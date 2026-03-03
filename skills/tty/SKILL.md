@@ -1,6 +1,6 @@
 # TTY Skill
 
-Interactive terminal app testing - MCP server with Bun PTY + xterm-headless.
+Interactive terminal app testing - MCP server with termless (PTY + xterm.js).
 
 **Configure in your project's `.mcp.json`:**
 
@@ -27,20 +27,19 @@ Interactive terminal app testing - MCP server with Bun PTY + xterm-headless.
 ## Architecture
 
 ```
-MCP Server → TtyEngine (Bun PTY + @xterm/headless) → target process
+MCP Server → termless (PTY + xterm.js backend) → target process
                 └→ Playwright (lazy, screenshots only)
 ```
 
-- **Bun PTY** spawns the target process with a real terminal
-- **@xterm/headless** emulates the terminal in-process (no browser needed for text/keys)
-- **Playwright** is only launched lazily for `screenshot` (renders HTML to PNG)
+- **termless** spawns the target process via Bun PTY and emulates the terminal with xterm.js
+- **Playwright** is only launched lazily for `screenshot` (renders SVG to PNG)
 - No ttyd, no port allocation, no external processes
 
 ## Tools
 
 | Tool                   | Description                                         |
 | ---------------------- | --------------------------------------------------- |
-| `mcp__tty__start`      | Start PTY session with xterm-headless emulator      |
+| `mcp__tty__start`      | Start PTY session with xterm.js terminal emulator   |
 | `mcp__tty__stop`       | Close PTY session and kill process                  |
 | `mcp__tty__press`      | Press keyboard key(s)                               |
 | `mcp__tty__type`       | Type text into terminal                             |

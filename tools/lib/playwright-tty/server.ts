@@ -1,8 +1,8 @@
 /**
- * TTY MCP Backend - manages TtyEngine sessions and implements tool handlers
+ * TTY MCP Backend - manages terminal sessions and implements tool handlers
  *
- * Uses Bun PTY + xterm-headless (via TtyEngine) instead of ttyd + Playwright.
- * Browser is only launched lazily for screenshots (rendering HTML to PNG).
+ * Uses termless (PTY + xterm.js backend) for terminal emulation.
+ * Browser is only launched lazily for screenshots (rendering SVG to PNG).
  *
  * Robustness features:
  * - Per-tool timeouts prevent hanging on stale sessions
@@ -10,7 +10,9 @@
  */
 
 import type { Browser } from "playwright"
-import { createTtyEngine, type TtyEngine } from "../tty-engine/index.js"
+import type { Terminal } from "termless"
+import { createTerminal } from "termless"
+import { createXtermBackend } from "termless-xtermjs"
 import {
   TtyStartInputSchema,
   TtyStopInputSchema,
@@ -41,6 +43,8 @@ const TOOL_TIMEOUTS: Record<string, number> = {
   tty_text: 5_000,
 }
 
+const POLL_INTERVAL = 50
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
   return Promise.race([
@@ -55,6 +59,24 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
+/** Wait for terminal to have any non-empty content */
+async function waitForContent(term: Terminal, timeout: number): Promise<void> {
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    const content = term.getText().trim()
+    if (content.length > 0) return
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
+  }
+  throw new Error(`Timeout: no terminal content after ${timeout}ms`)
+}
+
+interface TtySession {
+  id: string
+  command: string[]
+  createdAt: Date
+  terminal: Terminal
+}
+
 type ToolOutput =
   | TtyStartOutput
   | TtyListOutput
@@ -66,7 +88,7 @@ type ToolOutput =
   | TtyWaitOutput
 
 export class PlaywrightTtyBackend {
-  private engines = new Map<string, TtyEngine>()
+  private sessions = new Map<string, TtySession>()
   private browser: Browser | null = null
 
   /** Lazy-launch browser only for screenshots */
@@ -98,26 +120,26 @@ export class PlaywrightTtyBackend {
     }
   }
 
-  private getEngine(sessionId: string): TtyEngine {
-    const engine = this.engines.get(sessionId)
-    if (!engine) {
-      const active = Array.from(this.engines.keys()).join(", ") || "none"
+  private getSession(sessionId: string): TtySession {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      const active = Array.from(this.sessions.keys()).join(", ") || "none"
       throw new Error(`Session not found: ${sessionId}. Active sessions: ${active}`)
     }
-    if (!engine.alive) {
-      const info = engine.exitInfo ? ` (${engine.exitInfo})` : ""
-      engine.close().catch(() => {})
-      this.engines.delete(sessionId)
+    if (!session.terminal.alive) {
+      const info = session.terminal.exitInfo ? ` (${session.terminal.exitInfo})` : ""
+      session.terminal.close().catch(() => {})
+      this.sessions.delete(sessionId)
       throw new Error(`Session ${sessionId} is dead (process exited${info}). It has been removed.`)
     }
-    return engine
+    return session
   }
 
   private cleanupStaleSessions(): void {
-    for (const [id, engine] of this.engines) {
-      if (!engine.alive) {
-        engine.close().catch(() => {})
-        this.engines.delete(id)
+    for (const [id, session] of this.sessions) {
+      if (!session.terminal.alive) {
+        session.terminal.close().catch(() => {})
+        this.sessions.delete(id)
       }
     }
   }
@@ -156,12 +178,17 @@ export class PlaywrightTtyBackend {
       case "tty_start": {
         const input = TtyStartInputSchema.parse(args)
         const id = generateId()
+        const cols = input.cols ?? 120
+        const rows = input.rows ?? 40
 
-        const engine = createTtyEngine(id, {
-          command: input.command,
+        const terminal = createTerminal({
+          backend: createXtermBackend({ cols, rows }),
+          cols,
+          rows,
+        })
+
+        await terminal.spawn(input.command, {
           env: input.env as Record<string, string> | undefined,
-          cols: input.cols,
-          rows: input.rows,
           cwd: input.cwd,
         })
 
@@ -169,39 +196,44 @@ export class PlaywrightTtyBackend {
         try {
           const waitFor = input.waitFor ?? "content"
           if (waitFor === "content") {
-            await engine.waitForContent(input.timeout)
+            await waitForContent(terminal, input.timeout)
           } else if (waitFor === "stable") {
-            await engine.waitForStable(500, input.timeout)
+            await terminal.waitForStable(500, input.timeout)
           } else {
-            await engine.waitForText(waitFor, input.timeout)
+            await terminal.waitFor(waitFor, input.timeout)
           }
         } catch {
           // Don't fail start if wait times out — session is still usable
         }
 
-        this.engines.set(id, engine)
+        this.sessions.set(id, {
+          id,
+          command: input.command,
+          createdAt: new Date(),
+          terminal,
+        })
         return { sessionId: id }
       }
 
       case "tty_list": {
         TtyListInputSchema.parse(args)
         this.cleanupStaleSessions()
-        const sessions = Array.from(this.engines.values()).map((e) => ({
-          id: e.id,
-          command: e.command,
-          createdAt: e.createdAt.toISOString(),
+        const sessions = Array.from(this.sessions.values()).map((s) => ({
+          id: s.id,
+          command: s.command,
+          createdAt: s.createdAt.toISOString(),
         }))
         return { sessions }
       }
 
       case "tty_stop": {
         const input = TtyStopInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
-        await engine.close()
-        this.engines.delete(input.sessionId)
+        const session = this.getSession(input.sessionId)
+        await session.terminal.close()
+        this.sessions.delete(input.sessionId)
 
         // Close browser if no more sessions
-        if (this.engines.size === 0) {
+        if (this.sessions.size === 0) {
           await this.closeBrowser()
         }
 
@@ -210,29 +242,31 @@ export class PlaywrightTtyBackend {
 
       case "tty_press": {
         const input = TtyPressInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
-        engine.press(input.key)
+        const session = this.getSession(input.sessionId)
+        session.terminal.press(input.key)
         return { success: true }
       }
 
       case "tty_type": {
         const input = TtyTypeInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
-        engine.type(input.text)
+        const session = this.getSession(input.sessionId)
+        session.terminal.type(input.text)
         return { success: true }
       }
 
       case "tty_screenshot": {
         const input = TtyScreenshotInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
-        const html = engine.getHTML()
+        const session = this.getSession(input.sessionId)
+        const svg = session.terminal.screenshotSvg()
 
-        // Launch browser lazily for rendering
+        // Launch browser lazily for rendering SVG to PNG
         const browser = await this.ensureBrowser()
         const context = await browser.newContext()
         const page = await context.newPage()
         try {
-          await page.setContent(html, { waitUntil: "load" })
+          await page.setContent(`<!DOCTYPE html><html><body style="margin:0;background:#000">${svg}</body></html>`, {
+            waitUntil: "load",
+          })
           const buffer = await page.screenshot()
 
           if (input.outputPath) {
@@ -248,22 +282,22 @@ export class PlaywrightTtyBackend {
 
       case "tty_text": {
         const input = TtyTextInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
-        const content = engine.getText()
+        const session = this.getSession(input.sessionId)
+        const content = session.terminal.getText()
         return { content }
       }
 
       case "tty_wait": {
         const input = TtyWaitInputSchema.parse(args)
-        const engine = this.getEngine(input.sessionId)
+        const session = this.getSession(input.sessionId)
 
         try {
           if (input.for) {
-            await engine.waitForText(input.for, input.timeout)
+            await session.terminal.waitFor(input.for, input.timeout)
           } else if (input.stable) {
-            await engine.waitForStable(input.stable, input.timeout)
+            await session.terminal.waitForStable(input.stable, input.timeout)
           } else {
-            await engine.waitForContent(input.timeout)
+            await waitForContent(session.terminal, input.timeout)
           }
           return { success: true }
         } catch (err) {
@@ -280,14 +314,14 @@ export class PlaywrightTtyBackend {
   }
 
   async shutdown(): Promise<void> {
-    for (const engine of this.engines.values()) {
+    for (const session of this.sessions.values()) {
       try {
-        await engine.close()
+        await session.terminal.close()
       } catch {
         // Best-effort cleanup
       }
     }
-    this.engines.clear()
+    this.sessions.clear()
     await this.closeBrowser()
   }
 }
