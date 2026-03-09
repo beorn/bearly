@@ -3,6 +3,8 @@ import { readFileSync, existsSync } from "fs"
 import { basename, dirname, relative, resolve } from "path"
 import type { Reference, Edit, FileEditset, FileOp } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
+import { offsetToLineCol, lineColToOffset, getLinePreview } from "../../core/text-utils"
+import { findFiles } from "../../core/file-discovery"
 import { parseWikiLinks, linkMatchesTarget, generateReplacement, type WikiLink } from "./parser"
 
 /**
@@ -133,7 +135,7 @@ export function createFileRenameEditset(oldPath: string, newPath: string, search
  * Find all broken wikilinks (links to non-existent files)
  */
 export function findBrokenLinks(searchPath: string = ".", glob: string = "**/*.md"): Reference[] {
-  const files = findMarkdownFiles(searchPath, glob)
+  const files = findFiles(glob, searchPath)
   const existingFiles = new Set(files.map((f) => basename(f).replace(/\.md$/, "").toLowerCase()))
 
   const refs: Reference[] = []
@@ -183,51 +185,3 @@ function findCandidateFiles(targetName: string, searchPath: string, glob: string
   }
 }
 
-function findMarkdownFiles(searchPath: string, glob: string): string[] {
-  try {
-    const output = execSync(`rg --files --glob "${glob}" "${searchPath}"`, {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    return output.trim().split("\n").filter(Boolean)
-  } catch {
-    return []
-  }
-}
-
-function offsetToLineCol(content: string, offset: number): [number, number] {
-  let line = 1
-  let col = 1
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === "\n") {
-      line++
-      col = 1
-    } else {
-      col++
-    }
-  }
-  return [line, col]
-}
-
-function lineColToOffset(content: string, line: number, col: number): number {
-  let currentLine = 1
-  let offset = 0
-
-  for (let i = 0; i < content.length; i++) {
-    if (currentLine === line) {
-      return offset + col - 1
-    }
-    if (content[i] === "\n") {
-      currentLine++
-    }
-    offset++
-  }
-
-  return offset
-}
-
-function getLinePreview(content: string, line: number): string {
-  const lines = content.split("\n")
-  const lineContent = lines[line - 1] || ""
-  return lineContent.trim().slice(0, 80)
-}

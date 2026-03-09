@@ -1,8 +1,9 @@
-import { execSync } from "child_process"
 import { readFileSync, existsSync } from "fs"
 import { dirname, join, relative } from "path"
 import type { Reference, Edit, Editset } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
+import { offsetToLineCol } from "../../core/text-utils"
+import { findFiles } from "../../core/file-discovery"
 import { parseTsConfig, tsconfigPathMatchesFile, generateTsConfigReplacementPath } from "./parser"
 
 /**
@@ -14,7 +15,7 @@ export function findTsConfigRefs(
   glob: string = "**/tsconfig*.json",
 ): Reference[] {
   const refs: Reference[] = []
-  const tsconfigFiles = findTsConfigFiles(searchPath, glob)
+  const tsconfigFiles = findFiles(glob, searchPath, true)
 
   for (const configFile of tsconfigFiles) {
     if (!existsSync(configFile)) continue
@@ -51,7 +52,7 @@ export function findTsConfigRefs(
  */
 export function findTsConfigEdits(oldPath: string, newPath: string, searchPath: string = "."): Edit[] {
   const edits: Edit[] = []
-  const tsconfigFiles = findTsConfigFiles(searchPath, "**/tsconfig*.json")
+  const tsconfigFiles = findFiles("**/tsconfig*.json", searchPath, true)
 
   for (const configFile of tsconfigFiles) {
     if (!existsSync(configFile)) continue
@@ -123,34 +124,3 @@ export function createTsConfigEditset(oldPath: string, newPath: string, searchPa
   }
 }
 
-// Internal helpers
-
-function findTsConfigFiles(searchPath: string, glob: string): string[] {
-  try {
-    const output = execSync(`rg --files --glob "${glob}" "${searchPath}"`, {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    return output
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .filter((f) => !f.includes("node_modules"))
-  } catch {
-    return []
-  }
-}
-
-function offsetToLineCol(content: string, offset: number): [number, number] {
-  let line = 1
-  let col = 1
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === "\n") {
-      line++
-      col = 1
-    } else {
-      col++
-    }
-  }
-  return [line, col]
-}

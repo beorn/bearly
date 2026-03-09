@@ -1,8 +1,9 @@
-import { execSync } from "child_process"
 import { readFileSync, existsSync } from "fs"
-import { basename, dirname, join, relative } from "path"
+import { dirname, join, relative } from "path"
 import type { Reference, Edit, Editset } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
+import { offsetToLineCol } from "../../core/text-utils"
+import { findFiles } from "../../core/file-discovery"
 import { parsePackageJson, pathMatchesFile, generateReplacementPath } from "./parser"
 
 /**
@@ -16,7 +17,7 @@ export function findPackageJsonRefs(
   const refs: Reference[] = []
 
   // Find all package.json files
-  const packageJsonFiles = findPackageJsonFiles(searchPath, glob)
+  const packageJsonFiles = findFiles(glob, searchPath, true)
 
   for (const pkgFile of packageJsonFiles) {
     if (!existsSync(pkgFile)) continue
@@ -58,7 +59,7 @@ export function findPackageJsonEdits(oldPath: string, newPath: string, searchPat
   const edits: Edit[] = []
 
   // Find all package.json files
-  const packageJsonFiles = findPackageJsonFiles(searchPath, "**/package.json")
+  const packageJsonFiles = findFiles("**/package.json", searchPath, true)
 
   for (const pkgFile of packageJsonFiles) {
     if (!existsSync(pkgFile)) continue
@@ -140,7 +141,7 @@ export function createPackageJsonEditset(oldPath: string, newPath: string, searc
  */
 export function findBrokenPackageJsonPaths(searchPath: string = "."): Reference[] {
   const refs: Reference[] = []
-  const packageJsonFiles = findPackageJsonFiles(searchPath, "**/package.json")
+  const packageJsonFiles = findFiles("**/package.json", searchPath, true)
 
   for (const pkgFile of packageJsonFiles) {
     if (!existsSync(pkgFile)) continue
@@ -182,34 +183,3 @@ export function findBrokenPackageJsonPaths(searchPath: string = "."): Reference[
   return refs
 }
 
-// Internal helpers
-
-function findPackageJsonFiles(searchPath: string, glob: string): string[] {
-  try {
-    const output = execSync(`rg --files --glob "${glob}" "${searchPath}"`, {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    return output
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .filter((f) => !f.includes("node_modules"))
-  } catch {
-    return []
-  }
-}
-
-function offsetToLineCol(content: string, offset: number): [number, number] {
-  let line = 1
-  let col = 1
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === "\n") {
-      line++
-      col = 1
-    } else {
-      col++
-    }
-  }
-  return [line, col]
-}
