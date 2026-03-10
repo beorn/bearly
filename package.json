@@ -2,9 +2,22 @@
   "name": "@beorn/tools",
   "version": "0.6.0",
   "description": "Generic Claude Code tools - batch refactoring, multi-LLM research, TTY testing, session search",
+  "license": "MIT",
+  "author": "Beorn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/tools.git"
+  },
+  "files": [
+    "tools",
+    "skills"
+  ],
   "type": "module",
   "exports": {
     "./tools/worktree": "./tools/worktree.ts"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "refactor": "bun tools/refactor.ts",
