@@ -16,8 +16,21 @@ import { retrieveResponse, pollForCompletion } from "./lib/llm/openai-deep"
 import { listPartials, findPartialByResponseId, cleanupPartials } from "./lib/llm/persistence"
 import { consensus } from "./lib/llm/consensus"
 import { getAvailableProviders, getProviderEnvVar, isProviderAvailable } from "./lib/llm/providers"
-import { estimateCost, formatCost, getBestAvailableModel, getBestAvailableModels, MODELS } from "./lib/llm/types"
-import { initializePricing, getStaleWarning, cacheCurrentPricing, PRICING_SOURCES } from "./lib/llm/pricing"
+import {
+  estimateCost,
+  formatCost,
+  getBestAvailableModel,
+  getBestAvailableModels,
+  MODELS,
+  type ModelMode,
+} from "./lib/llm/types"
+import {
+  initializePricing,
+  isPricingStale,
+  getStaleWarning,
+  cacheCurrentPricing,
+  PRICING_SOURCES,
+} from "./lib/llm/pricing"
 import { getDb, closeDb, findSimilarQueries, ftsSearchWithSnippet } from "./lib/history/db"
 
 // Initialize pricing on startup
@@ -64,7 +77,7 @@ function usage(): never {
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 USAGE
-  llm "question"                    Answer using gpt-5.2 (~$0.02)
+  llm "question"                    Answer using gpt-5.4 (~$0.02)
   llm --deep "topic"                Deep research with web search (~$2-5)
   llm opinion "question"            Second opinion from Gemini (~$0.02)
   llm debate "question"             Multi-model consensus (~$1-3)
@@ -76,7 +89,7 @@ EXAMPLES
   llm debate "monorepo vs polyrepo for our use case"     Multiple perspectives
 
 KEYWORDS
-  (none)                 Default: gpt-5.2 (~$0.02)
+  (none)                 Default: gpt-5.4 (~$0.02)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
@@ -278,18 +291,324 @@ function totalResponseCost(
   return total
 }
 
+interface PricingUpdateResult {
+  priceChanges: Array<{
+    modelId: string
+    oldInput: number
+    oldOutput: number
+    newInput: number
+    newOutput: number
+  }>
+  extractionCost?: string
+  error?: string
+}
+
+/**
+ * Fetch pricing pages and extract price changes via LLM.
+ * Used by both manual `update-pricing` command and auto-update after invocation.
+ */
+async function performPricingUpdate(options: {
+  verbose: boolean
+  modelMode?: ModelMode
+}): Promise<PricingUpdateResult> {
+  const { verbose, modelMode = "quick" } = options
+  const log = verbose ? (msg: string) => console.error(msg) : (_msg: string) => {}
+
+  const currentPrices = new Map(
+    MODELS.filter((m) => m.inputPricePerM != null).map((m) => [
+      m.modelId,
+      { input: m.inputPricePerM!, output: m.outputPricePerM! },
+    ]),
+  )
+
+  // Fetch pricing pages in parallel
+  log("Fetching pricing pages...")
+  const pageTexts: string[] = []
+
+  await Promise.allSettled(
+    Object.entries(PRICING_SOURCES).map(async ([provider, url]) => {
+      try {
+        const resp = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; llm-pricing/1.0)" },
+          signal: AbortSignal.timeout(15000),
+          redirect: "follow",
+        })
+        if (!resp.ok) {
+          log(`  ⚠️  ${provider}: HTTP ${resp.status}`)
+          return
+        }
+        const html = await resp.text()
+        const text = html
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&nbsp;/g, " ")
+          .replace(/&#\d+;/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 8000)
+
+        pageTexts.push(`[${provider.toUpperCase()} — ${url}]\n${text}`)
+        log(`  ✓ ${provider} (${text.length} chars)`)
+      } catch (e) {
+        log(`  ⚠️  ${provider}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }),
+  )
+
+  if (pageTexts.length === 0) {
+    cacheCurrentPricing()
+    return { priceChanges: [], error: "Could not fetch any pricing pages. Cache refreshed from hardcoded values." }
+  }
+
+  // Build extraction prompt
+  const modelList = MODELS.filter((m) => !m.isDeepResearch)
+    .map((m) => `  ${m.modelId} (${m.displayName}): $${m.inputPricePerM}/M in, $${m.outputPricePerM}/M out`)
+    .join("\n")
+
+  const extractionPrompt = `Extract current API pricing for these AI models from the pricing pages below.
+
+MODELS TO CHECK:
+${modelList}
+
+PRICING PAGES:
+${pageTexts.join("\n\n---\n\n")}
+
+Return a JSON array of objects for models where the price DIFFERS from what's listed above.
+Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outputPricePerM": number }
+- Prices are per 1 MILLION tokens in USD
+- Input = prompt/input tokens, Output = completion/output tokens
+- Only include models whose prices DIFFER. If prices match or model isn't on the pages, skip it.
+- If no prices changed, return []
+- Return ONLY the JSON array, no markdown fences, no explanation.`
+
+  // Find a model for extraction
+  const { model: extractModel, warning: extractWarning } = getBestAvailableModel(modelMode, (p) =>
+    isProviderAvailable(p),
+  )
+  if (!extractModel) {
+    cacheCurrentPricing()
+    return { priceChanges: [], error: "No LLM available for price extraction. Cache refreshed from hardcoded values." }
+  }
+  if (extractWarning) log(`  ℹ ${extractWarning}`)
+
+  log(`\nExtracting prices via ${extractModel.displayName}...`)
+
+  const extractResult = await queryModel({
+    question: extractionPrompt,
+    model: extractModel,
+    systemPrompt: "You are a data extraction assistant. Output only valid JSON arrays. No markdown fences.",
+  })
+
+  if (extractResult.response.error || !extractResult.response.content) {
+    cacheCurrentPricing()
+    return {
+      priceChanges: [],
+      error: `LLM extraction failed: ${extractResult.response.error ?? "empty response"}. Cache refreshed from hardcoded values.`,
+    }
+  }
+
+  // Parse response
+  let priceUpdates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }> = []
+  try {
+    const jsonStr = extractResult.response.content
+      .replace(/```json?\n?/g, "")
+      .replace(/```/g, "")
+      .trim()
+    priceUpdates = JSON.parse(jsonStr)
+    if (!Array.isArray(priceUpdates)) priceUpdates = []
+  } catch {
+    cacheCurrentPricing()
+    return { priceChanges: [], error: "Could not parse LLM response. Cache refreshed from hardcoded values." }
+  }
+
+  // Apply changes
+  const priceChanges: PricingUpdateResult["priceChanges"] = []
+  for (const u of priceUpdates) {
+    const current = currentPrices.get(u.modelId)
+    if (!current) continue
+    const inChanged = u.inputPricePerM !== current.input
+    const outChanged = u.outputPricePerM !== current.output
+    if (inChanged || outChanged) {
+      priceChanges.push({
+        modelId: u.modelId,
+        oldInput: current.input,
+        oldOutput: current.output,
+        newInput: u.inputPricePerM,
+        newOutput: u.outputPricePerM,
+      })
+      const model = MODELS.find((m) => m.modelId === u.modelId)
+      if (model) {
+        model.inputPricePerM = u.inputPricePerM
+        model.outputPricePerM = u.outputPricePerM
+      }
+    }
+  }
+
+  // Save cache (resets stale timer)
+  cacheCurrentPricing()
+
+  // Extraction cost
+  let extractionCost: string | undefined
+  if (extractResult.response.usage) {
+    const cost = estimateCost(
+      extractModel,
+      extractResult.response.usage.promptTokens,
+      extractResult.response.usage.completionTokens,
+    )
+    extractionCost = formatCost(cost)
+  }
+
+  return { priceChanges, extractionCost }
+}
+
+/**
+ * Discover new models by querying provider APIs (OpenAI, Anthropic).
+ * Returns model IDs not present in the MODELS registry.
+ */
+async function discoverNewModels(): Promise<string[]> {
+  const knownIds = new Set(MODELS.map((m) => m.modelId))
+  const newModels: string[] = []
+
+  // OpenAI /v1/models
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const resp = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        signal: AbortSignal.timeout(10000),
+      })
+      if (resp.ok) {
+        const data = (await resp.json()) as { data: Array<{ id: string }> }
+        for (const m of data.data) {
+          if (
+            (m.id.startsWith("gpt-5") ||
+              m.id.startsWith("gpt-6") ||
+              m.id.startsWith("o3") ||
+              m.id.startsWith("o4") ||
+              m.id.startsWith("o5")) &&
+            !m.id.includes("audio") &&
+            !m.id.includes("realtime") &&
+            !m.id.includes("tts") &&
+            !m.id.includes("dall-e") &&
+            !m.id.includes("embedding") &&
+            !m.id.includes("whisper") &&
+            !knownIds.has(m.id)
+          ) {
+            newModels.push(m.id)
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Anthropic /v1/models
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/models", {
+        headers: {
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+        },
+        signal: AbortSignal.timeout(10000),
+      })
+      if (resp.ok) {
+        const data = (await resp.json()) as { data: Array<{ id: string }> }
+        for (const m of data.data) {
+          if (m.id.startsWith("claude-") && !knownIds.has(m.id)) {
+            newModels.push(m.id)
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return newModels
+}
+
+/**
+ * Auto-update pricing after invocation if cache is stale (>5 days).
+ * Prints discoveries prominently to stderr AFTER the main response.
+ */
+async function maybeAutoUpdatePricing(): Promise<void> {
+  if (!isPricingStale()) return
+  const skip = ["update-pricing", "recover", "partials"]
+  if (!command || command === "--help" || command === "-h") return
+  if (skip.includes(command!)) return
+  if (hasFlag("--dry-run")) return
+
+  try {
+    console.error("\n📊 Pricing cache is >5 days old, refreshing...")
+
+    const [updateResult, newModels] = await Promise.all([
+      performPricingUpdate({ verbose: false, modelMode: "quick" }),
+      discoverNewModels(),
+    ])
+
+    const hasChanges = updateResult.priceChanges.length > 0
+    const hasNewModels = newModels.length > 0
+
+    if (!hasChanges && !hasNewModels) {
+      if (updateResult.error) {
+        console.error(`  ⚠️  ${updateResult.error}`)
+      } else {
+        console.error("  ✓ No changes detected.")
+      }
+      return
+    }
+
+    console.error("")
+    console.error("╔" + "═".repeat(58) + "╗")
+    console.error("║  📊 Pricing Auto-Update — Discoveries                      ║")
+    console.error("╚" + "═".repeat(58) + "╝")
+
+    if (hasChanges) {
+      console.error(`\n  Price changes (${updateResult.priceChanges.length}):`)
+      for (const c of updateResult.priceChanges) {
+        console.error(`    ${c.modelId}:`)
+        if (c.oldInput !== c.newInput) console.error(`      input:  $${c.oldInput}/M → $${c.newInput}/M`)
+        if (c.oldOutput !== c.newOutput) console.error(`      output: $${c.oldOutput}/M → $${c.newOutput}/M`)
+      }
+      console.error(`\n  ⚠️  To persist: update vendor/tools/tools/lib/llm/types.ts`)
+    }
+
+    if (hasNewModels) {
+      console.error(`\n  🆕 New models (${newModels.length}):`)
+      for (const id of newModels.slice(0, 15)) {
+        console.error(`    • ${id}`)
+      }
+      if (newModels.length > 15) {
+        console.error(`    ... and ${newModels.length - 15} more`)
+      }
+      console.error(`\n  ℹ️  Add to MODELS in vendor/tools/tools/lib/llm/types.ts`)
+    }
+
+    if (updateResult.extractionCost) {
+      console.error(`\n  (auto-update cost: ${updateResult.extractionCost})`)
+    }
+    console.error("")
+  } catch {
+    // Best-effort — never fail the main operation
+  }
+}
+
 /** Shared single-model ask: select model, stream, finalize */
 async function askAndFinish(
   question: string,
-  modelMode: string,
+  modelMode: ModelMode,
   level: "standard" | "quick",
   header: (name: string) => string,
 ): Promise<void> {
+  const context = await buildContext(question)
+  const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
+  if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
   const { model, warning } = getBestAvailableModel(modelMode, isProviderAvailable)
   if (!model) error(`No model available for ${modelMode}. ${warning || ""}`)
   if (warning) console.error(`⚠️  ${warning}\n`)
   console.error(header(model.displayName) + "\n")
-  const response = await ask(question, level, {
+  const response = await ask(enrichedQuestion, level, {
     modelOverride: model.modelId,
     stream: true,
     onToken: streamToken,
@@ -470,7 +789,7 @@ async function main() {
   // If first arg is not a keyword, treat entire args as a question (default mode)
   const isKeyword = KEYWORDS.includes(command!)
   if (!isKeyword && !isDeepFlag && !isAskFlag) {
-    const question = args.join(" ")
+    const question = extractText(true, [])
     if (!question) usage()
 
     // Check history first
@@ -492,7 +811,7 @@ async function main() {
     }
 
     await askAndFinish(question, "default", "standard", (name) => `[${name}]`)
-    process.exit(0)
+    return
   }
 
   if (isDeepFlag) {
@@ -503,7 +822,7 @@ async function main() {
     const shouldContinue = await checkAndRecoverPartials()
     if (!shouldContinue) {
       console.error("Cancelled.")
-      process.exit(0)
+      return
     }
 
     const { model: deepModel, warning: deepWarning } = getBestAvailableModel("deep", isProviderAvailable)
@@ -524,7 +843,7 @@ async function main() {
       console.error(`   Model: ${deepModel.modelId}`)
       console.error(`   Provider: ${deepModel.provider}`)
       if (context) console.error(`   Context: ${context.slice(0, 100)}...`)
-      process.exit(0)
+      return
     }
 
     await confirmOrExit("⚠️  This uses deep research models (~$2-5). Proceed? [Y/n] ")
@@ -537,14 +856,14 @@ async function main() {
 
     if (response.error) console.error(`Error: ${response.error}`)
     finishResponse(response.content, response.model, response.usage, response.durationMs, topic)
-    process.exit(0)
+    return
   }
 
   if (isAskFlag) {
     const question = isKeyword ? getQuestion() : extractText(true, ["/ask"])
     if (!question) error("Usage: llm --ask <question>")
     await askAndFinish(question, "default", "standard", (name) => `[${name}]`)
-    process.exit(0)
+    return
   }
 
   switch (command) {
@@ -782,174 +1101,25 @@ async function main() {
 
     case "update-pricing": {
       console.error("📊 Updating model pricing...\n")
+      const result = await performPricingUpdate({ verbose: true, modelMode: "default" })
 
-      // Current prices for comparison
-      const currentPrices = new Map(
-        MODELS.filter((m) => m.inputPricePerM != null).map((m) => [
-          m.modelId,
-          { input: m.inputPricePerM!, output: m.outputPricePerM! },
-        ]),
-      )
-
-      // Fetch pricing pages in parallel
-      console.error("Fetching pricing pages...")
-      const pageTexts: string[] = []
-
-      await Promise.allSettled(
-        Object.entries(PRICING_SOURCES).map(async ([provider, url]) => {
-          try {
-            const resp = await fetch(url, {
-              headers: { "User-Agent": "Mozilla/5.0 (compatible; llm-pricing/1.0)" },
-              signal: AbortSignal.timeout(15000),
-              redirect: "follow",
-            })
-            if (!resp.ok) {
-              console.error(`  ⚠️  ${provider}: HTTP ${resp.status}`)
-              return
-            }
-            const html = await resp.text()
-            // Strip HTML to text
-            const text = html
-              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-              .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-              .replace(/<[^>]+>/g, " ")
-              .replace(/&amp;/g, "&")
-              .replace(/&lt;/g, "<")
-              .replace(/&gt;/g, ">")
-              .replace(/&nbsp;/g, " ")
-              .replace(/&#\d+;/g, " ")
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, 8000)
-
-            pageTexts.push(`[${provider.toUpperCase()} — ${url}]\n${text}`)
-            console.error(`  ✓ ${provider} (${text.length} chars)`)
-          } catch (e) {
-            console.error(`  ⚠️  ${provider}: ${e instanceof Error ? e.message : String(e)}`)
-          }
-        }),
-      )
-
-      if (pageTexts.length === 0) {
-        console.error("\n⚠️  Could not fetch any pricing pages. Refreshing cache from hardcoded values.")
-        cacheCurrentPricing()
-        console.error("✓ Cache refreshed (stale warning cleared).")
-        break
-      }
-
-      // Build extraction prompt
-      const modelList = MODELS.filter((m) => !m.isDeepResearch)
-        .map((m) => `  ${m.modelId} (${m.displayName}): $${m.inputPricePerM}/M in, $${m.outputPricePerM}/M out`)
-        .join("\n")
-
-      const extractionPrompt = `Extract current API pricing for these AI models from the pricing pages below.
-
-MODELS TO CHECK:
-${modelList}
-
-PRICING PAGES:
-${pageTexts.join("\n\n---\n\n")}
-
-Return a JSON array of objects for models where the price DIFFERS from what's listed above.
-Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outputPricePerM": number }
-- Prices are per 1 MILLION tokens in USD
-- Input = prompt/input tokens, Output = completion/output tokens
-- Only include models whose prices DIFFER. If prices match or model isn't on the pages, skip it.
-- If no prices changed, return []
-- Return ONLY the JSON array, no markdown fences, no explanation.`
-
-      // Find a model for extraction
-      const { model: extractModel, warning: extractWarning } = getBestAvailableModel("default", (p) =>
-        isProviderAvailable(p),
-      )
-      if (!extractModel) {
-        console.error("\n⚠️  No LLM available for extraction. Refreshing cache from hardcoded values.")
-        cacheCurrentPricing()
-        console.error("✓ Cache refreshed (stale warning cleared).")
-        break
-      }
-      if (extractWarning) console.error(`  ℹ ${extractWarning}`)
-
-      console.error(`\nExtracting prices via ${extractModel.displayName}...`)
-
-      const extractResult = await queryModel({
-        question: extractionPrompt,
-        model: extractModel,
-        systemPrompt: "You are a data extraction assistant. Output only valid JSON arrays. No markdown fences.",
-      })
-
-      if (extractResult.response.error || !extractResult.response.content) {
-        console.error(`\n⚠️  LLM extraction failed: ${extractResult.response.error ?? "empty response"}`)
-        console.error("Refreshing cache from hardcoded values.")
-        cacheCurrentPricing()
-        console.error("✓ Cache refreshed (stale warning cleared).")
-        break
-      }
-
-      // Parse response
-      let priceUpdates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }> = []
-      try {
-        const jsonStr = extractResult.response.content
-          .replace(/```json?\n?/g, "")
-          .replace(/```/g, "")
-          .trim()
-        priceUpdates = JSON.parse(jsonStr)
-        if (!Array.isArray(priceUpdates)) priceUpdates = []
-      } catch {
-        console.error("\n⚠️  Could not parse LLM response as JSON:")
-        console.error(extractResult.response.content.slice(0, 300))
-        console.error("\nRefreshing cache from hardcoded values.")
-        cacheCurrentPricing()
-        console.error("✓ Cache refreshed (stale warning cleared).")
-        break
-      }
-
-      if (priceUpdates.length === 0) {
+      if (result.error) {
+        console.error(`\n⚠️  ${result.error}`)
+      } else if (result.priceChanges.length === 0) {
         console.error("\n✓ All prices are current — no changes detected.")
       } else {
-        console.error(`\n📋 Price changes detected (${priceUpdates.length}):\n`)
-        for (const u of priceUpdates) {
-          const current = currentPrices.get(u.modelId)
-          if (!current) {
-            console.error(`  ⚠️  Unknown model: ${u.modelId} (skipping)`)
-            continue
-          }
-          const inChanged = u.inputPricePerM !== current.input
-          const outChanged = u.outputPricePerM !== current.output
-          if (inChanged || outChanged) {
-            console.error(`  ${u.modelId}:`)
-            if (inChanged) console.error(`    input:  $${current.input}/M → $${u.inputPricePerM}/M`)
-            if (outChanged) console.error(`    output: $${current.output}/M → $${u.outputPricePerM}/M`)
-          }
+        console.error(`\n📋 Price changes detected (${result.priceChanges.length}):\n`)
+        for (const c of result.priceChanges) {
+          console.error(`  ${c.modelId}:`)
+          if (c.oldInput !== c.newInput) console.error(`    input:  $${c.oldInput}/M → $${c.newInput}/M`)
+          if (c.oldOutput !== c.newOutput) console.error(`    output: $${c.oldOutput}/M → $${c.newOutput}/M`)
         }
-
-        // Apply to in-memory MODELS
-        let applied = 0
-        for (const u of priceUpdates) {
-          const model = MODELS.find((m) => m.modelId === u.modelId)
-          if (model) {
-            model.inputPricePerM = u.inputPricePerM
-            model.outputPricePerM = u.outputPricePerM
-            applied++
-          }
-        }
-        if (applied > 0) {
-          console.error(`\n⚠️  To persist, update vendor/tools/tools/lib/llm/types.ts`)
-        }
+        console.error(`\n⚠️  To persist, update vendor/tools/tools/lib/llm/types.ts`)
       }
 
-      // Save cache (resets stale timer regardless)
-      cacheCurrentPricing()
       console.error("✓ Pricing cache updated.")
-
-      // Show cost summary
-      if (extractResult.response.usage) {
-        const cost = estimateCost(
-          extractModel,
-          extractResult.response.usage.promptTokens,
-          extractResult.response.usage.completionTokens,
-        )
-        console.error(`  (extraction cost: ${formatCost(cost)})`)
+      if (result.extractionCost) {
+        console.error(`  (extraction cost: ${result.extractionCost})`)
       }
       break
     }
@@ -959,6 +1129,8 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
   }
 }
 
-main().catch((err) => {
-  error(err instanceof Error ? err.message : String(err))
-})
+main()
+  .then(() => maybeAutoUpdatePricing())
+  .catch((err) => {
+    error(err instanceof Error ? err.message : String(err))
+  })
