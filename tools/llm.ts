@@ -21,7 +21,9 @@ import {
   formatCost,
   getBestAvailableModel,
   getBestAvailableModels,
+  getModel,
   MODELS,
+  type Model,
   type ModelMode,
 } from "./lib/llm/types"
 import {
@@ -90,6 +92,7 @@ EXAMPLES
 
 KEYWORDS
   (none)                 Default: gpt-5.4 (~$0.02)
+  pro                    Pro model: gpt-5.4-pro (~$5-15, ~10x standard)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
@@ -100,6 +103,7 @@ FLAGS
   --ask, /ask            Explicit default mode (syntactic sugar)
   -y, --yes              Skip confirmation prompts (for scripting)
   --dry-run              Show what would happen without calling APIs
+  --model <id>           Use specific model (e.g., gpt-5.4-pro, gemini-3-pro-preview)
   --no-recover           Skip auto-recovery of incomplete responses
   --with-history         Include relevant context from session history
   --context <text>       Provide explicit context (prepended to topic)
@@ -149,6 +153,14 @@ const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
  * exceed 30KB limit). The --output - mode was removed for this reason.
  */
 const outputFile = outputArg ?? `/tmp/llm-${sessionTag}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.txt`
+
+/** Resolve --model flag to a Model, or undefined if not specified */
+const modelOverrideId = getArg("--model")
+const modelOverride: Model | undefined = modelOverrideId ? getModel(modelOverrideId) : undefined
+if (modelOverrideId && !modelOverride) {
+  const available = MODELS.map((m) => m.modelId).join(", ")
+  error(`Unknown model: ${modelOverrideId}. Available: ${available}`)
+}
 
 /**
  * Write token during streaming — stderr ONLY if interactive terminal (TTY).
@@ -617,9 +629,15 @@ async function askAndFinish(
   const context = await buildContext(question)
   const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
-  const { model, warning } = getBestAvailableModel(modelMode, isProviderAvailable)
-  if (!model) error(`No model available for ${modelMode}. ${warning || ""}`)
-  if (warning) console.error(`⚠️  ${warning}\n`)
+  let model: Model
+  if (modelOverride) {
+    model = modelOverride
+  } else {
+    const result = getBestAvailableModel(modelMode, isProviderAvailable)
+    if (!result.model) error(`No model available for ${modelMode}. ${result.warning || ""}`)
+    if (result.warning) console.error(`⚠️  ${result.warning}\n`)
+    model = result.model
+  }
   console.error(header(model.displayName) + "\n")
   const response = await ask(enrichedQuestion, level, {
     modelOverride: model.modelId,
@@ -784,7 +802,7 @@ async function checkAndRecoverPartials(): Promise<boolean> {
 }
 
 // Keywords that trigger specific modes
-const KEYWORDS = ["quick", "cheap", "mini", "nano", "opinion", "debate", "recover", "partials", "update-pricing"]
+const KEYWORDS = ["quick", "cheap", "mini", "nano", "opinion", "pro", "debate", "recover", "partials", "update-pricing"]
 
 async function main() {
   if (!command || command === "--help" || command === "-h") {
@@ -838,15 +856,19 @@ async function main() {
       return
     }
 
-    const { model: deepModel, warning: deepWarning } = getBestAvailableModel("deep", isProviderAvailable)
-    if (!deepModel) {
-      error("No deep research model available. " + (deepWarning || ""))
+    let deepModel: Model
+    if (modelOverride) {
+      deepModel = modelOverride
+    } else {
+      const result = getBestAvailableModel("deep", isProviderAvailable)
+      if (!result.model) error("No deep research model available. " + (result.warning || ""))
+      if (result.warning) console.error(`⚠️  ${result.warning}\n`)
+      deepModel = result.model
     }
 
     console.error(`Deep research: ${topic}`)
     console.error(`Model: ${deepModel.displayName}`)
     console.error(`Estimated cost: ~$2-5\n`)
-    if (deepWarning) console.error(`⚠️  ${deepWarning}\n`)
     if (context) {
       console.error(`📎 Context provided (${context.length} chars)\n`)
     }
@@ -865,6 +887,7 @@ async function main() {
       context,
       stream: true,
       onToken: streamToken,
+      modelOverride: deepModel.modelId,
     })
 
     if (response.error) console.error(`Error: ${response.error}`)
@@ -895,6 +918,13 @@ async function main() {
       const question = getQuestion()
       if (!question) error("Usage: llm opinion <question>")
       await askAndFinish(question, "opinion", "standard", (name) => `[Second opinion from ${name}]`)
+      break
+    }
+
+    case "pro": {
+      const question = getQuestion()
+      if (!question) error("Usage: llm pro <question>")
+      await askAndFinish(question, "pro", "standard", (name) => `[${name} - pro mode]`)
       break
     }
 

@@ -673,18 +673,15 @@ export const BEST_MODELS = {
   default: ["gpt-5.4", "gemini-3-pro-preview", "claude-sonnet-4-6", "grok-4"],
   // Deep research - GPT-5.4 gives better results than deep research models for code review.
   // Deep research APIs (o3, gemini) still available as fallback for web-search-heavy queries.
-  deep: [
-    "gpt-5.4",
-    "o3-deep-research-2025-06-26",
-    "deep-research-pro-preview-12-2025",
-    "sonar-deep-research",
-  ],
+  deep: ["gpt-5.4", "o3-deep-research-2025-06-26", "deep-research-pro-preview-12-2025", "sonar-deep-research"],
   // Second opinion - prefer different provider than default
   opinion: ["gemini-3-pro-preview", "gemini-2.5-pro", "gpt-5.4", "grok-4"],
   // Debate - one from each major provider
   debate: ["gpt-5.4", "gemini-3-pro-preview", "grok-4", "claude-sonnet-4-6"],
   // Quick/cheap - fast and cheap
   quick: ["gpt-5-nano", "gemini-2.0-flash-lite", "grok-3-fast", "claude-haiku-4-5-20251001"],
+  // Pro - most capable models (very-high cost tier, ~10x standard)
+  pro: ["gpt-5.4-pro", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
 }
 
 export type ModelMode = keyof typeof BEST_MODELS
