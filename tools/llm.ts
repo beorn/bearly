@@ -108,7 +108,7 @@ FLAGS
   --with-history         Include relevant context from session history
   --context <text>       Provide explicit context (prepended to topic)
   --context-file <path>  Read context from a file
-  --output <file>        Write response to specific file (default: auto /tmp/llm-*.txt)
+  --output <file>        Write response to specific file (default: auto /tmp/llm-<session>-<slug>-<rand>.txt)
 
 FEATURES
   • Auto-recovery: Checks for interrupted responses and recovers them
@@ -147,12 +147,34 @@ function hasFlag(name: string): boolean {
 
 const outputArg = getArg("--output")
 const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
+
+/** Derive a short slug from the topic for the output filename. */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 4)
+    .join("-")
+    .slice(0, 40)
+}
+
 /**
  * Response is ALWAYS written to a file. Never stream to stdout — it causes truncation
  * when Claude Code captures background task output (stderr streaming tokens + stdout JSON
  * exceed 30KB limit). The --output - mode was removed for this reason.
  */
-const outputFile = outputArg ?? `/tmp/llm-${sessionTag}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.txt`
+let outputFile = outputArg ?? `/tmp/llm-${sessionTag}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.txt`
+
+/** Update the output filename to include a topic slug (call once topic is known). */
+function setOutputSlug(topic: string) {
+  if (outputArg) return // user specified explicit output, don't override
+  const slug = slugify(topic)
+  if (slug) {
+    outputFile = `/tmp/llm-${sessionTag}-${slug}-${Math.random().toString(36).slice(2, 6)}.txt`
+  }
+}
 
 /** Resolve --model flag to a Model, or undefined if not specified */
 const modelOverrideId = getArg("--model")
@@ -822,6 +844,7 @@ async function main() {
   if (!isKeyword && !isDeepFlag && !isAskFlag) {
     const question = extractText(true, [])
     if (!question) usage()
+    setOutputSlug(question)
 
     // Check history first
     try {
@@ -848,6 +871,7 @@ async function main() {
   if (isDeepFlag) {
     const topic = isKeyword ? getQuestion() : extractText(true, ["/deep"])
     if (!topic) error("Usage: llm --deep <topic>")
+    setOutputSlug(topic)
 
     const context = await buildContext(topic)
     const shouldContinue = await checkAndRecoverPartials()
@@ -898,6 +922,7 @@ async function main() {
   if (isAskFlag) {
     const question = isKeyword ? getQuestion() : extractText(true, ["/ask"])
     if (!question) error("Usage: llm --ask <question>")
+    setOutputSlug(question)
     await askAndFinish(question, "default", "standard", (name) => `[${name}]`)
     return
   }
@@ -910,6 +935,7 @@ async function main() {
     case "nano": {
       const question = getQuestion()
       if (!question) error("Usage: llm quick <question>")
+      setOutputSlug(question)
       await askAndFinish(question, "quick", "quick", (name) => `[${name} - quick mode]`)
       break
     }
@@ -917,6 +943,7 @@ async function main() {
     case "opinion": {
       const question = getQuestion()
       if (!question) error("Usage: llm opinion <question>")
+      setOutputSlug(question)
       await askAndFinish(question, "opinion", "standard", (name) => `[Second opinion from ${name}]`)
       break
     }
@@ -924,6 +951,7 @@ async function main() {
     case "pro": {
       const question = getQuestion()
       if (!question) error("Usage: llm pro <question>")
+      setOutputSlug(question)
       await askAndFinish(question, "pro", "standard", (name) => `[${name} - pro mode]`)
       break
     }
@@ -932,6 +960,7 @@ async function main() {
     case "debate": {
       const question = getQuestion()
       if (!question) error("Usage: llm debate <question>")
+      setOutputSlug(question)
 
       const contextDebate = await buildContext(question)
       const enrichedQuestion = contextDebate ? `${contextDebate}\n\n---\n\n${question}` : question
