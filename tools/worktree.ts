@@ -555,6 +555,12 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
   }
   success("Merged successfully")
 
+  // Validate submodule commits are pushed (prevents losing work on detached HEAD submodules)
+  const mainSubmodules = getSubmodulePaths(gitRoot)
+  if (mainSubmodules.length > 0) {
+    await checkUnpushedSubmodules(gitRoot, mainSubmodules)
+  }
+
   // Show merge summary
   const logResult = await safeExec($`cd ${gitRoot} && git log --oneline -5`)
   console.log("")
