@@ -792,11 +792,13 @@ ${BOLD}worktree${RESET} - Git worktree management with submodule support
 ${BOLD}USAGE${RESET}
   bun worktree                          Show worktrees and help
   bun worktree create <name> [branch]   Create worktree at ../<repo>-<name>
+  bun worktree create --branch <branch> Create worktree using branch as name
   bun worktree merge <name>             Merge worktree branch into main and clean up
   bun worktree remove <name>            Remove worktree
   bun worktree list                     Detailed worktree status
 
 ${BOLD}CREATE OPTIONS${RESET}
+  --branch <name>   Use specific branch (also used as worktree name if no <name>)
   --no-install      Skip dependency installation
   --no-direnv       Skip direnv allow
   --no-hooks        Skip hook installation
@@ -811,9 +813,10 @@ ${BOLD}REMOVE OPTIONS${RESET}
   -f, --force       Force removal even with uncommitted changes
 
 ${BOLD}EXAMPLES${RESET}
-  bun worktree create my-feature                  # New branch feat/my-feature
-  bun worktree create bugfix fix/cursor-pos       # Specific branch
-  bun worktree create test main                   # Track main branch
+  bun worktree create my-feature                           # New branch feat/my-feature
+  bun worktree create bugfix fix/cursor-pos                # Specific branch
+  bun worktree create --branch km-ila18-theme-inherit      # Branch as name
+  bun worktree create test main                            # Track main branch
   bun worktree merge my-feature                    # Merge, test, remove, delete branch
   bun worktree merge my-feature --keep-branch      # Merge but keep branch
   bun worktree remove my-feature --delete-branch   # Remove and delete branch
@@ -857,13 +860,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   switch (command) {
     case "create": {
-      const name = args[1]
+      // Parse --branch <value> flag if present
+      const branchFlagIndex = args.indexOf("--branch")
+      let branchFromFlag: string | undefined
+      if (branchFlagIndex !== -1) {
+        branchFromFlag = args[branchFlagIndex + 1]
+        if (!branchFromFlag || branchFromFlag.startsWith("--")) {
+          error("--branch requires a value")
+          process.exit(1)
+        }
+      }
+      // Positional args: first non-flag after "create"
+      const positional = args.slice(1).filter((a, i, arr) => {
+        if (a.startsWith("--")) return false
+        // Skip value following --branch
+        const prev = arr[i - 1]
+        if (prev === "--branch") return false
+        return true
+      })
+      const name = positional[0] ?? branchFromFlag
       if (!name) {
-        error("Usage: bun worktree create <name> [branch]")
+        error("Usage: bun worktree create <name> [--branch <branch>]")
         process.exit(1)
       }
-      // Branch is the first non-flag argument after name
-      const branch = args.slice(2).find((a) => !a.startsWith("--"))
+      // Branch priority: --branch flag > positional > default (feat/<name>)
+      const branch = branchFromFlag ?? positional[1]
       await createWorktree(name, branch, {
         install: !hasFlag("--no-install"),
         direnv: !hasFlag("--no-direnv"),
