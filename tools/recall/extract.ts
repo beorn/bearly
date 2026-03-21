@@ -96,11 +96,13 @@ export function extractSessionContent(
           }
           if (!block || typeof block !== "object") continue
 
-          if (block.type === "text" && block.text && block.text.length > 20) {
-            parts.push(truncStr(block.text, 1500))
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const b = block as any
+          if (b.type === "text" && b.text && b.text.length > 20) {
+            parts.push(truncStr(b.text, 1500))
             if (entry.type === "user") hasUserText = true
-          } else if (block.type === "tool_use") {
-            const summary = summarizeToolUse(block)
+          } else if (b.type === "tool_use") {
+            const summary = summarizeToolUse(b)
             if (summary) parts.push(summary)
           }
           // Skip tool_result (large file dumps, noise)
@@ -167,7 +169,8 @@ export function isSubAgent(sessionId: string): boolean {
 
         for (const block of content) {
           if (typeof block === "string" && block.length > 0) return false
-          if (block && typeof block === "object" && block.type === "text" && block.text) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (block && typeof block === "object" && (block as any).type === "text" && (block as any).text) {
             return false
           }
         }

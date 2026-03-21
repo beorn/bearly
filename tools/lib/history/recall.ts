@@ -1457,7 +1457,8 @@ export async function hookRecall(prompt: string): Promise<HookResult> {
   let turnNumber = 0
   if (seenFile) {
     try {
-      const data = JSON.parse(fs.readFileSync(seenFile, "utf8"))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = JSON.parse(fs.readFileSync(seenFile, "utf8")) as any
       seen = data.seen ?? {}
       turnNumber = (data.turn ?? 0) + 1
     } catch {
@@ -1482,7 +1483,7 @@ export async function hookRecall(prompt: string): Promise<HookResult> {
   const newKeys: string[] = []
   for (const r of result.results) {
     const key = `${r.sessionId}:${r.type}`
-    if (key in seen && turnNumber - seen[key] < DEDUP_TTL_TURNS) continue
+    if (key in seen && turnNumber - seen[key]! < DEDUP_TTL_TURNS) continue
     let text = r.snippet.trim()
     // Strip FTS5 highlight markers (both >>> and <<<)
     text = text.replace(/>>>|<<</g, "")

@@ -218,7 +218,7 @@ function formatType(type: string): string {
 // Raw FTS5 search (old `bun history` behavior)
 // ============================================================================
 
-interface RawSearchOptions extends SearchOptions {
+interface RawSearchOptions extends Omit<SearchOptions, "limit"> {
   limit: number
 }
 

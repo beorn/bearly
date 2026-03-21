@@ -214,7 +214,8 @@ async function queryWithStreaming(
         if (!data || data === "[DONE]") continue
 
         try {
-          const event = JSON.parse(data)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const event = JSON.parse(data) as any
 
           // Capture interaction ID
           if (event.id && !interactionId) {

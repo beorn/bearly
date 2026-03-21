@@ -47,10 +47,10 @@ process.on("unhandledRejection", (err) => {
 })
 
 /** Wrap a tool handler so errors become MCP error responses, not process crashes */
-function safeTool<T>(
-  fn: (args: T) => Promise<{ content: Array<{ type: string; [k: string]: unknown }> }>,
-): (args: T) => Promise<{ content: Array<{ type: string; [k: string]: unknown }> }> {
-  return async (args: T) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function safeTool(fn: (args: any) => Promise<{ content: Array<{ type: string; [k: string]: unknown }> }>): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any) => {
     try {
       return await fn(args)
     } catch (err) {
@@ -59,6 +59,12 @@ function safeTool<T>(
       return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true }
     }
   }
+}
+
+/** Type-safe registerTool that bridges safeTool's return type to McpServer's expected handler type */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function register(srv: McpServer, name: string, schema: any, handler: any): void {
+  srv.registerTool(name, schema, handler)
 }
 
 async function main() {
@@ -72,7 +78,8 @@ async function main() {
   })
 
   // start - Start a terminal session with Bun PTY
-  server.registerTool(
+  register(
+    server,
     "start",
     {
       description: "Start a terminal session with a PTY and xterm-headless emulator",
@@ -98,7 +105,8 @@ async function main() {
   )
 
   // list - List active sessions
-  server.registerTool(
+  register(
+    server,
     "list",
     {
       description: "List all active TTY sessions",
@@ -113,7 +121,8 @@ async function main() {
   )
 
   // stop - Close a terminal session
-  server.registerTool(
+  register(
+    server,
     "stop",
     {
       description: "Stop a TTY session and kill the process",
@@ -130,7 +139,8 @@ async function main() {
   )
 
   // press - Press keyboard key(s)
-  server.registerTool(
+  register(
+    server,
     "press",
     {
       description: "Press a keyboard key (e.g. 'Enter', 'ArrowDown', 'Control+c', 'j')",
@@ -148,7 +158,8 @@ async function main() {
   )
 
   // type - Type text
-  server.registerTool(
+  register(
+    server,
     "type",
     {
       description: "Type text into the terminal",
@@ -166,7 +177,8 @@ async function main() {
   )
 
   // screenshot - Capture screenshot
-  server.registerTool(
+  register(
+    server,
     "screenshot",
     {
       description: "Capture a screenshot of the terminal (launches browser for rendering)",
@@ -201,7 +213,8 @@ async function main() {
   )
 
   // text - Get terminal text content
-  server.registerTool(
+  register(
+    server,
     "text",
     {
       description: "Get the text content of the terminal",
@@ -218,7 +231,8 @@ async function main() {
   )
 
   // wait - Wait for text/stability
-  server.registerTool(
+  register(
+    server,
     "wait",
     {
       description: "Wait for specific text or terminal stability",

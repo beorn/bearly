@@ -204,7 +204,7 @@ export async function indexSessionFile(
       // Use actual record timestamp for session date tracking;
       // fall back to Date.now() only for message insertion (not session bounds)
       const hasRecordTimestamp = !!record.timestamp
-      const timestamp = hasRecordTimestamp ? new Date(record.timestamp).getTime() : Date.now()
+      const timestamp = hasRecordTimestamp ? new Date(record.timestamp!).getTime() : Date.now()
       if (hasRecordTimestamp) {
         if (firstTimestamp === null) firstTimestamp = timestamp
         lastTimestamp = timestamp
