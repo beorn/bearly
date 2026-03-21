@@ -95,19 +95,32 @@ async function handleStreamingResponse(
     tools: [{ type: "web_search_preview" }],
     stream: true,
     background,
+    store: true, // persist response so it can be recovered if process dies
   })
 
-  let responseId = ""
+  // Try to get response ID immediately (before streaming events)
+  let responseId = (response as any)?.id ?? (response as any)?.response?.id ?? ""
   let partialPath = ""
   let fullText = ""
   let promptTokens = 0
   let completionTokens = 0
   let completed = false
 
+  // Persist response ID early so recovery works even if process dies during streaming
+  if (responseId && !noPersist) {
+    partialPath = getPartialPath(responseId)
+    writePartialHeader(partialPath, {
+      responseId,
+      model: model.displayName,
+      topic,
+      timestamp: new Date().toISOString(),
+    })
+  }
+
   for await (const event of response) {
     if (!responseId && "response" in event && event.response?.id) {
       responseId = event.response.id
-      if (!noPersist) {
+      if (!noPersist && !partialPath) {
         partialPath = getPartialPath(responseId)
         writePartialHeader(partialPath, {
           responseId,

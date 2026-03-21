@@ -465,7 +465,7 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
       .replace(/```json?\n?/g, "")
       .replace(/```/g, "")
       .trim()
-    priceUpdates = JSON.parse(jsonStr)
+    priceUpdates = JSON.parse(jsonStr) as typeof priceUpdates
     if (!Array.isArray(priceUpdates)) priceUpdates = []
   } catch {
     cacheCurrentPricing()
@@ -892,7 +892,11 @@ async function main() {
 
     console.error(`Deep research: ${topic}`)
     console.error(`Model: ${deepModel.displayName}`)
-    console.error(`Estimated cost: ~$2-5\n`)
+    if (!deepModel.isDeepResearch) {
+      console.error(`⚠️  ${deepModel.displayName} is not a dedicated deep research model — may take 10-15 minutes`)
+    }
+    const costEstimate = deepModel.costTier === "very-high" ? "~$5-15" : "~$2-5"
+    console.error(`Estimated cost: ${costEstimate}\n`)
     if (context) {
       console.error(`📎 Context provided (${context.length} chars)\n`)
     }
