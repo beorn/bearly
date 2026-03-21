@@ -892,7 +892,7 @@ async function main() {
 
     console.error(`Deep research: ${topic}`)
     console.error(`Model: ${deepModel.displayName}`)
-    if (!deepModel.isDeepResearch) {
+    if (!deepModel.isDeepResearch && deepModel.costTier === "very-high") {
       console.error(`⚠️  ${deepModel.displayName} is not a dedicated deep research model — may take 10-15 minutes`)
     }
     const costEstimate = deepModel.costTier === "very-high" ? "~$5-15" : "~$2-5"
