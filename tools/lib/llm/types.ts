@@ -671,8 +671,12 @@ export function requiresConfirmation(model: Model, threshold = 0.1): boolean {
 export const BEST_MODELS = {
   // Default query - best general-purpose models
   default: ["gpt-5.4", "gemini-3-pro-preview", "claude-sonnet-4-6", "grok-4"],
-  // Deep research - GPT-5.4 gives better results than deep research models for code review.
-  // Deep research APIs (o3, gemini) still available as fallback for web-search-heavy queries.
+  // Deep research — GPT-5.4 via Responses API + web_search is the best deep research model.
+  // (2026-03-12) Tested GPT-5.4 vs O3 Deep Research on 19K lines of silvery+flexily source:
+  //   GPT-5.4: $0.57, 182K tokens, comprehensive findings
+  //   O3 Deep Research: $2.27, 14KB output, much worse quality
+  // (2026-03-20) GPT-5.4 Pro also works via --model gpt-5.4-pro but takes 2-3 min (background+poll).
+  // The "dedicated" deep research models (o3, gemini) are kept as fallbacks only.
   deep: ["gpt-5.4", "o3-deep-research-2025-06-26", "deep-research-pro-preview-12-2025", "sonar-deep-research"],
   // Second opinion - prefer different provider than default
   opinion: ["gemini-3-pro-preview", "gemini-2.5-pro", "gpt-5.4", "grok-4"],

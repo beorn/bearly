@@ -1,13 +1,20 @@
 /**
  * OpenAI Deep Research using Responses API
  *
- * Uses OpenAI SDK directly to support web_search_preview tool
- * which is required for deep research models.
+ * Uses background create + poll (NOT streaming). Why:
+ * (2026-03-20) Streaming deep research with GPT-5.4 Pro timed out 3x in a row.
+ * The streaming connection drops after ~2 min but the research continues server-side
+ * for 10-15 min. With streaming, the response ID isn't captured until the first event,
+ * so if the process dies before that, recovery is impossible.
+ *
+ * Background create returns the response ID synchronously, which we persist immediately.
+ * Then we poll until completion. This is slower to show incremental progress but 100%
+ * reliable — the response ID is always captured, and recovery always works.
  *
  * Features:
  * - Background mode: server continues even if client disconnects
- * - Persistence: streams to temp file so partial results aren't lost
- * - Recovery: can retrieve/resume responses by ID
+ * - Immediate ID persistence: response ID written to disk before any async work
+ * - Recovery: can retrieve responses by ID via `bun llm recover`
  */
 
 import OpenAI from "openai"
