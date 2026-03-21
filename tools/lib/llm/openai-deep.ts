@@ -88,85 +88,93 @@ async function handleStreamingResponse(
   researchPrompt: string,
   options: DeepResearchOptions & { background: boolean },
 ): Promise<{ fullText: string; responseId: string; promptTokens: number; completionTokens: number }> {
-  const { model, topic, onToken, noPersist = false, background } = options
-  const response = await openai.responses.create({
+  const { model, topic, onToken, noPersist = false } = options
+
+  // Step 1: Create in background mode (non-streaming) — gets response ID immediately
+  const initialResponse = await openai.responses.create({
     model: model.modelId,
     input: researchPrompt,
     tools: [{ type: "web_search_preview" }],
-    stream: true,
-    background,
-    store: true, // persist response so it can be recovered if process dies
+    stream: false,
+    background: true,
+    store: true,
   })
 
-  // Try to get response ID immediately (before streaming events)
-  let responseId = (response as any)?.id ?? (response as any)?.response?.id ?? ""
+  const responseId = initialResponse.id
   let partialPath = ""
-  let fullText = ""
-  let promptTokens = 0
-  let completionTokens = 0
-  let completed = false
 
-  // Persist response ID early so recovery works even if process dies during streaming
+  // Step 2: Persist response ID immediately — recovery works even if process dies
   if (responseId && !noPersist) {
     partialPath = getPartialPath(responseId)
     writePartialHeader(partialPath, {
       responseId,
       model: model.displayName,
+      modelId: model.modelId,
       topic,
-      timestamp: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
     })
+    process.stderr.write(`🔑 Response ID: ${responseId} (recoverable with 'bun llm recover')\n`)
   }
 
-  for await (const event of response) {
-    if (!responseId && "response" in event && event.response?.id) {
-      responseId = event.response.id
-      if (!noPersist && !partialPath) {
-        partialPath = getPartialPath(responseId)
-        writePartialHeader(partialPath, {
-          responseId,
-          model: model.displayName,
-          modelId: model.modelId,
-          topic,
-          startedAt: new Date().toISOString(),
-        })
+  // Step 3: If already completed (fast models), extract immediately
+  if (initialResponse.status === "completed") {
+    const result = extractResponseText(initialResponse)
+    if (onToken && result.text) onToken(result.text)
+    if (partialPath) completePartial(partialPath, { delete: true, usage: result.usage })
+    return { fullText: result.text, responseId, promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+  }
+
+  // Step 4: Poll until complete — no streaming, just check periodically
+  process.stderr.write("⏳ Research in progress...\n")
+  const pollResult = await pollForCompletion(responseId, {
+    intervalMs: 5_000,
+    maxAttempts: 180,
+    onProgress: (status, elapsed) => {
+      process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
+    },
+  })
+
+  if (pollResult.status === "completed" && pollResult.content) {
+    if (onToken) onToken(pollResult.content)
+    if (partialPath) {
+      appendPartial(partialPath, pollResult.content)
+      completePartial(partialPath, {
+        delete: true,
+        usage: { promptTokens: pollResult.usage?.promptTokens ?? 0, completionTokens: pollResult.usage?.completionTokens ?? 0, totalTokens: pollResult.usage?.totalTokens ?? 0 },
+      })
+    }
+    process.stderr.write("\n")
+    return {
+      fullText: pollResult.content,
+      responseId,
+      promptTokens: pollResult.usage?.promptTokens ?? 0,
+      completionTokens: pollResult.usage?.completionTokens ?? 0,
+    }
+  }
+
+  process.stderr.write(`\n⚠️  Research did not complete: ${pollResult.status}\n`)
+  return { fullText: pollResult.content || "", responseId, promptTokens: 0, completionTokens: 0 }
+}
+
+/** Extract text and usage from a completed response object */
+function extractResponseText(response: any): { text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } } {
+  let text = ""
+  for (const item of response.output || []) {
+    if (item.type === "message" && item.content) {
+      for (const content of item.content) {
+        if (content.type === "output_text") text += content.text || ""
       }
     }
-
-    if (event.type === "response.output_text.delta") {
-      const delta = event.delta || ""
-      onToken?.(delta)
-      fullText += delta
-      if (partialPath) appendPartial(partialPath, delta)
-    } else if (event.type === "response.completed") {
-      completed = true
-      const usage = event.response?.usage
-      if (usage) {
-        promptTokens = usage.input_tokens || 0
-        completionTokens = usage.output_tokens || 0
-      }
-    }
   }
-
-  // Handle disconnected stream with background polling
-  if (!completed && responseId && background) {
-    const pollResult = await handleStreamDisconnect(responseId, model, topic, fullText, partialPath, onToken)
-    fullText = pollResult.fullText
-    promptTokens = pollResult.promptTokens
-    completionTokens = pollResult.completionTokens
-    completed = pollResult.completed
-  } else if (!completed && !responseId && background) {
-    process.stderr.write("\n⚠️  Stream ended without yielding any events (no response ID received)\n")
+  const usage = response.usage
+  return {
+    text,
+    usage: {
+      promptTokens: usage?.input_tokens || 0,
+      completionTokens: usage?.output_tokens || 0,
+      totalTokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0),
+    },
   }
-
-  // Clean up partial file
-  if (partialPath && completed) {
-    completePartial(partialPath, {
-      delete: true,
-      usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
-    })
-  }
-
-  return { fullText, responseId, promptTokens, completionTokens }
 }
 
 async function handleStreamDisconnect(
