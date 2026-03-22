@@ -572,7 +572,7 @@ function escapeToken(token: string): { text: string; quoted: boolean } {
 export function toFts5Query(query: string): string {
   // Handle quoted phrases
   const phrases: string[] = []
-  let remaining = query.replace(/"([^"]+)"/g, (_, phrase) => {
+  const remaining = query.replace(/"([^"]+)"/g, (_, phrase) => {
     phrases.push(phrase)
     return `__PHRASE_${phrases.length - 1}__`
   })

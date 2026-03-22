@@ -128,7 +128,12 @@ async function handleStreamingResponse(
     const result = extractResponseText(initialResponse)
     if (onToken && result.text) onToken(result.text)
     if (partialPath) completePartial(partialPath, { delete: true, usage: result.usage })
-    return { fullText: result.text, responseId, promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+    return {
+      fullText: result.text,
+      responseId,
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+    }
   }
 
   // Step 4: Poll until complete — no streaming, just check periodically
@@ -147,7 +152,11 @@ async function handleStreamingResponse(
       appendPartial(partialPath, pollResult.content)
       completePartial(partialPath, {
         delete: true,
-        usage: { promptTokens: pollResult.usage?.promptTokens ?? 0, completionTokens: pollResult.usage?.completionTokens ?? 0, totalTokens: pollResult.usage?.totalTokens ?? 0 },
+        usage: {
+          promptTokens: pollResult.usage?.promptTokens ?? 0,
+          completionTokens: pollResult.usage?.completionTokens ?? 0,
+          totalTokens: pollResult.usage?.totalTokens ?? 0,
+        },
       })
     }
     process.stderr.write("\n")
@@ -164,7 +173,10 @@ async function handleStreamingResponse(
 }
 
 /** Extract text and usage from a completed response object */
-function extractResponseText(response: any): { text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } } {
+function extractResponseText(response: any): {
+  text: string
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number }
+} {
   let text = ""
   for (const item of response.output || []) {
     if (item.type === "message" && item.content) {
