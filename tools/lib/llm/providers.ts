@@ -84,6 +84,8 @@ export function getLanguageModel(model: Model): LanguageModel {
       return getXai()(model.modelId)
     case "perplexity":
       return getPerplexity()(model.modelId)
+    case "ollama":
+      throw new Error("Ollama does not use Vercel AI SDK — handle via ollamaChat() directly")
     default:
       throw new Error(`Unknown provider: ${model.provider}`)
   }
@@ -104,6 +106,10 @@ export function isProviderAvailable(provider: Provider): boolean {
       return !!process.env.XAI_API_KEY
     case "perplexity":
       return !!process.env.PERPLEXITY_API_KEY
+    case "ollama":
+      // Ollama availability is checked asynchronously — use isOllamaAvailable() for runtime check.
+      // For sync checks (model selection), assume available if not explicitly disabled.
+      return true
     default:
       return false
   }
@@ -113,6 +119,7 @@ export function isProviderAvailable(provider: Provider): boolean {
  * Get list of available providers (those with API keys set)
  */
 export function getAvailableProviders(): Provider[] {
+  // Ollama excluded — it's checked asynchronously via isOllamaAvailable()
   const providers: Provider[] = ["openai", "anthropic", "google", "xai", "perplexity"]
   return providers.filter(isProviderAvailable)
 }
@@ -132,6 +139,8 @@ export function getProviderEnvVar(provider: Provider): string {
       return "XAI_API_KEY"
     case "perplexity":
       return "PERPLEXITY_API_KEY"
+    case "ollama":
+      return "OLLAMA_HOST (or localhost:11434)"
     default:
       return `${(provider as string).toUpperCase()}_API_KEY`
   }

@@ -104,7 +104,9 @@ function getReposSync(): string[] {
   if (args.repos && String(args.repos) !== "all") return String(args.repos).split(",").filter(Boolean)
   const detected = detectRepoFromGit()
   if (detected) return [detected]
-  throw new Error("No --repos specified and could not auto-detect from git remote. Pass --repos owner/repo,owner/repo2 or --repos all.")
+  throw new Error(
+    "No --repos specified and could not auto-detect from git remote. Pass --repos owner/repo,owner/repo2 or --repos all.",
+  )
 }
 
 // Resolve repos — "all" fetches from GitHub API, otherwise synchronous

@@ -8,6 +8,7 @@ import { generateText, streamText } from "ai"
 import { getLanguageModel, isProviderAvailable } from "./providers"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
+import { ollamaChat } from "./ollama"
 import type { Model, ModelResponse, ThinkingLevel } from "./types"
 import { getModelsForLevel, getModel, MODELS } from "./types"
 
@@ -47,6 +48,20 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         error: `Provider ${model.provider} not available (API key not set)`,
       },
     }
+  }
+
+  // Ollama uses its own REST API, not Vercel AI SDK
+  if (model.provider === "ollama") {
+    const response = await ollamaChat({
+      model: model.modelId,
+      question,
+      systemPrompt,
+      imagePath: options.imagePath,
+      stream: stream ?? false,
+      onToken,
+      abortSignal,
+    })
+    return { response }
   }
 
   // Use direct OpenAI SDK for deep research models (requires web_search_preview)

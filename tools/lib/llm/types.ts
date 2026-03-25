@@ -5,7 +5,7 @@
 import { z } from "zod"
 
 // Provider identifiers
-export const ProviderSchema = z.enum(["openai", "anthropic", "google", "xai", "perplexity"])
+export const ProviderSchema = z.enum(["openai", "anthropic", "google", "xai", "perplexity", "ollama"])
 export type Provider = z.infer<typeof ProviderSchema>
 
 // Model identifiers by provider
@@ -14,7 +14,7 @@ export const ModelSchema = z.object({
   modelId: z.string(),
   displayName: z.string(),
   isDeepResearch: z.boolean().default(false),
-  costTier: z.enum(["low", "medium", "high", "very-high"]),
+  costTier: z.enum(["local", "low", "medium", "high", "very-high"]),
   // Pricing per 1M tokens (USD)
   inputPricePerM: z.number().optional(),
   outputPricePerM: z.number().optional(),
@@ -782,6 +782,8 @@ function getProviderEnvVar(provider: Provider): string {
       return "XAI_API_KEY"
     case "perplexity":
       return "PERPLEXITY_API_KEY"
+    case "ollama":
+      return "OLLAMA_HOST (or localhost:11434)"
     default:
       return `${(provider as string).toUpperCase()}_API_KEY`
   }

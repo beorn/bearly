@@ -70,6 +70,21 @@ function error(message: string): never {
   process.exit(1)
 }
 
+let ollamaStatus = "○"
+let ollamaStatusText = "not checked"
+
+async function checkOllamaStatus(): Promise<void> {
+  try {
+    const { isOllamaAvailable } = await import("./lib/llm/ollama")
+    const available = await isOllamaAvailable()
+    ollamaStatus = available ? "✓" : "○"
+    ollamaStatusText = available ? "ready (local)" : "not running (ollama serve)"
+  } catch {
+    ollamaStatus = "○"
+    ollamaStatusText = "not running (ollama serve)"
+  }
+}
+
 function usage(): never {
   const available = getAvailableProviders()
 
@@ -119,12 +134,22 @@ FEATURES
   • File output: Response ALWAYS written to file (path printed to stdout + stderr)
   • Streaming tokens shown on stderr only in interactive terminals (TTY)
 
+LOCAL MODELS
+  --model ollama:<name>            Run locally via Ollama (free, no API key)
+  list-models                      Show available local models (ollama list)
+
+  Examples:
+    --model ollama:qwen2.5-vl:7b     Vision model, local
+    --model ollama:llama3.3:70b       Large local model
+    --model ollama:llava:34b          Multimodal (image support)
+
 PROVIDERS
   ${available.includes("openai" as any) ? "✓" : "○"} OpenAI      ${available.includes("openai" as any) ? "ready" : "set OPENAI_API_KEY"}
   ${available.includes("anthropic" as any) ? "✓" : "○"} Anthropic   ${available.includes("anthropic" as any) ? "ready" : "set ANTHROPIC_API_KEY"}
   ${available.includes("google" as any) ? "✓" : "○"} Google      ${available.includes("google" as any) ? "ready" : "set GOOGLE_GENERATIVE_AI_API_KEY"}
   ${available.includes("xai" as any) ? "✓" : "○"} xAI (Grok)  ${available.includes("xai" as any) ? "ready" : "set XAI_API_KEY"}
   ${available.includes("perplexity" as any) ? "✓" : "○"} Perplexity  ${available.includes("perplexity" as any) ? "ready" : "set PERPLEXITY_API_KEY"}
+  ${ollamaStatus} Ollama      ${ollamaStatusText}
 
 RECOVERY (for interrupted deep research)
   llm recover                       List incomplete/partial responses
@@ -178,10 +203,18 @@ function setOutputSlug(topic: string) {
 
 /** Resolve --model flag to a Model, or undefined if not specified */
 const modelOverrideId = getArg("--model")
-const modelOverride: Model | undefined = modelOverrideId ? getModel(modelOverrideId) : undefined
-if (modelOverrideId && !modelOverride) {
-  const available = MODELS.map((m) => m.modelId).join(", ")
-  error(`Unknown model: ${modelOverrideId}. Available: ${available}`)
+let modelOverride: Model | undefined
+if (modelOverrideId) {
+  if (modelOverrideId.startsWith("ollama:")) {
+    const { parseOllamaModel } = await import("./lib/llm/ollama")
+    modelOverride = parseOllamaModel(modelOverrideId.slice("ollama:".length))
+  } else {
+    modelOverride = getModel(modelOverrideId)
+  }
+  if (!modelOverride) {
+    const available = MODELS.map((m) => m.modelId).join(", ")
+    error(`Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>`)
+  }
 }
 
 /** Resolve --image flag to a file path */
@@ -834,11 +867,35 @@ async function checkAndRecoverPartials(): Promise<boolean> {
 }
 
 // Keywords that trigger specific modes
-const KEYWORDS = ["quick", "cheap", "mini", "nano", "opinion", "pro", "debate", "recover", "partials", "update-pricing"]
+const KEYWORDS = ["quick", "cheap", "mini", "nano", "opinion", "pro", "debate", "recover", "partials", "update-pricing", "list-models"]
 
 async function main() {
   if (!command || command === "--help" || command === "-h") {
+    await checkOllamaStatus()
     usage()
+  }
+
+  // Handle list-models command (show pulled Ollama models)
+  if (command === "list-models") {
+    const { isOllamaAvailable, listOllamaModels, formatSize } = await import("./lib/llm/ollama")
+    const available = await isOllamaAvailable()
+    if (!available) {
+      console.error("Ollama is not running. Start it with: ollama serve")
+      console.error("Install: https://ollama.com")
+      process.exit(1)
+    }
+    const models = await listOllamaModels()
+    if (models.length === 0) {
+      console.error("No models pulled. Pull one with: ollama pull qwen2.5-vl:7b")
+      process.exit(0)
+    }
+    console.error("Available Ollama models:\n")
+    for (const m of models) {
+      const size = formatSize(m.size)
+      console.error(`  ollama:${m.name.padEnd(30)} ${size.padStart(8)}`)
+    }
+    console.error(`\nUsage: llm --model ollama:<name> "your question"`)
+    process.exit(0)
   }
 
   // Check for stale pricing and warn
