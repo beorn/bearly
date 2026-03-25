@@ -1,13 +1,8 @@
 {
-  "name": "@bearly/tribe",
+  "name": "@bearly/github",
   "version": "0.1.0",
-  "description": "Cross-session coordination channel for Claude Code",
+  "description": "GitHub channel for Claude Code — notifications for builds, PRs, and issues",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/beorn/bearly.git",
-    "directory": "plugins/tribe"
-  },
   "bin": "./server.ts",
   "type": "module",
   "scripts": {

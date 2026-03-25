@@ -35,6 +35,12 @@
       "description": "Batch rename, refactor, and migrate across files — TypeScript symbols, file renames, text/markdown updates, API migrations",
       "version": "0.3.0",
       "source": "./plugins/batch-refactor"
+    },
+    {
+      "name": "github",
+      "description": "GitHub notifications — build failures, PR activity, push events delivered as channel messages",
+      "version": "0.1.0",
+      "source": "./plugins/github"
     }
   ]
 }
