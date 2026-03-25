@@ -9,9 +9,5 @@
   "repository": "https://github.com/beorn/bearly",
   "license": "MIT",
   "keywords": ["tribe", "coordination", "multi-session", "channel", "mcp"],
-  "skills": [
-    "skills/tribe/SKILL.md",
-    "skills/tribe/chief.md",
-    "skills/tribe/member.md"
-  ]
+  "skills": ["skills/tribe/SKILL.md", "skills/tribe/chief.md", "skills/tribe/member.md"]
 }

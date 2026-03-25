@@ -19,6 +19,8 @@ export interface QueryOptions {
   onToken?: (token: string) => void
   /** Optional context passed to deep research models */
   context?: string
+  /** Optional image path — sent as base64 for multimodal models */
+  imagePath?: string
   /** AbortSignal to cancel the request */
   abortSignal?: AbortSignal
 }
@@ -73,9 +75,24 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   const languageModel = getLanguageModel(model)
 
+  // Build user message content — text or multimodal (text + image)
+  let userContent: any = question
+  if (options.imagePath) {
+    const { readFileSync } = await import("fs")
+    const imageData = readFileSync(options.imagePath)
+    const base64 = imageData.toString("base64")
+    const ext = options.imagePath.split(".").pop()?.toLowerCase() ?? "png"
+    const mimeType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`
+    // Vercel AI SDK expects image as a URL (data URI) or Uint8Array
+    userContent = [
+      { type: "text" as const, text: question },
+      { type: "image" as const, image: new Uint8Array(imageData), mimeType },
+    ]
+  }
+
   const messages = [
     ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
-    { role: "user" as const, content: question },
+    { role: "user" as const, content: userContent },
   ]
 
   try {
@@ -157,6 +174,7 @@ export async function ask(
     stream?: boolean
     onToken?: (token: string) => void
     modelOverride?: string
+    imagePath?: string
   } = {},
 ): Promise<ModelResponse> {
   // Get model for level, or use override
@@ -180,6 +198,7 @@ export async function ask(
     model,
     stream: options.stream,
     onToken: options.onToken,
+    imagePath: options.imagePath,
   })
 
   return result.response

@@ -545,7 +545,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "tribe_retro",
-      description: "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
+      description:
+        "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -811,8 +812,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const sinceStr = a.since as string | undefined
       let sinceMs: number | undefined
       if (sinceStr) {
-        try { sinceMs = parseDuration(sinceStr) }
-        catch { return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] } }
+        try {
+          sinceMs = parseDuration(sinceStr)
+        } catch {
+          return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] }
+        }
       }
       const fmt = (a.format as string) ?? "markdown"
       const report = generateRetro(db, sinceMs)

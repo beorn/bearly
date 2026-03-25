@@ -29,7 +29,10 @@ function findTribeDb(): string | null {
 
 function openDb(writable = false): Database {
   const path = findTribeDb()
-  if (!path) { console.error("No .beads/tribe.db found (walked up from cwd)"); process.exit(1) }
+  if (!path) {
+    console.error("No .beads/tribe.db found (walked up from cwd)")
+    process.exit(1)
+  }
   const db = writable ? new Database(path) : new Database(path, { readonly: true })
   db.exec(writable ? "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000" : "PRAGMA busy_timeout = 3000")
   return db
@@ -74,43 +77,88 @@ function pad(s: string, n: number): string {
 
 // --- Types ---
 
-interface Session { id: string; name: string; role: string; domains: string; pid: number; started_at: number; heartbeat: number; pruned_at: number | null }
-interface Msg { id: string; type: string; sender: string; recipient: string; content: string; bead_id: string | null; ts: number }
+interface Session {
+  id: string
+  name: string
+  role: string
+  domains: string
+  pid: number
+  started_at: number
+  heartbeat: number
+  pruned_at: number | null
+}
+interface Msg {
+  id: string
+  type: string
+  sender: string
+  recipient: string
+  content: string
+  bead_id: string | null
+  ts: number
+}
 
 // --- Commands ---
 
 function cmdStatus(): void {
-  const db = openDb(), now = Date.now(), t = now - 30_000
-  const rows = db.prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`).all(t) as Session[]
-  if (!rows.length) { console.log("No active tribe sessions."); db.close(); return }
+  const db = openDb(),
+    now = Date.now(),
+    t = now - 30_000
+  const rows = db
+    .prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`)
+    .all(t) as Session[]
+  if (!rows.length) {
+    console.log("No active tribe sessions.")
+    db.close()
+    return
+  }
 
   console.log(`TRIBE STATUS \u2014 ${rows.length} session${rows.length !== 1 ? "s" : ""} active\n`)
   const nW = Math.max(4, ...rows.map((r) => r.name.length))
   const rW = Math.max(4, ...rows.map((r) => r.role.length))
-  const dW = Math.max(7, ...rows.map((r) => { const d = JSON.parse(r.domains) as string[]; return (d.length ? d.join(", ") : "\u2014").length }))
+  const dW = Math.max(
+    7,
+    ...rows.map((r) => {
+      const d = JSON.parse(r.domains) as string[]
+      return (d.length ? d.join(", ") : "\u2014").length
+    }),
+  )
   console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("DOMAINS", dW)}  ${pad("UPTIME", 10)}  LAST SEEN`)
   for (const r of rows) {
     const d = JSON.parse(r.domains) as string[]
-    console.log(`  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(d.length ? d.join(", ") : "\u2014", dW)}  ${pad(fmtDur(now - r.started_at), 10)}  ${fmtAge(now - r.heartbeat)}`)
+    console.log(
+      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(d.length ? d.join(", ") : "\u2014", dW)}  ${pad(fmtDur(now - r.started_at), 10)}  ${fmtAge(now - r.heartbeat)}`,
+    )
   }
   db.close()
 }
 
 function cmdSessions(showAll: boolean): void {
-  const db = openDb(), now = Date.now(), t = now - 30_000
+  const db = openDb(),
+    now = Date.now(),
+    t = now - 30_000
   const rows = showAll
-    ? db.prepare("SELECT * FROM sessions ORDER BY heartbeat DESC").all() as Session[]
-    : db.prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`).all(t) as Session[]
-  if (!rows.length) { console.log(showAll ? "No tribe sessions in database." : "No active tribe sessions."); db.close(); return }
+    ? (db.prepare("SELECT * FROM sessions ORDER BY heartbeat DESC").all() as Session[])
+    : (db
+        .prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`)
+        .all(t) as Session[])
+  if (!rows.length) {
+    console.log(showAll ? "No tribe sessions in database." : "No active tribe sessions.")
+    db.close()
+    return
+  }
 
   console.log(`TRIBE SESSIONS \u2014 ${rows.length} ${showAll ? "all" : "active"}\n`)
   const nW = Math.max(4, ...rows.map((r) => r.name.length))
   const rW = Math.max(4, ...rows.map((r) => r.role.length))
-  console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  ${pad("LAST SEEN", 10)}  STATUS`)
+  console.log(
+    `  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  ${pad("LAST SEEN", 10)}  STATUS`,
+  )
   for (const r of rows) {
     const alive = r.heartbeat > t && r.pruned_at == null
     const st = r.pruned_at != null ? "pruned" : alive ? "alive" : "dead"
-    console.log(`  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(now - r.started_at), 10)}  ${pad(fmtAge(now - r.heartbeat), 10)}  ${st}`)
+    console.log(
+      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(now - r.started_at), 10)}  ${pad(fmtAge(now - r.heartbeat), 10)}  ${st}`,
+    )
   }
   db.close()
 }
@@ -118,7 +166,11 @@ function cmdSessions(showAll: boolean): void {
 function cmdLog(limit: number): void {
   const db = openDb()
   const rows = db.prepare("SELECT * FROM messages ORDER BY ts DESC LIMIT ?").all(limit) as Msg[]
-  if (!rows.length) { console.log("No messages in tribe log."); db.close(); return }
+  if (!rows.length) {
+    console.log("No messages in tribe log.")
+    db.close()
+    return
+  }
 
   console.log(`TRIBE LOG \u2014 last ${rows.length} message${rows.length !== 1 ? "s" : ""}\n`)
   for (const m of rows.reverse()) {
@@ -137,45 +189,66 @@ function cmdSend(to: string, message: string): void {
     const all = db.prepare("SELECT name FROM sessions").all() as Array<{ name: string }>
     console.error(`Unknown session: "${to}"`)
     if (all.length) console.error(`Known sessions: ${all.map((r) => r.name).join(", ")}`)
-    db.close(); process.exit(1)
+    db.close()
+    process.exit(1)
   }
   const id = randomUUID()
-  db.prepare("INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, "notify", "cli", to, message, null, null, Date.now())
+  db.prepare(
+    "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, "notify", "cli", to, message, null, null, Date.now())
   console.log(`Sent message to ${to} (id: ${id.slice(0, 8)})`)
   db.close()
 }
 
 function cmdHealth(): void {
-  const db = openDb(), now = Date.now(), t = now - 30_000, silentT = now - 300_000
+  const db = openDb(),
+    now = Date.now(),
+    t = now - 30_000,
+    silentT = now - 300_000
   const hasPruned = hasColumn(db, "sessions", "pruned_at")
-  const sessions = (hasPruned
-    ? db.prepare("SELECT * FROM sessions WHERE pruned_at IS NULL").all()
-    : db.prepare("SELECT * FROM sessions").all()) as Session[]
+  const sessions = (
+    hasPruned
+      ? db.prepare("SELECT * FROM sessions WHERE pruned_at IS NULL").all()
+      : db.prepare("SELECT * FROM sessions").all()
+  ) as Session[]
 
   console.log("TRIBE HEALTH DIAGNOSTICS\n")
   const issues: string[] = []
-  let aliveN = 0, deadN = 0
+  let aliveN = 0,
+    deadN = 0
   for (const s of sessions) {
     const alive = s.heartbeat > t
     alive ? aliveN++ : deadN++
-    if (!alive) { issues.push(`[DEAD] ${s.name} \u2014 last heartbeat ${fmtAge(now - s.heartbeat)}`); continue }
-    const last = db.prepare("SELECT ts FROM messages WHERE sender = ? ORDER BY ts DESC LIMIT 1").get(s.name) as { ts: number } | null
-    if (last && now - last.ts > silentT) issues.push(`[SILENT] ${s.name} \u2014 alive but last message ${fmtAge(now - last.ts)}`)
+    if (!alive) {
+      issues.push(`[DEAD] ${s.name} \u2014 last heartbeat ${fmtAge(now - s.heartbeat)}`)
+      continue
+    }
+    const last = db.prepare("SELECT ts FROM messages WHERE sender = ? ORDER BY ts DESC LIMIT 1").get(s.name) as {
+      ts: number
+    } | null
+    if (last && now - last.ts > silentT)
+      issues.push(`[SILENT] ${s.name} \u2014 alive but last message ${fmtAge(now - last.ts)}`)
     else if (!last) issues.push(`[SILENT] ${s.name} \u2014 alive but never sent a message`)
   }
   console.log(`  Sessions: ${aliveN} alive, ${deadN} dead`)
 
-  const unread = db.prepare(`
+  const unread = db
+    .prepare(`
     SELECT m.recipient, COUNT(*) as count FROM messages m
     WHERE m.recipient != '*' AND NOT EXISTS (
       SELECT 1 FROM reads r JOIN sessions s ON r.session_id = s.id
       WHERE r.message_id = m.id AND s.name = m.recipient
-    ) GROUP BY m.recipient`).all() as Array<{ recipient: string; count: number }>
+    ) GROUP BY m.recipient`)
+    .all() as Array<{ recipient: string; count: number }>
 
-  if (unread.length) { console.log("\n  Unread messages:"); for (const u of unread) console.log(`    ${u.recipient}: ${u.count} unread`) }
-  else console.log("  Unread messages: none")
-  if (issues.length) { console.log("\n  Issues:"); for (const i of issues) console.log(`    ${i}`) }
-  else console.log("\n  No issues detected.")
+  if (unread.length) {
+    console.log("\n  Unread messages:")
+    for (const u of unread) console.log(`    ${u.recipient}: ${u.count} unread`)
+  } else console.log("  Unread messages: none")
+  if (issues.length) {
+    console.log("\n  Issues:")
+    for (const i of issues) console.log(`    ${i}`)
+  } else console.log("\n  No issues detected.")
   db.close()
 }
 
@@ -183,8 +256,13 @@ function cmdHealth(): void {
 
 const { positionals, values } = parseArgs({
   args: process.argv.slice(2),
-  options: { limit: { type: "string", short: "n" }, all: { type: "boolean", short: "a" }, help: { type: "boolean", short: "h" } },
-  allowPositionals: true, strict: false,
+  options: {
+    limit: { type: "string", short: "n" },
+    all: { type: "boolean", short: "a" },
+    help: { type: "boolean", short: "h" },
+  },
+  allowPositionals: true,
+  strict: false,
 })
 
 const cmd = positionals[0]
@@ -206,14 +284,29 @@ Options:
 }
 
 switch (cmd) {
-  case "status": cmdStatus(); break
+  case "status":
+    cmdStatus()
+    break
   case "send": {
-    const to = positionals[1], msg = positionals.slice(2).join(" ")
-    if (!to || !msg) { console.error("Usage: bun tribe send <to> <message>"); process.exit(1) }
-    cmdSend(to, msg); break
+    const to = positionals[1],
+      msg = positionals.slice(2).join(" ")
+    if (!to || !msg) {
+      console.error("Usage: bun tribe send <to> <message>")
+      process.exit(1)
+    }
+    cmdSend(to, msg)
+    break
   }
-  case "log": cmdLog(values.limit ? parseInt(values.limit as string, 10) : 20); break
-  case "health": cmdHealth(); break
-  case "sessions": cmdSessions(!!values.all); break
-  default: console.error(`Unknown command: ${cmd}\nRun with --help to see available commands.`); process.exit(1)
+  case "log":
+    cmdLog(values.limit ? parseInt(values.limit as string, 10) : 20)
+    break
+  case "health":
+    cmdHealth()
+    break
+  case "sessions":
+    cmdSessions(!!values.all)
+    break
+  default:
+    console.error(`Unknown command: ${cmd}\nRun with --help to see available commands.`)
+    process.exit(1)
 }

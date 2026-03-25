@@ -75,19 +75,34 @@ const snippet = (s: string, n = 80) => (s.length > n ? s.slice(0, n) + "..." : s
 // ---------------------------------------------------------------------------
 
 interface Message {
-  id: string; type: string; sender: string; recipient: string
-  content: string; bead_id: string | null; ref: string | null; ts: number
+  id: string
+  type: string
+  sender: string
+  recipient: string
+  content: string
+  bead_id: string | null
+  ref: string | null
+  ts: number
 }
 
 interface Session {
-  id: string; name: string; role: string; domains: string
-  started_at: number; heartbeat: number
+  id: string
+  name: string
+  role: string
+  domains: string
+  started_at: number
+  heartbeat: number
 }
 
 interface MemberMetrics {
-  name: string; role: string; domains: string[]
-  sent: number; received: number; byType: Record<string, number>
-  beads: Set<string>; avgResponseMs: number | null
+  name: string
+  role: string
+  domains: string[]
+  sent: number
+  received: number
+  byType: Record<string, number>
+  beads: Set<string>
+  avgResponseMs: number | null
 }
 
 export interface RetroReport {
@@ -95,13 +110,20 @@ export interface RetroReport {
   window: { start: number; end: number; duration_ms: number }
   summary: { duration: string; members: number; total_messages: number; by_type: Record<string, number> }
   members: Array<{
-    name: string; role: string; domains: string[]
-    sent: number; received: number; beads_mentioned: string[]; avg_response: string | null
+    name: string
+    role: string
+    domains: string[]
+    sent: number
+    received: number
+    beads_mentioned: string[]
+    avg_response: string | null
   }>
   timeline: Array<{ time: string; event: string }>
   coordination: {
-    unanswered_queries: number; avg_response_time: string | null
-    longest_response: string | null; longest_response_member: string | null
+    unanswered_queries: number
+    avg_response_time: string | null
+    longest_response: string | null
+    longest_response_member: string | null
   }
 }
 
@@ -115,7 +137,10 @@ function makeMember(name: string, role: string, domains: string[]): MemberMetric
 
 function getOrCreateMember(map: Map<string, MemberMetrics>, name: string): MemberMetrics {
   let m = map.get(name)
-  if (!m) { m = makeMember(name, "unknown", []); map.set(name, m) }
+  if (!m) {
+    m = makeMember(name, "unknown", [])
+    map.set(name, m)
+  }
   return m
 }
 
@@ -166,14 +191,19 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   const windowEnd = now
 
   const messages = db.prepare("SELECT * FROM messages WHERE ts >= ? ORDER BY ts ASC").all(windowStart) as Message[]
-  const sessions = db.prepare("SELECT * FROM sessions WHERE started_at <= ? AND heartbeat >= ?").all(windowEnd, windowStart) as Session[]
+  const sessions = db
+    .prepare("SELECT * FROM sessions WHERE started_at <= ? AND heartbeat >= ?")
+    .all(windowEnd, windowStart) as Session[]
 
   // Include sessions that sent messages but might have expired
   const sessionNames = new Set(sessions.map((s) => s.name))
   for (const sender of new Set(messages.map((m) => m.sender))) {
     if (!sessionNames.has(sender)) {
       const s = db.prepare("SELECT * FROM sessions WHERE name = ?").get(sender) as Session | null
-      if (s) { sessions.push(s); sessionNames.add(s.name) }
+      if (s) {
+        sessions.push(s)
+        sessionNames.add(s.name)
+      }
     }
   }
 
@@ -193,7 +223,9 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
     if (beadRefs) for (const ref of beadRefs) sender.beads.add(ref)
 
     if (msg.recipient === "*") {
-      for (const [name, m] of memberMap) { if (name !== msg.sender) m.received++ }
+      for (const [name, m] of memberMap) {
+        if (name !== msg.sender) m.received++
+      }
     } else {
       getOrCreateMember(memberMap, msg.recipient).received++
     }
@@ -212,15 +244,23 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   const longestResponse = allTimes.length > 0 ? Math.max(...allTimes) : null
   let longestResponseMember: string | null = null
   if (longestResponse !== null) {
-    for (const [name, t] of responseTimes) if (t.includes(longestResponse)) { longestResponseMember = name; break }
+    for (const [name, t] of responseTimes)
+      if (t.includes(longestResponse)) {
+        longestResponseMember = name
+        break
+      }
   }
 
   // Timeline: events + notable messages
   const timeline: Array<{ time: string; event: string; ts: number }> = []
-  const events = db.prepare("SELECT * FROM events WHERE ts >= ? ORDER BY ts ASC")
-    .all(windowStart) as Array<{ type: string; session: string; data: string | null; ts: number }>
+  const events = db.prepare("SELECT * FROM events WHERE ts >= ? ORDER BY ts ASC").all(windowStart) as Array<{
+    type: string
+    session: string
+    data: string | null
+    ts: number
+  }>
 
-  const eventFormatters: Record<string, (ev: typeof events[0], data: Record<string, string>) => string | null> = {
+  const eventFormatters: Record<string, (ev: (typeof events)[0], data: Record<string, string>) => string | null> = {
     "session.joined": (ev, data) => `${ev.session} joined (${data.role ?? "member"})`,
     "session.left": (ev) => `${ev.session} left`,
     "session.renamed": (_, data) => `${data.old_name} renamed to ${data.new_name}`,
@@ -249,7 +289,11 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
     .filter((m) => m.sent > 0 || m.received > 0)
     .sort((a, b) => b.sent - a.sent)
     .map((m) => ({
-      name: m.name, role: m.role, domains: m.domains, sent: m.sent, received: m.received,
+      name: m.name,
+      role: m.role,
+      domains: m.domains,
+      sent: m.sent,
+      received: m.received,
       beads_mentioned: [...m.beads].sort(),
       avg_response: m.avgResponseMs !== null ? formatDuration(m.avgResponseMs) : null,
     }))
@@ -258,7 +302,12 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   return {
     generated_at: new Date().toISOString(),
     window: { start: windowStart, end: windowEnd, duration_ms: durationMs },
-    summary: { duration: formatDuration(durationMs), members: memberList.length, total_messages: messages.length, by_type: byType },
+    summary: {
+      duration: formatDuration(durationMs),
+      members: memberList.length,
+      total_messages: messages.length,
+      by_type: byType,
+    },
     members: memberList,
     timeline: timeline.map(({ time, event }) => ({ time, event })),
     coordination: {
@@ -287,7 +336,9 @@ export function formatMarkdown(report: RetroReport): string {
   lines.push("## Summary")
   lines.push(`- Duration: ${report.summary.duration}`)
   lines.push(`- Members: ${report.summary.members} active (${report.members.map((m) => m.name).join(", ")})`)
-  const typeBreakdown = Object.entries(report.summary.by_type).map(([t, c]) => `${c} ${t}`).join(", ")
+  const typeBreakdown = Object.entries(report.summary.by_type)
+    .map(([t, c]) => `${c} ${t}`)
+    .join(", ")
   lines.push(`- Messages: ${report.summary.total_messages} total (${typeBreakdown})`, "")
 
   if (report.members.length > 0) {
@@ -295,7 +346,9 @@ export function formatMarkdown(report: RetroReport): string {
     lines.push("| Member | Sent | Received | Beads Mentioned | Avg Response |")
     lines.push("|--------|------|----------|-----------------|--------------|")
     for (const m of report.members)
-      lines.push(`| ${m.name} | ${m.sent} | ${m.received} | ${m.beads_mentioned.length} | ${m.avg_response ?? "\u2014"} |`)
+      lines.push(
+        `| ${m.name} | ${m.sent} | ${m.received} | ${m.beads_mentioned.length} | ${m.avg_response ?? "\u2014"} |`,
+      )
     lines.push("")
   }
 
@@ -309,7 +362,9 @@ export function formatMarkdown(report: RetroReport): string {
   lines.push(`- Unanswered queries: ${report.coordination.unanswered_queries}`)
   lines.push(`- Average response time: ${report.coordination.avg_response_time ?? "\u2014"}`)
   if (report.coordination.longest_response)
-    lines.push(`- Longest response: ${report.coordination.longest_response} (${report.coordination.longest_response_member})`)
+    lines.push(
+      `- Longest response: ${report.coordination.longest_response} (${report.coordination.longest_response_member})`,
+    )
   lines.push("")
   return lines.join("\n")
 }
@@ -320,7 +375,10 @@ export function formatMarkdown(report: RetroReport): string {
 
 function main(): void {
   const dbPath = (args.db as string) ?? resolve(findBeadsDir(), "tribe.db")
-  if (!existsSync(dbPath)) { console.error(`No tribe database found at ${dbPath}`); process.exit(1) }
+  if (!existsSync(dbPath)) {
+    console.error(`No tribe database found at ${dbPath}`)
+    process.exit(1)
+  }
 
   const db = new Database(dbPath, { readonly: true })
   db.run("PRAGMA busy_timeout = 5000")

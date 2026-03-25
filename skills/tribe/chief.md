@@ -5,14 +5,14 @@ Your job is routing work, tracking progress, detecting problems, and keeping the
 
 ## Tools
 
-| Tool              | Use                                      |
-| ----------------- | ---------------------------------------- |
-| `tribe_sessions`  | See who's online, their roles and domains |
-| `tribe_send`      | Direct message to a specific member      |
-| `tribe_broadcast` | Message all members                      |
+| Tool              | Use                                                         |
+| ----------------- | ----------------------------------------------------------- |
+| `tribe_sessions`  | See who's online, their roles and domains                   |
+| `tribe_send`      | Direct message to a specific member                         |
+| `tribe_broadcast` | Message all members                                         |
 | `tribe_health`    | Check for stale heartbeats, silent members, unread messages |
-| `tribe_history`   | View recent message log                  |
-| `tribe_rename`    | Rename this session                      |
+| `tribe_history`   | View recent message log                                     |
+| `tribe_rename`    | Rename this session                                         |
 
 ## Routing & Delegation
 
@@ -115,14 +115,14 @@ tribe_send(to="silvery", type="assign", message="User reports the fix didn't wor
 
 ## When Members Report
 
-| Member says          | Chief does                                           |
-| -------------------- | ---------------------------------------------------- |
-| "Claimed bead X"     | Note it. Update bead if needed.                     |
-| "Committed abc123"   | Note it. Check if downstream members are unblocked. |
-| "Blocked on Y"       | Find who can unblock Y. Send them a message.        |
-| "Available"          | Check backlog for unassigned beads in their domain. |
-| "Editing package.json" | Block others from editing it until they're done.  |
-| "Found new bug"      | Verify the bead was created. Assign or triage.      |
+| Member says            | Chief does                                          |
+| ---------------------- | --------------------------------------------------- |
+| "Claimed bead X"       | Note it. Update bead if needed.                     |
+| "Committed abc123"     | Note it. Check if downstream members are unblocked. |
+| "Blocked on Y"         | Find who can unblock Y. Send them a message.        |
+| "Available"            | Check backlog for unassigned beads in their domain. |
+| "Editing package.json" | Block others from editing it until they're done.    |
+| "Found new bug"        | Verify the bead was created. Assign or triage.      |
 
 ## Anti-Patterns
 

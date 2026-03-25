@@ -5,14 +5,14 @@ Your job is doing assigned work, reporting status, and coordinating shared resou
 
 ## Tools
 
-| Tool              | Use                                        |
-| ----------------- | ------------------------------------------ |
-| `tribe_send`      | Send a message to chief or another member  |
-| `tribe_broadcast` | Message everyone (rare -- prefer direct)   |
-| `tribe_sessions`  | See who's online                           |
-| `tribe_health`    | Check tribe health (usually chief's job)   |
-| `tribe_history`   | View recent message log                    |
-| `tribe_rename`    | Rename this session                        |
+| Tool              | Use                                       |
+| ----------------- | ----------------------------------------- |
+| `tribe_send`      | Send a message to chief or another member |
+| `tribe_broadcast` | Message everyone (rare -- prefer direct)  |
+| `tribe_sessions`  | See who's online                          |
+| `tribe_health`    | Check tribe health (usually chief's job)  |
+| `tribe_history`   | View recent message log                   |
+| `tribe_rename`    | Rename this session                       |
 
 ## Coordination Protocol
 
@@ -20,13 +20,13 @@ Your job is doing assigned work, reporting status, and coordinating shared resou
 
 Send status to chief at these moments -- not before, not after:
 
-| Event                    | Message                                                      |
-| ------------------------ | ------------------------------------------------------------ |
-| Claimed a bead           | `tribe_send(to="chief", type="status", bead="km-x.y", message="Claimed km-x.y, starting work")` |
-| Committed a fix          | `tribe_send(to="chief", type="status", bead="km-x.y", message="Committed abc1234: fixed scroll jitter")` |
-| Blocked                  | `tribe_send(to="chief", type="status", bead="km-x.y", message="Blocked: need silvery PR merged before I can integrate. Unblock: merge silvery commit abc1234")` |
-| All work done            | `tribe_send(to="chief", type="status", message="Available -- all assigned beads complete")` |
-| Found a new bug          | `tribe_send(to="chief", type="notify", bead="km-x.z", message="Found new bug while working on km-x.y, created bead km-x.z")` |
+| Event           | Message                                                                                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claimed a bead  | `tribe_send(to="chief", type="status", bead="km-x.y", message="Claimed km-x.y, starting work")`                                                                 |
+| Committed a fix | `tribe_send(to="chief", type="status", bead="km-x.y", message="Committed abc1234: fixed scroll jitter")`                                                        |
+| Blocked         | `tribe_send(to="chief", type="status", bead="km-x.y", message="Blocked: need silvery PR merged before I can integrate. Unblock: merge silvery commit abc1234")` |
+| All work done   | `tribe_send(to="chief", type="status", message="Available -- all assigned beads complete")`                                                                     |
+| Found a new bug | `tribe_send(to="chief", type="notify", bead="km-x.z", message="Found new bug while working on km-x.y, created bead km-x.z")`                                    |
 
 ### Before editing shared files
 

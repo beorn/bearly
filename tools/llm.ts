@@ -184,6 +184,15 @@ if (modelOverrideId && !modelOverride) {
   error(`Unknown model: ${modelOverrideId}. Available: ${available}`)
 }
 
+/** Resolve --image flag to a file path */
+const imagePath = getArg("--image")
+if (imagePath) {
+  const { existsSync: imageExists } = await import("fs")
+  if (!imageExists(imagePath)) {
+    error(`Image not found: ${imagePath}`)
+  }
+}
+
 /**
  * Write token during streaming — stderr ONLY if interactive terminal (TTY).
  *
@@ -665,6 +674,7 @@ async function askAndFinish(
     modelOverride: model.modelId,
     stream: true,
     onToken: streamToken,
+    imagePath,
   })
   finishResponse(response.content, model, response.usage, response.durationMs, question)
 }
