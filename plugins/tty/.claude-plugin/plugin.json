@@ -1,0 +1,12 @@
+{
+  "name": "tty",
+  "version": "0.1.0",
+  "description": "Headless terminal testing — spawn PTY sessions, send keystrokes, capture screenshots and text via xterm.js emulation",
+  "author": {
+    "name": "beorn",
+    "url": "https://github.com/beorn"
+  },
+  "repository": "https://github.com/beorn/tools",
+  "license": "MIT",
+  "keywords": ["tty", "terminal", "testing", "pty", "xterm", "screenshot", "mcp"]
+}

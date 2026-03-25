@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "tty": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "(cd \"${CLAUDE_PLUGIN_ROOT}\" && bun install --no-summary 2>/dev/null); exec bun \"${CLAUDE_PLUGIN_ROOT}/server.ts\""
+      ]
+    }
+  }
+}

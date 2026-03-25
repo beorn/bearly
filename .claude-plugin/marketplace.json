@@ -1,16 +1,40 @@
 {
   "name": "beorn-tools",
-  "description": "Beorn's Claude Code tools",
+  "description": "Beorn's Claude Code tools — coordination, testing, research, refactoring",
   "owner": {
     "name": "beorn",
     "url": "https://github.com/beorn"
   },
   "plugins": [
     {
-      "name": "batch",
-      "description": "Batch operations across files: rename, search-replace, refactor code, update text/markdown, migrate terminology",
+      "name": "tribe",
+      "description": "Cross-session coordination — discover, message, and coordinate work across multiple Claude Code sessions",
+      "version": "0.1.0",
+      "source": "./plugins/tribe"
+    },
+    {
+      "name": "tty",
+      "description": "Headless terminal testing — spawn PTY sessions, send keystrokes, capture screenshots and text via xterm.js emulation",
+      "version": "0.1.0",
+      "source": "./plugins/tty"
+    },
+    {
+      "name": "llm",
+      "description": "Multi-LLM research — deep research, second opinions, and multi-model debate via GPT, Gemini, Grok, and Perplexity",
+      "version": "0.1.0",
+      "source": "./plugins/llm"
+    },
+    {
+      "name": "recall",
+      "description": "Session history search — FTS5-indexed search across past Claude Code sessions with LLM synthesis and file recovery",
+      "version": "0.1.0",
+      "source": "./plugins/recall"
+    },
+    {
+      "name": "batch-refactor",
+      "description": "Batch rename, refactor, and migrate across files — TypeScript symbols, file renames, text/markdown updates, API migrations",
       "version": "0.3.0",
-      "source": "."
+      "source": "./plugins/batch-refactor"
     }
   ]
 }

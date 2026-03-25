@@ -1,0 +1,12 @@
+{
+  "name": "tribe",
+  "version": "0.1.0",
+  "description": "Cross-session coordination for Claude Code — discover, message, and coordinate work across multiple sessions via SQLite bus",
+  "author": {
+    "name": "beorn",
+    "url": "https://github.com/beorn"
+  },
+  "repository": "https://github.com/beorn/tools",
+  "license": "MIT",
+  "keywords": ["tribe", "coordination", "multi-session", "channel", "mcp"]
+}

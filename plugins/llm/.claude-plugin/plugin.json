@@ -1,0 +1,12 @@
+{
+  "name": "llm",
+  "version": "0.1.0",
+  "description": "Multi-LLM research — deep research, second opinions, and multi-model debate via GPT, Gemini, Grok, and Perplexity",
+  "author": {
+    "name": "beorn",
+    "url": "https://github.com/beorn"
+  },
+  "repository": "https://github.com/beorn/tools",
+  "license": "MIT",
+  "keywords": ["llm", "research", "gpt", "gemini", "grok", "multi-model", "debate"]
+}
