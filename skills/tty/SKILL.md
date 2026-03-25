@@ -177,7 +177,7 @@ mcp__tty__stop({ sessionId: session2 })
 
 On first `mcp__tty__screenshot`, Chromium is automatically installed to a local cache:
 
-- Location: `vendor/tools/tools/.playwright-cache/`
+- Location: `vendor/bearly/tools/.playwright-cache/`
 - One-time installation, reused for all future sessions
 - Text and key operations do NOT require Chromium
 

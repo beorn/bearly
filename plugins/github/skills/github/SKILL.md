@@ -9,17 +9,17 @@ GitHub event monitoring and queries. Parse the subcommand from ARGUMENTS.
 
 ## Command Mapping
 
-| User Says                       | Action                                                                  |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `/github`                       | `github_status()` — recent events summary                               |
-| `/github status`                | `github_status()` — recent events summary                               |
-| `/github status <repo>`         | `github_status(repo)` — events for specific repo                        |
-| `/github runs`                  | `github_runs()` — recent workflow runs                                   |
-| `/github runs --failed`         | `github_runs(status="failure")` — failed runs only                       |
-| `/github runs --status <s>`     | `github_runs(status=s)` — filter by status                              |
-| `/github runs <repo>`           | `github_runs(repo=repo)` — runs for specific repo                       |
-| `/github prs`                   | `github_prs()` — open PRs                                               |
-| `/github prs <repo>`            | `github_prs(repo=repo)` — open PRs for specific repo                    |
+| User Says                   | Action                                               |
+| --------------------------- | ---------------------------------------------------- |
+| `/github`                   | `github_status()` — recent events summary            |
+| `/github status`            | `github_status()` — recent events summary            |
+| `/github status <repo>`     | `github_status(repo)` — events for specific repo     |
+| `/github runs`              | `github_runs()` — recent workflow runs               |
+| `/github runs --failed`     | `github_runs(status="failure")` — failed runs only   |
+| `/github runs --status <s>` | `github_runs(status=s)` — filter by status           |
+| `/github runs <repo>`       | `github_runs(repo=repo)` — runs for specific repo    |
+| `/github prs`               | `github_prs()` — open PRs                            |
+| `/github prs <repo>`        | `github_prs(repo=repo)` — open PRs for specific repo |
 
 ## Output Format
 

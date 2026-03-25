@@ -130,7 +130,7 @@ function saveCursor(state: CursorState): void {
   writeFileSync(CURSOR_PATH, JSON.stringify(state, null, 2))
 }
 
-let cursorState = loadCursor()
+const cursorState = loadCursor()
 
 // ---------------------------------------------------------------------------
 // GitHub API helpers
@@ -599,7 +599,9 @@ async function pollWorkflowFailures(): Promise<void> {
         })
       }
     } catch (err) {
-      process.stderr.write(`[github] Error polling workflows for ${repo}: ${err instanceof Error ? err.message : err}\n`)
+      process.stderr.write(
+        `[github] Error polling workflows for ${repo}: ${err instanceof Error ? err.message : err}\n`,
+      )
     }
   }
 }

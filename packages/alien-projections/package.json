@@ -19,15 +19,15 @@
     "tc39-signals",
     "transform"
   ],
-  "homepage": "https://github.com/beorn/bearlymade/tree/main/packages/alien-projections",
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/alien-projections",
   "bugs": {
-    "url": "https://github.com/beorn/bearlymade/issues"
+    "url": "https://github.com/beorn/bearly/issues"
   },
   "license": "MIT",
   "author": "Beorn",
   "repository": {
     "type": "git",
-    "url": "https://github.com/beorn/bearlymade.git"
+    "url": "https://github.com/beorn/bearly.git"
   },
   "files": [
     "dist",

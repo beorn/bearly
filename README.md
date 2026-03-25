@@ -49,11 +49,11 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 Standalone npm packages absorbed from bearlymade:
 
-| Package                                                   | What                                                     |
-| --------------------------------------------------------- | -------------------------------------------------------- |
-| [alien-projections](packages/alien-projections/)          | Incremental reactive collection transforms for alien-signals |
-| [alien-resources](packages/alien-resources/)              | Async signal bridge for alien-signals — reactive resources   |
-| [vitest-silvery-dots](packages/vitest-silvery-dots/)      | Streaming dot reporter for Vitest, built with Silvery        |
+| Package                                              | What                                                         |
+| ---------------------------------------------------- | ------------------------------------------------------------ |
+| [alien-projections](packages/alien-projections/)     | Incremental reactive collection transforms for alien-signals |
+| [alien-resources](packages/alien-resources/)         | Async signal bridge for alien-signals — reactive resources   |
+| [vitest-silvery-dots](packages/vitest-silvery-dots/) | Streaming dot reporter for Vitest, built with Silvery        |
 
 ## Development
 

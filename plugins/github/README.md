@@ -36,32 +36,32 @@ claude --dangerously-load-development-channels server:github
 
 ## Events monitored
 
-| Type             | Channel tag `type=` | What                                        |
-| ---------------- | ------------------- | ------------------------------------------- |
-| Push events      | `push`              | New commits pushed to branches              |
-| Workflow runs    | `workflow`          | CI/CD completions (failures highlighted)    |
-| Pull requests    | `pr`                | Opened, merged, reviewed, commented         |
-| Issues           | `issue`             | Opened, closed, assigned, commented         |
+| Type          | Channel tag `type=` | What                                     |
+| ------------- | ------------------- | ---------------------------------------- |
+| Push events   | `push`              | New commits pushed to branches           |
+| Workflow runs | `workflow`          | CI/CD completions (failures highlighted) |
+| Pull requests | `pr`                | Opened, merged, reviewed, commented      |
+| Issues        | `issue`             | Opened, closed, assigned, commented      |
 
 ## Commands
 
 Once installed, use `/github` in Claude Code:
 
-| Command                    | What                            |
-| -------------------------- | ------------------------------- |
-| `/github`                  | Recent events summary           |
-| `/github status`           | Recent events summary           |
-| `/github runs`             | Workflow runs                   |
-| `/github runs --failed`    | Failed runs only                |
-| `/github prs`              | Open PRs with review status     |
+| Command                 | What                        |
+| ----------------------- | --------------------------- |
+| `/github`               | Recent events summary       |
+| `/github status`        | Recent events summary       |
+| `/github runs`          | Workflow runs               |
+| `/github runs --failed` | Failed runs only            |
+| `/github prs`           | Open PRs with review status |
 
 ## Tools
 
-| Tool             | Description                                |
-| ---------------- | ------------------------------------------ |
-| `github_status`  | Recent events summary across monitored repos |
-| `github_runs`    | Workflow runs (filter by status/conclusion) |
-| `github_prs`     | Open PRs with review status                |
+| Tool            | Description                                  |
+| --------------- | -------------------------------------------- |
+| `github_status` | Recent events summary across monitored repos |
+| `github_runs`   | Workflow runs (filter by status/conclusion)  |
+| `github_prs`    | Open PRs with review status                  |
 
 ## Configuration
 
@@ -73,11 +73,11 @@ bun server.ts --repos beorn/km,beorn/bearly --poll-interval 30 --events push,wor
 GITHUB_REPOS=beorn/km GITHUB_POLL_INTERVAL=30 GITHUB_EVENTS=push,workflow_run
 ```
 
-| Option             | Default                                    | Description                   |
-| ------------------ | ------------------------------------------ | ----------------------------- |
-| `--repos`          | Auto-detect from git remote                | Comma-separated owner/repo    |
-| `--poll-interval`  | 30                                         | Seconds between polls         |
-| `--events`         | `push,workflow_run,pull_request,issues`     | Event types to monitor        |
+| Option            | Default                                 | Description                |
+| ----------------- | --------------------------------------- | -------------------------- |
+| `--repos`         | Auto-detect from git remote             | Comma-separated owner/repo |
+| `--poll-interval` | 30                                      | Seconds between polls      |
+| `--events`        | `push,workflow_run,pull_request,issues` | Event types to monitor     |
 
 ## License
 

@@ -14,15 +14,15 @@
     "vitest",
     "vitest-reporter"
   ],
-  "homepage": "https://github.com/beorn/bearlymade",
+  "homepage": "https://github.com/beorn/bearly",
   "bugs": {
-    "url": "https://github.com/beorn/bearlymade/issues"
+    "url": "https://github.com/beorn/bearly/issues"
   },
   "license": "MIT",
   "author": "Beorn",
   "repository": {
     "type": "git",
-    "url": "https://github.com/beorn/bearlymade.git"
+    "url": "https://github.com/beorn/bearly.git"
   },
   "files": [
     "dist",
