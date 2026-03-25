@@ -83,14 +83,38 @@ function detectRepoFromGit(): string | null {
   return null
 }
 
-function getRepos(): string[] {
-  if (args.repos) return String(args.repos).split(",").filter(Boolean)
-  const detected = detectRepoFromGit()
-  if (detected) return [detected]
-  throw new Error("No --repos specified and could not auto-detect from git remote. Pass --repos owner/repo.")
+async function fetchUserRepos(): Promise<string[]> {
+  const repos: string[] = []
+  let page = 1
+  while (true) {
+    const batch = await ghFetch<Array<{ full_name: string; archived: boolean; fork: boolean }>>(
+      `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
+    )
+    if (batch.length === 0) break
+    for (const r of batch) {
+      if (!r.archived && !r.fork) repos.push(r.full_name)
+    }
+    if (batch.length < 100) break
+    page++
+  }
+  return repos
 }
 
-const REPOS = getRepos()
+function getReposSync(): string[] {
+  if (args.repos && String(args.repos) !== "all") return String(args.repos).split(",").filter(Boolean)
+  const detected = detectRepoFromGit()
+  if (detected) return [detected]
+  throw new Error("No --repos specified and could not auto-detect from git remote. Pass --repos owner/repo,owner/repo2 or --repos all.")
+}
+
+// Resolve repos — "all" fetches from GitHub API, otherwise synchronous
+let REPOS: string[]
+if (String(args.repos) === "all") {
+  REPOS = await fetchUserRepos()
+  process.stderr.write(`[github] Discovered ${REPOS.length} repos for authenticated user\n`)
+} else {
+  REPOS = getReposSync()
+}
 
 // ---------------------------------------------------------------------------
 // Cursor persistence
