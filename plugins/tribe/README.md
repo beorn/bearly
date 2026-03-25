@@ -64,6 +64,33 @@ Once installed, use `/tribe` in Claude Code:
 | `status`   | 5           | Status update                 |
 | `notify`   | 6 (lowest)  | General notification          |
 
+## Roles
+
+Role is auto-detected: the first session to join becomes **chief**; subsequent sessions become **members**. Override with `--role chief` or `--role member`.
+
+### Chief (coordinator)
+
+The chief routes work, tracks progress, and keeps the user informed. It does not do implementation work itself. Responsibilities:
+
+- **Route work** to members by matching their registered domains
+- **Track status** by periodically querying members and aggregating responses
+- **Detect dead members** and release their bead claims
+- **Prevent conflicts** by serializing access to shared files (package.json, tsconfig, etc.)
+- **Relay user messages** (e.g., from Telegram) to the right member
+
+See `skills/tribe/chief.md` for full instructions.
+
+### Member (worker)
+
+Members do the actual implementation work. They coordinate with chief, not each other. Responsibilities:
+
+- **Report status** when claiming beads, committing, getting blocked, or becoming available
+- **Ask before editing shared files** — chief serializes access to prevent merge conflicts
+- **Report infrastructure changes** — multi-file refactors, worktree creation, dependency additions
+- **Respond to queries promptly** — chief needs timely status to coordinate effectively
+
+See `skills/tribe/member.md` for full instructions.
+
 ## Configuration
 
 The server auto-detects role and name. Override via CLI args or env vars:

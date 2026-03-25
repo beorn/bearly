@@ -24,7 +24,8 @@ function createTribeDb(path: string): Database {
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
 		domains TEXT NOT NULL DEFAULT '[]', pid INTEGER NOT NULL,
-		cwd TEXT, started_at INTEGER NOT NULL, heartbeat INTEGER NOT NULL
+		cwd TEXT, started_at INTEGER NOT NULL, heartbeat INTEGER NOT NULL,
+		pruned_at INTEGER
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS aliases (
 		old_name TEXT PRIMARY KEY, session_id TEXT NOT NULL, renamed_at INTEGER NOT NULL
@@ -399,5 +400,131 @@ describe("tribe", () => {
       .get(msgId, "id-worker") as { read_at: number } | null
     expect(after).not.toBeNull()
     expect(after!.read_at).toBeGreaterThan(0)
+  })
+
+  test("soft pruning: pruned sessions are marked, not deleted", () => {
+    registerSession(db, "id-1", "worker-a", "member")
+    const prunedAt = Date.now()
+
+    // Soft-prune the session
+    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [prunedAt, "id-1"])
+
+    // Session row still exists
+    const row = db.prepare("SELECT name, pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+      name: string
+      pruned_at: number | null
+    } | null
+    expect(row).not.toBeNull()
+    expect(row!.name).toBe("worker-a")
+    expect(row!.pruned_at).toBe(prunedAt)
+  })
+
+  test("soft pruning: pruned sessions excluded from live query", () => {
+    registerSession(db, "id-1", "alive-member", "member")
+    registerSession(db, "id-2", "pruned-member", "member")
+
+    // Soft-prune id-2
+    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-2"])
+
+    const threshold = Date.now() - 30_000
+    const live = db
+      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
+      .all(threshold) as Array<{ name: string }>
+
+    expect(live.map((s) => s.name)).toContain("alive-member")
+    expect(live.map((s) => s.name)).not.toContain("pruned-member")
+
+    // But allSessions still includes it
+    const all = db.prepare("SELECT name FROM sessions").all() as Array<{ name: string }>
+    expect(all.map((s) => s.name)).toContain("pruned-member")
+  })
+
+  test("auto-rejoin: heartbeat clears pruned_at", () => {
+    registerSession(db, "id-1", "worker-a", "member")
+
+    // Soft-prune
+    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
+
+    // Verify pruned
+    const before = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+      pruned_at: number | null
+    }
+    expect(before.pruned_at).not.toBeNull()
+
+    // Simulate heartbeat (clears pruned_at)
+    db.run("UPDATE sessions SET heartbeat = ?, pruned_at = NULL WHERE id = ?", [Date.now(), "id-1"])
+
+    // Verify no longer pruned
+    const after = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+      pruned_at: number | null
+    }
+    expect(after.pruned_at).toBeNull()
+  })
+
+  test("auto-rejoin: pruned session reappears in live query after heartbeat", () => {
+    registerSession(db, "id-1", "worker-a", "member")
+
+    // Soft-prune
+    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
+
+    const threshold = Date.now() - 30_000
+
+    // Not in live sessions
+    const before = db
+      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
+      .all(threshold) as Array<{ name: string }>
+    expect(before.map((s) => s.name)).not.toContain("worker-a")
+
+    // Heartbeat clears pruned_at
+    db.run("UPDATE sessions SET heartbeat = ?, pruned_at = NULL WHERE id = ?", [Date.now(), "id-1"])
+
+    // Now in live sessions
+    const after = db
+      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
+      .all(threshold) as Array<{ name: string }>
+    expect(after.map((s) => s.name)).toContain("worker-a")
+  })
+
+  test("tribe_join: re-register with updated metadata", () => {
+    registerSession(db, "id-1", "worker-a", "member", ["silvery"])
+
+    // Simulate tribe_join — update name, role, domains, clear pruned_at
+    db.run("UPDATE sessions SET name = ?, role = ?, domains = ?, heartbeat = ?, pruned_at = NULL WHERE id = ?", [
+      "silvery-expert",
+      "member",
+      JSON.stringify(["silvery", "flexily"]),
+      Date.now(),
+      "id-1",
+    ])
+
+    const row = db.prepare("SELECT name, role, domains, pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+      name: string
+      role: string
+      domains: string
+      pruned_at: number | null
+    }
+    expect(row.name).toBe("silvery-expert")
+    expect(row.role).toBe("member")
+    expect(JSON.parse(row.domains)).toEqual(["silvery", "flexily"])
+    expect(row.pruned_at).toBeNull()
+  })
+
+  test("tribe_join: clears pruned_at on rejoin", () => {
+    registerSession(db, "id-1", "worker-a", "member")
+
+    // Soft-prune then rejoin
+    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
+    db.run("UPDATE sessions SET name = ?, role = ?, domains = ?, heartbeat = ?, pruned_at = NULL WHERE id = ?", [
+      "worker-a",
+      "member",
+      JSON.stringify([]),
+      Date.now(),
+      "id-1",
+    ])
+
+    const row = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+      pruned_at: number | null
+    }
+    expect(row.pruned_at).toBeNull()
   })
 })

@@ -24,10 +24,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { Database } from "bun:sqlite"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
 import { execSync } from "node:child_process"
+import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
+import { generateRetro, formatMarkdown, parseDuration } from "./tribe-retro.ts"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -39,6 +41,7 @@ const { values: args } = parseArgs({
     role: { type: "string", default: process.env.TRIBE_ROLE },
     domains: { type: "string", default: process.env.TRIBE_DOMAINS ?? "" },
     db: { type: "string", default: process.env.TRIBE_DB },
+    "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
   },
   strict: false,
 })
@@ -106,7 +109,8 @@ function openDatabase(path: string): Database {
 		claude_session_id TEXT,
 		claude_session_name TEXT,
 		started_at INTEGER NOT NULL,
-		heartbeat  INTEGER NOT NULL
+		heartbeat  INTEGER NOT NULL,
+		pruned_at  INTEGER
 	)`)
 
   // Migration: add columns if they don't exist (for existing DBs)
@@ -117,6 +121,11 @@ function openDatabase(path: string): Database {
   }
   try {
     db.run("ALTER TABLE sessions ADD COLUMN claude_session_name TEXT")
+  } catch {
+    /* already exists */
+  }
+  try {
+    db.run("ALTER TABLE sessions ADD COLUMN pruned_at INTEGER")
   } catch {
     /* already exists */
   }
@@ -199,15 +208,15 @@ if (SESSION_DOMAINS.length > 0) {
 
 const stmts = {
   upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now)
+		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
+		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now, NULL)
 		ON CONFLICT(name) DO UPDATE SET
 			id = $id, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, claude_session_id = $claude_session_id,
-			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now
+			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
 	`),
 
-  heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now WHERE id = $id"),
+  heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now, pruned_at = NULL WHERE id = $id"),
 
   pollMessages: db.prepare(`
 		SELECT * FROM messages
@@ -255,13 +264,13 @@ const stmts = {
 	`),
 
   liveSessions: db.prepare(`
-		SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat
+		SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
 		FROM sessions
-		WHERE heartbeat > $threshold
+		WHERE heartbeat > $threshold AND pruned_at IS NULL
 	`),
 
   allSessions: db.prepare(
-    "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat FROM sessions",
+    "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
   ),
 
   messageHistory: db.prepare(`
@@ -279,6 +288,13 @@ const stmts = {
 	`),
 
   renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
+
+  pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now WHERE id = $id"),
+
+  updateSessionMeta: db.prepare(`
+		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
+		WHERE id = $id
+	`),
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +337,14 @@ function registerSession(): void {
 }
 
 function sendHeartbeat(): void {
+  // Check if we were pruned — if so, log a rejoin event
+  const session = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get(SESSION_ID) as {
+    pruned_at: number | null
+  } | null
+  if (session?.pruned_at) {
+    logEvent("session.rejoined", undefined, { name: currentName, role: SESSION_ROLE, domains: SESSION_DOMAINS })
+    process.stderr.write(`[tribe] ${currentName} rejoined tribe (was pruned)\n`)
+  }
   stmts.heartbeat.run({ $id: SESSION_ID, $now: now() })
 }
 
@@ -498,6 +522,46 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {},
       },
     },
+    {
+      name: "tribe_join",
+      description: "Re-announce this session's name, role, and domains (e.g. after compaction/rejoin)",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          name: { type: "string", description: "Session name" },
+          role: {
+            type: "string",
+            description: "Session role",
+            enum: ["chief", "member"],
+          },
+          domains: {
+            type: "array",
+            items: { type: "string" },
+            description: "Domain expertise areas (e.g. ['silvery', 'flexily'])",
+          },
+        },
+        required: ["name", "role"],
+      },
+    },
+    {
+      name: "tribe_retro",
+      description: "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          since: {
+            type: "string",
+            description: 'Duration to look back (e.g. "2h", "30m", "1d"). Default: entire session.',
+          },
+          format: {
+            type: "string",
+            description: "Output format",
+            enum: ["markdown", "json"],
+            default: "markdown",
+          },
+        },
+      },
+    },
   ],
 }))
 
@@ -540,17 +604,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         claude_session_name: string | null
         started_at: number
         heartbeat: number
+        pruned_at: number | null
       }>
 
-      // Auto-prune: check PID liveness and remove dead sessions
+      // Auto-prune: check PID liveness and soft-prune dead sessions
       const dead: string[] = []
       for (const r of rows) {
         if (r.pid === process.pid) continue // don't kill ourselves
+        if (r.pruned_at) continue // already pruned
         try {
           process.kill(r.pid, 0) // signal 0 = check if process exists
         } catch {
           dead.push(r.name)
-          db.prepare("DELETE FROM sessions WHERE id = ?").run(r.id)
+          stmts.pruneSession.run({ $id: r.id, $now: now() })
         }
       }
 
@@ -568,6 +634,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           claude_session_name: string | null
           started_at: number
           heartbeat: number
+          pruned_at: number | null
         }>
       ).map((r) => ({
         name: r.name,
@@ -577,7 +644,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         cwd: r.cwd,
         claude_session_id: r.claude_session_id,
         claude_session_name: r.claude_session_name,
-        alive: r.heartbeat > threshold,
+        alive: r.heartbeat > threshold && !r.pruned_at,
+        pruned: !!r.pruned_at,
         uptime_min: Math.round((now() - r.started_at) / 60_000),
         last_heartbeat_sec: Math.round((now() - r.heartbeat) / 1000),
       }))
@@ -630,6 +698,50 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       logEvent("session.renamed", undefined, { old_name: oldName, new_name: newName })
       return {
         content: [{ type: "text", text: JSON.stringify({ renamed: true, old_name: oldName, new_name: newName }) }],
+      }
+    }
+
+    case "tribe_join": {
+      const joinName = a.name as string
+      const joinRole = (a.role as string) ?? SESSION_ROLE
+      const joinDomains = (a.domains as string[]) ?? SESSION_DOMAINS
+
+      // Check if name is taken by another session
+      const taken = stmts.checkNameTaken.get({ $name: joinName, $session_id: SESSION_ID })
+      if (taken) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
+      }
+
+      const prevName = currentName
+      // If name changed, create an alias for the old name
+      if (joinName !== prevName) {
+        stmts.insertAlias.run({ $old_name: prevName, $session_id: SESSION_ID, $now: now() })
+      }
+
+      stmts.updateSessionMeta.run({
+        $id: SESSION_ID,
+        $name: joinName,
+        $role: joinRole,
+        $domains: JSON.stringify(joinDomains),
+        $now: now(),
+      })
+      currentName = joinName
+
+      logEvent("session.joined", undefined, { name: joinName, role: joinRole, domains: joinDomains, rejoin: true })
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              joined: true,
+              name: joinName,
+              role: joinRole,
+              domains: joinDomains,
+              previous_name: joinName !== prevName ? prevName : undefined,
+            }),
+          },
+        ],
       }
     }
 
@@ -695,6 +807,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case "tribe_retro": {
+      const sinceStr = a.since as string | undefined
+      let sinceMs: number | undefined
+      if (sinceStr) {
+        try { sinceMs = parseDuration(sinceStr) }
+        catch { return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] } }
+      }
+      const fmt = (a.format as string) ?? "markdown"
+      const report = generateRetro(db, sinceMs)
+      const text = fmt === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report)
+      return { content: [{ type: "text", text }] }
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -755,6 +880,103 @@ async function pollMessages(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-reporter — detects git commits and bead changes, sends to chief
+// ---------------------------------------------------------------------------
+
+function startAutoReporter(): () => void {
+  let lastHead = ""
+  let lastIssuesMtime = 0
+  let lastIssuesLineCount = 0
+  const issuesPath = resolve(findBeadsDir(), "backup/issues.jsonl")
+
+  // Initialize: capture current state without reporting
+  try {
+    lastHead = execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" }).trim()
+  } catch {
+    /* not a git repo */
+  }
+  try {
+    const stat = statSync(issuesPath)
+    lastIssuesMtime = stat.mtimeMs
+    const content = readFileSync(issuesPath, "utf8")
+    lastIssuesLineCount = content.split("\n").filter(Boolean).length
+  } catch {
+    /* no issues file yet */
+  }
+
+  function hasChief(): boolean {
+    const threshold = Date.now() - 30_000
+    const chief = db
+      .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
+      .get(threshold)
+    return !!chief
+  }
+
+  async function checkGit(): Promise<void> {
+    if (!hasChief()) return
+    try {
+      const proc = Bun.spawn(["git", "log", "--oneline", "-1", "HEAD"], {
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "ignore",
+      })
+      const out = await new Response(proc.stdout).text()
+      const line = out.trim()
+      const head = line.split(" ")[0] ?? ""
+      if (head && lastHead && head !== lastHead) {
+        sendMessage("chief", `Committed: ${line}`, "status")
+      }
+      if (head) lastHead = head
+    } catch {
+      /* git error — skip */
+    }
+  }
+
+  async function checkBeads(): Promise<void> {
+    if (!hasChief()) return
+    try {
+      const stat = statSync(issuesPath)
+      if (stat.mtimeMs === lastIssuesMtime) return
+      lastIssuesMtime = stat.mtimeMs
+
+      const content = await readFile(issuesPath, "utf8")
+      const lines = content.split("\n").filter(Boolean)
+      if (lines.length <= lastIssuesLineCount) {
+        lastIssuesLineCount = lines.length
+        return
+      }
+
+      // Process only new lines
+      const newLines = lines.slice(lastIssuesLineCount)
+      lastIssuesLineCount = lines.length
+
+      for (const line of newLines) {
+        try {
+          const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
+          if (entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)) {
+            sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
+          } else if (entry.status === "closed") {
+            sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
+          }
+        } catch {
+          /* malformed line */
+        }
+      }
+    } catch {
+      /* file missing or read error */
+    }
+  }
+
+  const interval = setInterval(() => {
+    void checkGit()
+    void checkBeads()
+  }, 30_000)
+
+  process.stderr.write(`[tribe] auto-reporter started (30s polling)\n`)
+  return () => clearInterval(interval)
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
@@ -766,6 +988,13 @@ const heartbeatInterval = setInterval(sendHeartbeat, 10_000)
 // Poll: every 1s
 const pollInterval = setInterval(() => void pollMessages(), 1_000)
 
+// Auto-reporter: detect commits + bead changes and notify chief
+const autoReport = args["auto-report"] !== false
+let stopAutoReporter: (() => void) | undefined
+if (autoReport) {
+  stopAutoReporter = startAutoReporter()
+}
+
 // Cleanup on exit (guard against double-close)
 let cleaned = false
 function cleanup(): void {
@@ -773,6 +1002,7 @@ function cleanup(): void {
   cleaned = true
   clearInterval(heartbeatInterval)
   clearInterval(pollInterval)
+  stopAutoReporter?.()
   try {
     logEvent("session.left", undefined, { name: currentName })
     db.close()

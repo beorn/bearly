@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "GitHub channel for Claude Code — notifications for builds, PRs, and issues",
   "license": "MIT",
-  "bin": "./server.ts",
+  "files": ["server.ts", "skills", "README.md", ".claude-plugin", ".mcp.json"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "plugins/github"
+  },
   "type": "module",
   "scripts": {
     "start": "bun install --no-summary && bun server.ts"

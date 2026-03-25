@@ -40,6 +40,8 @@
     "refactor": "bun tools/refactor.ts",
     "llm": "bun tools/llm.ts",
     "recall": "bun tools/recall.ts",
+    "tribe": "bun tools/tribe-cli.ts",
+    "tribe-retro": "bun tools/tribe-retro.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -8,7 +8,7 @@
     "url": "https://github.com/beorn/bearly.git",
     "directory": "plugins/tribe"
   },
-  "bin": "./server.ts",
+  "files": ["server.ts", "skills", "README.md", ".claude-plugin", ".mcp.json"],
   "type": "module",
   "scripts": {
     "start": "bun install --no-summary && bun server.ts"
