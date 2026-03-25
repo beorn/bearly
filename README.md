@@ -1,4 +1,4 @@
-# beorn-tools
+# bearly
 
 Claude Code plugins and CLI tools — coordination, testing, research, refactoring.
 
@@ -53,7 +53,7 @@ bun run typecheck
 ### As a git submodule
 
 ```bash
-git submodule add git@github.com:beorn/tools.git vendor/tools
+git submodule add git@github.com:beorn/tools.git vendor/bearly
 ```
 
 ## License

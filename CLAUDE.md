@@ -1,6 +1,6 @@
-# tools
+# bearly
 
-Generic Claude Code tools - reusable across projects.
+Reusable Claude Code tools — coordination, testing, research, refactoring.
 
 **All generic Claude tools should live here**, not in project-specific repos.
 
@@ -36,20 +36,20 @@ See `skills/` for Claude Code skill definitions:
 Include as git submodule in `vendor/`:
 
 ```bash
-git submodule add <repo-url> vendor/tools
+git submodule add <repo-url> vendor/bearly
 ```
 
 Run tools:
 
 ```bash
-bun vendor/tools/tools/llm.ts ask "question"
-bun vendor/tools/tools/refactor.ts rename.batch --pattern foo --replace bar
+bun vendor/bearly/tools/llm.ts ask "question"
+bun vendor/bearly/tools/refactor.ts rename.batch --pattern foo --replace bar
 ```
 
 ## Development
 
 ```bash
-cd vendor/tools
+cd vendor/bearly
 bun install
 bun run typecheck
 ```

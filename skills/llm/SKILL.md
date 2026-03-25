@@ -5,7 +5,7 @@ Multi-LLM research with deep research, second opinions, and multi-model debate.
 **Run from your project:**
 
 ```bash
-bun vendor/tools/tools/llm.ts "question"
+bun vendor/bearly/tools/llm.ts "question"
 ```
 
 ## When to Use

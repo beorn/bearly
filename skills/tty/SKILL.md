@@ -9,7 +9,7 @@ Interactive terminal app testing - MCP server with Termless (PTY + xterm.js).
   "mcpServers": {
     "tty": {
       "command": "bun",
-      "args": ["vendor/tools/tools/playwright-tty-mcp.ts"]
+      "args": ["vendor/bearly/tools/playwright-tty-mcp.ts"]
     }
   }
 }

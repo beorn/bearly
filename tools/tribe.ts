@@ -8,7 +8,7 @@
  *
  * Usage:
  *   # In .mcp.json:
- *   { "command": "bun", "args": ["vendor/tools/tools/tribe.ts", "--name", "chief", "--role", "chief"] }
+ *   { "command": "bun", "args": ["vendor/bearly/tools/tribe.ts", "--name", "chief", "--role", "chief"] }
  *
  *   # Or via env:
  *   TRIBE_NAME=silvery-worker TRIBE_ROLE=member TRIBE_DOMAINS=silvery,flexily

@@ -39,7 +39,7 @@ import {
 
 /**
  * Resolve the project root directory.
- * The recall.ts script lives at vendor/tools/tools/recall.ts
+ * The recall.ts script lives at vendor/bearly/tools/recall.ts
  * So project root is 4 levels up from __dirname (tools/recall/ → tools/ → tools/ → vendor/ → root)
  */
 function getProjectRoot(): string {

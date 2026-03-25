@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Edit, Grep, Glob, AskUserQuestion
 
 # Batch Operations Skill
 
-**Quick start:** Run `bun vendor/tools/tools/refactor.ts --help` for command reference and examples.
+**Quick start:** Run `bun vendor/bearly/tools/refactor.ts --help` for command reference and examples.
 
 Use this skill when the user wants to make changes across multiple files:
 
