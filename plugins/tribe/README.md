@@ -8,7 +8,7 @@ One session becomes **chief** (coordinator); the rest are **members** (workers).
 
 ```bash
 # As a Claude Code plugin
-claude plugin install tribe@beorn-tools
+claude plugin install tribe@bearly
 
 # Launch with channel support (required during research preview)
 claude --dangerously-load-development-channels server:tribe

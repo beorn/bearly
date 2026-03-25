@@ -19,34 +19,34 @@ Search past Claude Code session history with FTS5 indexing and optional LLM synt
 
 ```bash
 # Search with LLM synthesis (default)
-bunx @beorn/tools recall "query terms"
+bun tools/recall.ts "query terms"
 
 # Raw search results (no LLM)
-bunx @beorn/tools recall "query terms" --raw
+bun tools/recall.ts "query terms" --raw
 
 # Build/rebuild FTS5 index
-bunx @beorn/tools recall index [--incremental]
+bun tools/recall.ts index [--incremental]
 
 # Dashboard: activity + stats + index health
-bunx @beorn/tools recall status
+bun tools/recall.ts status
 
 # List sessions or show details
-bunx @beorn/tools recall sessions [id]
+bun tools/recall.ts sessions [id]
 
 # List/search file writes
-bunx @beorn/tools recall files [pattern]
+bun tools/recall.ts files [pattern]
 
 # Recover file content from session history
-bunx @beorn/tools recall files --restore <file>
+bun tools/recall.ts files --restore <file>
 
 # Daily summary
-bunx @beorn/tools recall summarize
+bun tools/recall.ts summarize
 
 # Weekly summary
-bunx @beorn/tools recall weekly
+bun tools/recall.ts weekly
 
 # Show specific summary
-bunx @beorn/tools recall show <id>
+bun tools/recall.ts show <id>
 ```
 
 ## Output
@@ -55,9 +55,9 @@ Search results include session metadata, matching excerpts, and relevance scores
 
 ## Workflow
 
-1. **Before debugging**: `bunx @beorn/tools recall "error message or topic"` to check prior art
+1. **Before debugging**: `bun tools/recall.ts "error message or topic"` to check prior art
 2. **After fixing**: session is auto-indexed for future recall
-3. **Periodic maintenance**: `bunx @beorn/tools recall index --incremental` to update the index
+3. **Periodic maintenance**: `bun tools/recall.ts index --incremental` to update the index
 
 ## Trigger Phrases
 

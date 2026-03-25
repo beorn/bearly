@@ -5,36 +5,36 @@ Multi-LLM research for Claude Code. Get second opinions, deep research with web 
 ## Install
 
 ```bash
-claude plugin install llm@beorn-tools
+claude plugin install llm@bearly
 ```
 
 ## Commands
 
 ```bash
 # Quick question (~$0.02)
-bunx @beorn/tools llm "question"
+bun tools/llm.ts "question"
 
 # Deep research with web search (~$2-5)
-bunx @beorn/tools llm --deep -y "topic"
+bun tools/llm.ts --deep -y "topic"
 
 # Second opinion from another model (~$0.02)
-bunx @beorn/tools llm opinion "Is this approach reasonable?"
+bun tools/llm.ts opinion "Is this approach reasonable?"
 
 # Multi-model debate with synthesis (~$1-3)
-bunx @beorn/tools llm debate -y "Monorepo vs polyrepo?"
+bun tools/llm.ts debate -y "Monorepo vs polyrepo?"
 ```
 
 ## Context
 
 ```bash
 # From string
-bunx @beorn/tools llm --context "relevant code" "question"
+bun tools/llm.ts --context "relevant code" "question"
 
 # From file
-bunx @beorn/tools llm --context-file ./src/module.ts "Review this"
+bun tools/llm.ts --context-file ./src/module.ts "Review this"
 
 # Include session history
-bunx @beorn/tools llm --with-history "topic"
+bun tools/llm.ts --with-history "topic"
 ```
 
 ## Output

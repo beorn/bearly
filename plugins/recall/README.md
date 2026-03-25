@@ -5,36 +5,36 @@ Session history search for Claude Code. FTS5-indexed search across past sessions
 ## Install
 
 ```bash
-claude plugin install recall@beorn-tools
+claude plugin install recall@bearly
 ```
 
 ## Commands
 
 ```bash
 # Search with LLM synthesis (default)
-bunx @beorn/tools recall "query terms"
+bun tools/recall.ts "query terms"
 
 # Raw search results (no LLM)
-bunx @beorn/tools recall "query" --raw
+bun tools/recall.ts "query" --raw
 
 # Build/rebuild FTS5 index
-bunx @beorn/tools recall index [--incremental]
+bun tools/recall.ts index [--incremental]
 
 # Dashboard: activity + stats + index health
-bunx @beorn/tools recall status
+bun tools/recall.ts status
 
 # List sessions or show details
-bunx @beorn/tools recall sessions [id]
+bun tools/recall.ts sessions [id]
 
 # List/search file writes
-bunx @beorn/tools recall files [pattern]
+bun tools/recall.ts files [pattern]
 
 # Recover file content
-bunx @beorn/tools recall files --restore <file>
+bun tools/recall.ts files --restore <file>
 
 # Daily/weekly summaries
-bunx @beorn/tools recall summarize
-bunx @beorn/tools recall weekly
+bun tools/recall.ts summarize
+bun tools/recall.ts weekly
 ```
 
 ## How it works

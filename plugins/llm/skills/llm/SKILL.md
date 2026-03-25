@@ -19,32 +19,32 @@ Multi-LLM research with deep research, second opinions, and multi-model debate.
 
 ```bash
 # Standard question (~$0.02)
-bunx @beorn/tools llm "What is the capital of France?"
+bun tools/llm.ts "What is the capital of France?"
 
 # Deep research with web search (~$2-5)
-bunx @beorn/tools llm --deep -y "Best practices for TUI testing in 2026"
+bun tools/llm.ts --deep -y "Best practices for TUI testing in 2026"
 
 # Second opinion from a different provider (~$0.02)
-bunx @beorn/tools llm opinion "Is my caching approach reasonable?"
+bun tools/llm.ts opinion "Is my caching approach reasonable?"
 
 # Multi-model debate with synthesis (~$1-3)
-bunx @beorn/tools llm debate -y "Monorepo vs polyrepo for our use case?"
+bun tools/llm.ts debate -y "Monorepo vs polyrepo for our use case?"
 
 # Quick/cheap model (~$0.01)
-bunx @beorn/tools llm quick "What port does postgres use?"
+bun tools/llm.ts quick "What port does postgres use?"
 ```
 
 ## Context Flags
 
 ```bash
 # Explicit context
-bunx @beorn/tools llm --deep -y --context "relevant code or info" "topic"
+bun tools/llm.ts --deep -y --context "relevant code or info" "topic"
 
 # Context from file
-bunx @beorn/tools llm --deep -y --context-file ./src/module.ts "Review this code"
+bun tools/llm.ts --deep -y --context-file ./src/module.ts "Review this code"
 
 # Include session history
-bunx @beorn/tools llm --deep -y --with-history "topic"
+bun tools/llm.ts --deep -y --with-history "topic"
 ```
 
 ## Output
@@ -76,7 +76,7 @@ Read the output file with `Read` tool. Stale files (>7 days) are auto-cleaned on
 Fast enough to run synchronously. Stdout contains JSON with file path:
 
 ```bash
-bunx @beorn/tools llm "question"
+bun tools/llm.ts "question"
 # stdout = JSON with "file" key -- Read the file
 ```
 
@@ -87,7 +87,7 @@ Deep research takes 2-15 minutes. **Never poll output files manually** (sleep + 
 ```
 # Step 1: Launch background task
 Task(subagent_type="Bash", run_in_background=true,
-     prompt='bunx @beorn/tools llm --deep -y "topic"')
+     prompt='bun tools/llm.ts --deep -y "topic"')
 -> Returns task_id
 
 # Step 2: Do other work while it runs...
@@ -122,9 +122,9 @@ Similar to deep research timing-wise. Use the same `TaskOutput` pattern for back
 ## Recovery
 
 ```bash
-bunx @beorn/tools llm recover              # List incomplete responses
-bunx @beorn/tools llm recover <id>         # Retrieve by ID from OpenAI
-bunx @beorn/tools llm partials --clean     # Clean up old partial files
+bun tools/llm.ts recover              # List incomplete responses
+bun tools/llm.ts recover <id>         # Retrieve by ID from OpenAI
+bun tools/llm.ts partials --clean     # Clean up old partial files
 ```
 
 ## Environment Variables

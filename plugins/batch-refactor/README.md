@@ -5,7 +5,7 @@ Batch rename, refactor, and migrate across files for Claude Code. TypeScript sym
 ## Install
 
 ```bash
-claude plugin install batch-refactor@beorn-tools
+claude plugin install batch-refactor@bearly
 ```
 
 ## Features
@@ -34,16 +34,16 @@ Or invoke directly:
 
 ```bash
 # Full help
-bunx @beorn/tools refactor --help
+bun tools/refactor.ts --help
 
 # Batch rename TypeScript symbols
-bunx @beorn/tools refactor rename.batch --pattern foo --replace bar
+bun tools/refactor.ts rename.batch --pattern foo --replace bar
 
 # Full terminology migration (files + symbols + text)
-bunx @beorn/tools refactor migrate --from widget --to gadget
+bun tools/refactor.ts migrate --from widget --to gadget
 
 # Structural pattern replace
-bunx @beorn/tools refactor pattern.replace --pattern "oldFn($$$)" --replace "newFn($$$)"
+bun tools/refactor.ts pattern.replace --pattern "oldFn($$$)" --replace "newFn($$$)"
 ```
 
 ## Why not sed/awk/manual edits?

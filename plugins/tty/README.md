@@ -7,7 +7,7 @@ Built on [Termless](https://github.com/beorn/termless) (Bun PTY + xterm.js) with
 ## Install
 
 ```bash
-claude plugin install tty@beorn-tools
+claude plugin install tty@bearly
 ```
 
 ## Architecture

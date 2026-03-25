@@ -1,12 +1,12 @@
 ---
 name: batch-refactor
-description: Batch operations across files with confidence-based auto-apply. Use for renaming, search-replace, refactoring code, updating text/markdown, migrating terminology, and API migrations. Run `bunx @beorn/tools refactor --help` for detailed command reference.
+description: Batch operations across files with confidence-based auto-apply. Use for renaming, search-replace, refactoring code, updating text/markdown, migrating terminology, and API migrations. Run `bun tools/refactor.ts --help` for detailed command reference.
 allowed-tools: Bash, Read, Edit, Grep, Glob, AskUserQuestion
 ---
 
 # Batch Operations Skill
 
-**Quick start:** Run `bunx @beorn/tools refactor --help` for command reference and examples.
+**Quick start:** Run `bun tools/refactor.ts --help` for command reference and examples.
 
 Use this skill when the user wants to make changes across multiple files:
 
@@ -64,8 +64,8 @@ async ({ createWidget }: Deps) => {}  # parameter destructuring
 **Batch refactor approach (CORRECT)**:
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern createWidget --replace createGadget --output edits.json
-bunx @beorn/tools refactor editset.apply edits.json
+bun tools/refactor.ts rename.batch --pattern createWidget --replace createGadget --output edits.json
+bun tools/refactor.ts editset.apply edits.json
 # Finds ALL 127 references including destructuring, types, re-exports
 ```
 
@@ -94,10 +94,10 @@ For large terminology migrations (e.g., "rename widget to repo"), follow this ph
 # Run from the batch plugin directory
 
 # 1. Check file name conflicts
-bunx @beorn/tools refactor file.rename --pattern widget --replace repo --glob "**/*.ts" --check-conflicts
+bun tools/refactor.ts file.rename --pattern widget --replace repo --glob "**/*.ts" --check-conflicts
 
 # 2. Check symbol conflicts
-bunx @beorn/tools refactor rename.batch --pattern widget --replace repo --check-conflicts
+bun tools/refactor.ts rename.batch --pattern widget --replace repo --check-conflicts
 
 # 3. Check for existing targets manually
 ls **/repo*.ts 2>/dev/null || echo "No existing repo files"
@@ -120,15 +120,15 @@ Rename files FIRST (before symbol renames) because:
 
 ```bash
 # Create file rename proposal
-bunx @beorn/tools refactor file.rename --pattern widget --replace repo \
+bun tools/refactor.ts file.rename --pattern widget --replace repo \
   --glob "**/*.{ts,tsx}" \
   --output file-editset.json
 
 # Preview
-bunx @beorn/tools refactor file.apply file-editset.json --dry-run
+bun tools/refactor.ts file.apply file-editset.json --dry-run
 
 # Apply
-bunx @beorn/tools refactor file.apply file-editset.json
+bun tools/refactor.ts file.apply file-editset.json
 ```
 
 ### Phase 3: Symbol Renames (TypeScript)
@@ -137,14 +137,14 @@ After files are renamed, rename symbols:
 
 ```bash
 # Create symbol rename proposal
-bunx @beorn/tools refactor rename.batch --pattern widget --replace repo \
+bun tools/refactor.ts rename.batch --pattern widget --replace repo \
   --output symbol-editset.json
 
 # Preview
-bunx @beorn/tools refactor editset.apply symbol-editset.json --dry-run
+bun tools/refactor.ts editset.apply symbol-editset.json --dry-run
 
 # Apply
-bunx @beorn/tools refactor editset.apply symbol-editset.json
+bun tools/refactor.ts editset.apply symbol-editset.json
 ```
 
 ### Phase 4: Text/Comment Renames
@@ -153,20 +153,20 @@ Rename remaining mentions in comments, strings, markdown:
 
 ```bash
 # TypeScript comments and strings
-bunx @beorn/tools refactor pattern.replace --pattern widget --replace repo \
+bun tools/refactor.ts pattern.replace --pattern widget --replace repo \
   --glob "**/*.{ts,tsx}" \
   --backend ripgrep \
   --output text-editset.json
 
 # Markdown documentation
-bunx @beorn/tools refactor pattern.replace --pattern widget --replace repo \
+bun tools/refactor.ts pattern.replace --pattern widget --replace repo \
   --glob "**/*.md" \
   --backend ripgrep \
   --output docs-editset.json
 
 # Preview and apply each
-bunx @beorn/tools refactor editset.apply text-editset.json --dry-run
-bunx @beorn/tools refactor editset.apply text-editset.json
+bun tools/refactor.ts editset.apply text-editset.json --dry-run
+bun tools/refactor.ts editset.apply text-editset.json
 ```
 
 ### Phase 5: Vendor Submodules
@@ -178,7 +178,7 @@ For changes in git submodules:
 cd vendor/<submodule>
 
 # Run the same workflow (conflicts, files, symbols, text)
-bunx @beorn/tools refactor rename.batch \
+bun tools/refactor.ts rename.batch \
   --pattern widget --replace repo --check-conflicts
 
 # After applying
@@ -304,21 +304,21 @@ bun run test:all
 
 ```bash
 # 1. Find files that would be renamed
-bunx @beorn/tools refactor file.find --pattern "user-service" --replace "account-service" --glob "**/*.ts"
+bun tools/refactor.ts file.find --pattern "user-service" --replace "account-service" --glob "**/*.ts"
 
 # 2. Check for conflicts (target files already exist?)
-bunx @beorn/tools refactor file.rename --pattern "user-service" --replace "account-service" \
+bun tools/refactor.ts file.rename --pattern "user-service" --replace "account-service" \
   --glob "**/*.ts" --check-conflicts
 
 # 3. Create editset
-bunx @beorn/tools refactor file.rename --pattern "user-service" --replace "account-service" \
+bun tools/refactor.ts file.rename --pattern "user-service" --replace "account-service" \
   --glob "**/*.ts" --output file-renames.json
 
 # 4. Preview (dry run)
-bunx @beorn/tools refactor file.apply file-renames.json --dry-run
+bun tools/refactor.ts file.apply file-renames.json --dry-run
 
 # 5. Apply
-bunx @beorn/tools refactor file.apply file-renames.json
+bun tools/refactor.ts file.apply file-renames.json
 ```
 
 **Result**:
@@ -335,15 +335,15 @@ bunx @beorn/tools refactor file.apply file-renames.json
 
 ```bash
 # After renaming user-service.ts → account-service.ts, update imports:
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern "user-service" \
   --replace "account-service" \
   --glob "**/*.ts" \
   --backend ripgrep \
   --output import-updates.json
 
-bunx @beorn/tools refactor editset.apply import-updates.json --dry-run
-bunx @beorn/tools refactor editset.apply import-updates.json
+bun tools/refactor.ts editset.apply import-updates.json --dry-run
+bun tools/refactor.ts editset.apply import-updates.json
 ```
 
 **Before**:
@@ -368,17 +368,17 @@ import { UserService } from "../services/account-service"
 
 ```bash
 # 1. Check for conflicts (does createGadget already exist?)
-bunx @beorn/tools refactor rename.batch --pattern "createWidget" --replace "createGadget" --check-conflicts
+bun tools/refactor.ts rename.batch --pattern "createWidget" --replace "createGadget" --check-conflicts
 
 # 2. Create editset
-bunx @beorn/tools refactor rename.batch --pattern "createWidget" --replace "createGadget" \
+bun tools/refactor.ts rename.batch --pattern "createWidget" --replace "createGadget" \
   --output symbol-renames.json
 
 # 3. Preview
-bunx @beorn/tools refactor editset.apply symbol-renames.json --dry-run
+bun tools/refactor.ts editset.apply symbol-renames.json --dry-run
 
 # 4. Apply
-bunx @beorn/tools refactor editset.apply symbol-renames.json
+bun tools/refactor.ts editset.apply symbol-renames.json
 ```
 
 **Handles correctly**:
@@ -408,12 +408,12 @@ type Factory = typeof createWidget  → createGadget
 
 ```bash
 # Check conflicts
-bunx @beorn/tools refactor rename.batch --pattern "ApiClient" --replace "HttpClient" --check-conflicts
+bun tools/refactor.ts rename.batch --pattern "ApiClient" --replace "HttpClient" --check-conflicts
 
 # Create and apply
-bunx @beorn/tools refactor rename.batch --pattern "ApiClient" --replace "HttpClient" \
+bun tools/refactor.ts rename.batch --pattern "ApiClient" --replace "HttpClient" \
   --output type-renames.json
-bunx @beorn/tools refactor editset.apply type-renames.json
+bun tools/refactor.ts editset.apply type-renames.json
 ```
 
 **Handles correctly**:
@@ -443,7 +443,7 @@ import type { ApiClient } from "./api"  → HttpClient
 
 ```bash
 # Markdown docs
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern "widget" \
   --replace "gadget" \
   --glob "**/*.md" \
@@ -451,7 +451,7 @@ bunx @beorn/tools refactor pattern.replace \
   --output docs-updates.json
 
 # TypeScript comments and strings
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern "widget" \
   --replace "gadget" \
   --glob "**/*.ts" \
@@ -459,8 +459,8 @@ bunx @beorn/tools refactor pattern.replace \
   --output comment-updates.json
 
 # Preview and apply
-bunx @beorn/tools refactor editset.apply docs-updates.json --dry-run
-bunx @beorn/tools refactor editset.apply docs-updates.json
+bun tools/refactor.ts editset.apply docs-updates.json --dry-run
+bun tools/refactor.ts editset.apply docs-updates.json
 ```
 
 **Updates**:
@@ -484,14 +484,14 @@ Create a widget with... → Create a gadget with...
 **Scenario**: Migrate Go logging from `fmt.Println` to `log.Info`
 
 ```bash
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern 'fmt.Println($MSG)' \
   --replace 'log.Info($MSG)' \
   --glob "**/*.go" \
   --backend ast-grep \
   --output go-logging.json
 
-bunx @beorn/tools refactor editset.apply go-logging.json
+bun tools/refactor.ts editset.apply go-logging.json
 ```
 
 **Before**:
@@ -516,28 +516,28 @@ log.Info(err.Error())
 
 ```bash
 # Phase 1: Conflict Analysis
-bunx @beorn/tools refactor file.rename --pattern "user" --replace "account" --check-conflicts
-bunx @beorn/tools refactor rename.batch --pattern "user" --replace "account" --check-conflicts
+bun tools/refactor.ts file.rename --pattern "user" --replace "account" --check-conflicts
+bun tools/refactor.ts rename.batch --pattern "user" --replace "account" --check-conflicts
 
 # Phase 2: File Renames (FIRST)
-bunx @beorn/tools refactor file.rename --pattern "user" --replace "account" \
+bun tools/refactor.ts file.rename --pattern "user" --replace "account" \
   --glob "**/*.ts" --output phase2-files.json
-bunx @beorn/tools refactor file.apply phase2-files.json
+bun tools/refactor.ts file.apply phase2-files.json
 
 # Phase 3: Symbol Renames
-bunx @beorn/tools refactor rename.batch --pattern "user" --replace "account" \
+bun tools/refactor.ts rename.batch --pattern "user" --replace "account" \
   --output phase3-symbols.json
-bunx @beorn/tools refactor editset.apply phase3-symbols.json
+bun tools/refactor.ts editset.apply phase3-symbols.json
 
 # Phase 4: Text/Comments
-bunx @beorn/tools refactor pattern.replace --pattern "user" --replace "account" \
+bun tools/refactor.ts pattern.replace --pattern "user" --replace "account" \
   --glob "**/*.ts" --backend ripgrep --output phase4-text.json
-bunx @beorn/tools refactor editset.apply phase4-text.json
+bun tools/refactor.ts editset.apply phase4-text.json
 
 # Phase 5: Documentation
-bunx @beorn/tools refactor pattern.replace --pattern "user" --replace "account" \
+bun tools/refactor.ts pattern.replace --pattern "user" --replace "account" \
   --glob "**/*.md" --backend ripgrep --output phase5-docs.json
-bunx @beorn/tools refactor editset.apply phase5-docs.json
+bun tools/refactor.ts editset.apply phase5-docs.json
 
 # Phase 6: Verify
 grep -ri user . --include="*.ts" | wc -l  # Should be 0
@@ -554,17 +554,17 @@ bun run test:all
 
 ```bash
 # Create full editset
-bunx @beorn/tools refactor rename.batch --pattern "config" --replace "options" \
+bun tools/refactor.ts rename.batch --pattern "config" --replace "options" \
   --output full-editset.json
 
 # Filter to only certain files
-bunx @beorn/tools refactor editset.select full-editset.json \
+bun tools/refactor.ts editset.select full-editset.json \
   --include "src/core/**" \
   --exclude "src/core/legacy/**" \
   --output filtered-editset.json
 
 # Apply filtered set
-bunx @beorn/tools refactor editset.apply filtered-editset.json
+bun tools/refactor.ts editset.apply filtered-editset.json
 ```
 
 ---
@@ -699,10 +699,10 @@ interface TestEnv { widgetDir: string }  // property definition
 
    ```bash
    # File conflicts
-   bunx @beorn/tools refactor file.rename --pattern widget --replace repo --check-conflicts
+   bun tools/refactor.ts file.rename --pattern widget --replace repo --check-conflicts
 
    # Symbol conflicts
-   bunx @beorn/tools refactor rename.batch --pattern widget --replace repo --check-conflicts
+   bun tools/refactor.ts rename.batch --pattern widget --replace repo --check-conflicts
    ```
 
 3. **Document conflict resolutions** (ask user if unclear)
@@ -757,17 +757,17 @@ Each reference in an editset includes:
 # Run from the batch plugin directory
 
 # 1. Generate editset with enriched context
-bunx @beorn/tools refactor rename.batch --pattern widget --replace repo -o editset.json
+bun tools/refactor.ts rename.batch --pattern widget --replace repo -o editset.json
 
 # 2. LLM reviews the editset and patches specific references
 #    - Set replace to null to skip a reference
 #    - Set replace to a custom string for non-standard replacement
-bunx @beorn/tools refactor editset.patch editset.json <<'EOF'
+bun tools/refactor.ts editset.patch editset.json <<'EOF'
 { "b2c3": "Repository", "c3d4": null }
 EOF
 
 # 3. Apply the patched editset
-bunx @beorn/tools refactor editset.apply editset.json
+bun tools/refactor.ts editset.apply editset.json
 ```
 
 ### Example: Selective Replacement
@@ -796,7 +796,7 @@ An LLM might decide:
 - Set `c3d4` to `null` (skip comment, it refers to external Obsidian widget)
 
 ```bash
-bunx @beorn/tools refactor editset.patch editset.json <<'EOF'
+bun tools/refactor.ts editset.patch editset.json <<'EOF'
 { "b2c3": "Repository", "c3d4": null }
 EOF
 ```
@@ -827,16 +827,16 @@ The `migrate` command orchestrates a full terminology migration in phases:
 # Run from the batch plugin directory
 
 # Preview what would be migrated
-bunx @beorn/tools refactor migrate --from widget --to repo --dry-run
+bun tools/refactor.ts migrate --from widget --to repo --dry-run
 
 # Run migration (creates editsets in .editsets/ directory)
-bunx @beorn/tools refactor migrate --from widget --to repo
+bun tools/refactor.ts migrate --from widget --to repo
 
 # Custom output directory
-bunx @beorn/tools refactor migrate --from widget --to repo --output ./my-editsets
+bun tools/refactor.ts migrate --from widget --to repo --output ./my-editsets
 
 # Custom file glob
-bunx @beorn/tools refactor migrate --from widget --to repo --glob "**/*.{ts,tsx,md}"
+bun tools/refactor.ts migrate --from widget --to repo --glob "**/*.{ts,tsx,md}"
 ```
 
 ### What Migrate Does
@@ -851,14 +851,14 @@ After running, review each editset and apply:
 
 ```bash
 # Review and apply each phase
-bunx @beorn/tools refactor file.apply .editsets/01-file-renames.json --dry-run
-bunx @beorn/tools refactor file.apply .editsets/01-file-renames.json
+bun tools/refactor.ts file.apply .editsets/01-file-renames.json --dry-run
+bun tools/refactor.ts file.apply .editsets/01-file-renames.json
 
-bunx @beorn/tools refactor editset.apply .editsets/02-symbol-renames.json --dry-run
-bunx @beorn/tools refactor editset.apply .editsets/02-symbol-renames.json
+bun tools/refactor.ts editset.apply .editsets/02-symbol-renames.json --dry-run
+bun tools/refactor.ts editset.apply .editsets/02-symbol-renames.json
 
-bunx @beorn/tools refactor editset.apply .editsets/03-text-patterns.json --dry-run
-bunx @beorn/tools refactor editset.apply .editsets/03-text-patterns.json
+bun tools/refactor.ts editset.apply .editsets/03-text-patterns.json --dry-run
+bun tools/refactor.ts editset.apply .editsets/03-text-patterns.json
 ```
 
 ### Migrate Command Flags
@@ -904,7 +904,7 @@ Use `pattern.migrate` instead of `pattern.replace` when:
 # expect(app.text).toContain('Hello')
 # await app.press('ArrowUp')
 
-bunx @beorn/tools refactor pattern.migrate \
+bun tools/refactor.ts pattern.migrate \
   --patterns "lastFrame(),stdin.write,= render(" \
   --glob "**/*.test.tsx" \
   --prompt "Migrate old render() API to new App API:
@@ -919,7 +919,7 @@ bunx @beorn/tools refactor pattern.migrate \
 jq '.refs[:5]' /tmp/migrate.json
 
 # Apply
-bunx @beorn/tools refactor editset.apply /tmp/migrate.json
+bun tools/refactor.ts editset.apply /tmp/migrate.json
 ```
 
 ### Command Flags
@@ -937,14 +937,14 @@ bunx @beorn/tools refactor editset.apply /tmp/migrate.json
 
 ```bash
 # 1. Dry run - see what would be sent to LLM
-bunx @beorn/tools refactor pattern.migrate \
+bun tools/refactor.ts pattern.migrate \
   --patterns "oldPattern" \
   --glob "**/*.ts" \
   --prompt "Migrate to new pattern" \
   --dry-run
 
 # 2. Run migration
-bunx @beorn/tools refactor pattern.migrate \
+bun tools/refactor.ts pattern.migrate \
   --patterns "oldPattern" \
   --glob "**/*.ts" \
   --prompt "Migrate to new pattern" \
@@ -955,7 +955,7 @@ jq '.refs | length' /tmp/migrate.json        # Count changes
 jq '.refs[:3]' /tmp/migrate.json             # Preview first 3
 
 # 4. Apply
-bunx @beorn/tools refactor editset.apply /tmp/migrate.json
+bun tools/refactor.ts editset.apply /tmp/migrate.json
 
 # 5. Verify
 bun tsc --noEmit && bun run test:fast
@@ -1051,7 +1051,7 @@ Apply LLM-generated patches to editsets via stdin (heredoc):
 
 ```bash
 # Minimal patch format: refId → replacement or null
-bunx @beorn/tools refactor editset.patch editset.json <<'EOF'
+bun tools/refactor.ts editset.patch editset.json <<'EOF'
 {
   "b2c3d4e5": "repository",
   "c3d4e5f6": null
@@ -1059,10 +1059,10 @@ bunx @beorn/tools refactor editset.patch editset.json <<'EOF'
 EOF
 
 # Or pipe from a file
-cat my-patch.json | bunx @beorn/tools refactor editset.patch editset.json
+cat my-patch.json | bun tools/refactor.ts editset.patch editset.json
 
 # Output to different file
-bunx @beorn/tools refactor editset.patch editset.json --output patched.json <<'EOF'
+bun tools/refactor.ts editset.patch editset.json --output patched.json <<'EOF'
 { "b2c3": null }
 EOF
 ```
@@ -1137,8 +1137,8 @@ return { widgetPath } // property AND value both renamed
 **Command:**
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern widgetPath --replace repoPath --output edits.json
-bunx @beorn/tools refactor editset.apply edits.json
+bun tools/refactor.ts rename.batch --pattern widgetPath --replace repoPath --output edits.json
+bun tools/refactor.ts editset.apply edits.json
 # All 47 occurrences updated atomically
 ```
 
@@ -1163,7 +1163,7 @@ export { Widget as DefaultWidget } from "./Widget"
 **ts-morph finds ALL of these:**
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
 # Found: 89 references across 23 files including all re-exports
 ```
 
@@ -1189,8 +1189,8 @@ function process<T extends UserService>(svc: T) {}
 **ts-morph finds all patterns:**
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern UserService --replace AccountService --check-conflicts
-bunx @beorn/tools refactor rename.batch --pattern UserService --replace AccountService --output edits.json
+bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --check-conflicts
+bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --output edits.json
 ```
 
 ---
@@ -1210,7 +1210,7 @@ function initApp(config) {}
 **ripgrep backend catches JSDoc:**
 
 ```bash
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern parseConfig \
   --replace loadConfig \
   --glob "**/*.{ts,js}" \
@@ -1237,17 +1237,17 @@ const { handler } = await import(`./user-api`)
 
 ```bash
 # 1. Rename file + static imports
-bunx @beorn/tools refactor file.rename --pattern user-api --replace account-api --output files.json
-bunx @beorn/tools refactor file.apply files.json
+bun tools/refactor.ts file.rename --pattern user-api --replace account-api --output files.json
+bun tools/refactor.ts file.apply files.json
 
 # 2. Catch dynamic imports
-bunx @beorn/tools refactor pattern.replace \
+bun tools/refactor.ts pattern.replace \
   --pattern "user-api" \
   --replace "account-api" \
   --glob "**/*.ts" \
   --backend ripgrep \
   --output dynamic.json
-bunx @beorn/tools refactor editset.apply dynamic.json
+bun tools/refactor.ts editset.apply dynamic.json
 ```
 
 ---
@@ -1272,7 +1272,7 @@ export const mockCreateWidget = () => {} // Compound identifier
 **ts-morph renames ALL including mocks:**
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern createWidget --replace createGadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern createWidget --replace createGadget --output edits.json
 # Found in: src/widget.ts, 12 test files, 3 fixture files
 ```
 
@@ -1294,7 +1294,7 @@ const REPO_OPTIONS = {} // SCREAMING compound
 **Automatic case preservation:**
 
 ```bash
-bunx @beorn/tools refactor rename.batch --pattern widget --replace repo --output edits.json
+bun tools/refactor.ts rename.batch --pattern widget --replace repo --output edits.json
 ```
 
 **Result:**
@@ -1325,7 +1325,7 @@ packages/
 **Single command handles all:**
 
 ```bash
-bunx @beorn/tools refactor migrate --from widget --to repo --glob "packages/**/*.{ts,tsx}"
+bun tools/refactor.ts migrate --from widget --to repo --glob "packages/**/*.{ts,tsx}"
 
 # Creates editsets in .editsets/:
 # - 01-file-renames.json (4 files)
@@ -1341,12 +1341,12 @@ bunx @beorn/tools refactor migrate --from widget --to repo --glob "packages/**/*
 
 ```bash
 # Create editset
-bunx @beorn/tools refactor rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
 
 # ... time passes, teammate edits src/widget.ts ...
 
 # Apply fails safely with drift detection
-bunx @beorn/tools refactor editset.apply edits.json
+bun tools/refactor.ts editset.apply edits.json
 # Error: Drift detected in src/widget.ts (checksum mismatch)
 # Skipped: 3 edits in src/widget.ts
 # Applied: 45 edits in other files
@@ -1433,11 +1433,11 @@ Storing editsets outside the repo avoids cluttering your working directory and n
 
 ```bash
 # Instead of:
-bunx @beorn/tools refactor migrate --from widget --to repo -o .editsets
+bun tools/refactor.ts migrate --from widget --to repo -o .editsets
 rg -l widget -g "*.ts" | grep -v .editsets | wc -l  # Annoying
 
 # Do this:
-bunx @beorn/tools refactor migrate --from widget --to repo -o /tmp/editsets
+bun tools/refactor.ts migrate --from widget --to repo -o /tmp/editsets
 rg -l widget -g "*.ts" | wc -l  # Clean
 ```
 
@@ -1453,7 +1453,7 @@ cat /tmp/editset.json | head -50
 cat /tmp/editset.json | jq '{refs: .refs | length, edits: .edits | length}'
 
 # Dry-run shows what would be applied
-bunx @beorn/tools refactor editset.apply /tmp/editset.json --dry-run
+bun tools/refactor.ts editset.apply /tmp/editset.json --dry-run
 ```
 
 ### 3. Use rg directly for exploration
@@ -1516,7 +1516,7 @@ rg --files -g "**/*.ts" | head -10
 rg --files -g "apps/**/*.tsx" | head -10
 
 # Then use same glob in batch command
-bunx @beorn/tools refactor pattern.replace --pattern widget --glob "apps/**/*.tsx" -o /tmp/edits.json
+bun tools/refactor.ts pattern.replace --pattern widget --glob "apps/**/*.tsx" -o /tmp/edits.json
 ```
 
 ### 6. Check remaining mentions efficiently
@@ -1547,5 +1547,5 @@ rg -l "pattern" -g "*.ts"
 # Good: --glob "**/*.ts" --glob "**/*.tsx"  (separate globs)
 
 # 3. Run with verbose output
-DEBUG=* bunx @beorn/tools refactor pattern.replace --pattern widget --glob "**/*.ts"
+DEBUG=* bun tools/refactor.ts pattern.replace --pattern widget --glob "**/*.ts"
 ```

@@ -6,7 +6,7 @@ GitHub notifications for Claude Code. Push events, PR activity, workflow failure
 
 ```bash
 # As a Claude Code plugin
-claude plugin install github@beorn-tools
+claude plugin install github@bearly
 
 # Launch with channel support (required during research preview)
 claude --dangerously-load-development-channels server:github

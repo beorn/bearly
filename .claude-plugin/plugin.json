@@ -6,7 +6,7 @@
     "name": "beorn",
     "url": "https://github.com/beorn"
   },
-  "repository": "https://github.com/beorn/claude-tools",
+  "repository": "https://github.com/beorn/bearly",
   "license": "MIT",
   "keywords": ["batch", "refactoring", "rename", "search-replace", "ast-grep", "migrate", "bulk-edit", "mass-rename"],
   "mcpServers": {
