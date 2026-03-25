@@ -1,0 +1,46 @@
+{
+  "name": "vitest-silvery-dots",
+  "version": "0.1.0",
+  "description": "Streaming dot reporter for Vitest, built with Silvery React terminal UI",
+  "keywords": [
+    "dot-reporter",
+    "dots",
+    "reporter",
+    "silvery",
+    "streaming",
+    "terminal",
+    "test-reporter",
+    "tui",
+    "vitest",
+    "vitest-reporter"
+  ],
+  "homepage": "https://github.com/beorn/bearlymade",
+  "bugs": {
+    "url": "https://github.com/beorn/bearlymade/issues"
+  },
+  "license": "MIT",
+  "author": "Beorn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearlymade.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "module": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "bun run build"
+  },
+  "peerDependencies": {
+    "@silvery/ag-react": ">=0.1.0",
+    "@silvery/test": ">=0.1.0",
+    "react": ">=19.0.0",
+    "vitest": ">=4.0.0"
+  }
+}

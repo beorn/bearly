@@ -1,6 +1,6 @@
 {
-  "name": "beorn-tools",
-  "description": "Beorn's Claude Code tools — coordination, testing, research, refactoring",
+  "name": "bearly",
+  "description": "Bearly — Claude Code tools for coordination, testing, research, and refactoring",
   "owner": {
     "name": "beorn",
     "url": "https://github.com/beorn"
