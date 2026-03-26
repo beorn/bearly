@@ -303,7 +303,7 @@ const stmts = {
 
   renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
 
-  pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now WHERE id = $id"),
+  pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now, name = $pruned_name WHERE id = $id"),
 
   updateSessionMeta: db.prepare(`
 		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
@@ -429,6 +429,9 @@ function sendHeartbeat(): void {
   if (session?.pruned_at) {
     logEvent("session.rejoined", undefined, { name: currentName, role: SESSION_ROLE, domains: SESSION_DOMAINS })
     process.stderr.write(`[tribe] ${currentName} rejoined tribe (was pruned)\n`)
+    // Re-register to restore name (pruning renames to free the original name)
+    registerSession()
+    return
   }
   stmts.heartbeat.run({ $id: SESSION_ID, $now: now() })
 }
@@ -716,7 +719,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           process.kill(r.pid, 0) // signal 0 = check if process exists
         } catch {
           dead.push(r.name)
-          stmts.pruneSession.run({ $id: r.id, $now: now() })
+          const pruneTs = now()
+          stmts.pruneSession.run({ $id: r.id, $now: pruneTs, $pruned_name: `${r.name}-pruned-${pruneTs}` })
         }
       }
 
