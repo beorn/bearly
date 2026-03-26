@@ -378,7 +378,25 @@ function registerSession(ctx) {
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts;
         initialSeq = prior.last_delivered_seq ?? 0;
-        process.stderr.write(`[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}
+        process.stderr.write(`[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}
+`);
+      }
+    }
+    if (initialSeq === 0) {
+      const priorByPid = ctx.db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY heartbeat DESC LIMIT 1").get({ $pid: process.pid, $id: ctx.sessionId });
+      if (priorByPid?.last_delivered_seq) {
+        initialTs = priorByPid.last_delivered_ts ?? 0;
+        initialSeq = priorByPid.last_delivered_seq;
+        process.stderr.write(`[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}
+`);
+      }
+    }
+    if (initialSeq === 0) {
+      const latest = ctx.db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get();
+      if (latest?.max_seq) {
+        initialSeq = latest.max_seq;
+        initialTs = Date.now();
+        process.stderr.write(`[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}
 `);
       }
     }
