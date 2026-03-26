@@ -337,14 +337,13 @@ function registerSession(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-detect /rename via Claude Code's transcript slug
+// Initial name from Claude Code's transcript slug (one-time, startup only)
 // ---------------------------------------------------------------------------
 
-let lastKnownSlug: string | null = null
+let userRenamed = false // Set to true after explicit tribe_rename — blocks further auto-naming
 
 function resolveTranscriptPath(): string | null {
   if (!CLAUDE_SESSION_ID) return null
-  // Find the project dir — it's the cwd path with slashes replaced by dashes, prefixed with -
   const cwd = process.cwd()
   const projectKey = "-" + cwd.replace(/\//g, "-")
   const transcriptPath = resolve(
@@ -358,50 +357,41 @@ function resolveTranscriptPath(): string | null {
 
 const TRANSCRIPT_PATH = resolveTranscriptPath()
 
-function checkSlugRename(): void {
-  if (!TRANSCRIPT_PATH) return
+/** Read the slug from the transcript — used once at startup to set initial name */
+function readTranscriptSlug(): string | null {
+  if (!TRANSCRIPT_PATH) return null
   try {
-    // Read last 4KB to find the last JSONL line (avoids reading entire file)
-    const fd = Bun.file(TRANSCRIPT_PATH)
-    const size = fd.size
-    if (size === 0) return
-    const chunk = size > 4096 ? fd.slice(size - 4096) : fd.slice(0)
-    // Sync read via Bun.file — get the last non-empty line
+    const size = Bun.file(TRANSCRIPT_PATH).size
+    if (size === 0) return null
     const text = new TextDecoder().decode(
       new Uint8Array(readFileSync(TRANSCRIPT_PATH).buffer.slice(Math.max(0, size - 4096))),
     )
     const lines = text.trimEnd().split("\n")
     const lastLine = lines[lines.length - 1]
-    if (!lastLine) return
+    if (!lastLine) return null
     const data = JSON.parse(lastLine) as { slug?: string }
-    if (!data.slug) return
-
-    if (lastKnownSlug === null) {
-      // First check — just record it
-      lastKnownSlug = data.slug
-      return
-    }
-
-    if (data.slug !== lastKnownSlug && data.slug !== currentName) {
-      const oldName = currentName
-      lastKnownSlug = data.slug
-
-      // Check if name is taken
-      const existing = stmts.checkNameTaken.get({ $name: data.slug, $session_id: SESSION_ID })
-      if (existing) return // Name taken, don't auto-rename
-
-      stmts.insertAlias.run({ $old_name: oldName, $session_id: SESSION_ID, $now: now() })
-      stmts.renameSession.run({ $new_name: data.slug, $session_id: SESSION_ID })
-      currentName = data.slug
-      sendMessage("*", `Member "${oldName}" is now "${data.slug}"`, "notify")
-      logEvent("session.renamed", undefined, { old_name: oldName, new_name: data.slug, source: "claude-rename" })
-      process.stderr.write(`[tribe] auto-renamed: ${oldName} → ${data.slug} (from /rename)\n`)
-    } else {
-      lastKnownSlug = data.slug
-    }
+    return data.slug ?? null
   } catch {
-    // Transcript not readable or malformed — skip
+    return null
   }
+}
+
+// One-time: if session has a generic member-N name, try to set it from the transcript slug
+function tryInitialRename(): void {
+  if (!currentName.startsWith("member-")) return // Already has a real name
+  const slug = readTranscriptSlug()
+  if (!slug || slug === currentName) return
+
+  const existing = stmts.checkNameTaken.get({ $name: slug, $session_id: SESSION_ID })
+  if (existing) return
+
+  const oldName = currentName
+  stmts.insertAlias.run({ $old_name: oldName, $session_id: SESSION_ID, $now: now() })
+  stmts.renameSession.run({ $new_name: slug, $session_id: SESSION_ID })
+  currentName = slug
+  sendMessage("*", `Member "${oldName}" is now "${slug}"`, "notify")
+  logEvent("session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
+  process.stderr.write(`[tribe] initial name from /rename: ${oldName} → ${slug}\n`)
 }
 
 function sendHeartbeat(): void {
@@ -414,9 +404,6 @@ function sendHeartbeat(): void {
     process.stderr.write(`[tribe] ${currentName} rejoined tribe (was pruned)\n`)
   }
   stmts.heartbeat.run({ $id: SESSION_ID, $now: now() })
-
-  // Check for /rename slug changes
-  checkSlugRename()
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +766,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       stmts.insertAlias.run({ $old_name: oldName, $session_id: SESSION_ID, $now: now() })
       stmts.renameSession.run({ $new_name: newName, $session_id: SESSION_ID })
       currentName = newName
+      userRenamed = true // Explicit rename — name is now sticky, won't be overridden
       // Broadcast the rename
       sendMessage("*", `Member "${oldName}" is now "${newName}"`, "notify")
       logEvent("session.renamed", undefined, { old_name: oldName, new_name: newName })
@@ -1110,6 +1098,9 @@ function startAutoReporter(): () => void {
 // ---------------------------------------------------------------------------
 
 registerSession()
+
+// One-time: if we have a generic member-N name, try to pick up the /rename slug
+tryInitialRename()
 
 // Heartbeat: every 10s
 const heartbeatInterval = setInterval(sendHeartbeat, 10_000)
