@@ -280,7 +280,7 @@ const stmts = {
 		LIMIT $limit
 	`),
 
-  checkNameTaken: db.prepare("SELECT id FROM sessions WHERE name = $name AND id != $session_id"),
+  checkNameTaken: db.prepare("SELECT id FROM sessions WHERE name = $name AND id != $session_id AND pruned_at IS NULL"),
 
   insertAlias: db.prepare(`
 		INSERT OR REPLACE INTO aliases (old_name, session_id, renamed_at)
