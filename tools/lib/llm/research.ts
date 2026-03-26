@@ -189,12 +189,16 @@ export async function ask(
     stream?: boolean
     onToken?: (token: string) => void
     modelOverride?: string
+    /** Pre-resolved Model object (bypasses getModel lookup — used for ollama) */
+    modelObject?: Model
     imagePath?: string
   } = {},
 ): Promise<ModelResponse> {
   // Get model for level, or use override
   let model: Model | undefined
-  if (options.modelOverride) {
+  if (options.modelObject) {
+    model = options.modelObject
+  } else if (options.modelOverride) {
     model = getModel(options.modelOverride)
     if (!model) {
       throw new Error(`Unknown model: ${options.modelOverride}`)

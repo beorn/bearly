@@ -704,7 +704,8 @@ async function askAndFinish(
   }
   console.error(header(model.displayName) + "\n")
   const response = await ask(enrichedQuestion, level, {
-    modelOverride: model.modelId,
+    modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
+    modelObject: model.provider === "ollama" ? model : undefined,
     stream: true,
     onToken: streamToken,
     imagePath,
@@ -867,7 +868,19 @@ async function checkAndRecoverPartials(): Promise<boolean> {
 }
 
 // Keywords that trigger specific modes
-const KEYWORDS = ["quick", "cheap", "mini", "nano", "opinion", "pro", "debate", "recover", "partials", "update-pricing", "list-models"]
+const KEYWORDS = [
+  "quick",
+  "cheap",
+  "mini",
+  "nano",
+  "opinion",
+  "pro",
+  "debate",
+  "recover",
+  "partials",
+  "update-pricing",
+  "list-models",
+]
 
 async function main() {
   if (!command || command === "--help" || command === "-h") {
