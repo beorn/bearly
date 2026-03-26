@@ -92,14 +92,16 @@ function detectRole(db: Database): "chief" | "member" {
 }
 
 // Auto-generate name: chief gets "chief", members get "member-<N>"
+// Uses PID as tiebreaker to avoid UNIQUE conflicts when multiple sessions start simultaneously
 function detectName(db: Database, role: "chief" | "member"): string {
   if (args.name) return String(args.name)
   if (role === "chief") return "chief"
-  // Find next available member number
-  const existing = db.prepare("SELECT name FROM sessions WHERE name LIKE 'member-%'").all() as Array<{ name: string }>
-  const nums = existing.map((r) => parseInt(r.name.replace("member-", ""), 10)).filter((n) => !isNaN(n))
-  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1
-  return `member-${next}`
+  // Use PID-based name to avoid race conditions (max+1 can collide)
+  const pidName = `member-${process.pid}`
+  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
+  if (!taken) return pidName
+  // PID collision (unlikely) — fall back to random suffix
+  return `member-${process.pid}-${Math.random().toString(36).slice(2, 5)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -222,8 +224,8 @@ const stmts = {
   upsertSession: db.prepare(`
 		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
 		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now, NULL)
-		ON CONFLICT(name) DO UPDATE SET
-			id = $id, role = $role, domains = $domains,
+		ON CONFLICT(id) DO UPDATE SET
+			name = $name, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, claude_session_id = $claude_session_id,
 			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
 	`),
@@ -320,9 +322,10 @@ function now(): number {
 }
 
 function registerSession(): void {
-  stmts.upsertSession.run({
-    $id: SESSION_ID,
-    $name: currentName,
+  try {
+    stmts.upsertSession.run({
+      $id: SESSION_ID,
+      $name: currentName,
     $role: SESSION_ROLE,
     $domains: JSON.stringify(SESSION_DOMAINS),
     $pid: process.pid,
@@ -331,6 +334,23 @@ function registerSession(): void {
     $claude_session_name: CLAUDE_SESSION_NAME,
     $now: now(),
   })
+  } catch (err) {
+    // Name collision — add random suffix and retry
+    const fallbackName = `${currentName}-${Math.random().toString(36).slice(2, 5)}`
+    process.stderr.write(`[tribe] name "${currentName}" taken, using "${fallbackName}"\n`)
+    currentName = fallbackName
+    stmts.upsertSession.run({
+      $id: SESSION_ID,
+      $name: currentName,
+      $role: SESSION_ROLE,
+      $domains: JSON.stringify(SESSION_DOMAINS),
+      $pid: process.pid,
+      $cwd: process.cwd(),
+      $claude_session_id: CLAUDE_SESSION_ID,
+      $claude_session_name: CLAUDE_SESSION_NAME,
+      $now: now(),
+    })
+  }
 
   stmts.insertEvent.run({
     $id: randomUUID(),
