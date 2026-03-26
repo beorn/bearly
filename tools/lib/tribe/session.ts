@@ -59,10 +59,11 @@ export function registerSession(ctx: TribeContext): void {
     last_seq: number | null
   } | null
   if (!cursor) {
-    // On reconnect after compaction: recover last_delivered_seq from prior session with same claude_session_id
-    // to avoid re-delivering already-seen messages
+    // On reconnect: recover cursor from prior session to avoid re-delivering old messages.
+    // Try three strategies in order: claude_session_id match, PID match, then skip-to-latest.
     let initialTs = 0
     let initialSeq = 0
+    // Strategy 1: match by claude_session_id (works when env var propagates)
     if (ctx.claudeSessionId) {
       const prior = ctx.db
         .prepare(
@@ -76,7 +77,38 @@ export function registerSession(ctx: TribeContext): void {
         initialTs = prior.last_delivered_ts
         initialSeq = prior.last_delivered_seq ?? 0
         process.stderr.write(
-          `[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}\n`,
+          `[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}\n`,
+        )
+      }
+    }
+    // Strategy 2: match by PID (works for /mcp reconnect — same PID, new MCP process)
+    if (initialSeq === 0) {
+      const priorByPid = ctx.db
+        .prepare(
+          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY heartbeat DESC LIMIT 1",
+        )
+        .get({ $pid: process.pid, $id: ctx.sessionId }) as {
+        last_delivered_ts: number
+        last_delivered_seq: number | null
+      } | null
+      if (priorByPid?.last_delivered_seq) {
+        initialTs = priorByPid.last_delivered_ts ?? 0
+        initialSeq = priorByPid.last_delivered_seq
+        process.stderr.write(
+          `[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}\n`,
+        )
+      }
+    }
+    // Strategy 3: if no prior session found, skip to current latest (avoid replaying entire history)
+    if (initialSeq === 0) {
+      const latest = ctx.db
+        .prepare("SELECT MAX(rowid) as max_seq FROM messages")
+        .get() as { max_seq: number | null } | null
+      if (latest?.max_seq) {
+        initialSeq = latest.max_seq
+        initialTs = Date.now()
+        process.stderr.write(
+          `[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}\n`,
         )
       }
     }
