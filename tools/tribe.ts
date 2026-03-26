@@ -30,6 +30,7 @@ import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { generateRetro, formatMarkdown, parseDuration } from "./tribe-retro.ts"
+import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -55,21 +56,32 @@ const SESSION_ID = randomUUID()
 const CLAUDE_SESSION_ID = process.env.CLAUDE_SESSION_ID ?? process.env.BD_ACTOR?.replace("claude:", "") ?? null
 const CLAUDE_SESSION_NAME = process.env.CLAUDE_SESSION_NAME ?? null
 
-// Find .beads/ directory by walking up from cwd
-function findBeadsDir(): string {
+// Find .beads/ directory by walking up from cwd (returns null if not found)
+function findBeadsDir(): string | null {
   let dir = process.cwd()
   while (dir !== "/") {
     const candidate = resolve(dir, ".beads")
     if (existsSync(candidate)) return candidate
     dir = dirname(dir)
   }
-  // Fall back to cwd/.beads
-  const fallback = resolve(process.cwd(), ".beads")
-  mkdirSync(fallback, { recursive: true })
-  return fallback
+  return null
 }
 
-const DB_PATH = args.db ?? resolve(findBeadsDir(), "tribe.db")
+// DB location: --db flag > TRIBE_DB env > .beads/tribe.db > ~/.local/share/tribe/tribe.db
+function resolveDbPath(): string {
+  if (args.db) return String(args.db)
+  if (process.env.TRIBE_DB) return process.env.TRIBE_DB
+  const beadsDir = findBeadsDir()
+  if (beadsDir) return resolve(beadsDir, "tribe.db")
+  // No .beads/ found — use XDG data dir
+  const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
+  const tribeDir = resolve(xdgData, "tribe")
+  mkdirSync(tribeDir, { recursive: true })
+  return resolve(tribeDir, "tribe.db")
+}
+
+const BEADS_DIR = findBeadsDir()
+const DB_PATH = resolveDbPath()
 
 // Auto-detect role: if no chief exists (or chief is dead), become chief; otherwise member
 function detectRole(db: Database): "chief" | "member" {
@@ -346,12 +358,7 @@ function resolveTranscriptPath(): string | null {
   if (!CLAUDE_SESSION_ID) return null
   const cwd = process.cwd()
   const projectKey = "-" + cwd.replace(/\//g, "-")
-  const transcriptPath = resolve(
-    process.env.HOME ?? "~",
-    ".claude/projects",
-    projectKey,
-    `${CLAUDE_SESSION_ID}.jsonl`,
-  )
+  const transcriptPath = resolve(process.env.HOME ?? "~", ".claude/projects", projectKey, `${CLAUDE_SESSION_ID}.jsonl`)
   return existsSync(transcriptPath) ? transcriptPath : null
 }
 
@@ -454,10 +461,10 @@ Coordination protocol:
 - Use tribe_sessions() to see who's online and their domains
 - Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
 - Use tribe_broadcast(message) to announce changes that affect everyone
-- Use tribe_health() to check for silent members, stale beads, or conflicts
-- Use beads (bd create, bd update, bd close) for persistent task tracking
+- Use tribe_health() to check for silent members or conflicts
+- If beads are available (bd command exists), use bd create/update/close for persistent task tracking
 
-When a member sends a "status" message, update the relevant bead.
+When a member sends a "status" message, update any relevant tracking.
 When a member sends a "request" message, check for conflicts before approving.
 When a member sends a "query" message, either answer directly or route to the right member.
 When a member goes silent (tribe_health shows warning), send a query to check on them.
@@ -984,116 +991,6 @@ async function pollMessages(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-reporter — detects git commits and bead changes, sends to chief
-// ---------------------------------------------------------------------------
-
-function startAutoReporter(): () => void {
-  let lastHead = ""
-  let lastIssuesMtime = 0
-  /** Track reported bead states to prevent duplicate notifications */
-  const reportedStates = new Map<string, string>() // id → "claimed" | "closed"
-  const issuesPath = resolve(findBeadsDir(), "backup/issues.jsonl")
-
-  // Initialize: capture current state without reporting
-  try {
-    lastHead = execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" }).trim()
-  } catch {
-    /* not a git repo */
-  }
-  try {
-    const stat = statSync(issuesPath)
-    lastIssuesMtime = stat.mtimeMs
-    // Snapshot current bead states so we don't report pre-existing data
-    const content = readFileSync(issuesPath, "utf8")
-    for (const line of content.split("\n").filter(Boolean)) {
-      try {
-        const entry = JSON.parse(line) as { id?: string; status?: string; claimed_by?: string }
-        if (!entry.id) continue
-        if (entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)) {
-          reportedStates.set(entry.id, "claimed")
-        }
-        if (entry.status === "closed") {
-          reportedStates.set(entry.id, "closed")
-        }
-      } catch {
-        /* malformed */
-      }
-    }
-  } catch {
-    /* no issues file yet */
-  }
-
-  function hasChief(): boolean {
-    const threshold = Date.now() - 30_000
-    const chief = db
-      .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
-      .get(threshold)
-    return !!chief
-  }
-
-  async function checkGit(): Promise<void> {
-    if (!hasChief()) return
-    try {
-      const proc = Bun.spawn(["git", "log", "--oneline", "-1", "HEAD"], {
-        cwd: process.cwd(),
-        stdout: "pipe",
-        stderr: "ignore",
-      })
-      const out = await new Response(proc.stdout).text()
-      const line = out.trim()
-      const head = line.split(" ")[0] ?? ""
-      if (head && lastHead && head !== lastHead) {
-        sendMessage("chief", `Committed: ${line}`, "status")
-      }
-      if (head) lastHead = head
-    } catch {
-      /* git error — skip */
-    }
-  }
-
-  async function checkBeads(): Promise<void> {
-    if (!hasChief()) return
-    try {
-      const stat = statSync(issuesPath)
-      if (stat.mtimeMs === lastIssuesMtime) return
-      lastIssuesMtime = stat.mtimeMs
-
-      const content = await readFile(issuesPath, "utf8")
-      const lines = content.split("\n").filter(Boolean)
-
-      // Scan ALL lines for state changes (file is full dump, not append-only)
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
-          if (!entry.id) continue
-
-          const isMyClaim = entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)
-          if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
-            reportedStates.set(entry.id, "claimed")
-            sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
-          } else if (entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
-            reportedStates.set(entry.id, "closed")
-            sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
-          }
-        } catch {
-          /* malformed line */
-        }
-      }
-    } catch {
-      /* file missing or read error */
-    }
-  }
-
-  const interval = setInterval(() => {
-    void checkGit()
-    void checkBeads()
-  }, 30_000)
-
-  process.stderr.write(`[tribe] auto-reporter started (30s polling)\n`)
-  return () => clearInterval(interval)
-}
-
-// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
@@ -1108,12 +1005,21 @@ const heartbeatInterval = setInterval(sendHeartbeat, 10_000)
 // Poll: every 1s
 const pollInterval = setInterval(() => void pollMessages(), 1_000)
 
-// Auto-reporter: detect commits + bead changes and notify chief
-const autoReport = args["auto-report"] !== false
-let stopAutoReporter: (() => void) | undefined
-if (autoReport) {
-  stopAutoReporter = startAutoReporter()
+// Plugins: optional capabilities (beads tracking, git commit reporting, etc.)
+const pluginCtx: PluginContext = {
+  sendMessage,
+  hasChief() {
+    const threshold = Date.now() - 30_000
+    return !!db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold)
+  },
+  sessionName: currentName,
+  sessionId: SESSION_ID,
+  claudeSessionId: CLAUDE_SESSION_ID,
 }
+const plugins = args["auto-report"] !== false
+  ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })]
+  : []
+const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Cleanup on exit (guard against double-close)
 let cleaned = false
@@ -1122,7 +1028,7 @@ function cleanup(): void {
   cleaned = true
   clearInterval(heartbeatInterval)
   clearInterval(pollInterval)
-  stopAutoReporter?.()
+  stopPlugins()
   try {
     logEvent("session.left", undefined, { name: currentName })
     db.close()

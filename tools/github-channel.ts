@@ -607,7 +607,12 @@ async function pollWorkflowRuns(): Promise<void> {
       for (const run of recent.slice(0, 5)) {
         if (recentEvents.some((e) => e.url === run.html_url)) continue
 
-        const status = run.conclusion === "success" ? "PASSED" : run.conclusion === "failure" ? "FAILED" : String(run.conclusion).toUpperCase()
+        const status =
+          run.conclusion === "success"
+            ? "PASSED"
+            : run.conclusion === "failure"
+              ? "FAILED"
+              : String(run.conclusion).toUpperCase()
         const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
         const line = `[workflow] ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
 
