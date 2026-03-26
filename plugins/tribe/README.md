@@ -107,10 +107,10 @@ Tribe works without beads or any other external dependency. The database locatio
 
 Plugins activate automatically when their dependencies are available:
 
-| Plugin   | Activates when          | What it does                                      |
-| -------- | ----------------------- | ------------------------------------------------- |
-| `git`    | Inside a git repo       | Reports new commits to chief every 30s            |
-| `beads`  | `.beads/` dir exists    | Reports bead claims/closures to chief every 30s   |
+| Plugin  | Activates when       | What it does                                    |
+| ------- | -------------------- | ----------------------------------------------- |
+| `git`   | Inside a git repo    | Reports new commits to chief every 30s          |
+| `beads` | `.beads/` dir exists | Reports bead claims/closures to chief every 30s |
 
 If a plugin's dependencies aren't present, it silently disables itself -- no configuration needed.
 

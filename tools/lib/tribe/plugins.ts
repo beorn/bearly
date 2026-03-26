@@ -76,9 +76,13 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
             if (entry.status === "closed") {
               reportedStates.set(entry.id, "closed")
             }
-          } catch { /* malformed */ }
+          } catch {
+            /* malformed */
+          }
         }
-      } catch { /* file missing */ }
+      } catch {
+        /* file missing */
+      }
 
       const interval = setInterval(async () => {
         if (!ctx.hasChief()) return
@@ -93,7 +97,8 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
               const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
               if (!entry.id) continue
 
-              const isMyClaim = entry.claimed_by?.includes(ctx.sessionName) || entry.claimed_by?.includes(ctx.claudeSessionId ?? "")
+              const isMyClaim =
+                entry.claimed_by?.includes(ctx.sessionName) || entry.claimed_by?.includes(ctx.claudeSessionId ?? "")
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed")
                 if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
@@ -105,9 +110,13 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
                   ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
               }
-            } catch { /* malformed */ }
+            } catch {
+              /* malformed */
+            }
           }
-        } catch { /* file error */ }
+        } catch {
+          /* file error */
+        }
       }, 30_000)
 
       return () => clearInterval(interval)
@@ -142,7 +151,9 @@ export function gitPlugin(): TribePlugin {
       let lastHead = ""
       try {
         lastHead = execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" }).trim()
-      } catch { /* not a git repo */ }
+      } catch {
+        /* not a git repo */
+      }
 
       const interval = setInterval(async () => {
         if (!ctx.hasChief()) return
@@ -172,10 +183,14 @@ export function gitPlugin(): TribePlugin {
                 process.stderr.write(`[tribe] tribe code changed in ${head}, auto-reloading\n`)
                 ctx.triggerReload?.(`tribe code changed in ${head}`)
               }
-            } catch { /* diff failed, skip */ }
+            } catch {
+              /* diff failed, skip */
+            }
           }
           if (head) lastHead = head
-        } catch { /* git error */ }
+        } catch {
+          /* git error */
+        }
       }, 30_000)
 
       return () => clearInterval(interval)

@@ -339,14 +339,14 @@ function registerSession(): void {
     stmts.upsertSession.run({
       $id: SESSION_ID,
       $name: currentName,
-    $role: SESSION_ROLE,
-    $domains: JSON.stringify(SESSION_DOMAINS),
-    $pid: process.pid,
-    $cwd: process.cwd(),
-    $claude_session_id: CLAUDE_SESSION_ID,
-    $claude_session_name: CLAUDE_SESSION_NAME,
-    $now: now(),
-  })
+      $role: SESSION_ROLE,
+      $domains: JSON.stringify(SESSION_DOMAINS),
+      $pid: process.pid,
+      $cwd: process.cwd(),
+      $claude_session_id: CLAUDE_SESSION_ID,
+      $claude_session_name: CLAUDE_SESSION_NAME,
+      $now: now(),
+    })
   } catch (err) {
     // Name collision — add random suffix and retry
     const fallbackName = `${currentName}-${Math.random().toString(36).slice(2, 5)}`
@@ -382,7 +382,9 @@ function registerSession(): void {
     let initialTs = 0
     if (CLAUDE_SESSION_ID) {
       const prior = db
-        .prepare("SELECT last_delivered_ts FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1")
+        .prepare(
+          "SELECT last_delivered_ts FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
+        )
         .get({ $csid: CLAUDE_SESSION_ID, $id: SESSION_ID }) as { last_delivered_ts: number } | null
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts
@@ -1079,7 +1081,9 @@ const pluginCtx: PluginContext = {
   sendMessage,
   hasChief() {
     const threshold = Date.now() - 30_000
-    return !!db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold)
+    return !!db
+      .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
+      .get(threshold)
   },
   hasRecentMessage(contentPrefix: string): boolean {
     // Check if any session already sent a message with this prefix in the last 120s (4 poll intervals)
@@ -1105,9 +1109,7 @@ const pluginCtx: PluginContext = {
     }, 500)
   },
 }
-const plugins = args["auto-report"] !== false
-  ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })]
-  : []
+const plugins = args["auto-report"] !== false ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })] : []
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Cleanup on exit (guard against double-close)
