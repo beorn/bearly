@@ -107,7 +107,9 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
                 if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
                   ctx.sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
-              } else if (entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
+              }
+              // Only report closures for beads this session claimed (not all closures)
+              if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
                 reportedStates.set(entry.id, "closed")
                 if (!ctx.hasRecentMessage(`Closed: ${entry.id}`)) {
                   ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
