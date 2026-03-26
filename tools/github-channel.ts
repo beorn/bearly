@@ -34,6 +34,7 @@ const { values: args } = parseArgs({
     repos: { type: "string", default: process.env.GITHUB_REPOS },
     "poll-interval": { type: "string", default: process.env.GITHUB_POLL_INTERVAL ?? "30" },
     events: { type: "string", default: process.env.GITHUB_EVENTS ?? "push,workflow_run,pull_request,issues" },
+    "workflow-notify": { type: "string", default: process.env.GITHUB_WORKFLOW_NOTIFY ?? "all" },
   },
   strict: false,
 })
@@ -42,6 +43,8 @@ const POLL_INTERVAL_SEC = parseInt(String(args["poll-interval"]), 10) || 30
 const EVENT_TYPES = String(args.events ?? "push,workflow_run,pull_request,issues")
   .split(",")
   .filter(Boolean)
+// "all" = notify on every conclusion, "failure" = only failures, "success" = only successes
+const WORKFLOW_NOTIFY = String(args["workflow-notify"] ?? "all") as "all" | "failure" | "success"
 
 // ---------------------------------------------------------------------------
 // GitHub auth
@@ -584,24 +587,29 @@ async function pollGitHubEvents(): Promise<void> {
   }
 }
 
-// Also poll workflow runs for failures (events API doesn't always capture these promptly)
-async function pollWorkflowFailures(): Promise<void> {
+// Poll workflow runs — configurable via --workflow-notify (all|failure|success)
+async function pollWorkflowRuns(): Promise<void> {
   for (const repo of REPOS) {
     if (!EVENT_TYPES.includes("workflow_run")) continue
     try {
       const runs = await fetchWorkflowRuns(repo, "completed")
-      const failures = runs.filter((r) => r.conclusion === "failure")
 
-      // Only notify about recent failures (last 5 minutes)
+      // Filter by conclusion based on --workflow-notify flag
+      const matching = runs.filter((r) => {
+        if (WORKFLOW_NOTIFY === "all") return r.conclusion !== null
+        return r.conclusion === WORKFLOW_NOTIFY
+      })
+
+      // Only notify about recent runs (last 5 minutes)
       const cutoff = Date.now() - 5 * 60 * 1000
-      const recent = failures.filter((r) => new Date(r.updated_at).getTime() > cutoff)
+      const recent = matching.filter((r) => new Date(r.updated_at).getTime() > cutoff)
 
-      for (const run of recent.slice(0, 3)) {
-        // Check if we already notified about this run
-        const key = `workflow-${run.id}`
+      for (const run of recent.slice(0, 5)) {
         if (recentEvents.some((e) => e.url === run.html_url)) continue
 
-        const line = `[workflow] ${run.name} #${run.run_number} FAILED on ${run.head_branch} (${run.actor.login})`
+        const status = run.conclusion === "success" ? "PASSED" : run.conclusion === "failure" ? "FAILED" : String(run.conclusion).toUpperCase()
+        const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
+        const line = `[workflow] ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
 
         await mcp.notification({
           method: "notifications/claude/channel",
@@ -612,6 +620,7 @@ async function pollWorkflowFailures(): Promise<void> {
               type: "workflow",
               repo,
               url: run.html_url,
+              conclusion: run.conclusion ?? undefined,
             },
           },
         })
@@ -639,6 +648,7 @@ async function pollWorkflowFailures(): Promise<void> {
 process.stderr.write(`[github] Monitoring repos: ${REPOS.join(", ")}\n`)
 process.stderr.write(`[github] Poll interval: ${POLL_INTERVAL_SEC}s\n`)
 process.stderr.write(`[github] Event types: ${EVENT_TYPES.join(", ")}\n`)
+process.stderr.write(`[github] Workflow notify: ${WORKFLOW_NOTIFY}\n`)
 process.stderr.write(`[github] Cursor file: ${CURSOR_PATH}\n`)
 
 // Initial poll
@@ -647,10 +657,10 @@ void pollGitHubEvents()
 // Regular polling
 const eventPollInterval = setInterval(() => void pollGitHubEvents(), POLL_INTERVAL_SEC * 1000)
 
-// Workflow failure polling (every 60s — separate from events since it's a different endpoint)
-const workflowPollInterval = setInterval(() => void pollWorkflowFailures(), 60_000)
+// Workflow run polling (every 60s — separate from events since it's a different endpoint)
+const workflowPollInterval = setInterval(() => void pollWorkflowRuns(), 60_000)
 // Initial workflow poll after a short delay
-setTimeout(() => void pollWorkflowFailures(), 5_000)
+setTimeout(() => void pollWorkflowRuns(), 5_000)
 
 // Cleanup on exit
 let cleaned = false
