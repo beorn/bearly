@@ -1046,57 +1046,64 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // Polling loop — check for new messages and push as channel notifications
 // ---------------------------------------------------------------------------
 
+let polling = false
 async function pollMessages(): Promise<void> {
+  if (polling) return
+  polling = true
   try {
-    const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as { last_read_ts: number } | null
-    const cursorTs = cursor?.last_read_ts ?? 0
+    try {
+      const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as { last_read_ts: number } | null
+      const cursorTs = cursor?.last_read_ts ?? 0
 
-    const rows = stmts.pollMessages.all({
-      $cursor: cursorTs,
-      $name: currentName,
-      $session_id: SESSION_ID,
-    }) as Array<{
-      id: string
-      type: string
-      sender: string
-      recipient: string
-      content: string
-      bead_id: string
-      ref: string
-      ts: number
-    }>
+      const rows = stmts.pollMessages.all({
+        $cursor: cursorTs,
+        $name: currentName,
+        $session_id: SESSION_ID,
+      }) as Array<{
+        id: string
+        type: string
+        sender: string
+        recipient: string
+        content: string
+        bead_id: string
+        ref: string
+        ts: number
+      }>
 
-    // Don't deliver our own messages back to us
-    const incoming = rows.filter((r) => r.sender !== currentName)
+      // Don't deliver our own messages back to us
+      const incoming = rows.filter((r) => r.sender !== currentName)
 
-    for (const msg of incoming) {
-      const meta: Record<string, string> = {
-        from: msg.sender,
-        type: msg.type,
-        message_id: msg.id,
+      for (const msg of incoming) {
+        const meta: Record<string, string> = {
+          from: msg.sender,
+          type: msg.type,
+          message_id: msg.id,
+        }
+        if (msg.bead_id) meta.bead = msg.bead_id
+        if (msg.ref) meta.ref = msg.ref
+
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: { content: msg.content, meta },
+        })
+
+        stmts.markRead.run({ $message_id: msg.id, $session_id: SESSION_ID, $now: now() })
       }
-      if (msg.bead_id) meta.bead = msg.bead_id
-      if (msg.ref) meta.ref = msg.ref
 
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: { content: msg.content, meta },
-      })
-
-      stmts.markRead.run({ $message_id: msg.id, $session_id: SESSION_ID, $now: now() })
-    }
-
-    // Advance cursor to latest timestamp (including our own messages)
-    if (rows.length > 0) {
-      const maxTs = Math.max(...rows.map((r) => r.ts))
-      stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs })
-      // Track last delivery time so reconnecting sessions skip already-delivered messages
-      if (incoming.length > 0) {
-        stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs })
+      // Advance cursor to latest timestamp (including our own messages)
+      if (rows.length > 0) {
+        const maxTs = Math.max(...rows.map((r) => r.ts))
+        stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs })
+        // Track last delivery time so reconnecting sessions skip already-delivered messages
+        if (incoming.length > 0) {
+          stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs })
+        }
       }
+    } catch {
+      // SQLite busy or other transient error — retry next poll
     }
-  } catch {
-    // SQLite busy or other transient error — retry next poll
+  } finally {
+    polling = false
   }
 }
 

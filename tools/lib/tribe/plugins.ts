@@ -70,7 +70,9 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
           try {
             const entry = JSON.parse(line) as { id?: string; status?: string; claimed_by?: string }
             if (!entry.id) continue
-            if (entry.claimed_by?.includes(ctx.sessionName) || entry.claimed_by?.includes(ctx.claudeSessionId ?? "")) {
+            const matchesName = !!ctx.sessionName && !!entry.claimed_by?.includes(ctx.sessionName)
+            const matchesSession = !!ctx.claudeSessionId && !!entry.claimed_by?.includes(ctx.claudeSessionId)
+            if (matchesName || matchesSession) {
               reportedStates.set(entry.id, "claimed")
             }
             if (entry.status === "closed") {
@@ -97,8 +99,9 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
               const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
               if (!entry.id) continue
 
-              const isMyClaim =
-                entry.claimed_by?.includes(ctx.sessionName) || entry.claimed_by?.includes(ctx.claudeSessionId ?? "")
+              const matchesName = !!ctx.sessionName && !!entry.claimed_by?.includes(ctx.sessionName)
+              const matchesSession = !!ctx.claudeSessionId && !!entry.claimed_by?.includes(ctx.claudeSessionId)
+              const isMyClaim = matchesName || matchesSession
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed")
                 if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
