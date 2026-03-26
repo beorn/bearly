@@ -423,9 +423,7 @@ function handleLeadership(ctx: TribeContext): ToolResult {
   const info = getLeaseInfo(ctx.db)
   if (!info) {
     return {
-      content: [
-        { type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) },
-      ],
+      content: [{ type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) }],
     }
   }
   const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))

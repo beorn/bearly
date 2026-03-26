@@ -32,12 +32,7 @@ export function sendMessage(
   return { id }
 }
 
-export function logEvent(
-  ctx: TribeContext,
-  type: string,
-  bead_id?: string,
-  data?: Record<string, unknown>,
-): void {
+export function logEvent(ctx: TribeContext, type: string, bead_id?: string, data?: Record<string, unknown>): void {
   ctx.stmts.insertEvent.run({
     $id: randomUUID(),
     $type: type,

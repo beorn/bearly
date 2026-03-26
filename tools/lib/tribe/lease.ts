@@ -40,9 +40,7 @@ export function isLeaseHolder(db: Database, id: string): boolean {
   return !!row
 }
 
-export function getLeaseInfo(
-  db: Database,
-): {
+export function getLeaseInfo(db: Database): {
   holder_name: string
   holder_id: string
   term: number
