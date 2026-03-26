@@ -1543,7 +1543,7 @@ var pluginCtx = {
     return !!db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold);
   },
   hasRecentMessage(contentPrefix) {
-    const since = Date.now() - 120000;
+    const since = Date.now() - 300000;
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since });
   },
   sessionName: ctx.getName(),

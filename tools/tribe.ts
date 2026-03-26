@@ -215,7 +215,7 @@ const pluginCtx: PluginContext = {
       .get(threshold)
   },
   hasRecentMessage(contentPrefix: string): boolean {
-    const since = Date.now() - 120_000
+    const since = Date.now() - 300_000
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
   sessionName: ctx.getName(),
