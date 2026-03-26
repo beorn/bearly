@@ -96,10 +96,14 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
               const isMyClaim = entry.claimed_by?.includes(ctx.sessionName) || entry.claimed_by?.includes(ctx.claudeSessionId ?? "")
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed")
-                ctx.sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
+                  ctx.sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                }
               } else if (entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
                 reportedStates.set(entry.id, "closed")
-                ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                if (!ctx.hasRecentMessage(`Closed: ${entry.id}`)) {
+                  ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                }
               }
             } catch { /* malformed */ }
           }
