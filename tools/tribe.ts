@@ -295,8 +295,16 @@ function isLeaseHolder(id: string): boolean {
   return !!row
 }
 
-function getLeaseInfo(): { holder_name: string; holder_id: string; term: number; lease_until: number; acquired_at: number } | null {
-  return db.prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'").get() as {
+function getLeaseInfo(): {
+  holder_name: string
+  holder_id: string
+  term: number
+  lease_until: number
+  acquired_at: number
+} | null {
+  return db
+    .prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'")
+    .get() as {
     holder_name: string
     holder_id: string
     term: number
@@ -417,7 +425,9 @@ const stmts = {
 		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
 	`),
 
-  updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id"),
+  updateLastDelivered: db.prepare(
+    "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id",
+  ),
 
   getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
 
@@ -500,19 +510,25 @@ function registerSession(): void {
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts
         initialSeq = prior.last_delivered_seq ?? 0
-        process.stderr.write(`[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}\n`)
+        process.stderr.write(
+          `[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}\n`,
+        )
       }
     }
     // Backward compat: if no seq available, bootstrap from current max rowid
     if (initialSeq === 0 && initialTs > 0) {
-      const maxRow = db.prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts").get({ $ts: initialTs }) as { max_rowid: number | null } | null
+      const maxRow = db
+        .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
+        .get({ $ts: initialTs }) as { max_rowid: number | null } | null
       initialSeq = maxRow?.max_rowid ?? 0
       process.stderr.write(`[tribe] migrated ts cursor to seq=${initialSeq}\n`)
     }
     stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: initialTs, $seq: initialSeq })
   } else if (!cursor.last_seq) {
     // Backward compat: existing cursor without last_seq — migrate from last_read_ts
-    const maxRow = db.prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts").get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
+    const maxRow = db
+      .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
+      .get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
     const migratedSeq = maxRow?.max_rowid ?? 0
     stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: cursor.last_read_ts, $seq: migratedSeq })
     process.stderr.write(`[tribe] migrated existing cursor to seq=${migratedSeq}\n`)
@@ -885,7 +901,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const msgType = (a.type as string) ?? "notify"
       // Only lease holders can assign or verdict
       if ((msgType === "assign" || msgType === "verdict") && !isLeaseHolder(SESSION_ID)) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }) }] }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }),
+            },
+          ],
+        }
       }
       const sanitized = sanitizeMessage(a.message as string)
       const result = sendMessage(
@@ -1048,7 +1071,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const leased = acquireLease(SESSION_ID, joinName)
         if (!leased) {
           const info = getLeaseInfo()
-          return { content: [{ type: "text", text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }) }] }
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }),
+              },
+            ],
+          }
         }
       }
 
@@ -1223,21 +1253,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "tribe_leadership": {
       const info = getLeaseInfo()
       if (!info) {
-        return { content: [{ type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) }] }
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) },
+          ],
+        }
       }
       const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({
-              holder_name: info.holder_name,
-              holder_id: info.holder_id,
-              term: info.term,
-              expires_in_seconds: expiresIn,
-              expired: expiresIn === 0,
-              acquired_at: new Date(info.acquired_at).toISOString(),
-            }, null, 2),
+            text: JSON.stringify(
+              {
+                holder_name: info.holder_name,
+                holder_id: info.holder_id,
+                term: info.term,
+                expires_in_seconds: expiresIn,
+                expired: expiresIn === 0,
+                acquired_at: new Date(info.acquired_at).toISOString(),
+              },
+              null,
+              2,
+            ),
           },
         ],
       }
