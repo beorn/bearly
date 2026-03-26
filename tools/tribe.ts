@@ -148,6 +148,11 @@ function openDatabase(path: string): Database {
   } catch {
     /* already exists */
   }
+  try {
+    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_seq INTEGER DEFAULT 0")
+  } catch {
+    /* already exists */
+  }
 
   db.run(`CREATE TABLE IF NOT EXISTS aliases (
 		old_name   TEXT PRIMARY KEY,
@@ -168,8 +173,16 @@ function openDatabase(path: string): Database {
 
   db.run(`CREATE TABLE IF NOT EXISTS cursors (
 		session_id   TEXT PRIMARY KEY,
-		last_read_ts INTEGER NOT NULL
+		last_read_ts INTEGER NOT NULL,
+		last_seq     INTEGER DEFAULT 0
 	)`)
+
+  // Migration: add last_seq column for rowid-based cursor (replaces timestamp-based)
+  try {
+    db.run("ALTER TABLE cursors ADD COLUMN last_seq INTEGER DEFAULT 0")
+  } catch {
+    /* already exists */
+  }
 
   db.run(`CREATE TABLE IF NOT EXISTS reads (
 		message_id TEXT NOT NULL,
@@ -206,6 +219,11 @@ function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_events_bead ON events(bead_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session)")
 
+  // Indexes for common query patterns
+  db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_pruned ON sessions(pruned_at, heartbeat)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
+
   return db
 }
 
@@ -238,8 +256,8 @@ const stmts = {
   heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now, pruned_at = NULL WHERE id = $id"),
 
   pollMessages: db.prepare(`
-		SELECT * FROM messages
-		WHERE ts >= $cursor
+		SELECT rowid, * FROM messages
+		WHERE rowid > $last_seq
 		AND id NOT IN (SELECT message_id FROM reads WHERE session_id = $session_id)
 		AND (
 			recipient = $name
@@ -257,19 +275,19 @@ const stmts = {
 				WHEN 'notify' THEN 6
 				ELSE 7
 			END,
-			ts ASC
+			rowid ASC
 	`),
 
   markRead: db.prepare(
     "INSERT OR IGNORE INTO reads (message_id, session_id, read_at) VALUES ($message_id, $session_id, $now)",
   ),
 
-  getCursor: db.prepare("SELECT last_read_ts FROM cursors WHERE session_id = $session_id"),
+  getCursor: db.prepare("SELECT last_read_ts, last_seq FROM cursors WHERE session_id = $session_id"),
 
   upsertCursor: db.prepare(`
-		INSERT INTO cursors (session_id, last_read_ts)
-		VALUES ($session_id, $ts)
-		ON CONFLICT(session_id) DO UPDATE SET last_read_ts = $ts
+		INSERT INTO cursors (session_id, last_read_ts, last_seq)
+		VALUES ($session_id, $ts, $seq)
+		ON CONFLICT(session_id) DO UPDATE SET last_read_ts = $ts, last_seq = $seq
 	`),
 
   insertMessage: db.prepare(`
@@ -319,9 +337,9 @@ const stmts = {
 		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
 	`),
 
-  updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts WHERE id = $id"),
+  updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id"),
 
-  getLastDelivered: db.prepare("SELECT last_delivered_ts FROM sessions WHERE id = $id"),
+  getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
 
   activeSessions: db.prepare(
     "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
@@ -381,23 +399,43 @@ function registerSession(): void {
   })
 
   // Initialize cursor if needed
-  const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as { last_read_ts: number } | null
+  const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as {
+    last_read_ts: number
+    last_seq: number | null
+  } | null
   if (!cursor) {
-    // On reconnect after compaction: recover last_delivered_ts from prior session with same claude_session_id
+    // On reconnect after compaction: recover last_delivered_seq from prior session with same claude_session_id
     // to avoid re-delivering already-seen messages
     let initialTs = 0
+    let initialSeq = 0
     if (CLAUDE_SESSION_ID) {
       const prior = db
         .prepare(
-          "SELECT last_delivered_ts FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
+          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
         )
-        .get({ $csid: CLAUDE_SESSION_ID, $id: SESSION_ID }) as { last_delivered_ts: number } | null
+        .get({ $csid: CLAUDE_SESSION_ID, $id: SESSION_ID }) as {
+        last_delivered_ts: number
+        last_delivered_seq: number | null
+      } | null
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts
-        process.stderr.write(`[tribe] recovered cursor from prior session: ${new Date(initialTs).toISOString()}\n`)
+        initialSeq = prior.last_delivered_seq ?? 0
+        process.stderr.write(`[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}\n`)
       }
     }
-    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: initialTs })
+    // Backward compat: if no seq available, bootstrap from current max rowid
+    if (initialSeq === 0 && initialTs > 0) {
+      const maxRow = db.prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts").get({ $ts: initialTs }) as { max_rowid: number | null } | null
+      initialSeq = maxRow?.max_rowid ?? 0
+      process.stderr.write(`[tribe] migrated ts cursor to seq=${initialSeq}\n`)
+    }
+    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: initialTs, $seq: initialSeq })
+  } else if (!cursor.last_seq) {
+    // Backward compat: existing cursor without last_seq — migrate from last_read_ts
+    const maxRow = db.prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts").get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
+    const migratedSeq = maxRow?.max_rowid ?? 0
+    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: cursor.last_read_ts, $seq: migratedSeq })
+    process.stderr.write(`[tribe] migrated existing cursor to seq=${migratedSeq}\n`)
   }
 }
 
@@ -1052,14 +1090,18 @@ async function pollMessages(): Promise<void> {
   polling = true
   try {
     try {
-      const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as { last_read_ts: number } | null
-      const cursorTs = cursor?.last_read_ts ?? 0
+      const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as {
+        last_read_ts: number
+        last_seq: number | null
+      } | null
+      const lastSeq = cursor?.last_seq ?? 0
 
       const rows = stmts.pollMessages.all({
-        $cursor: cursorTs,
+        $last_seq: lastSeq,
         $name: currentName,
         $session_id: SESSION_ID,
       }) as Array<{
+        rowid: number
         id: string
         type: string
         sender: string
@@ -1090,13 +1132,14 @@ async function pollMessages(): Promise<void> {
         stmts.markRead.run({ $message_id: msg.id, $session_id: SESSION_ID, $now: now() })
       }
 
-      // Advance cursor to latest timestamp (including our own messages)
+      // Advance cursor to latest rowid (including our own messages)
       if (rows.length > 0) {
+        const maxSeq = Math.max(...rows.map((r) => r.rowid))
         const maxTs = Math.max(...rows.map((r) => r.ts))
-        stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs })
-        // Track last delivery time so reconnecting sessions skip already-delivered messages
+        stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs, $seq: maxSeq })
+        // Track last delivery so reconnecting sessions skip already-delivered messages
         if (incoming.length > 0) {
-          stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs })
+          stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs, $seq: maxSeq })
         }
       }
     } catch {
