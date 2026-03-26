@@ -37,6 +37,8 @@ export interface PluginContext {
   sessionId: string
   /** Claude Code session ID (if available) */
   claudeSessionId: string | null
+  /** Trigger a hot-reload of the tribe MCP server (optional — not all hosts support it) */
+  triggerReload?(reason: string): void
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +156,19 @@ export function gitPlugin(): TribePlugin {
             if (!ctx.hasRecentMessage(`Committed: ${head}`)) {
               ctx.sendMessage("chief", `Committed: ${line}`, "status")
             }
+            // Auto-reload if tribe code changed in this commit
+            try {
+              const diffProc = Bun.spawn(["git", "diff", "--name-only", lastHead, head], {
+                cwd: process.cwd(),
+                stdout: "pipe",
+                stderr: "ignore",
+              })
+              const diffOut = await new Response(diffProc.stdout).text()
+              if (diffOut.includes("tools/tribe.ts") || diffOut.includes("tools/lib/tribe/")) {
+                process.stderr.write(`[tribe] tribe code changed in ${head}, auto-reloading\n`)
+                ctx.triggerReload?.(`tribe code changed in ${head}`)
+              }
+            } catch { /* diff failed, skip */ }
           }
           if (head) lastHead = head
         } catch { /* git error */ }

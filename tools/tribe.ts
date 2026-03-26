@@ -1089,6 +1089,21 @@ const pluginCtx: PluginContext = {
   sessionName: currentName,
   sessionId: SESSION_ID,
   claudeSessionId: CLAUDE_SESSION_ID,
+  triggerReload(reason: string) {
+    logEvent("session.reload", undefined, { name: currentName, reason, auto: true })
+    process.stderr.write(`[tribe] auto-reload: ${reason}\n`)
+    setTimeout(() => {
+      cleanup()
+      const args = process.argv.slice(1)
+      const child = Bun.spawn([process.execPath, ...args], {
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+        env: process.env,
+      })
+      child.exited.then((code) => process.exit(code ?? 0))
+    }, 500)
+  },
 }
 const plugins = args["auto-report"] !== false
   ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })]
