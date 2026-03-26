@@ -322,6 +322,12 @@ const stmts = {
   updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts WHERE id = $id"),
 
   getLastDelivered: db.prepare("SELECT last_delivered_ts FROM sessions WHERE id = $id"),
+
+  activeSessions: db.prepare(
+    "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
+  ),
+
+  deleteOldPrunedSessions: db.prepare("DELETE FROM sessions WHERE pruned_at IS NOT NULL AND pruned_at < $cutoff"),
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +452,15 @@ function tryInitialRename(): void {
   sendMessage("*", `Member "${oldName}" is now "${slug}"`, "notify")
   logEvent("session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
   process.stderr.write(`[tribe] initial name from /rename: ${oldName} → ${slug}\n`)
+}
+
+/** Delete sessions pruned more than 24 hours ago */
+function cleanupOldPrunedSessions(): void {
+  const cutoff = now() - 24 * 60 * 60 * 1000
+  const result = stmts.deleteOldPrunedSessions.run({ $cutoff: cutoff })
+  if (result.changes > 0) {
+    process.stderr.write(`[tribe] cleaned up ${result.changes} old pruned session(s)\n`)
+  }
 }
 
 function sendHeartbeat(): void {
@@ -896,7 +911,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "tribe_health": {
       const threshold = now() - 30_000
       const silentThreshold = now() - 300_000 // 5 minutes
-      const allSessions = stmts.allSessions.all() as Array<{
+
+      // Only check non-pruned sessions
+      const activeSessions = stmts.activeSessions.all() as Array<{
         id: string
         name: string
         role: string
@@ -904,9 +921,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         pid: number
         started_at: number
         heartbeat: number
+        pruned_at: number | null
       }>
 
-      const members = allSessions.map((s) => {
+      // Auto-prune: check PID liveness and soft-prune dead sessions
+      const pruned: string[] = []
+      for (const s of activeSessions) {
+        if (s.pid === process.pid) continue
+        try {
+          process.kill(s.pid, 0)
+        } catch {
+          pruned.push(s.name)
+          const pruneTs = now()
+          stmts.pruneSession.run({ $id: s.id, $now: pruneTs, $pruned_name: `${s.name}-pruned-${pruneTs}` })
+        }
+      }
+
+      // Clean up sessions pruned more than 24 hours ago
+      cleanupOldPrunedSessions()
+
+      // Re-query active sessions after pruning
+      const liveSessions = stmts.activeSessions.all() as typeof activeSessions
+
+      const members = liveSessions.map((s) => {
         const alive = s.heartbeat > threshold
         // Find last message from this member
         const lastMsg = db
@@ -945,11 +982,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 			`)
         .all() as Array<{ recipient: string; count: number }>
 
+      const result: Record<string, unknown> = { members, unread, checked_at: new Date().toISOString() }
+      if (pruned.length > 0) result.pruned = pruned
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ members, unread, checked_at: new Date().toISOString() }, null, 2),
+            text: JSON.stringify(result, null, 2),
           },
         ],
       }
@@ -1066,6 +1105,7 @@ async function pollMessages(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 registerSession()
+cleanupOldPrunedSessions()
 
 // One-time: if we have a generic member-N name, try to pick up the /rename slug
 tryInitialRename()
