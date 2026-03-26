@@ -18,7 +18,7 @@ export function acquireLease(db: Database, id: string, name: string): boolean {
     db.run(
       `INSERT INTO leadership (role, holder_id, holder_name, term, lease_until, acquired_at)
        VALUES ('chief', $id, $name, 1, $lease_until, $acquired)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired },
+      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired } as any,
     )
     return true
   } catch {
@@ -27,7 +27,7 @@ export function acquireLease(db: Database, id: string, name: string): boolean {
       `UPDATE leadership SET holder_id = $id, holder_name = $name, term = term + 1,
          lease_until = $lease_until, acquired_at = $acquired
        WHERE role = 'chief' AND (lease_until < $now OR holder_id = $id)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() },
+      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() } as any,
     )
     return result.changes > 0
   }
