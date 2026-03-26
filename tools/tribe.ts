@@ -544,6 +544,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "tribe_reload",
+      description:
+        "Hot-reload the tribe MCP server — re-exec with latest code from disk. Use after tribe.ts is updated to pick up fixes without restarting the Claude Code session.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          reason: {
+            type: "string",
+            description: "Why the reload is needed (logged to events)",
+          },
+        },
+      },
+    },
+    {
       name: "tribe_retro",
       description:
         "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
@@ -808,6 +822,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case "tribe_reload": {
+      const reason = (a.reason as string) ?? "manual reload"
+      logEvent("session.reload", undefined, { name: currentName, reason })
+      process.stderr.write(`[tribe] reloading: ${reason}\n`)
+
+      // Schedule re-exec after responding to the tool call
+      setTimeout(() => {
+        cleanup()
+        // Re-exec the same script with the same args — picks up latest code from disk
+        const args = process.argv.slice(1) // drop the bun/node executable
+        process.stderr.write(`[tribe] exec: ${process.execPath} ${args.join(" ")}\n`)
+        // Use Bun.spawn to replace the process
+        const child = Bun.spawn([process.execPath, ...args], {
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+          env: process.env,
+        })
+        // Forward exit
+        child.exited.then((code) => process.exit(code ?? 0))
+      }, 100) // small delay so the tool response gets sent first
+
+      return {
+        content: [{ type: "text", text: JSON.stringify({ reloading: true, reason, pid: process.pid }) }],
+      }
+    }
+
     case "tribe_retro": {
       const sinceStr = a.since as string | undefined
       let sinceMs: number | undefined
@@ -915,7 +956,9 @@ function startAutoReporter(): () => void {
         if (entry.status === "closed") {
           reportedStates.set(entry.id, "closed")
         }
-      } catch { /* malformed */ }
+      } catch {
+        /* malformed */
+      }
     }
   } catch {
     /* no issues file yet */
