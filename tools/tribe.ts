@@ -22,654 +22,73 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { Database } from "bun:sqlite"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
-import { execSync } from "node:child_process"
-import { readFile } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
-import { parseArgs } from "node:util"
-import { generateRetro, formatMarkdown, parseDuration } from "./tribe-retro.ts"
+import {
+  parseTribeArgs,
+  parseSessionDomains,
+  findBeadsDir,
+  resolveDbPath,
+  detectRole,
+  detectName,
+  resolveClaudeSessionId,
+  resolveClaudeSessionName,
+} from "./lib/tribe/config.ts"
+import { openDatabase, createStatements } from "./lib/tribe/database.ts"
+import { acquireLease } from "./lib/tribe/lease.ts"
+import { createTribeContext } from "./lib/tribe/context.ts"
+import {
+  registerSession,
+  resolveTranscriptPath,
+  tryInitialRename,
+  cleanupOldPrunedSessions,
+  cleanupOldData,
+  sendHeartbeat,
+} from "./lib/tribe/session.ts"
+import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
+import { handleToolCall } from "./lib/tribe/handlers.ts"
+import { createPoller } from "./lib/tribe/polling.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
+import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 
 // ---------------------------------------------------------------------------
-// Config
+// Bootstrap
 // ---------------------------------------------------------------------------
 
-const { values: args } = parseArgs({
-  options: {
-    name: { type: "string", default: process.env.TRIBE_NAME },
-    role: { type: "string", default: process.env.TRIBE_ROLE },
-    domains: { type: "string", default: process.env.TRIBE_DOMAINS ?? "" },
-    db: { type: "string", default: process.env.TRIBE_DB },
-    "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
-  },
-  strict: false,
-})
-
-const SESSION_DOMAINS = String(args.domains ?? "")
-  .split(",")
-  .filter(Boolean)
+const args = parseTribeArgs()
+const SESSION_DOMAINS = parseSessionDomains(args)
 const SESSION_ID = randomUUID()
-// Claude Code doesn't pass CLAUDE_SESSION_ID to MCP subprocesses.
-// Detect it from BD_ACTOR env var (set by beads session hook) or parent process.
-const CLAUDE_SESSION_ID = process.env.CLAUDE_SESSION_ID ?? process.env.BD_ACTOR?.replace("claude:", "") ?? null
-const CLAUDE_SESSION_NAME = process.env.CLAUDE_SESSION_NAME ?? null
-
-// Find .beads/ directory by walking up from cwd (returns null if not found)
-function findBeadsDir(): string | null {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const candidate = resolve(dir, ".beads")
-    if (existsSync(candidate)) return candidate
-    dir = dirname(dir)
-  }
-  return null
-}
-
-// DB location: --db flag > TRIBE_DB env > .beads/tribe.db > ~/.local/share/tribe/tribe.db
-function resolveDbPath(): string {
-  if (args.db) return String(args.db)
-  if (process.env.TRIBE_DB) return process.env.TRIBE_DB
-  const beadsDir = findBeadsDir()
-  if (beadsDir) return resolve(beadsDir, "tribe.db")
-  // No .beads/ found — use XDG data dir
-  const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
-  const tribeDir = resolve(xdgData, "tribe")
-  mkdirSync(tribeDir, { recursive: true })
-  return resolve(tribeDir, "tribe.db")
-}
-
+const CLAUDE_SESSION_ID = resolveClaudeSessionId()
+const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
 const BEADS_DIR = findBeadsDir()
-const DB_PATH = resolveDbPath()
-
-// Auto-detect role: if no chief exists (or chief is dead), become chief; otherwise member
-function detectRole(db: Database): "chief" | "member" {
-  if (args.role) return args.role as "chief" | "member"
-  const threshold = Date.now() - 30_000
-  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ?").get(threshold)
-  return liveChief ? "member" : "chief"
-}
-
-// Auto-generate name: chief gets "chief", members get "member-<N>"
-// Uses PID as tiebreaker to avoid UNIQUE conflicts when multiple sessions start simultaneously
-function detectName(db: Database, role: "chief" | "member"): string {
-  if (args.name) return String(args.name)
-  if (role === "chief") return "chief"
-  // Use PID-based name to avoid race conditions (max+1 can collide)
-  const pidName = `member-${process.pid}`
-  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
-  if (!taken) return pidName
-  // PID collision (unlikely) — fall back to random suffix
-  return `member-${process.pid}-${Math.random().toString(36).slice(2, 5)}`
-}
-
-// ---------------------------------------------------------------------------
-// Database
-// ---------------------------------------------------------------------------
-
-function openDatabase(path: string): Database {
-  const db = new Database(path, { create: true })
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA busy_timeout = 5000")
-
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
-		id         TEXT PRIMARY KEY,
-		name       TEXT NOT NULL UNIQUE,
-		role       TEXT NOT NULL,
-		domains    TEXT NOT NULL DEFAULT '[]',
-		pid        INTEGER NOT NULL,
-		cwd        TEXT,
-		claude_session_id TEXT,
-		claude_session_name TEXT,
-		started_at INTEGER NOT NULL,
-		heartbeat  INTEGER NOT NULL,
-		pruned_at  INTEGER
-	)`)
-
-  // Migration: add columns if they don't exist (for existing DBs)
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_name TEXT")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN pruned_at INTEGER")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_ts INTEGER")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_seq INTEGER DEFAULT 0")
-  } catch {
-    /* already exists */
-  }
-
-  db.run(`CREATE TABLE IF NOT EXISTS aliases (
-		old_name   TEXT PRIMARY KEY,
-		session_id TEXT NOT NULL,
-		renamed_at INTEGER NOT NULL
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
-		id         TEXT PRIMARY KEY,
-		type       TEXT NOT NULL,
-		sender     TEXT NOT NULL,
-		recipient  TEXT NOT NULL,
-		content    TEXT NOT NULL,
-		bead_id    TEXT,
-		ref        TEXT,
-		ts         INTEGER NOT NULL
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS cursors (
-		session_id   TEXT PRIMARY KEY,
-		last_read_ts INTEGER NOT NULL,
-		last_seq     INTEGER DEFAULT 0
-	)`)
-
-  // Migration: add last_seq column for rowid-based cursor (replaces timestamp-based)
-  try {
-    db.run("ALTER TABLE cursors ADD COLUMN last_seq INTEGER DEFAULT 0")
-  } catch {
-    /* already exists */
-  }
-
-  db.run(`CREATE TABLE IF NOT EXISTS reads (
-		message_id TEXT NOT NULL,
-		session_id TEXT NOT NULL,
-		read_at    INTEGER NOT NULL,
-		PRIMARY KEY (message_id, session_id)
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS events (
-		id       TEXT PRIMARY KEY,
-		type     TEXT NOT NULL,
-		session  TEXT,
-		bead_id  TEXT,
-		data     TEXT,
-		ts       INTEGER NOT NULL
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS retros (
-		id          TEXT PRIMARY KEY,
-		tribe_start INTEGER NOT NULL,
-		tribe_end   INTEGER NOT NULL,
-		members     TEXT NOT NULL,
-		metrics     TEXT NOT NULL,
-		lessons     TEXT NOT NULL,
-		full_md     TEXT NOT NULL,
-		ts          INTEGER NOT NULL
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS leadership (
-		role         TEXT PRIMARY KEY DEFAULT 'chief',
-		holder_id    TEXT NOT NULL,
-		holder_name  TEXT NOT NULL,
-		term         INTEGER NOT NULL DEFAULT 1,
-		lease_until  INTEGER NOT NULL,
-		acquired_at  INTEGER NOT NULL
-	)`)
-
-  // Create indexes if they don't exist
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_aliases_session ON aliases(session_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_bead ON events(bead_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session)")
-
-  // Indexes for common query patterns
-  db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_pruned ON sessions(pruned_at, heartbeat)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
-
-  return db
-}
+const DB_PATH = resolveDbPath(args, BEADS_DIR)
 
 const db = openDatabase(String(DB_PATH))
-const SESSION_ROLE = detectRole(db)
-const SESSION_NAME = detectName(db, SESSION_ROLE)
+const SESSION_ROLE = detectRole(db, args)
+const SESSION_NAME = detectName(db, SESSION_ROLE, args)
+const stmts = createStatements(db)
 
-// ---------------------------------------------------------------------------
-// Input validation
-// ---------------------------------------------------------------------------
-
-function validateName(name: string): string | null {
-  if (!/^[a-z0-9][a-z0-9_.-]{0,31}$/.test(name)) {
-    return "Name must be 1-32 chars: lowercase letters, digits, hyphens, underscores, dots. Must start with letter or digit."
-  }
-  return null
-}
-
-function sanitizeMessage(content: string): string {
-  // Strip control chars except newlines
-  const cleaned = content.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, "")
-  // Cap at 4096 chars
-  if (cleaned.length > 4096) return cleaned.slice(0, 4093) + "..."
-  return cleaned
-}
-
-// ---------------------------------------------------------------------------
-// Leader lease
-// ---------------------------------------------------------------------------
-
-const LEASE_DURATION_MS = 60_000
-
-function acquireLease(id: string, name: string): boolean {
-  const leaseUntil = Date.now() + LEASE_DURATION_MS
-  const acquired = Date.now()
-  // Try insert first (no leader yet)
-  try {
-    db.run(
-      `INSERT INTO leadership (role, holder_id, holder_name, term, lease_until, acquired_at)
-       VALUES ('chief', $id, $name, 1, $lease_until, $acquired)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired },
-    )
-    return true
-  } catch {
-    // Row exists — try to take over if expired or renew if same holder
-    const result = db.run(
-      `UPDATE leadership SET holder_id = $id, holder_name = $name, term = term + 1,
-         lease_until = $lease_until, acquired_at = $acquired
-       WHERE role = 'chief' AND (lease_until < $now OR holder_id = $id)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() },
-    )
-    return result.changes > 0
-  }
-}
-
-function isLeaseHolder(id: string): boolean {
-  const row = db
-    .prepare("SELECT holder_id FROM leadership WHERE role = 'chief' AND holder_id = $id AND lease_until > $now")
-    .get({ $id: id, $now: Date.now() }) as { holder_id: string } | null
-  return !!row
-}
-
-function getLeaseInfo(): {
-  holder_name: string
-  holder_id: string
-  term: number
-  lease_until: number
-  acquired_at: number
-} | null {
-  return db
-    .prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'")
-    .get() as {
-    holder_name: string
-    holder_id: string
-    term: number
-    lease_until: number
-    acquired_at: number
-  } | null
-}
+const ctx = createTribeContext({
+  db,
+  stmts,
+  sessionId: SESSION_ID,
+  sessionRole: SESSION_ROLE,
+  initialName: SESSION_NAME,
+  domains: SESSION_DOMAINS,
+  claudeSessionId: CLAUDE_SESSION_ID,
+  claudeSessionName: CLAUDE_SESSION_NAME,
+})
 
 // Log startup info to stderr (visible in Claude Code debug logs)
-process.stderr.write(`[tribe] ${SESSION_NAME} (${SESSION_ROLE}) joining tribe at ${DB_PATH}\n`)
+process.stderr.write(`[tribe] ${ctx.getName()} (${SESSION_ROLE}) joining tribe at ${DB_PATH}\n`)
 process.stderr.write(`[tribe] claude_session_id=${CLAUDE_SESSION_ID ?? "none"}\n`)
-
 if (SESSION_DOMAINS.length > 0) {
   process.stderr.write(`[tribe] domains: ${SESSION_DOMAINS.join(", ")}\n`)
 }
 
 // Acquire leadership lease on startup if chief
 if (SESSION_ROLE === "chief") {
-  const leased = acquireLease(SESSION_ID, SESSION_NAME)
+  const leased = acquireLease(db, SESSION_ID, SESSION_NAME)
   process.stderr.write(`[tribe] leader lease: ${leased ? "acquired" : "held by another"}\n`)
-}
-
-// ---------------------------------------------------------------------------
-// Prepared statements
-// ---------------------------------------------------------------------------
-
-const stmts = {
-  upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now, NULL)
-		ON CONFLICT(id) DO UPDATE SET
-			name = $name, role = $role, domains = $domains,
-			pid = $pid, cwd = $cwd, claude_session_id = $claude_session_id,
-			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
-	`),
-
-  heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now, pruned_at = NULL WHERE id = $id"),
-
-  pollMessages: db.prepare(`
-		SELECT rowid, * FROM messages
-		WHERE rowid > $last_seq
-		AND id NOT IN (SELECT message_id FROM reads WHERE session_id = $session_id)
-		AND (
-			recipient = $name
-			OR recipient = '*'
-			OR recipient IN (SELECT old_name FROM aliases WHERE session_id = $session_id)
-		)
-		ORDER BY
-			CASE type
-				WHEN 'assign' THEN 0
-				WHEN 'request' THEN 1
-				WHEN 'verdict' THEN 2
-				WHEN 'query' THEN 3
-				WHEN 'response' THEN 4
-				WHEN 'status' THEN 5
-				WHEN 'notify' THEN 6
-				ELSE 7
-			END,
-			rowid ASC
-	`),
-
-  markRead: db.prepare(
-    "INSERT OR IGNORE INTO reads (message_id, session_id, read_at) VALUES ($message_id, $session_id, $now)",
-  ),
-
-  getCursor: db.prepare("SELECT last_read_ts, last_seq FROM cursors WHERE session_id = $session_id"),
-
-  upsertCursor: db.prepare(`
-		INSERT INTO cursors (session_id, last_read_ts, last_seq)
-		VALUES ($session_id, $ts, $seq)
-		ON CONFLICT(session_id) DO UPDATE SET last_read_ts = $ts, last_seq = $seq
-	`),
-
-  insertMessage: db.prepare(`
-		INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
-		VALUES ($id, $type, $sender, $recipient, $content, $bead_id, $ref, $ts)
-	`),
-
-  insertEvent: db.prepare(`
-		INSERT INTO events (id, type, session, bead_id, data, ts)
-		VALUES ($id, $type, $session, $bead_id, $data, $ts)
-	`),
-
-  liveSessions: db.prepare(`
-		SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
-		FROM sessions
-		WHERE heartbeat > $threshold AND pruned_at IS NULL
-	`),
-
-  allSessions: db.prepare(
-    "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
-  ),
-
-  messageHistory: db.prepare(`
-		SELECT * FROM messages
-		WHERE (sender = $name OR recipient = $name OR recipient = '*')
-		ORDER BY ts DESC
-		LIMIT $limit
-	`),
-
-  checkNameTaken: db.prepare("SELECT id FROM sessions WHERE name = $name AND id != $session_id AND pruned_at IS NULL"),
-
-  insertAlias: db.prepare(`
-		INSERT OR REPLACE INTO aliases (old_name, session_id, renamed_at)
-		VALUES ($old_name, $session_id, $now)
-	`),
-
-  renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
-
-  pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now, name = $pruned_name WHERE id = $id"),
-
-  updateSessionMeta: db.prepare(`
-		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
-		WHERE id = $id
-	`),
-
-  hasRecentMessage: db.prepare(`
-		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
-	`),
-
-  updateLastDelivered: db.prepare(
-    "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id",
-  ),
-
-  getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
-
-  activeSessions: db.prepare(
-    "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
-  ),
-
-  deleteOldPrunedSessions: db.prepare("DELETE FROM sessions WHERE pruned_at IS NOT NULL AND pruned_at < $cutoff"),
-}
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
-let currentName = SESSION_NAME
-
-function now(): number {
-  return Date.now()
-}
-
-function registerSession(): void {
-  try {
-    stmts.upsertSession.run({
-      $id: SESSION_ID,
-      $name: currentName,
-      $role: SESSION_ROLE,
-      $domains: JSON.stringify(SESSION_DOMAINS),
-      $pid: process.pid,
-      $cwd: process.cwd(),
-      $claude_session_id: CLAUDE_SESSION_ID,
-      $claude_session_name: CLAUDE_SESSION_NAME,
-      $now: now(),
-    })
-  } catch (err) {
-    // Name collision — add random suffix and retry
-    const fallbackName = `${currentName}-${Math.random().toString(36).slice(2, 5)}`
-    process.stderr.write(`[tribe] name "${currentName}" taken, using "${fallbackName}"\n`)
-    currentName = fallbackName
-    stmts.upsertSession.run({
-      $id: SESSION_ID,
-      $name: currentName,
-      $role: SESSION_ROLE,
-      $domains: JSON.stringify(SESSION_DOMAINS),
-      $pid: process.pid,
-      $cwd: process.cwd(),
-      $claude_session_id: CLAUDE_SESSION_ID,
-      $claude_session_name: CLAUDE_SESSION_NAME,
-      $now: now(),
-    })
-  }
-
-  stmts.insertEvent.run({
-    $id: randomUUID(),
-    $type: "session.joined",
-    $session: currentName,
-    $bead_id: null,
-    $data: JSON.stringify({ name: currentName, role: SESSION_ROLE, domains: SESSION_DOMAINS }),
-    $ts: now(),
-  })
-
-  // Initialize cursor if needed
-  const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as {
-    last_read_ts: number
-    last_seq: number | null
-  } | null
-  if (!cursor) {
-    // On reconnect after compaction: recover last_delivered_seq from prior session with same claude_session_id
-    // to avoid re-delivering already-seen messages
-    let initialTs = 0
-    let initialSeq = 0
-    if (CLAUDE_SESSION_ID) {
-      const prior = db
-        .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
-        )
-        .get({ $csid: CLAUDE_SESSION_ID, $id: SESSION_ID }) as {
-        last_delivered_ts: number
-        last_delivered_seq: number | null
-      } | null
-      if (prior?.last_delivered_ts) {
-        initialTs = prior.last_delivered_ts
-        initialSeq = prior.last_delivered_seq ?? 0
-        process.stderr.write(
-          `[tribe] recovered cursor from prior session: seq=${initialSeq} ts=${new Date(initialTs).toISOString()}\n`,
-        )
-      }
-    }
-    // Backward compat: if no seq available, bootstrap from current max rowid
-    if (initialSeq === 0 && initialTs > 0) {
-      const maxRow = db
-        .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-        .get({ $ts: initialTs }) as { max_rowid: number | null } | null
-      initialSeq = maxRow?.max_rowid ?? 0
-      process.stderr.write(`[tribe] migrated ts cursor to seq=${initialSeq}\n`)
-    }
-    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: initialTs, $seq: initialSeq })
-  } else if (!cursor.last_seq) {
-    // Backward compat: existing cursor without last_seq — migrate from last_read_ts
-    const maxRow = db
-      .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-      .get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
-    const migratedSeq = maxRow?.max_rowid ?? 0
-    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: cursor.last_read_ts, $seq: migratedSeq })
-    process.stderr.write(`[tribe] migrated existing cursor to seq=${migratedSeq}\n`)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Initial name from Claude Code's transcript slug (one-time, startup only)
-// ---------------------------------------------------------------------------
-
-let userRenamed = false // Set to true after explicit tribe_rename — blocks further auto-naming
-
-function resolveTranscriptPath(): string | null {
-  if (!CLAUDE_SESSION_ID) return null
-  const cwd = process.cwd()
-  const projectKey = "-" + cwd.replace(/\//g, "-")
-  const transcriptPath = resolve(process.env.HOME ?? "~", ".claude/projects", projectKey, `${CLAUDE_SESSION_ID}.jsonl`)
-  return existsSync(transcriptPath) ? transcriptPath : null
-}
-
-const TRANSCRIPT_PATH = resolveTranscriptPath()
-
-/** Read the slug from the transcript — used once at startup to set initial name */
-function readTranscriptSlug(): string | null {
-  if (!TRANSCRIPT_PATH) return null
-  try {
-    const size = Bun.file(TRANSCRIPT_PATH).size
-    if (size === 0) return null
-    const text = new TextDecoder().decode(
-      new Uint8Array(readFileSync(TRANSCRIPT_PATH).buffer.slice(Math.max(0, size - 4096))),
-    )
-    const lines = text.trimEnd().split("\n")
-    const lastLine = lines[lines.length - 1]
-    if (!lastLine) return null
-    const data = JSON.parse(lastLine) as { slug?: string }
-    return data.slug ?? null
-  } catch {
-    return null
-  }
-}
-
-// One-time: if session has a generic member-N name, try to set it from the transcript slug
-function tryInitialRename(): void {
-  if (!currentName.startsWith("member-")) return // Already has a real name
-  const slug = readTranscriptSlug()
-  if (!slug || slug === currentName) return
-
-  const existing = stmts.checkNameTaken.get({ $name: slug, $session_id: SESSION_ID })
-  if (existing) return
-
-  const oldName = currentName
-  stmts.insertAlias.run({ $old_name: oldName, $session_id: SESSION_ID, $now: now() })
-  stmts.renameSession.run({ $new_name: slug, $session_id: SESSION_ID })
-  currentName = slug
-  sendMessage("*", `Member "${oldName}" is now "${slug}"`, "notify")
-  logEvent("session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
-  process.stderr.write(`[tribe] initial name from /rename: ${oldName} → ${slug}\n`)
-}
-
-/** Delete sessions pruned more than 24 hours ago */
-function cleanupOldPrunedSessions(): void {
-  const cutoff = now() - 24 * 60 * 60 * 1000
-  const result = stmts.deleteOldPrunedSessions.run({ $cutoff: cutoff })
-  if (result.changes > 0) {
-    process.stderr.write(`[tribe] cleaned up ${result.changes} old pruned session(s)\n`)
-  }
-}
-
-/** Delete old data based on TTL: reads after 7 days, messages/events/aliases after 30 days */
-function cleanupOldData(): void {
-  const READS_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
-  const DATA_TTL = 30 * 24 * 60 * 60 * 1000 // 30 days
-  const now_ms = Date.now()
-
-  const readsDel = db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - READS_TTL })
-  const eventsDel = db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-  const msgsDel = db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-  const aliasesDel = db.prepare("DELETE FROM aliases WHERE renamed_at < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-
-  const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
-  if (total > 0) {
-    process.stderr.write(
-      `[tribe] cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted\n`,
-    )
-  }
-}
-
-function sendHeartbeat(): void {
-  // Check if we were pruned — if so, log a rejoin event
-  const session = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get(SESSION_ID) as {
-    pruned_at: number | null
-  } | null
-  if (session?.pruned_at) {
-    logEvent("session.rejoined", undefined, { name: currentName, role: SESSION_ROLE, domains: SESSION_DOMAINS })
-    process.stderr.write(`[tribe] ${currentName} rejoined tribe (was pruned)\n`)
-    // Re-register to restore name (pruning renames to free the original name)
-    registerSession()
-    return
-  }
-  stmts.heartbeat.run({ $id: SESSION_ID, $now: now() })
-
-  // Renew leader lease if chief
-  if (SESSION_ROLE === "chief") {
-    acquireLease(SESSION_ID, currentName)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Message helpers
-// ---------------------------------------------------------------------------
-
-function sendMessage(
-  recipient: string,
-  content: string,
-  type = "notify",
-  bead_id?: string,
-  ref?: string,
-): { id: string } {
-  const id = randomUUID()
-  stmts.insertMessage.run({
-    $id: id,
-    $type: type,
-    $sender: currentName,
-    $recipient: recipient,
-    $content: content,
-    $bead_id: bead_id ?? null,
-    $ref: ref ?? null,
-    $ts: now(),
-  })
-  return { id }
-}
-
-function logEvent(type: string, bead_id?: string, data?: Record<string, unknown>): void {
-  stmts.insertEvent.run({
-    $id: randomUUID(),
-    $type: type,
-    $session: currentName,
-    $bead_id: bead_id ?? null,
-    $data: data ? JSON.stringify(data) : null,
-    $ts: now(),
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -746,639 +165,49 @@ const mcp = new Server(
 // Tools
 // ---------------------------------------------------------------------------
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "tribe_send",
-      description: "Send a message to a specific tribe member",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          to: { type: "string", description: "Recipient session name" },
-          message: { type: "string", description: "Message content" },
-          type: {
-            type: "string",
-            description: "Message type",
-            enum: ["assign", "status", "query", "response", "notify", "request", "verdict"],
-            default: "notify",
-          },
-          bead: { type: "string", description: "Associated bead ID (optional)" },
-          ref: { type: "string", description: "Reference to a previous message ID (optional)" },
-        },
-        required: ["to", "message"],
-      },
-    },
-    {
-      name: "tribe_broadcast",
-      description: "Broadcast a message to all tribe members",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          message: { type: "string", description: "Message content" },
-          type: {
-            type: "string",
-            description: "Message type",
-            enum: ["notify", "status"],
-            default: "notify",
-          },
-          bead: { type: "string", description: "Associated bead ID (optional)" },
-        },
-        required: ["message"],
-      },
-    },
-    {
-      name: "tribe_sessions",
-      description: "List active tribe sessions with their roles and domains",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          all: { type: "boolean", description: "Include dead sessions (default: false)" },
-        },
-      },
-    },
-    {
-      name: "tribe_history",
-      description: "View recent message history",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          with: { type: "string", description: "Filter to messages involving this session" },
-          limit: { type: "number", description: "Max messages to return (default: 20)" },
-        },
-      },
-    },
-    {
-      name: "tribe_rename",
-      description: "Rename this session in the tribe",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          new_name: { type: "string", description: "New session name" },
-        },
-        required: ["new_name"],
-      },
-    },
-    {
-      name: "tribe_health",
-      description: "Diagnostic: check for silent members, stale beads, unread messages",
-      inputSchema: {
-        type: "object" as const,
-        properties: {},
-      },
-    },
-    {
-      name: "tribe_join",
-      description: "Re-announce this session's name, role, and domains (e.g. after compaction/rejoin)",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          name: { type: "string", description: "Session name" },
-          role: {
-            type: "string",
-            description: "Session role",
-            enum: ["chief", "member"],
-          },
-          domains: {
-            type: "array",
-            items: { type: "string" },
-            description: "Domain expertise areas (e.g. ['silvery', 'flexily'])",
-          },
-        },
-        required: ["name", "role"],
-      },
-    },
-    {
-      name: "tribe_reload",
-      description:
-        "Hot-reload the tribe MCP server — re-exec with latest code from disk. Use after tribe.ts is updated to pick up fixes without restarting the Claude Code session.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          reason: {
-            type: "string",
-            description: "Why the reload is needed (logged to events)",
-          },
-        },
-      },
-    },
-    {
-      name: "tribe_retro",
-      description:
-        "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          since: {
-            type: "string",
-            description: 'Duration to look back (e.g. "2h", "30m", "1d"). Default: entire session.',
-          },
-          format: {
-            type: "string",
-            description: "Output format",
-            enum: ["markdown", "json"],
-            default: "markdown",
-          },
-        },
-      },
-    },
-    {
-      name: "tribe_leadership",
-      description: "Show the current chief lease holder, term number, and time until expiry",
-      inputSchema: {
-        type: "object" as const,
-        properties: {},
-      },
-    },
-  ],
-}))
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS_LIST }))
+
+let userRenamed = false
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: toolArgs } = req.params
   const a = (toolArgs ?? {}) as Record<string, unknown>
-
-  switch (name) {
-    case "tribe_send": {
-      const msgType = (a.type as string) ?? "notify"
-      // Only lease holders can assign or verdict
-      if ((msgType === "assign" || msgType === "verdict") && !isLeaseHolder(SESSION_ID)) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }),
-            },
-          ],
-        }
-      }
-      const sanitized = sanitizeMessage(a.message as string)
-      const result = sendMessage(
-        a.to as string,
-        sanitized,
-        msgType,
-        a.bead as string | undefined,
-        a.ref as string | undefined,
-      )
-      logEvent(`message.sent.${msgType}`, a.bead as string | undefined, {
-        to: a.to,
-        message_id: result.id,
-      })
-      return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
-    }
-
-    case "tribe_broadcast": {
-      const sanitized = sanitizeMessage(a.message as string)
-      const result = sendMessage("*", sanitized, (a.type as string) ?? "notify", a.bead as string | undefined)
-      logEvent("message.broadcast", a.bead as string | undefined, { message_id: result.id })
-      return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
-    }
-
-    case "tribe_sessions": {
-      const threshold = now() - 30_000
-      const rows = stmts.allSessions.all() as Array<{
-        id: string
-        name: string
-        role: string
-        domains: string
-        pid: number
-        cwd: string
-        claude_session_id: string | null
-        claude_session_name: string | null
-        started_at: number
-        heartbeat: number
-        pruned_at: number | null
-      }>
-
-      // Auto-prune: check PID liveness and soft-prune dead sessions
-      const dead: string[] = []
-      for (const r of rows) {
-        if (r.pid === process.pid) continue // don't kill ourselves
-        if (r.pruned_at) continue // already pruned
-        try {
-          process.kill(r.pid, 0) // signal 0 = check if process exists
-        } catch {
-          dead.push(r.name)
-          const pruneTs = now()
-          stmts.pruneSession.run({ $id: r.id, $now: pruneTs, $pruned_name: `${r.name}-pruned-${pruneTs}` })
-        }
-      }
-
-      // Re-query after pruning
-      const liveRows = a.all ? stmts.allSessions.all() : stmts.liveSessions.all({ $threshold: threshold })
-      const sessions = (
-        liveRows as Array<{
-          id: string
-          name: string
-          role: string
-          domains: string
-          pid: number
-          cwd: string
-          claude_session_id: string | null
-          claude_session_name: string | null
-          started_at: number
-          heartbeat: number
-          pruned_at: number | null
-        }>
-      ).map((r) => ({
-        name: r.name,
-        role: r.role,
-        domains: JSON.parse(r.domains),
-        pid: r.pid,
-        cwd: r.cwd,
-        claude_session_id: r.claude_session_id,
-        claude_session_name: r.claude_session_name,
-        alive: r.heartbeat > threshold && !r.pruned_at,
-        pruned: !!r.pruned_at,
-        uptime_min: Math.round((now() - r.started_at) / 60_000),
-        last_heartbeat_sec: Math.round((now() - r.heartbeat) / 1000),
-      }))
-      const result: Record<string, unknown> = { sessions }
-      if (dead.length > 0) result.pruned = dead
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }
-    }
-
-    case "tribe_history": {
-      const who = (a.with as string) ?? currentName
-      const limit = (a.limit as number) ?? 20
-      const rows = stmts.messageHistory.all({ $name: who, $limit: limit }) as Array<{
-        id: string
-        type: string
-        sender: string
-        recipient: string
-        content: string
-        bead_id: string
-        ref: string
-        ts: number
-        read_at: number
-      }>
-      const messages = rows.map((r) => ({
-        id: r.id,
-        type: r.type,
-        from: r.sender,
-        to: r.recipient,
-        content: r.content,
-        bead: r.bead_id,
-        ref: r.ref,
-        ts: new Date(r.ts).toISOString(),
-        read: !!r.read_at,
-      }))
-      return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) }] }
-    }
-
-    case "tribe_rename": {
-      const newName = a.new_name as string
-      // Validate name format
-      const nameError = validateName(newName)
-      if (nameError) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: nameError }) }] }
-      }
-      // Check if name is taken
-      const existing = stmts.checkNameTaken.get({ $name: newName, $session_id: SESSION_ID })
-      if (existing) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${newName}" is already taken` }) }] }
-      }
-      const oldName = currentName
-      stmts.insertAlias.run({ $old_name: oldName, $session_id: SESSION_ID, $now: now() })
-      stmts.renameSession.run({ $new_name: newName, $session_id: SESSION_ID })
-      currentName = newName
-      userRenamed = true // Explicit rename — name is now sticky, won't be overridden
-      // Broadcast the rename
-      sendMessage("*", `Member "${oldName}" is now "${newName}"`, "notify")
-      logEvent("session.renamed", undefined, { old_name: oldName, new_name: newName })
-      return {
-        content: [{ type: "text", text: JSON.stringify({ renamed: true, old_name: oldName, new_name: newName }) }],
-      }
-    }
-
-    case "tribe_join": {
-      const joinName = a.name as string
-      const joinRole = (a.role as string) ?? SESSION_ROLE
-      const joinDomains = (a.domains as string[]) ?? SESSION_DOMAINS
-
-      // Validate name format
-      const joinNameError = validateName(joinName)
-      if (joinNameError) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: joinNameError }) }] }
-      }
-
-      // Check if name is taken by another session
-      const taken = stmts.checkNameTaken.get({ $name: joinName, $session_id: SESSION_ID })
-      if (taken) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
-      }
-
-      // If joining as chief, try to acquire lease
-      if (joinRole === "chief") {
-        const leased = acquireLease(SESSION_ID, joinName)
-        if (!leased) {
-          const info = getLeaseInfo()
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }),
-              },
-            ],
-          }
-        }
-      }
-
-      const prevName = currentName
-      // If name changed, create an alias for the old name
-      if (joinName !== prevName) {
-        stmts.insertAlias.run({ $old_name: prevName, $session_id: SESSION_ID, $now: now() })
-      }
-
-      stmts.updateSessionMeta.run({
-        $id: SESSION_ID,
-        $name: joinName,
-        $role: joinRole,
-        $domains: JSON.stringify(joinDomains),
-        $now: now(),
-      })
-      currentName = joinName
-
-      logEvent("session.joined", undefined, { name: joinName, role: joinRole, domains: joinDomains, rejoin: true })
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              joined: true,
-              name: joinName,
-              role: joinRole,
-              domains: joinDomains,
-              previous_name: joinName !== prevName ? prevName : undefined,
-            }),
-          },
-        ],
-      }
-    }
-
-    case "tribe_health": {
-      const threshold = now() - 30_000
-      const silentThreshold = now() - 300_000 // 5 minutes
-
-      // Only check non-pruned sessions
-      const activeSessions = stmts.activeSessions.all() as Array<{
-        id: string
-        name: string
-        role: string
-        domains: string
-        pid: number
-        started_at: number
-        heartbeat: number
-        pruned_at: number | null
-      }>
-
-      // Auto-prune: check PID liveness and soft-prune dead sessions
-      const pruned: string[] = []
-      for (const s of activeSessions) {
-        if (s.pid === process.pid) continue
-        try {
-          process.kill(s.pid, 0)
-        } catch {
-          pruned.push(s.name)
-          const pruneTs = now()
-          stmts.pruneSession.run({ $id: s.id, $now: pruneTs, $pruned_name: `${s.name}-pruned-${pruneTs}` })
-        }
-      }
-
-      // Clean up sessions pruned more than 24 hours ago
-      cleanupOldPrunedSessions()
-
-      // Re-query active sessions after pruning
-      const liveSessions = stmts.activeSessions.all() as typeof activeSessions
-
-      const members = liveSessions.map((s) => {
-        const alive = s.heartbeat > threshold
-        // Find last message from this member
-        const lastMsg = db
-          .prepare("SELECT ts FROM messages WHERE sender = $name ORDER BY ts DESC LIMIT 1")
-          .get({ $name: s.name }) as { ts: number } | null
-
-        const lastMsgAge = lastMsg ? now() - lastMsg.ts : null
-        const warnings: string[] = []
-        if (!alive) warnings.push("heartbeat timeout — session may be dead")
-        if (alive && lastMsgAge && lastMsgAge > silentThreshold) {
-          warnings.push(`no message in ${Math.round(lastMsgAge / 60_000)} min`)
-        }
-        if (!alive && !lastMsg) warnings.push("never sent a message")
-
-        return {
-          name: s.name,
-          role: s.role,
-          domains: JSON.parse(s.domains),
-          alive,
-          last_message: lastMsgAge ? `${Math.round(lastMsgAge / 60_000)} min ago` : "never",
-          warnings,
-        }
-      })
-
-      // Unread message count per recipient (direct messages only)
-      const unread = db
-        .prepare(`
-				SELECT m.recipient, COUNT(*) as count FROM messages m
-				WHERE m.recipient != '*'
-				AND NOT EXISTS (
-					SELECT 1 FROM reads r
-					JOIN sessions s ON r.session_id = s.id
-					WHERE r.message_id = m.id AND s.name = m.recipient
-				)
-				GROUP BY m.recipient
-			`)
-        .all() as Array<{ recipient: string; count: number }>
-
-      const stats = {
-        messages: (db.prepare("SELECT COUNT(*) as n FROM messages").get() as any)?.n ?? 0,
-        events: (db.prepare("SELECT COUNT(*) as n FROM events").get() as any)?.n ?? 0,
-        reads: (db.prepare("SELECT COUNT(*) as n FROM reads").get() as any)?.n ?? 0,
-      }
-
-      const result: Record<string, unknown> = { members, unread, stats, checked_at: new Date().toISOString() }
-      if (pruned.length > 0) result.pruned = pruned
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      }
-    }
-
-    case "tribe_reload": {
-      const reason = (a.reason as string) ?? "manual reload"
-      logEvent("session.reload", undefined, { name: currentName, reason })
-      process.stderr.write(`[tribe] reloading: ${reason}\n`)
-
-      // Schedule re-exec after responding to the tool call
-      setTimeout(() => {
-        cleanup()
-        // Re-exec the same script with the same args — picks up latest code from disk
-        const args = process.argv.slice(1) // drop the bun/node executable
-        process.stderr.write(`[tribe] exec: ${process.execPath} ${args.join(" ")}\n`)
-        // Use Bun.spawn to replace the process
-        const child = Bun.spawn([process.execPath, ...args], {
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-          env: process.env,
-        })
-        // Forward exit
-        child.exited.then((code) => process.exit(code ?? 0))
-      }, 100) // small delay so the tool response gets sent first
-
-      return {
-        content: [{ type: "text", text: JSON.stringify({ reloading: true, reason, pid: process.pid }) }],
-      }
-    }
-
-    case "tribe_retro": {
-      const sinceStr = a.since as string | undefined
-      let sinceMs: number | undefined
-      if (sinceStr) {
-        try {
-          sinceMs = parseDuration(sinceStr)
-        } catch {
-          return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] }
-        }
-      }
-      const fmt = (a.format as string) ?? "markdown"
-      const report = generateRetro(db, sinceMs)
-      const text = fmt === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report)
-      return { content: [{ type: "text", text }] }
-    }
-
-    case "tribe_leadership": {
-      const info = getLeaseInfo()
-      if (!info) {
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) },
-          ],
-        }
-      }
-      const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                holder_name: info.holder_name,
-                holder_id: info.holder_id,
-                term: info.term,
-                expires_in_seconds: expiresIn,
-                expired: expiresIn === 0,
-                acquired_at: new Date(info.acquired_at).toISOString(),
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      }
-    }
-
-    default:
-      throw new Error(`Unknown tool: ${name}`)
-  }
+  return handleToolCall(ctx, name, a, {
+    cleanup,
+    userRenamed,
+    setUserRenamed: (v: boolean) => {
+      userRenamed = v
+    },
+  })
 })
-
-// ---------------------------------------------------------------------------
-// Polling loop — check for new messages and push as channel notifications
-// ---------------------------------------------------------------------------
-
-let polling = false
-async function pollMessages(): Promise<void> {
-  if (polling) return
-  polling = true
-  try {
-    try {
-      const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as {
-        last_read_ts: number
-        last_seq: number | null
-      } | null
-      const lastSeq = cursor?.last_seq ?? 0
-
-      const rows = stmts.pollMessages.all({
-        $last_seq: lastSeq,
-        $name: currentName,
-        $session_id: SESSION_ID,
-      }) as Array<{
-        rowid: number
-        id: string
-        type: string
-        sender: string
-        recipient: string
-        content: string
-        bead_id: string
-        ref: string
-        ts: number
-      }>
-
-      // Don't deliver our own messages back to us
-      const incoming = rows.filter((r) => r.sender !== currentName)
-
-      for (const msg of incoming) {
-        const meta: Record<string, string> = {
-          from: msg.sender,
-          type: msg.type,
-          message_id: msg.id,
-        }
-        if (msg.bead_id) meta.bead = msg.bead_id
-        if (msg.ref) meta.ref = msg.ref
-
-        await mcp.notification({
-          method: "notifications/claude/channel",
-          params: { content: msg.content, meta },
-        })
-
-        stmts.markRead.run({ $message_id: msg.id, $session_id: SESSION_ID, $now: now() })
-      }
-
-      // Advance cursor to latest rowid (including our own messages)
-      if (rows.length > 0) {
-        const maxSeq = Math.max(...rows.map((r) => r.rowid))
-        const maxTs = Math.max(...rows.map((r) => r.ts))
-        stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs, $seq: maxSeq })
-        // Track last delivery so reconnecting sessions skip already-delivered messages
-        if (incoming.length > 0) {
-          stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs, $seq: maxSeq })
-        }
-      }
-    } catch {
-      // SQLite busy or other transient error — retry next poll
-    }
-  } finally {
-    polling = false
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-registerSession()
-cleanupOldPrunedSessions()
-cleanupOldData()
+registerSession(ctx)
+cleanupOldPrunedSessions(ctx)
+cleanupOldData(ctx)
 
 // One-time: if we have a generic member-N name, try to pick up the /rename slug
-tryInitialRename()
+const transcriptPath = resolveTranscriptPath(CLAUDE_SESSION_ID)
+tryInitialRename(ctx, transcriptPath)
 
 // Heartbeat: every 10s
-const heartbeatInterval = setInterval(sendHeartbeat, 10_000)
+const heartbeatInterval = setInterval(() => sendHeartbeat(ctx), 10_000)
 
 // Poll: every 1s
+const pollMessages = createPoller(ctx, mcp)
 const pollInterval = setInterval(() => void pollMessages(), 1_000)
 
 // Data retention cleanup: every 6 hours
-const cleanupInterval = setInterval(cleanupOldData, 6 * 60 * 60 * 1000)
+const cleanupDataInterval = setInterval(() => cleanupOldData(ctx), 6 * 60 * 60 * 1000)
 
 // Plugins: optional capabilities (beads tracking, git commit reporting, etc.)
 const pluginCtx: PluginContext = {
-  sendMessage,
+  sendMessage(to: string, content: string, type?: string, beadId?: string) {
+    sendMessage(ctx, to, content, type, beadId)
+  },
   hasChief() {
     const threshold = Date.now() - 30_000
     return !!db
@@ -1386,20 +215,19 @@ const pluginCtx: PluginContext = {
       .get(threshold)
   },
   hasRecentMessage(contentPrefix: string): boolean {
-    // Check if any session already sent a message with this prefix in the last 120s (4 poll intervals)
     const since = Date.now() - 120_000
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
-  sessionName: currentName,
+  sessionName: ctx.getName(),
   sessionId: SESSION_ID,
   claudeSessionId: CLAUDE_SESSION_ID,
   triggerReload(reason: string) {
-    logEvent("session.reload", undefined, { name: currentName, reason, auto: true })
+    logEvent(ctx, "session.reload", undefined, { name: ctx.getName(), reason, auto: true })
     process.stderr.write(`[tribe] auto-reload: ${reason}\n`)
     setTimeout(() => {
       cleanup()
-      const args = process.argv.slice(1)
-      const child = Bun.spawn([process.execPath, ...args], {
+      const argv = process.argv.slice(1)
+      const child = Bun.spawn([process.execPath, ...argv], {
         stdin: "inherit",
         stdout: "inherit",
         stderr: "inherit",
@@ -1419,10 +247,10 @@ function cleanup(): void {
   cleaned = true
   clearInterval(heartbeatInterval)
   clearInterval(pollInterval)
-  clearInterval(cleanupInterval)
+  clearInterval(cleanupDataInterval)
   stopPlugins()
   try {
-    logEvent("session.left", undefined, { name: currentName })
+    logEvent(ctx, "session.left", undefined, { name: ctx.getName() })
     db.close()
   } catch {
     // DB may already be closed
