@@ -143,6 +143,11 @@ function openDatabase(path: string): Database {
   } catch {
     /* already exists */
   }
+  try {
+    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_ts INTEGER")
+  } catch {
+    /* already exists */
+  }
 
   db.run(`CREATE TABLE IF NOT EXISTS aliases (
 		old_name   TEXT PRIMARY KEY,
@@ -309,6 +314,14 @@ const stmts = {
 		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
 		WHERE id = $id
 	`),
+
+  hasRecentMessage: db.prepare(`
+		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
+	`),
+
+  updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts WHERE id = $id"),
+
+  getLastDelivered: db.prepare("SELECT last_delivered_ts FROM sessions WHERE id = $id"),
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +377,19 @@ function registerSession(): void {
   // Initialize cursor if needed
   const cursor = stmts.getCursor.get({ $session_id: SESSION_ID }) as { last_read_ts: number } | null
   if (!cursor) {
-    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: 0 })
+    // On reconnect after compaction: recover last_delivered_ts from prior session with same claude_session_id
+    // to avoid re-delivering already-seen messages
+    let initialTs = 0
+    if (CLAUDE_SESSION_ID) {
+      const prior = db
+        .prepare("SELECT last_delivered_ts FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1")
+        .get({ $csid: CLAUDE_SESSION_ID, $id: SESSION_ID }) as { last_delivered_ts: number } | null
+      if (prior?.last_delivered_ts) {
+        initialTs = prior.last_delivered_ts
+        process.stderr.write(`[tribe] recovered cursor from prior session: ${new Date(initialTs).toISOString()}\n`)
+      }
+    }
+    stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: initialTs })
   }
 }
 
@@ -491,7 +516,14 @@ When a member sends a "status" message, update any relevant tracking.
 When a member sends a "request" message, check for conflicts before approving.
 When a member sends a "query" message, either answer directly or route to the right member.
 When a member goes silent (tribe_health shows warning), send a query to check on them.
-If a member dies (heartbeat timeout), reassign their beads to another member.`
+If a member dies (heartbeat timeout), reassign their beads to another member.
+
+Message format rules:
+- Keep messages SHORT — 1-3 lines max. No essays.
+- Use plain text only — no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
+- For sync broadcasts: keep the template concise, ask for one-line responses.
+- Don't send overlapping sync/rollcall requests — one at a time, wait for responses.
+- Batch-acknowledge: if you receive many messages at once, one summary covers all.`
 
 const memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
@@ -512,6 +544,15 @@ Infrastructure reporting — notify chief when you:
 - Create or merge a git worktree
 - Modify shared config (package.json, tsconfig, .mcp.json)
 - Experience slowdowns (CPU contention from concurrent test runs, etc.)
+
+Message format rules:
+- Keep messages SHORT — 1-3 lines max. No essays.
+- Use plain text only — no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
+- For sync responses: "Session: name | Idle: Xm | Closed: N beads | Blockers: none | Available"
+- For status: "Claimed km-foo.bar" or "Committed abc1234 fix(scope): message" or "Available"
+- For blocking: "Blocked on km-foo.bar — need X to unblock"
+- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed" (one line, not per-message)
+- NEVER respond to messages individually if you received a batch — one summary response covers all.
 
 Don't over-communicate — only send messages when it changes what someone else should do.`
 
@@ -1008,6 +1049,10 @@ async function pollMessages(): Promise<void> {
     if (rows.length > 0) {
       const maxTs = Math.max(...rows.map((r) => r.ts))
       stmts.upsertCursor.run({ $session_id: SESSION_ID, $ts: maxTs })
+      // Track last delivery time so reconnecting sessions skip already-delivered messages
+      if (incoming.length > 0) {
+        stmts.updateLastDelivered.run({ $id: SESSION_ID, $ts: maxTs })
+      }
     }
   } catch {
     // SQLite busy or other transient error — retry next poll
@@ -1035,6 +1080,11 @@ const pluginCtx: PluginContext = {
   hasChief() {
     const threshold = Date.now() - 30_000
     return !!db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold)
+  },
+  hasRecentMessage(contentPrefix: string): boolean {
+    // Check if any session already sent a message with this prefix in the last 120s (4 poll intervals)
+    const since = Date.now() - 120_000
+    return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
   sessionName: currentName,
   sessionId: SESSION_ID,

@@ -29,6 +29,8 @@ export interface PluginContext {
   sendMessage(to: string, content: string, type?: string, beadId?: string): void
   /** Check if a chief session is alive */
   hasChief(): boolean
+  /** Check if any session already sent a message with this content prefix (dedup) */
+  hasRecentMessage(contentPrefix: string): boolean
   /** Current session name */
   sessionName: string
   /** Current session ID (internal tribe UUID) */
@@ -148,7 +150,10 @@ export function gitPlugin(): TribePlugin {
           const line = out.trim()
           const head = line.split(" ")[0] ?? ""
           if (head && lastHead && head !== lastHead) {
-            ctx.sendMessage("chief", `Committed: ${line}`, "status")
+            // Deduplicate: skip if any session already reported this commit
+            if (!ctx.hasRecentMessage(`Committed: ${head}`)) {
+              ctx.sendMessage("chief", `Committed: ${line}`, "status")
+            }
           }
           if (head) lastHead = head
         } catch { /* git error */ }
