@@ -890,7 +890,8 @@ async function pollMessages(): Promise<void> {
 function startAutoReporter(): () => void {
   let lastHead = ""
   let lastIssuesMtime = 0
-  let lastIssuesLineCount = 0
+  /** Track reported bead states to prevent duplicate notifications */
+  const reportedStates = new Map<string, string>() // id → "claimed" | "closed"
   const issuesPath = resolve(findBeadsDir(), "backup/issues.jsonl")
 
   // Initialize: capture current state without reporting
@@ -902,8 +903,20 @@ function startAutoReporter(): () => void {
   try {
     const stat = statSync(issuesPath)
     lastIssuesMtime = stat.mtimeMs
+    // Snapshot current bead states so we don't report pre-existing data
     const content = readFileSync(issuesPath, "utf8")
-    lastIssuesLineCount = content.split("\n").filter(Boolean).length
+    for (const line of content.split("\n").filter(Boolean)) {
+      try {
+        const entry = JSON.parse(line) as { id?: string; status?: string; claimed_by?: string }
+        if (!entry.id) continue
+        if (entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)) {
+          reportedStates.set(entry.id, "claimed")
+        }
+        if (entry.status === "closed") {
+          reportedStates.set(entry.id, "closed")
+        }
+      } catch { /* malformed */ }
+    }
   } catch {
     /* no issues file yet */
   }
@@ -945,21 +958,19 @@ function startAutoReporter(): () => void {
 
       const content = await readFile(issuesPath, "utf8")
       const lines = content.split("\n").filter(Boolean)
-      if (lines.length <= lastIssuesLineCount) {
-        lastIssuesLineCount = lines.length
-        return
-      }
 
-      // Process only new lines
-      const newLines = lines.slice(lastIssuesLineCount)
-      lastIssuesLineCount = lines.length
-
-      for (const line of newLines) {
+      // Scan ALL lines for state changes (file is full dump, not append-only)
+      for (const line of lines) {
         try {
           const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
-          if (entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)) {
+          if (!entry.id) continue
+
+          const isMyClaim = entry.claimed_by?.includes(currentName) || entry.claimed_by?.includes(SESSION_ID)
+          if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
+            reportedStates.set(entry.id, "claimed")
             sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
-          } else if (entry.status === "closed") {
+          } else if (entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
+            reportedStates.set(entry.id, "closed")
             sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
           }
         } catch {
