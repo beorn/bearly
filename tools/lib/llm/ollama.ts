@@ -30,9 +30,7 @@ export async function isOllamaAvailable(): Promise<boolean> {
 /**
  * List models pulled locally in Ollama
  */
-export async function listOllamaModels(): Promise<
-  Array<{ name: string; size: number; modifiedAt: string }>
-> {
+export async function listOllamaModels(): Promise<Array<{ name: string; size: number; modifiedAt: string }>> {
   const resp = await fetch(`${getOllamaHost()}/api/tags`, {
     signal: AbortSignal.timeout(5000),
   })
