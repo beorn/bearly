@@ -581,6 +581,25 @@ function cleanupOldPrunedSessions(): void {
   }
 }
 
+/** Delete old data based on TTL: reads after 7 days, messages/events/aliases after 30 days */
+function cleanupOldData(): void {
+  const READS_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
+  const DATA_TTL = 30 * 24 * 60 * 60 * 1000 // 30 days
+  const now_ms = Date.now()
+
+  const readsDel = db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - READS_TTL })
+  const eventsDel = db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
+  const msgsDel = db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
+  const aliasesDel = db.prepare("DELETE FROM aliases WHERE renamed_at < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
+
+  const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
+  if (total > 0) {
+    process.stderr.write(
+      `[tribe] cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted\n`,
+    )
+  }
+}
+
 function sendHeartbeat(): void {
   // Check if we were pruned — if so, log a rejoin event
   const session = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get(SESSION_ID) as {
@@ -1140,7 +1159,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 			`)
         .all() as Array<{ recipient: string; count: number }>
 
-      const result: Record<string, unknown> = { members, unread, checked_at: new Date().toISOString() }
+      const stats = {
+        messages: (db.prepare("SELECT COUNT(*) as n FROM messages").get() as any)?.n ?? 0,
+        events: (db.prepare("SELECT COUNT(*) as n FROM events").get() as any)?.n ?? 0,
+        reads: (db.prepare("SELECT COUNT(*) as n FROM reads").get() as any)?.n ?? 0,
+      }
+
+      const result: Record<string, unknown> = { members, unread, stats, checked_at: new Date().toISOString() }
       if (pruned.length > 0) result.pruned = pruned
       return {
         content: [
@@ -1299,6 +1324,7 @@ async function pollMessages(): Promise<void> {
 
 registerSession()
 cleanupOldPrunedSessions()
+cleanupOldData()
 
 // One-time: if we have a generic member-N name, try to pick up the /rename slug
 tryInitialRename()
@@ -1308,6 +1334,9 @@ const heartbeatInterval = setInterval(sendHeartbeat, 10_000)
 
 // Poll: every 1s
 const pollInterval = setInterval(() => void pollMessages(), 1_000)
+
+// Data retention cleanup: every 6 hours
+const cleanupInterval = setInterval(cleanupOldData, 6 * 60 * 60 * 1000)
 
 // Plugins: optional capabilities (beads tracking, git commit reporting, etc.)
 const pluginCtx: PluginContext = {
@@ -1352,6 +1381,7 @@ function cleanup(): void {
   cleaned = true
   clearInterval(heartbeatInterval)
   clearInterval(pollInterval)
+  clearInterval(cleanupInterval)
   stopPlugins()
   try {
     logEvent("session.left", undefined, { name: currentName })
