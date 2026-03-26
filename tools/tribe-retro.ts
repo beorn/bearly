@@ -49,7 +49,7 @@ const DURATION_MULTIPLIERS: Record<string, number> = { s: 1_000, m: 60_000, h: 3
 export function parseDuration(s: string): number {
   const match = s.match(/^(\d+(?:\.\d+)?)\s*(s|m|h|d)$/)
   if (!match) throw new Error(`Invalid duration: "${s}" — use e.g. "2h", "30m", "1d"`)
-  return parseFloat(match[1]) * DURATION_MULTIPLIERS[match[2]]
+  return parseFloat(match[1]!) * DURATION_MULTIPLIERS[match[2]!]!
 }
 
 function formatDuration(ms: number): string {
@@ -209,7 +209,7 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
 
   // Initialize per-member metrics from sessions
   const memberMap = new Map<string, MemberMetrics>()
-  for (const s of sessions) memberMap.set(s.name, makeMember(s.name, s.role, JSON.parse(s.domains)))
+  for (const s of sessions) memberMap.set(s.name, makeMember(s.name, s.role, JSON.parse(s.domains) as string[]))
 
   // Count messages and extract beads
   const byType: Record<string, number> = {}
@@ -269,7 +269,7 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   for (const ev of events) {
     const fmt = eventFormatters[ev.type]
     if (fmt) {
-      const text = fmt(ev, ev.data ? JSON.parse(ev.data) : {})
+      const text = fmt(ev, (ev.data ? JSON.parse(ev.data) : {}) as Record<string, string>)
       if (text) timeline.push({ time: formatTime(ev.ts), event: text, ts: ev.ts })
     }
   }
