@@ -18,6 +18,36 @@ Reusable Claude Code tools — coordination, testing, research, refactoring.
 | `tty`         | TTY testing MCP server (Bun PTY + xterm-headless)             | MCP server + CLI              |
 | `worktree`    | Git worktree management with submodules                       | `bun tools/worktree.ts`       |
 
+### Plugin System
+
+Tribe supports a plugin architecture for optional capabilities that enhance coordination. Plugins gracefully degrade -- if dependencies are unavailable, they silently disable themselves.
+
+**Interface** (`TribePlugin` in `tools/lib/tribe/plugins.ts`):
+
+```typescript
+interface TribePlugin {
+  name: string
+  available(): boolean                          // Check if plugin can activate
+  start?(ctx: PluginContext): (() => void) | void  // Background polling; returns cleanup
+  instructions?(): string                       // Extra MCP system prompt text
+}
+```
+
+**Built-in plugins** (activate automatically based on availability):
+
+| Plugin   | Activates when          | What it does                                      |
+| -------- | ----------------------- | ------------------------------------------------- |
+| `git`    | Inside a git repo       | Reports new commits to chief every 30s            |
+| `beads`  | `.beads/` dir exists    | Reports bead claims/closures to chief every 30s   |
+
+**Standalone operation**: Tribe works without beads. When no `.beads/` directory is found, the DB defaults to `~/.local/share/tribe/tribe.db` and the beads plugin silently disables.
+
+**Adding a custom plugin**:
+
+1. Create a factory function returning `TribePlugin`
+2. Add it to the plugins array in `tools/tribe.ts` (where `gitPlugin()` and `beadsPlugin()` are loaded)
+3. `loadPlugins()` handles availability checking, startup, and cleanup
+
 ### Refactor Tool Capabilities
 
 - **migrate**: Full terminology migration (files + symbols + text)

@@ -91,6 +91,44 @@ Members do the actual implementation work. They coordinate with chief, not each 
 
 See `skills/tribe/member.md` for full instructions.
 
+## Plugin Architecture
+
+Tribe has a plugin system for optional capabilities that activate based on the environment.
+
+### Standalone operation
+
+Tribe works without beads or any other external dependency. The database location is resolved in order:
+
+1. `--db` flag or `TRIBE_DB` env var (explicit path)
+2. `.beads/tribe.db` (if a `.beads/` directory exists in the project tree)
+3. `~/.local/share/tribe/tribe.db` (standalone fallback)
+
+### Built-in plugins
+
+Plugins activate automatically when their dependencies are available:
+
+| Plugin   | Activates when          | What it does                                      |
+| -------- | ----------------------- | ------------------------------------------------- |
+| `git`    | Inside a git repo       | Reports new commits to chief every 30s            |
+| `beads`  | `.beads/` dir exists    | Reports bead claims/closures to chief every 30s   |
+
+If a plugin's dependencies aren't present, it silently disables itself -- no configuration needed.
+
+### Custom plugins
+
+Implement the `TribePlugin` interface from `tools/lib/tribe/plugins.ts`:
+
+```typescript
+interface TribePlugin {
+  name: string
+  available(): boolean
+  start?(ctx: PluginContext): (() => void) | void
+  instructions?(): string
+}
+```
+
+Add your plugin to the plugins array in `tools/tribe.ts` alongside the built-in ones.
+
 ## Configuration
 
 The server auto-detects role and name. Override via CLI args or env vars:
