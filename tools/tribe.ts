@@ -211,6 +211,15 @@ function openDatabase(path: string): Database {
 		ts          INTEGER NOT NULL
 	)`)
 
+  db.run(`CREATE TABLE IF NOT EXISTS leadership (
+		role         TEXT PRIMARY KEY DEFAULT 'chief',
+		holder_id    TEXT NOT NULL,
+		holder_name  TEXT NOT NULL,
+		term         INTEGER NOT NULL DEFAULT 1,
+		lease_until  INTEGER NOT NULL,
+		acquired_at  INTEGER NOT NULL
+	)`)
+
   // Create indexes if they don't exist
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
@@ -231,12 +240,83 @@ const db = openDatabase(String(DB_PATH))
 const SESSION_ROLE = detectRole(db)
 const SESSION_NAME = detectName(db, SESSION_ROLE)
 
+// ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+function validateName(name: string): string | null {
+  if (!/^[a-z0-9][a-z0-9_.-]{0,31}$/.test(name)) {
+    return "Name must be 1-32 chars: lowercase letters, digits, hyphens, underscores, dots. Must start with letter or digit."
+  }
+  return null
+}
+
+function sanitizeMessage(content: string): string {
+  // Strip control chars except newlines
+  const cleaned = content.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, "")
+  // Cap at 4096 chars
+  if (cleaned.length > 4096) return cleaned.slice(0, 4093) + "..."
+  return cleaned
+}
+
+// ---------------------------------------------------------------------------
+// Leader lease
+// ---------------------------------------------------------------------------
+
+const LEASE_DURATION_MS = 60_000
+
+function acquireLease(id: string, name: string): boolean {
+  const leaseUntil = Date.now() + LEASE_DURATION_MS
+  const acquired = Date.now()
+  // Try insert first (no leader yet)
+  try {
+    db.run(
+      `INSERT INTO leadership (role, holder_id, holder_name, term, lease_until, acquired_at)
+       VALUES ('chief', $id, $name, 1, $lease_until, $acquired)`,
+      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired },
+    )
+    return true
+  } catch {
+    // Row exists — try to take over if expired or renew if same holder
+    const result = db.run(
+      `UPDATE leadership SET holder_id = $id, holder_name = $name, term = term + 1,
+         lease_until = $lease_until, acquired_at = $acquired
+       WHERE role = 'chief' AND (lease_until < $now OR holder_id = $id)`,
+      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() },
+    )
+    return result.changes > 0
+  }
+}
+
+function isLeaseHolder(id: string): boolean {
+  const row = db
+    .prepare("SELECT holder_id FROM leadership WHERE role = 'chief' AND holder_id = $id AND lease_until > $now")
+    .get({ $id: id, $now: Date.now() }) as { holder_id: string } | null
+  return !!row
+}
+
+function getLeaseInfo(): { holder_name: string; holder_id: string; term: number; lease_until: number; acquired_at: number } | null {
+  return db.prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'").get() as {
+    holder_name: string
+    holder_id: string
+    term: number
+    lease_until: number
+    acquired_at: number
+  } | null
+}
+
 // Log startup info to stderr (visible in Claude Code debug logs)
 process.stderr.write(`[tribe] ${SESSION_NAME} (${SESSION_ROLE}) joining tribe at ${DB_PATH}\n`)
 process.stderr.write(`[tribe] claude_session_id=${CLAUDE_SESSION_ID ?? "none"}\n`)
 
 if (SESSION_DOMAINS.length > 0) {
   process.stderr.write(`[tribe] domains: ${SESSION_DOMAINS.join(", ")}\n`)
+}
+
+// Acquire leadership lease on startup if chief
+if (SESSION_ROLE === "chief") {
+  const leased = acquireLease(SESSION_ID, SESSION_NAME)
+  process.stderr.write(`[tribe] leader lease: ${leased ? "acquired" : "held by another"}\n`)
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +594,11 @@ function sendHeartbeat(): void {
     return
   }
   stmts.heartbeat.run({ $id: SESSION_ID, $now: now() })
+
+  // Renew leader lease if chief
+  if (SESSION_ROLE === "chief") {
+    acquireLease(SESSION_ID, currentName)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +846,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "tribe_leadership",
+      description: "Show the current chief lease holder, term number, and time until expiry",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
   ],
 }))
 
@@ -770,14 +863,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "tribe_send": {
+      const msgType = (a.type as string) ?? "notify"
+      // Only lease holders can assign or verdict
+      if ((msgType === "assign" || msgType === "verdict") && !isLeaseHolder(SESSION_ID)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }) }] }
+      }
+      const sanitized = sanitizeMessage(a.message as string)
       const result = sendMessage(
         a.to as string,
-        a.message as string,
-        (a.type as string) ?? "notify",
+        sanitized,
+        msgType,
         a.bead as string | undefined,
         a.ref as string | undefined,
       )
-      logEvent(`message.sent.${(a.type as string) ?? "notify"}`, a.bead as string | undefined, {
+      logEvent(`message.sent.${msgType}`, a.bead as string | undefined, {
         to: a.to,
         message_id: result.id,
       })
@@ -785,7 +884,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "tribe_broadcast": {
-      const result = sendMessage("*", a.message as string, (a.type as string) ?? "notify", a.bead as string | undefined)
+      const sanitized = sanitizeMessage(a.message as string)
+      const result = sendMessage("*", sanitized, (a.type as string) ?? "notify", a.bead as string | undefined)
       logEvent("message.broadcast", a.bead as string | undefined, { message_id: result.id })
       return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
     }
@@ -884,6 +984,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case "tribe_rename": {
       const newName = a.new_name as string
+      // Validate name format
+      const nameError = validateName(newName)
+      if (nameError) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: nameError }) }] }
+      }
       // Check if name is taken
       const existing = stmts.checkNameTaken.get({ $name: newName, $session_id: SESSION_ID })
       if (existing) {
@@ -907,10 +1012,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const joinRole = (a.role as string) ?? SESSION_ROLE
       const joinDomains = (a.domains as string[]) ?? SESSION_DOMAINS
 
+      // Validate name format
+      const joinNameError = validateName(joinName)
+      if (joinNameError) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: joinNameError }) }] }
+      }
+
       // Check if name is taken by another session
       const taken = stmts.checkNameTaken.get({ $name: joinName, $session_id: SESSION_ID })
       if (taken) {
         return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
+      }
+
+      // If joining as chief, try to acquire lease
+      if (joinRole === "chief") {
+        const leased = acquireLease(SESSION_ID, joinName)
+        if (!leased) {
+          const info = getLeaseInfo()
+          return { content: [{ type: "text", text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }) }] }
+        }
       }
 
       const prevName = currentName
@@ -1073,6 +1193,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const report = generateRetro(db, sinceMs)
       const text = fmt === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report)
       return { content: [{ type: "text", text }] }
+    }
+
+    case "tribe_leadership": {
+      const info = getLeaseInfo()
+      if (!info) {
+        return { content: [{ type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) }] }
+      }
+      const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              holder_name: info.holder_name,
+              holder_id: info.holder_id,
+              term: info.term,
+              expires_in_seconds: expiresIn,
+              expired: expiresIn === 0,
+              acquired_at: new Date(info.acquired_at).toISOString(),
+            }, null, 2),
+          },
+        ],
+      }
     }
 
     default:
