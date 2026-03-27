@@ -206,6 +206,8 @@ export function cleanupOldData(ctx: TribeContext): void {
   const aliasesDel = ctx.db
     .prepare("DELETE FROM aliases WHERE renamed_at < $cutoff")
     .run({ $cutoff: now_ms - DATA_TTL })
+  // Clean dedup keys older than 1 day (they only need to survive the poll race window)
+  ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 })
 
   const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
   if (total > 0) {

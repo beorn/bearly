@@ -218,6 +218,10 @@ const pluginCtx: PluginContext = {
     const since = Date.now() - 300_000
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
+  claimDedup(key: string): boolean {
+    const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() })
+    return result.changes > 0
+  },
   sessionName: ctx.getName(),
   sessionId: SESSION_ID,
   claudeSessionId: CLAUDE_SESSION_ID,

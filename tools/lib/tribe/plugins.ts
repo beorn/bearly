@@ -31,6 +31,8 @@ export interface PluginContext {
   hasChief(): boolean
   /** Check if any session already sent a message with this content prefix (dedup) */
   hasRecentMessage(contentPrefix: string): boolean
+  /** Atomic dedup claim — returns true if this session won the claim, false if another session already claimed it */
+  claimDedup(key: string): boolean
   /** Current session name */
   sessionName: string
   /** Current session ID (internal tribe UUID) */
@@ -104,14 +106,14 @@ export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null
               const isMyClaim = matchesName || matchesSession
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed")
-                if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
+                if (ctx.claimDedup(`claimed:${entry.id}`)) {
                   ctx.sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
               }
               // Only report closures for beads this session claimed (not all closures)
               if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
                 reportedStates.set(entry.id, "closed")
-                if (!ctx.hasRecentMessage(`Closed: ${entry.id}`)) {
+                if (ctx.claimDedup(`closed:${entry.id}`)) {
                   ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
               }
@@ -172,8 +174,8 @@ export function gitPlugin(): TribePlugin {
           const line = out.trim()
           const head = line.split(" ")[0] ?? ""
           if (head && lastHead && head !== lastHead) {
-            // Deduplicate: skip if any session already reported this commit
-            if (!ctx.hasRecentMessage(`Committed: ${head}`)) {
+            // Atomic dedup: first session to claim this commit hash wins
+            if (ctx.claimDedup(`commit:${head}`)) {
               ctx.sendMessage("chief", `Committed: ${line}`, "status")
             }
             // Auto-reload if tribe code changed in this commit

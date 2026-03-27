@@ -111,6 +111,13 @@ export function openDatabase(path: string): Database {
 		ts          INTEGER NOT NULL
 	)`)
 
+  // Dedup table — atomic INSERT OR IGNORE prevents race-condition duplicates
+  db.run(`CREATE TABLE IF NOT EXISTS dedup (
+		key        TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		ts         INTEGER NOT NULL
+	)`)
+
   db.run(`CREATE TABLE IF NOT EXISTS leadership (
 		role         TEXT PRIMARY KEY DEFAULT 'chief',
 		holder_id    TEXT NOT NULL,
@@ -238,6 +245,14 @@ export function createStatements(db: Database) {
     hasRecentMessage: db.prepare(`
 		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
 	`),
+
+    // Atomic dedup: INSERT OR IGNORE — first session to claim a key wins, others get changes=0
+    claimDedup: db.prepare(
+      "INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)",
+    ),
+
+    // Cleanup old dedup entries (called by retention)
+    cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),
 
     updateLastDelivered: db.prepare(
       "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id",
