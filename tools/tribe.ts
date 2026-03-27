@@ -219,8 +219,17 @@ const pluginCtx: PluginContext = {
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
   claimDedup(key: string): boolean {
-    const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() })
-    return result.changes > 0
+    // BEGIN IMMEDIATE forces write lock acquisition before the INSERT,
+    // serializing concurrent claims and preventing WAL race conditions
+    try {
+      db.run("BEGIN IMMEDIATE")
+      const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() })
+      db.run("COMMIT")
+      return result.changes > 0
+    } catch {
+      try { db.run("ROLLBACK") } catch { /* already rolled back */ }
+      return false // Lock contention — another session won, skip
+    }
   },
   sessionName: ctx.getName(),
   sessionId: SESSION_ID,
