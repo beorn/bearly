@@ -156,6 +156,11 @@ function openDatabase(path) {
 		full_md     TEXT NOT NULL,
 		ts          INTEGER NOT NULL
 	)`);
+  db.run(`CREATE TABLE IF NOT EXISTS dedup (
+		key        TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		ts         INTEGER NOT NULL
+	)`);
   db.run(`CREATE TABLE IF NOT EXISTS leadership (
 		role         TEXT PRIMARY KEY DEFAULT 'chief',
 		holder_id    TEXT NOT NULL,
@@ -249,6 +254,8 @@ function createStatements(db) {
     hasRecentMessage: db.prepare(`
 		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
 	`),
+    claimDedup: db.prepare("INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)"),
+    cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),
     updateLastDelivered: db.prepare("UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id"),
     getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
     activeSessions: db.prepare("SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL"),
@@ -476,6 +483,7 @@ function cleanupOldData(ctx) {
   const eventsDel = ctx.db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL });
   const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL });
   const aliasesDel = ctx.db.prepare("DELETE FROM aliases WHERE renamed_at < $cutoff").run({ $cutoff: now_ms - DATA_TTL });
+  ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 });
   const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0);
   if (total > 0) {
     process.stderr.write(`[tribe] cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted
@@ -1193,13 +1201,13 @@ function beadsPlugin(opts = { beadsDir: null }) {
               const isMyClaim = matchesName || matchesSession;
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed");
-                if (!ctx.hasRecentMessage(`Claimed: ${entry.id}`)) {
+                if (ctx.claimDedup(`claimed:${entry.id}`)) {
                   ctx.sendMessage("chief", `Claimed: ${entry.id} \u2014 ${entry.title}`, "status", entry.id);
                 }
               }
               if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
                 reportedStates.set(entry.id, "closed");
-                if (!ctx.hasRecentMessage(`Closed: ${entry.id}`)) {
+                if (ctx.claimDedup(`closed:${entry.id}`)) {
                   ctx.sendMessage("chief", `Closed: ${entry.id} \u2014 ${entry.title}`, "status", entry.id);
                 }
               }
@@ -1245,7 +1253,7 @@ function gitPlugin() {
           const line = out.trim();
           const head = line.split(" ")[0] ?? "";
           if (head && lastHead && head !== lastHead) {
-            if (!ctx.hasRecentMessage(`Committed: ${head}`)) {
+            if (ctx.claimDedup(`commit:${head}`)) {
               ctx.sendMessage("chief", `Committed: ${line}`, "status");
             }
             try {
@@ -1563,6 +1571,10 @@ var pluginCtx = {
   hasRecentMessage(contentPrefix) {
     const since = Date.now() - 300000;
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since });
+  },
+  claimDedup(key) {
+    const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() });
+    return result.changes > 0;
   },
   sessionName: ctx.getName(),
   sessionId: SESSION_ID,
