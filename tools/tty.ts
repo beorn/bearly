@@ -17,6 +17,7 @@
  */
 
 import { Command } from "commander"
+import { colorizeHelp } from "@silvery/commander"
 import { createTerminal } from "@termless/core"
 import { createXtermBackend } from "@termless/xtermjs"
 
@@ -107,4 +108,5 @@ program
     }
   })
 
+colorizeHelp(program)
 program.parse()

@@ -20,6 +20,7 @@
  */
 
 import { Command, CommanderError } from "commander"
+import { colorizeHelp } from "@silvery/commander"
 import { cmdSearch, type SearchOptions } from "./recall/search"
 import { cmdStatus } from "./recall/status"
 import { cmdSessions, cmdIndex } from "./recall/sessions"
@@ -163,6 +164,8 @@ program
 // ============================================================================
 // Entry point
 // ============================================================================
+
+colorizeHelp(program)
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   // No args → show help (Step 0: fix exitOverride crash)

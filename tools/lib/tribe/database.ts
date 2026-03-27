@@ -247,9 +247,7 @@ export function createStatements(db: Database) {
 	`),
 
     // Atomic dedup: INSERT OR IGNORE — first session to claim a key wins, others get changes=0
-    claimDedup: db.prepare(
-      "INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)",
-    ),
+    claimDedup: db.prepare("INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)"),
 
     // Cleanup old dedup entries (called by retention)
     cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),

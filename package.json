@@ -51,6 +51,7 @@
     "@ai-sdk/perplexity": "^3.0.25",
     "@ai-sdk/xai": "^3.0.72",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@silvery/commander": "^0.1.0",
     "@termless/core": "^0.3.0",
     "@termless/xtermjs": "^0.3.0",
     "ai": "^6.0.134",

@@ -76,9 +76,7 @@ export function registerSession(ctx: TribeContext): void {
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts
         initialSeq = prior.last_delivered_seq ?? 0
-        process.stderr.write(
-          `[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}\n`,
-        )
+        process.stderr.write(`[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}\n`)
       }
     }
     // Strategy 2: match by PID (works for /mcp reconnect — same PID, new MCP process)
@@ -94,22 +92,18 @@ export function registerSession(ctx: TribeContext): void {
       if (priorByPid?.last_delivered_seq) {
         initialTs = priorByPid.last_delivered_ts ?? 0
         initialSeq = priorByPid.last_delivered_seq
-        process.stderr.write(
-          `[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}\n`,
-        )
+        process.stderr.write(`[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}\n`)
       }
     }
     // Strategy 3: if no prior session found, skip to current latest (avoid replaying entire history)
     if (initialSeq === 0) {
-      const latest = ctx.db
-        .prepare("SELECT MAX(rowid) as max_seq FROM messages")
-        .get() as { max_seq: number | null } | null
+      const latest = ctx.db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
+        max_seq: number | null
+      } | null
       if (latest?.max_seq) {
         initialSeq = latest.max_seq
         initialTs = Date.now()
-        process.stderr.write(
-          `[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}\n`,
-        )
+        process.stderr.write(`[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}\n`)
       }
     }
     // Backward compat: if no seq available, bootstrap from current max rowid
