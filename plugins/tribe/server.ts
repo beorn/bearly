@@ -1573,8 +1573,17 @@ var pluginCtx = {
     return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since });
   },
   claimDedup(key) {
-    const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() });
-    return result.changes > 0;
+    try {
+      db.run("BEGIN IMMEDIATE");
+      const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() });
+      db.run("COMMIT");
+      return result.changes > 0;
+    } catch {
+      try {
+        db.run("ROLLBACK");
+      } catch {}
+      return false;
+    }
   },
   sessionName: ctx.getName(),
   sessionId: SESSION_ID,
