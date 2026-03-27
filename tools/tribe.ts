@@ -49,6 +49,69 @@ import { handleToolCall } from "./lib/tribe/handlers.ts"
 import { createPoller } from "./lib/tribe/polling.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
+import { createHash } from "node:crypto"
+import { readdirSync, readFileSync, existsSync } from "node:fs"
+import { resolve, dirname } from "node:path"
+
+// ---------------------------------------------------------------------------
+// Source version check — re-exec if code changed since this process started
+// ---------------------------------------------------------------------------
+
+function computeSourceHash(): string {
+  const dir = dirname(new URL(import.meta.url).pathname)
+  const files = [
+    resolve(dir, "tribe.ts"),
+    ...(() => {
+      const libDir = resolve(dir, "lib/tribe")
+      if (!existsSync(libDir)) return []
+      return readdirSync(libDir)
+        .filter((f) => f.endsWith(".ts"))
+        .sort()
+        .map((f) => resolve(libDir, f))
+    })(),
+  ]
+  const hash = createHash("md5")
+  for (const f of files) {
+    try {
+      hash.update(readFileSync(f))
+    } catch {
+      /* file missing */
+    }
+  }
+  return hash.digest("hex").slice(0, 12)
+}
+
+const SOURCE_HASH = computeSourceHash()
+
+// Check if a prior process stored a different hash — if so, we're stale (Bun cache)
+// Uses a simple file marker since the DB isn't open yet
+const HASH_FILE = resolve(
+  process.env.TRIBE_DB ?? findBeadsDir() ?? resolve(process.env.HOME ?? "~", ".local/share/tribe"),
+  ".tribe-source-hash",
+)
+
+try {
+  const stored = existsSync(HASH_FILE) ? readFileSync(HASH_FILE, "utf8").trim() : ""
+  if (stored && stored !== SOURCE_HASH) {
+    process.stderr.write(`[tribe] source hash changed (${stored} → ${SOURCE_HASH}), re-execing\n`)
+    // Write new hash before re-exec
+    Bun.write(HASH_FILE, SOURCE_HASH)
+    // Re-exec with fresh Bun compilation
+    const child = Bun.spawn([process.execPath, ...process.argv.slice(1)], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: { ...process.env, BUN_RUNTIME_TRANSPILER_CACHE: "0" },
+    })
+    child.exited.then((code) => process.exit(code ?? 0))
+    // Block further execution in this process
+    await new Promise(() => {})
+  }
+  // Write current hash for future processes
+  Bun.write(HASH_FILE, SOURCE_HASH)
+} catch {
+  // Hash check failed — continue anyway, not critical
+}
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -227,7 +290,11 @@ const pluginCtx: PluginContext = {
       db.run("COMMIT")
       return result.changes > 0
     } catch {
-      try { db.run("ROLLBACK") } catch { /* already rolled back */ }
+      try {
+        db.run("ROLLBACK")
+      } catch {
+        /* already rolled back */
+      }
       return false // Lock contention — another session won, skip
     }
   },
