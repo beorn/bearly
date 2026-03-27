@@ -1444,6 +1444,47 @@ var TOOLS_LIST = [
 ];
 
 // tools/tribe.ts
+import { createHash } from "crypto";
+import { readdirSync, readFileSync as readFileSync3, existsSync as existsSync5 } from "fs";
+import { resolve as resolve5, dirname as dirname4 } from "path";
+function computeSourceHash() {
+  const dir = dirname4(new URL(import.meta.url).pathname);
+  const files = [
+    resolve5(dir, "tribe.ts"),
+    ...(() => {
+      const libDir = resolve5(dir, "lib/tribe");
+      if (!existsSync5(libDir))
+        return [];
+      return readdirSync(libDir).filter((f) => f.endsWith(".ts")).sort().map((f) => resolve5(libDir, f));
+    })()
+  ];
+  const hash = createHash("md5");
+  for (const f of files) {
+    try {
+      hash.update(readFileSync3(f));
+    } catch {}
+  }
+  return hash.digest("hex").slice(0, 12);
+}
+var SOURCE_HASH = computeSourceHash();
+var HASH_FILE = resolve5(process.env.TRIBE_DB ?? findBeadsDir() ?? resolve5(process.env.HOME ?? "~", ".local/share/tribe"), ".tribe-source-hash");
+try {
+  const stored = existsSync5(HASH_FILE) ? readFileSync3(HASH_FILE, "utf8").trim() : "";
+  if (stored && stored !== SOURCE_HASH) {
+    process.stderr.write(`[tribe] source hash changed (${stored} \u2192 ${SOURCE_HASH}), re-execing
+`);
+    Bun.write(HASH_FILE, SOURCE_HASH);
+    const child = Bun.spawn([process.execPath, ...process.argv.slice(1)], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: { ...process.env, BUN_RUNTIME_TRANSPILER_CACHE: "0" }
+    });
+    child.exited.then((code) => process.exit(code ?? 0));
+    await new Promise(() => {});
+  }
+  Bun.write(HASH_FILE, SOURCE_HASH);
+} catch {}
 var args2 = parseTribeArgs();
 var SESSION_DOMAINS = parseSessionDomains(args2);
 var SESSION_ID = randomUUID3();
