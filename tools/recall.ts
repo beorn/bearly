@@ -19,8 +19,7 @@
  *   recall remember                   # SessionEnd (stdin JSON)
  */
 
-import { Command, CommanderError } from "commander"
-import { colorizeHelp } from "@silvery/commander"
+import { Command, CommanderError, int, uint } from "@silvery/commander"
 import { cmdSearch, type SearchOptions } from "./recall/search"
 import { cmdStatus } from "./recall/status"
 import { cmdSessions, cmdIndex } from "./recall/sessions"
@@ -68,8 +67,8 @@ program
   .option("--raw", "Skip LLM synthesis, show raw results")
   .option("--json", "JSON output")
   .option("-s, --since <time>", "Time filter: 1h, 1d, 1w, today, yesterday (default: 30d)")
-  .option("-n, --limit <num>", "Max results (default: 10)")
-  .option("--timeout <ms>", "LLM timeout in ms (default: 4000)")
+  .option("-n, --limit <num>", "Max results (default: 10)", int)
+  .option("--timeout <ms>", "LLM timeout in ms (default: 4000)", uint)
   .option("-p, --project <glob>", "Project filter")
   .option("-g, --grep", "Regex mode (slower, scans files)")
   .option("-q, --question", "User messages only (implies --raw)")
@@ -164,8 +163,6 @@ program
 // ============================================================================
 // Entry point
 // ============================================================================
-
-colorizeHelp(program)
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   // No args → show help (Step 0: fix exitOverride crash)
