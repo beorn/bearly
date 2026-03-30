@@ -204,25 +204,24 @@ function App() {
       {/* Sessions + detail */}
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
-          <Box>
-            <Box width={18}><Text bold>NAME</Text></Box>
-            <Box width={10}><Text bold>ROLE</Text></Box>
-            <Box width={10}><Text bold>UPTIME</Text></Box>
-            <Text bold>SRC</Text>
-          </Box>
+          <Text bold>{"NAME".padEnd(16)} {"ROLE".padEnd(8)} {"UPTIME".padEnd(8)} SRC</Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
               renderItem={(item) => {
                 const s = sessions.find((x) => x.name === item.value)
                 if (!s) return <Text>{item.label}</Text>
+                const name = s.name.padEnd(16)
+                const role = s.role.padEnd(8)
+                const uptime = fmtDur(s.uptimeMs).padEnd(8)
+                const src = s.source === "db" ? " db" : ""
                 return (
-                  <Box>
-                    <Box width={18}><Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>{s.name}</Text></Box>
-                    <Box width={10}><Muted>{s.role}</Muted></Box>
-                    <Box width={10}><Text>{fmtDur(s.uptimeMs)}</Text></Box>
-                    <Muted>{s.source === "db" ? "db" : ""}</Muted>
-                  </Box>
+                  <Text>
+                    <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>{name}</Text>
+                    {" "}<Muted>{role}</Muted>
+                    {" "}{uptime}
+                    <Muted>{src}</Muted>
+                  </Text>
                 )
               }}
               onChange={(item) => {
@@ -271,3 +270,4 @@ using term = createTerm()
 const { waitUntilExit } = await render(<App />, term)
 await waitUntilExit()
 client.close()
+process.exit(0)
