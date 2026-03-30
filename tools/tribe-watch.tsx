@@ -29,7 +29,7 @@ type SessionInfo = {
   source?: "daemon" | "db"
 }
 
-type DaemonInfo = { pid: number; uptime: number; clients: number }
+type DaemonInfo = { pid: number; uptime: number; clients: number; dbPath: string; socketPath: string }
 
 type LogEntry = {
   ts: string
@@ -41,7 +41,7 @@ type LogEntry = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const COL = { name: 18, role: 10, uptime: 10, src: 4 }
+const COL = { name: 18, role: 10, uptime: 10, conn: 8 }
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -98,7 +98,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const [selectedName, setSelectedName] = useState<string | null>(null)
 
   useInput((input, key) => {
-    if (input === "q" || key.escape) {
+    if (input === "q" || key.escape || (key.ctrl && input === "c")) {
       ac.abort()
       exit()
     }
@@ -169,7 +169,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
   const selected = sessions.find((s) => s.name === selectedName) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.source === "db" ? "db" : ""}`,
+    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.source === "db" ? "db" : "socket"}`,
     value: s.name,
   }))
 
@@ -180,7 +180,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       <Box paddingX={1} justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
-          {daemon && <Small>daemon:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} sessions:{sessions.length}</Small>}
+          {daemon && <Small>pid:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} db:{daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"} sock:{daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}</Small>}
         </Box>
         <Box alignItems="center">
           <Small>j/k nav  q quit</Small>
@@ -191,7 +191,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions + detail */}
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
-          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
+          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}CONN</Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
@@ -213,7 +213,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
               <DetailField label="Domains">{selected.domains?.length ? selected.domains.join(", ") : "—"}</DetailField>
-              <DetailField label="Source">{selected.source ?? "—"}</DetailField>
+              <DetailField label="Conn">{selected.source === "db" ? "db" : "socket"}</DetailField>
             </>
           ) : (
             <Muted>Select a session</Muted>
