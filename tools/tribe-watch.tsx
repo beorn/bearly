@@ -7,9 +7,17 @@
 
 import React, { useState, useEffect, useCallback } from "react"
 import {
-  createTerm, render,
-  Box, Text, H1, Muted, Small, Divider,
-  SelectList, useApp, useInput,
+  createTerm,
+  render,
+  Box,
+  Text,
+  H1,
+  Muted,
+  Small,
+  Divider,
+  SelectList,
+  useApp,
+  useInput,
   type SelectOption,
 } from "@silvery/ag-react"
 import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
@@ -59,10 +67,18 @@ function now(): string {
 }
 
 const EVENT_COLORS: Record<LogEntry["type"], string | undefined> = {
-  join: "$success", leave: "$warning", reload: "$info", error: "$error", message: undefined,
+  join: "$success",
+  leave: "$warning",
+  reload: "$info",
+  error: "$error",
+  message: undefined,
 }
 const EVENT_PREFIX: Record<LogEntry["type"], string> = {
-  join: "+ ", leave: "- ", reload: "↻ ", error: "", message: "",
+  join: "+ ",
+  leave: "- ",
+  reload: "↻ ",
+  error: "",
+  message: "",
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +88,9 @@ const EVENT_PREFIX: Record<LogEntry["type"], string> = {
 function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Box>
-      <Box width={10}><Muted>{label}</Muted></Box>
+      <Box width={10}>
+        <Muted>{label}</Muted>
+      </Box>
       <Text bold>{children}</Text>
     </Box>
   )
@@ -82,7 +100,10 @@ function EventEntry({ entry }: { entry: LogEntry }) {
   return (
     <Text>
       <Small>{entry.ts} </Small>
-      <Text color={EVENT_COLORS[entry.type]}>{EVENT_PREFIX[entry.type]}{entry.text}</Text>
+      <Text color={EVENT_COLORS[entry.type]}>
+        {EVENT_PREFIX[entry.type]}
+        {entry.text}
+      </Text>
     </Text>
   )
 }
@@ -117,12 +138,18 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           messages: Array<{ sender: string; recipient: string; type: string; content: string; ts: number }>
         }
         const seed: LogEntry[] = (result.messages ?? []).map((m) => {
-          const t = new Date(m.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+          const t = new Date(m.ts).toLocaleTimeString("en-GB", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })
           const to = m.recipient === "*" ? "all" : m.recipient
           return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
         })
         if (seed.length > 0) setLog(seed)
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     })()
   }, [])
 
@@ -176,15 +203,20 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
   return (
     <Box flexDirection="column" width="100%" height="100%">
-
       {/* Header */}
       <Box justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
-          {daemon && <Small>pid:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} db:{daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"} sock:{daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}</Small>}
+          {daemon && (
+            <Small>
+              pid:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} db:
+              {daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"} sock:
+              {daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}
+            </Small>
+          )}
         </Box>
         <Box alignItems="center">
-          <Small>j/k nav  q quit</Small>
+          <Small>j/k nav q quit</Small>
         </Box>
       </Box>
 
@@ -192,7 +224,11 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       <Divider />
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column">
-          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}CONN</Text>
+          <Text bold color="$primary">
+            {"NAME".padEnd(COL.name)}
+            {"ROLE".padEnd(COL.role)}
+            {"UPTIME".padEnd(COL.uptime)}CONN
+          </Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
@@ -209,7 +245,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box width={30} flexDirection="column" paddingX={1}>
           {selected ? (
             <>
-              <DetailField label="Name"><Text bold color="$primary">{selected.name}</Text></DetailField>
+              <Text bold color="$primary">{selected.name}</Text>
               <DetailField label="Role">{selected.role}</DetailField>
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
@@ -225,14 +261,12 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
       {/* Event log — no border for easy copy */}
       <Box flexDirection="column" flexGrow={1} overflow="scroll">
-        <Text bold color="$primary">EVENTS</Text>
-        <Text>{" "}</Text>
-        {log.length > 0
-          ? log.map((e, i) => <EventEntry key={i} entry={e} />)
-          : <Muted>Waiting for events...</Muted>
-        }
+        <Text bold color="$primary">
+          EVENTS
+        </Text>
+        <Text> </Text>
+        {log.length > 0 ? log.map((e, i) => <EventEntry key={i} entry={e} />) : <Muted>Waiting for events...</Muted>}
       </Box>
-
     </Box>
   )
 }
@@ -249,7 +283,9 @@ const { values } = parseArgs({
 const SOCKET_PATH = resolveSocketPath(values.socket as string | undefined)
 
 await using client = Object.assign(await connectOrStart(SOCKET_PATH), {
-  [Symbol.asyncDispose]: async function(this: DaemonClient) { this.close() },
+  [Symbol.asyncDispose]: async function (this: DaemonClient) {
+    this.close()
+  },
 })
 
 await client.call("register", {

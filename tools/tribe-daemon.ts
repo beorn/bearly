@@ -25,12 +25,7 @@ import {
   type JsonRpcMessage,
   type JsonRpcRequest,
 } from "./lib/tribe/socket.ts"
-import {
-  parseTribeArgs,
-  parseSessionDomains,
-  findBeadsDir,
-  resolveDbPath,
-} from "./lib/tribe/config.ts"
+import { parseTribeArgs, parseSessionDomains, findBeadsDir, resolveDbPath, detectRole, detectName } from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall } from "./lib/tribe/handlers.ts"
@@ -143,8 +138,20 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
   try {
     switch (method) {
       case "register": {
-        const name = String(p.name ?? `client-${connId.slice(0, 6)}`)
-        const role = String(p.role ?? "member")
+        const clientPid = Number(p.pid ?? 0)
+        const requestedRole = String(p.role ?? "member") as "chief" | "member"
+        const role = p.role ? requestedRole : detectRole(db, {} as any)
+        // Auto-name: use client PID (not daemon PID)
+        let name: string
+        if (p.name) {
+          name = String(p.name)
+        } else if (role === "chief") {
+          name = "chief"
+        } else {
+          const pidName = `member-${clientPid || connId.slice(0, 6)}`
+          const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
+          name = taken ? `member-${clientPid}-${Math.random().toString(36).slice(2, 5)}` : pidName
+        }
         const domains = (p.domains as string[]) ?? []
         const project = String(p.project ?? process.cwd())
         const pid = Number(p.pid ?? 0)
@@ -168,7 +175,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           acquireLease(db, clientCtx.sessionId, name)
         }
 
-        const rel = (p: string) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p }
+        const rel = (p: string) => {
+          const cwd = process.cwd()
+          return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
+        }
         const client: ClientSession = {
           socket: clients.get(connId)?.socket ?? null!,
           id: connId,
@@ -199,7 +209,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         // Find chief name for response
         let chiefName = "none"
         for (const [, c] of clients) {
-          if (c.role === "chief" && c.id !== connId) { chiefName = c.name; break }
+          if (c.role === "chief" && c.id !== connId) {
+            chiefName = c.name
+            break
+          }
         }
 
         return makeResponse(id, {
@@ -236,7 +249,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // CLI-specific methods
       case "cli_status": {
-        const rel = (p: string) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p }
+        const rel = (p: string) => {
+          const cwd = process.cwd()
+          return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
+        }
         const dbConn = rel(String(DB_PATH))
 
         const sessions = Array.from(clients.values()).map((c) => ({
@@ -253,14 +269,23 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         // Also include DB-backed sessions not connected to this daemon
         const t = Date.now() - 30_000
-        const dbSessions = db.prepare(
-          "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC"
-        ).all(t) as Array<{ name: string; role: string; domains: string; pid: number; started_at: number; heartbeat: number }>
+        const dbSessions = db
+          .prepare(
+            "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC",
+          )
+          .all(t) as Array<{
+          name: string
+          role: string
+          domains: string
+          pid: number
+          started_at: number
+          heartbeat: number
+        }>
 
-        const connectedNames = new Set(sessions.map(s => s.name))
+        const connectedNames = new Set(sessions.map((s) => s.name))
         const dbOnly = dbSessions
-          .filter(s => !connectedNames.has(s.name) && s.name !== "daemon")
-          .map(s => ({
+          .filter((s) => !connectedNames.has(s.name) && s.name !== "daemon")
+          .map((s) => ({
             name: s.name,
             role: s.role,
             domains: JSON.parse(s.domains || "[]") as string[],
@@ -287,11 +312,16 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       }
 
       case "cli_health": {
-        const health = await handleToolCall(daemonCtx, "tribe_health", {}, {
-          cleanup: () => {},
-          userRenamed: false,
-          setUserRenamed: () => {},
-        })
+        const health = await handleToolCall(
+          daemonCtx,
+          "tribe_health",
+          {},
+          {
+            cleanup: () => {},
+            userRenamed: false,
+            setUserRenamed: () => {},
+          },
+        )
         return makeResponse(id, {
           ...health,
           daemon: {
@@ -510,12 +540,20 @@ if (INHERIT_FD !== null) {
 } else {
   // Fresh start: clean up stale socket, create new one
   if (existsSync(SOCKET_PATH)) {
-    try { unlinkSync(SOCKET_PATH) } catch { /* ignore */ }
+    try {
+      unlinkSync(SOCKET_PATH)
+    } catch {
+      /* ignore */
+    }
   }
   server = createServer(handleConnection)
   server.listen(SOCKET_PATH, () => {
     // Restrict socket to owner only (no group/other access)
-    try { chmodSync(SOCKET_PATH, 0o600) } catch { /* ignore on platforms that don't support it */ }
+    try {
+      chmodSync(SOCKET_PATH, 0o600)
+    } catch {
+      /* ignore on platforms that don't support it */
+    }
   })
   log(`Listening on ${SOCKET_PATH}`)
 }
@@ -533,7 +571,9 @@ try {
       log(`Hardened .beads/ permissions to 0700`)
     }
   }
-} catch { /* best effort */ }
+} catch {
+  /* best effort */
+}
 
 // ---------------------------------------------------------------------------
 // Auto-quit timer
@@ -616,13 +656,22 @@ function computeSourceHash(): string {
     require("node:path").resolve(dir, "tribe-proxy.ts"),
     ...(() => {
       try {
-        return readdirSync(libDir).filter((f: string) => f.endsWith(".ts")).sort().map((f: string) => require("node:path").resolve(libDir, f))
-      } catch { return [] }
+        return readdirSync(libDir)
+          .filter((f: string) => f.endsWith(".ts"))
+          .sort()
+          .map((f: string) => require("node:path").resolve(libDir, f))
+      } catch {
+        return []
+      }
     })(),
   ]
   const hash = createHash("md5")
   for (const f of files) {
-    try { hash.update(readFileSync(f)) } catch { /* missing */ }
+    try {
+      hash.update(readFileSync(f))
+    } catch {
+      /* missing */
+    }
   }
   return hash.digest("hex").slice(0, 12)
 }
@@ -649,7 +698,9 @@ function onSourceChange(filename: string | null): void {
 // Watch both the tools dir (tribe-daemon.ts, tribe-proxy.ts) and lib/tribe/
 const watchers = [
   watch(sourceDir, { persistent: false }, (_event, filename) => onSourceChange(filename)),
-  ...(existsSync(libTribeDir) ? [watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename))] : []),
+  ...(existsSync(libTribeDir)
+    ? [watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename))]
+    : []),
 ]
 log(`Watching source files for auto-reload`)
 
@@ -669,14 +720,30 @@ function shutdown(): void {
 
   // Close all client connections
   for (const [, client] of clients) {
-    try { client.socket.end() } catch { /* ignore */ }
+    try {
+      client.socket.end()
+    } catch {
+      /* ignore */
+    }
   }
   clients.clear()
 
   server.close()
-  try { unlinkSync(SOCKET_PATH) } catch { /* ignore */ }
-  try { unlinkSync(PID_PATH) } catch { /* ignore */ }
-  try { db.close() } catch { /* ignore */ }
+  try {
+    unlinkSync(SOCKET_PATH)
+  } catch {
+    /* ignore */
+  }
+  try {
+    unlinkSync(PID_PATH)
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.close()
+  } catch {
+    /* ignore */
+  }
   process.exit(0)
 }
 
