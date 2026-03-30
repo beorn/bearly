@@ -243,8 +243,34 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           uptimeMs: Date.now() - c.registeredAt,
         }))
 
+        // Also include DB-backed sessions not connected to this daemon
+        const t = Date.now() - 30_000
+        const dbSessions = db.prepare(
+          "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC"
+        ).all(t) as Array<{ name: string; role: string; domains: string; pid: number; started_at: number; heartbeat: number }>
+
+        // Merge: daemon-connected sessions take priority, add DB-only sessions
+        const connectedNames = new Set(sessions.map(s => s.name))
+        const dbOnly = dbSessions
+          .filter(s => !connectedNames.has(s.name) && s.name !== "daemon")
+          .map(s => ({
+            name: s.name,
+            role: s.role,
+            domains: JSON.parse(s.domains || "[]") as string[],
+            pid: s.pid,
+            claudeSessionId: null,
+            connectedAt: s.started_at,
+            uptimeMs: Date.now() - s.started_at,
+            source: "db" as const,
+          }))
+
+        const allSessions = [
+          ...sessions.map(s => ({ ...s, source: "daemon" as const })),
+          ...dbOnly,
+        ]
+
         return makeResponse(id, {
-          sessions,
+          sessions: allSessions,
           daemon: {
             pid: process.pid,
             uptime: Math.floor((Date.now() - startedAt) / 1000),
