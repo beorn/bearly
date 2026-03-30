@@ -119,7 +119,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const seed: LogEntry[] = (result.messages ?? []).map((m) => {
           const t = new Date(m.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
           const to = m.recipient === "*" ? "all" : m.recipient
-          return { ts: t, text: `${m.sender} → ${to}  [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
+          return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
         })
         if (seed.length > 0) setLog(seed)
       } catch { /* best effort */ }
@@ -157,7 +157,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
         const content = String(params?.content ?? "").slice(0, 120)
-        addLog({ ts: t, text: `${from}  [${type}] ${content}`, type: "message" })
+        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: "message" })
       } else if (method === "session.joined") {
         addLog({ ts: t, text: `${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
       } else if (method === "session.left") {
