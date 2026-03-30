@@ -12,7 +12,9 @@ Reusable Claude Code tools — coordination, testing, research, refactoring.
 | `llm`         | Multi-LLM research, consensus, deep research, local models    | `bun tools/llm.ts`            |
 | `recall`      | Session history search, LLM synthesis, file recovery          | `bun tools/recall.ts`         |
 | `tribe`       | Cross-session coordination MCP channel                        | `bun tools/tribe.ts`          |
-| `tribe-cli`   | Tribe CLI: status, send, log, health, sessions                | `bun tools/tribe-cli.ts`      |
+| `tribe-cli`   | Tribe CLI: status, send, log, health, sessions, start, stop, reload, watch | `bun tools/tribe-cli.ts`      |
+| `tribe-daemon` | Cross-session coordination daemon (single process, Unix socket IPC) | `bun tools/tribe-daemon.ts`  |
+| `tribe-proxy` | Thin MCP proxy connecting to tribe daemon                      | `bun tools/tribe-proxy.ts`    |
 | `tribe-retro` | Tribe retrospective: metrics, timeline, coordination health   | `bun tools/tribe-retro.ts`    |
 | `github`      | GitHub notifications MCP channel (push, PR, CI, issues)       | `bun tools/github-channel.ts` |
 | `tty`         | TTY testing MCP server (Bun PTY + xterm-headless)             | MCP server + CLI              |
@@ -41,6 +43,8 @@ interface TribePlugin {
 | `beads` | `.beads/` dir exists | Reports bead claims/closures to chief every 30s |
 
 **Standalone operation**: Tribe works without beads. When no `.beads/` directory is found, the DB defaults to `~/.local/share/tribe/tribe.db` and the beads plugin silently disables.
+
+**Daemon mode**: In daemon mode, plugins run in the daemon process (not per-session). This means a single plugin instance coordinates across all connected sessions.
 
 **Adding a custom plugin**:
 

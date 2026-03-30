@@ -8,7 +8,6 @@ import { validateName, sanitizeMessage } from "./validation.ts"
 import { isLeaseHolder, acquireLease, getLeaseInfo } from "./lease.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
 import { cleanupOldPrunedSessions } from "./session.ts"
-import { generateRetro, formatMarkdown, parseDuration } from "../../tribe-retro.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -403,7 +402,8 @@ function handleReload(ctx: TribeContext, a: ToolArgs, cleanup: () => void): Tool
   }
 }
 
-function handleRetro(ctx: TribeContext, a: ToolArgs): ToolResult {
+async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> {
+  const { generateRetro, formatMarkdown, parseDuration } = await import("../../tribe-retro.ts")
   const sinceStr = a.since as string | undefined
   let sinceMs: number | undefined
   if (sinceStr) {
