@@ -180,7 +180,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       <Box paddingX={1} justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
-          {daemon && <Small>daemon:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} clients:{daemon.clients}</Small>}
+          {daemon && <Small>daemon:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} sessions:{sessions.length}</Small>}
         </Box>
         <Box alignItems="center">
           <Small>j/k nav  q quit</Small>
@@ -191,10 +191,11 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions + detail */}
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
-          <Text bold color="$primary">{"  "}{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
+          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
+              showIndicator={false}
               onHighlight={(idx) => {
                 const s = sessions[idx]
                 if (s) setSelectedName(s.name)
