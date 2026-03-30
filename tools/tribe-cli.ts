@@ -8,12 +8,17 @@
  *   bun tribe log [--limit N] # Recent messages (default: 20)
  *   bun tribe health          # Diagnostics: stale sessions, unread messages
  *   bun tribe sessions [--all]# List sessions (--all includes dead/pruned)
+ *   bun tribe start           # Start daemon in foreground
+ *   bun tribe stop            # Stop daemon
+ *   bun tribe reload          # Hot-reload daemon (SIGHUP)
+ *   bun tribe watch           # Live dashboard (updates pushed from daemon)
  */
 import { Database } from "bun:sqlite"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
 
 // --- DB discovery ---
 
@@ -252,6 +257,148 @@ function cmdHealth(): void {
   db.close()
 }
 
+// --- Daemon management ---
+
+function findSocketPath(): string {
+  // Reuse the same discovery as the daemon
+  const beadsDir = findTribeDb()?.replace(/\/tribe\.db$/, "")
+  if (beadsDir) return resolve(beadsDir, "tribe.sock")
+  return `/tmp/tribe-${process.getuid?.() ?? process.pid}.sock`
+}
+
+function findPidPath(): string {
+  return findSocketPath().replace(/\.sock$/, ".pid")
+}
+
+function readPid(): number | null {
+  try {
+    const pid = parseInt(readFileSync(findPidPath(), "utf-8").trim(), 10)
+    if (isNaN(pid)) return null
+    try { process.kill(pid, 0); return pid } catch { return null }
+  } catch { return null }
+}
+
+function cmdStart(): void {
+  const pid = readPid()
+  if (pid) {
+    console.log(`Daemon already running (pid=${pid})`)
+    return
+  }
+  const daemonScript = resolve(dirname(new URL(import.meta.url).pathname), "tribe-daemon.ts")
+  console.log(`Starting tribe daemon in foreground...`)
+  console.log(`Socket: ${findSocketPath()}`)
+  const child = spawn(process.execPath, [daemonScript, "--socket", findSocketPath(), "--foreground"], {
+    stdio: "inherit",
+  })
+  child.on("exit", (code) => process.exit(code ?? 0))
+}
+
+function cmdStop(): void {
+  const pid = readPid()
+  if (!pid) {
+    console.log("No daemon running.")
+    return
+  }
+  console.log(`Stopping daemon (pid=${pid})...`)
+  process.kill(pid, "SIGTERM")
+  console.log("Sent SIGTERM.")
+}
+
+function cmdReload(): void {
+  const pid = readPid()
+  if (!pid) {
+    console.log("No daemon running.")
+    return
+  }
+  console.log(`Sending SIGHUP to daemon (pid=${pid})...`)
+  process.kill(pid, "SIGHUP")
+  console.log("Sent SIGHUP — daemon will hot-reload.")
+}
+
+async function cmdWatch(): Promise<void> {
+  const socketPath = findSocketPath()
+  let client: import("./lib/tribe/socket.ts").DaemonClient | null = null
+
+  // Try connecting to daemon
+  try {
+    const { connectToDaemon, connectOrStart } = await import("./lib/tribe/socket.ts")
+    client = await connectOrStart(socketPath)
+  } catch (err) {
+    console.error(`Cannot connect to daemon at ${socketPath}: ${err instanceof Error ? err.message : err}`)
+    console.error("Falling back to direct DB polling mode.\n")
+  }
+
+  if (client) {
+    // Daemon mode: subscribe and stream events
+    console.log("TRIBE WATCH — Live dashboard (Ctrl+C to quit)\n")
+
+    // Get initial status
+    const status = await client.call("cli_status") as {
+      sessions: Array<{ name: string; role: string; domains: string[]; uptimeMs: number }>
+      daemon: { uptime: number; clients: number; dbPath: string }
+    }
+    console.log(`Daemon: pid=${process.pid} uptime=${fmtDur(status.daemon.uptime * 1000)} clients=${status.daemon.clients}`)
+    console.log(`Sessions:`)
+    for (const s of status.sessions) {
+      console.log(`  ${pad(s.name, 20)} ${pad(s.role, 8)} ${fmtDur(s.uptimeMs)}`)
+    }
+    console.log(`\n--- Live events ---\n`)
+
+    // Subscribe to all notifications
+    await client.call("subscribe")
+
+    client.onNotification((method, params) => {
+      const ts = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      switch (method) {
+        case "channel": {
+          const from = params?.from ?? "?"
+          const type = params?.type ?? "notify"
+          const content = String(params?.content ?? "").slice(0, 120)
+          console.log(`${ts}  ${pad(String(from), 16)} [${type}] ${content}`)
+          break
+        }
+        case "session.joined":
+          console.log(`${ts}  + ${params?.name} joined (${params?.role ?? "member"})`)
+          break
+        case "session.left":
+          console.log(`${ts}  - ${params?.name} left`)
+          break
+        case "reload":
+          console.log(`${ts}  ↻ reload: ${params?.reason}`)
+          break
+        default:
+          console.log(`${ts}  [${method}] ${JSON.stringify(params)}`)
+      }
+    })
+
+    // Keep alive
+    process.on("SIGINT", () => {
+      client?.close()
+      process.exit(0)
+    })
+    await new Promise(() => {}) // Block forever
+  } else {
+    // Fallback: poll DB directly
+    console.log("TRIBE WATCH — Polling mode (no daemon) — Ctrl+C to quit\n")
+    let lastTs = Date.now()
+    const db = openDb()
+
+    const tick = () => {
+      const msgs = db.prepare("SELECT * FROM messages WHERE ts > ? ORDER BY ts ASC").all(lastTs) as Msg[]
+      for (const m of msgs) {
+        const to = m.recipient === "*" ? "all" : m.recipient
+        const txt = m.content.length > 100 ? m.content.slice(0, 97) + "..." : m.content
+        console.log(`${fmtTime(m.ts)}  ${pad(`${m.sender} → ${to}`, 28)} [${m.type}] "${txt}"`)
+        lastTs = m.ts
+      }
+    }
+
+    setInterval(tick, 2000)
+    tick()
+    await new Promise(() => {})
+  }
+}
+
 // --- CLI entry ---
 
 const { positionals, values } = parseArgs({
@@ -260,6 +407,7 @@ const { positionals, values } = parseArgs({
     limit: { type: "string", short: "n" },
     all: { type: "boolean", short: "a" },
     help: { type: "boolean", short: "h" },
+    offline: { type: "boolean" },
   },
   allowPositionals: true,
   strict: false,
@@ -275,11 +423,16 @@ Commands:
   log [--limit N]   Show recent messages (default: 20)
   health            Run health diagnostics (stale sessions, unread messages)
   sessions [--all]  List sessions (--all includes dead/pruned)
+  start             Start daemon in foreground (for debugging)
+  stop              Stop daemon (SIGTERM)
+  reload            Hot-reload daemon (SIGHUP)
+  watch             Live dashboard — stream events in real-time
 
 Options:
   -h, --help        Show this help
   -n, --limit N     Limit number of messages (log command)
-  -a, --all         Show all sessions including dead (sessions command)`)
+  -a, --all         Show all sessions including dead (sessions command)
+  --offline          Force direct DB access (skip daemon connection)`)
   process.exit(0)
 }
 
@@ -305,6 +458,18 @@ switch (cmd) {
     break
   case "sessions":
     cmdSessions(!!values.all)
+    break
+  case "start":
+    cmdStart()
+    break
+  case "stop":
+    cmdStop()
+    break
+  case "reload":
+    cmdReload()
+    break
+  case "watch":
+    void cmdWatch()
     break
   default:
     console.error(`Unknown command: ${cmd}\nRun with --help to see available commands.`)
