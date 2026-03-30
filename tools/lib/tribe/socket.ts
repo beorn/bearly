@@ -162,13 +162,14 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
             const id = nextId++
             pending.set(id, { resolve: res, reject: rej })
             socket.write(makeRequest(id, method, params))
-            // Timeout after 30s
-            setTimeout(() => {
+            // Timeout after 30s — unref so it doesn't block exit
+            const timer = setTimeout(() => {
               if (pending.has(id)) {
                 pending.delete(id)
                 rej(new Error(`Request ${method} timed out`))
               }
             }, 30_000)
+            if (typeof timer === "object" && "unref" in timer) timer.unref()
           })
         },
         notify(method, params) {
@@ -178,6 +179,9 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
           notificationHandlers.push(handler)
         },
         close() {
+          // Reject all pending calls so nothing hangs
+          for (const [, p] of pending) p.reject(new Error("Connection closed"))
+          pending.clear()
           socket.end()
         },
         socket,
