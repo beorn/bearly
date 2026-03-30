@@ -178,7 +178,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     <Box flexDirection="column" width="100%" height="100%">
 
       {/* Header */}
-      <Box paddingX={1} justifyContent="space-between">
+      <Box justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
           {daemon && <Small>pid:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} db:{daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"} sock:{daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}</Small>}
