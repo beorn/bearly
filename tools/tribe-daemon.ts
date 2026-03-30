@@ -10,7 +10,7 @@
  */
 
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
-import { existsSync, unlinkSync, writeFileSync, rmSync } from "node:fs"
+import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { randomUUID } from "node:crypto"
 import {
@@ -479,12 +479,27 @@ if (INHERIT_FD !== null) {
     try { unlinkSync(SOCKET_PATH) } catch { /* ignore */ }
   }
   server = createServer(handleConnection)
-  server.listen(SOCKET_PATH)
+  server.listen(SOCKET_PATH, () => {
+    // Restrict socket to owner only (no group/other access)
+    try { chmodSync(SOCKET_PATH, 0o600) } catch { /* ignore on platforms that don't support it */ }
+  })
   log(`Listening on ${SOCKET_PATH}`)
 }
 
-// Write PID file
-writeFileSync(PID_PATH, String(process.pid))
+// Write PID file (owner-only)
+writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 })
+
+// Ensure .beads dir is owner-only
+try {
+  const beadsDir = findBeadsDir()
+  if (beadsDir) {
+    const st = statSync(beadsDir)
+    if ((st.mode & 0o077) !== 0) {
+      chmodSync(beadsDir, 0o700)
+      log(`Hardened .beads/ permissions to 0700`)
+    }
+  }
+} catch { /* best effort */ }
 
 // ---------------------------------------------------------------------------
 // Auto-quit timer
