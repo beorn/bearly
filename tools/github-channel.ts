@@ -203,15 +203,50 @@ interface PullRequest {
   mergeable_state?: string
 }
 
+// ETag cache — 304 responses don't count against GitHub rate limit
+const etagCache = new Map<string, { etag: string; data: unknown }>()
+
 async function ghFetch<T>(path: string): Promise<T> {
   const url = path.startsWith("https://") ? path : `https://api.github.com${path}`
-  const res = await fetch(url, { headers: GITHUB_HEADERS })
+  const headers: Record<string, string> = { ...GITHUB_HEADERS }
+  const cached = etagCache.get(url)
+  if (cached?.etag) headers["If-None-Match"] = cached.etag
+
+  const res = await fetch(url, { headers })
+
+  // Track rate limit from response headers
+  const remaining = res.headers.get("x-ratelimit-remaining")
+  const limit = res.headers.get("x-ratelimit-limit")
+  if (remaining) rateLimitRemaining = parseInt(remaining, 10)
+  if (limit) rateLimitTotal = parseInt(limit, 10)
+
+  if (res.status === 304 && cached) {
+    apiCallsSaved++
+    return cached.data as T
+  }
+
+  apiCallsMade++
+
   if (!res.ok) {
     const body = await res.text()
+    if (res.status === 403 && body.includes("rate limit")) {
+      const reset = res.headers.get("x-ratelimit-reset")
+      const resetIn = reset ? Math.ceil((parseInt(reset, 10) * 1000 - Date.now()) / 60000) : "?"
+      process.stderr.write(`[github] RATE LIMITED — resets in ${resetIn} min. Calls made: ${apiCallsMade}, saved by ETag: ${apiCallsSaved}\n`)
+    }
     throw new Error(`GitHub API ${res.status}: ${body.slice(0, 200)}`)
   }
-  return res.json() as Promise<T>
+
+  const data = await res.json() as T
+  const etag = res.headers.get("etag")
+  if (etag) etagCache.set(url, { etag, data })
+  return data
 }
+
+let apiCallsMade = 0
+let apiCallsSaved = 0
+let rateLimitRemaining = 5000
+let rateLimitTotal = 5000
 
 async function fetchRepoEvents(repo: string): Promise<GitHubEvent[]> {
   return ghFetch<GitHubEvent[]>(`/repos/${repo}/events?per_page=30`)
@@ -650,11 +685,14 @@ async function pollWorkflowRuns(): Promise<void> {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-process.stderr.write(`[github] Monitoring repos: ${REPOS.join(", ")}\n`)
-process.stderr.write(`[github] Poll interval: ${POLL_INTERVAL_SEC}s\n`)
-process.stderr.write(`[github] Event types: ${EVENT_TYPES.join(", ")}\n`)
-process.stderr.write(`[github] Workflow notify: ${WORKFLOW_NOTIFY}\n`)
+process.stderr.write(`[github] Monitoring ${REPOS.length} repos\n`)
+process.stderr.write(`[github] Poll interval: ${POLL_INTERVAL_SEC}s, event types: ${EVENT_TYPES.join(", ")}\n`)
 process.stderr.write(`[github] Cursor file: ${CURSOR_PATH}\n`)
+
+// Rate limit status every 5 minutes
+setInterval(() => {
+  process.stderr.write(`[github] Rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag cache.\n`)
+}, 5 * 60 * 1000)
 
 // Initial poll
 void pollGitHubEvents()
