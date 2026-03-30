@@ -12,7 +12,12 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { parseTribeArgs, parseSessionDomains, resolveClaudeSessionId, resolveClaudeSessionName } from "./lib/tribe/config.ts"
+import {
+  parseTribeArgs,
+  parseSessionDomains,
+  resolveClaudeSessionId,
+  resolveClaudeSessionName,
+} from "./lib/tribe/config.ts"
 import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 
@@ -22,8 +27,6 @@ import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 
 const args = parseTribeArgs()
 const SOCKET_PATH = resolveSocketPath(args.socket)
-const SESSION_NAME = args.name ?? undefined
-const SESSION_ROLE = args.role ?? "member"
 const SESSION_DOMAINS = parseSessionDomains(args)
 const CLAUDE_SESSION_ID = resolveClaudeSessionId()
 const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
@@ -41,16 +44,16 @@ try {
   process.exit(1)
 }
 
-// Register with daemon
-const registration = await daemon.call("register", {
-  name: SESSION_NAME,
-  role: SESSION_ROLE,
+// Register with daemon — pass raw args, let daemon decide name/role
+const registration = (await daemon.call("register", {
+  ...(args.name ? { name: args.name } : {}),
+  ...(args.role ? { role: args.role } : {}),
   domains: SESSION_DOMAINS,
   project: process.cwd(),
   pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
-}) as { sessionId: string; name: string; role: string; chief: string }
+})) as { sessionId: string; name: string; role: string; chief: string }
 
 const myName = registration.name
 const myRole = registration.role
@@ -132,31 +135,35 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 daemon.onNotification((method, params) => {
   if (method === "channel") {
     // Forward tribe channel notification to Claude Code
-    mcp.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: String(params?.content ?? ""),
-        meta: {
-          from: String(params?.from ?? "unknown"),
-          type: String(params?.type ?? "notify"),
-          bead: params?.bead_id ? String(params.bead_id) : undefined,
-          message_id: params?.message_id ? String(params.message_id) : undefined,
+    mcp
+      .notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: String(params?.content ?? ""),
+          meta: {
+            from: String(params?.from ?? "unknown"),
+            type: String(params?.type ?? "notify"),
+            bead: params?.bead_id ? String(params.bead_id) : undefined,
+            message_id: params?.message_id ? String(params.message_id) : undefined,
+          },
         },
-      },
-    }).catch(() => {
-      // MCP notification failed — Claude Code may have disconnected
-    })
+      })
+      .catch(() => {
+        // MCP notification failed — Claude Code may have disconnected
+      })
   } else if (method === "session.joined" || method === "session.left") {
     // Optionally notify about session changes
     const name = params?.name ?? "unknown"
     const action = method === "session.joined" ? "joined" : "left"
-    mcp.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: `${name} ${action} the tribe`,
-        meta: { from: "daemon", type: "status" },
-      },
-    }).catch(() => {})
+    mcp
+      .notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `${name} ${action} the tribe`,
+          meta: { from: "daemon", type: "status" },
+        },
+      })
+      .catch(() => {})
   } else if (method === "reload") {
     process.stderr.write(`[tribe-proxy] Daemon requests reload: ${params?.reason}\n`)
     // Re-exec proxy to pick up code changes
