@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect, useCallback } from "react"
 import {
-  createTerm, render, patchConsole,
+  createTerm, render,
   Box, Text, H1, Muted, Small, Divider,
   SelectList, useApp, useInput,
   type SelectOption,
@@ -258,10 +258,9 @@ await client.call("register", {
 })
 
 using term = createTerm()
-patchConsole() // Redirect console.log/warn/error to stderr (prevents loggily leaking into alt screen)
 const ac = new AbortController()
-const { waitUntilExit } = await render(<App client={client} ac={ac} />, term)
-await waitUntilExit()
+const handle = render(<App client={client} ac={ac} />, term, { patchConsole: true })
+await handle.run()
 ac.abort()
 client.close()
-client.socket.unref() // Allow event loop to drain
+client.socket.unref()
