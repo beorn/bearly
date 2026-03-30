@@ -2,20 +2,29 @@
 /**
  * Tribe Watch — Live TUI dashboard for tribe coordination.
  *
- * Connects to the tribe daemon socket and displays:
- * - Session list (name, role, domains, uptime)
- * - Live event log (messages, joins, leaves, reloads)
- * - Daemon status bar
+ * Layout:
+ *   ┌─ Sessions (navigable) ──────────┬─ Session Detail ─────────┐
+ *   │  > chief-cwn  chief  1h 15m     │  Name: chief-cwn         │
+ *   │    member-1   member 3d 18h     │  Role: chief             │
+ *   │    member-2   member 1d 18h     │  PID: 62036              │
+ *   │                                 │  Domains: silvery        │
+ *   ├─ Events ────────────────────────┴──────────────────────────┤
+ *   │  13:40  member-1  [status] Committed abc123...             │
+ *   │  13:41  + member-3 joined (member)                         │
+ *   ├────────────────────────────────────────────────────────────┤
+ *   │  daemon:67261 up:6m clients:3 | q/Esc quit  s:send  r:reload │
+ *   └────────────────────────────────────────────────────────────┘
  *
- * Usage:
- *   bun tribe-watch.tsx                    # Auto-discover daemon
- *   bun tribe-watch.tsx --socket /path     # Explicit socket path
- *
- * Keys: q/Esc/Ctrl+C to quit
+ * Keys: j/k navigate sessions, q/Esc quit, s send message, r reload daemon
  */
 
 import React, { useState, useEffect, useCallback } from "react"
-import { createTerm, render, Box, Text, H1, H2, Muted, Small, Divider, useInput, useContentRect } from "@silvery/ag-react"
+import {
+  createTerm, render,
+  Box, Text, H1, H2, H3, Muted, Small, Divider,
+  SelectList, useInput, useContentRect,
+  type SelectOption,
+} from "@silvery/ag-react"
 import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
 import { parseArgs } from "node:util"
 
@@ -40,6 +49,8 @@ type SessionInfo = {
   domains: string[]
   pid: number
   uptimeMs: number
+  claudeSessionId?: string | null
+  source?: "daemon" | "db"
 }
 
 type DaemonInfo = {
@@ -78,22 +89,19 @@ function nowTs(): string {
 // Components
 // ---------------------------------------------------------------------------
 
-function SessionPanel({ sessions }: { sessions: SessionInfo[] }) {
+function SessionDetail({ session }: { session: SessionInfo | null }) {
+  if (!session) return <Muted>No session selected</Muted>
+
   return (
     <Box flexDirection="column" padding={1}>
-      <H2>Sessions ({sessions.length})</H2>
-      <Muted>{"NAME".padEnd(20) + "ROLE".padEnd(10) + "UPTIME"}</Muted>
-      {sessions.filter((s) => !s.name.startsWith("watch-")).map((s) => (
-        <Text key={s.name}>
-          <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>
-            {s.name.padEnd(20)}
-          </Text>
-          <Muted>{s.role.padEnd(10)}</Muted>
-          {fmtDur(s.uptimeMs)}
-        </Text>
-      ))}
-      {sessions.filter((s) => !s.name.startsWith("watch-")).length === 0 && (
-        <Muted>No sessions connected</Muted>
+      <H3>{session.name}</H3>
+      <Text><Text bold>Role    </Text>{session.role}</Text>
+      <Text><Text bold>PID     </Text>{session.pid || "—"}</Text>
+      <Text><Text bold>Uptime  </Text>{fmtDur(session.uptimeMs)}</Text>
+      <Text><Text bold>Domains </Text>{session.domains?.length ? session.domains.join(", ") : "—"}</Text>
+      <Text><Text bold>Source  </Text>{session.source ?? "unknown"}</Text>
+      {session.claudeSessionId && (
+        <Text><Text bold>Claude  </Text><Small>{session.claudeSessionId}</Small></Text>
       )}
     </Box>
   )
@@ -101,12 +109,12 @@ function SessionPanel({ sessions }: { sessions: SessionInfo[] }) {
 
 function EventLog({ entries }: { entries: LogEntry[] }) {
   const rect = useContentRect()
-  const maxLines = Math.max(3, (rect?.height ?? 20) - 3)
+  const maxLines = Math.max(3, (rect?.height ?? 12) - 2)
   const visible = entries.slice(-maxLines)
 
   return (
-    <Box flexDirection="column" padding={1} flexGrow={1}>
-      <H2>Events</H2>
+    <Box flexDirection="column" paddingX={1} flexGrow={1}>
+      <Text bold>Events</Text>
       {visible.map((e, i) => (
         <Text key={i} wrap="truncate">
           <Small>{e.ts} </Small>
@@ -122,29 +130,20 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
   )
 }
 
-function StatusBar({ daemon, exit }: { daemon: DaemonInfo | null; exit: () => void }) {
-  useInput((input, key) => {
-    if (input === "q" || key.escape) exit()
-  })
-
-  if (!daemon) return <Muted>  Connecting to daemon...</Muted>
-  return (
-    <Box paddingX={1}>
-      <Small>
-        daemon:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} clients:{daemon.clients} | q/Esc to quit
-      </Small>
-    </Box>
-  )
-}
-
 function App({ client, exit }: { client: DaemonClient; exit: () => void }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
+  const [selectedIdx, setSelectedIdx] = useState(0)
 
   const addLog = useCallback((entry: LogEntry) => {
     setLog((prev) => [...prev.slice(-200), entry])
   }, [])
+
+  // Exit keys
+  useInput((input, key) => {
+    if (input === "q" || key.escape) exit()
+  })
 
   // Periodic status refresh
   useEffect(() => {
@@ -154,7 +153,7 @@ function App({ client, exit }: { client: DaemonClient; exit: () => void }) {
           sessions: SessionInfo[]
           daemon: DaemonInfo
         }
-        setSessions(status.sessions)
+        setSessions(status.sessions.filter((s) => !s.name.startsWith("watch-")))
         setDaemon(status.daemon)
       } catch (err) {
         addLog({ ts: nowTs(), text: `fetch failed: ${err}`, type: "error" })
@@ -192,22 +191,63 @@ function App({ client, exit }: { client: DaemonClient; exit: () => void }) {
     })
   }, [client, addLog])
 
+  const selectedSession = sessions[selectedIdx] ?? null
+  const sessionItems: SelectOption[] = sessions.map((s) => ({
+    label: `${s.name.padEnd(18)} ${s.role.padEnd(8)} ${fmtDur(s.uptimeMs)}`,
+    value: s.name,
+  }))
+
   return (
     <Box flexDirection="column" width="100%" height="100%">
+      {/* Header */}
       <Box paddingX={1}>
         <H1>Tribe Watch</H1>
+        {daemon && (
+          <Box marginLeft={2}>
+            <Muted>{daemon.clients} sessions</Muted>
+          </Box>
+        )}
       </Box>
       <Divider />
-      <Box flexDirection="row" flexGrow={1}>
-        <Box width={44} borderStyle="single" borderColor="$border">
-          <SessionPanel sessions={sessions} />
+
+      {/* Sessions (navigable) + Detail pane */}
+      <Box flexDirection="row" height={Math.min(sessions.length + 4, 12)}>
+        <Box width="50%" borderStyle="single" borderColor="$border" flexDirection="column" paddingX={1}>
+          <Text bold>{"NAME".padEnd(18)} {"ROLE".padEnd(8)} UPTIME</Text>
+          {sessionItems.length > 0 ? (
+            <SelectList
+              items={sessionItems}
+              onSelect={(item) => {
+                const idx = sessions.findIndex((s) => s.name === item.value)
+                if (idx >= 0) setSelectedIdx(idx)
+              }}
+              onChange={(item) => {
+                const idx = sessions.findIndex((s) => s.name === item.value)
+                if (idx >= 0) setSelectedIdx(idx)
+              }}
+            />
+          ) : (
+            <Muted>No sessions</Muted>
+          )}
         </Box>
-        <Box flexGrow={1} borderStyle="single" borderColor="$border">
-          <EventLog entries={log} />
+        <Box width="50%" borderStyle="single" borderColor="$border">
+          <SessionDetail session={selectedSession} />
         </Box>
       </Box>
-      <Divider />
-      <StatusBar daemon={daemon} exit={exit} />
+
+      {/* Event log */}
+      <Box flexGrow={1} borderStyle="single" borderColor="$border">
+        <EventLog entries={log} />
+      </Box>
+
+      {/* Status bar */}
+      <Box paddingX={1}>
+        <Small>
+          {daemon
+            ? `daemon:${daemon.pid} up:${fmtDur(daemon.uptime * 1000)} | j/k:navigate  q/Esc:quit`
+            : "connecting..."}
+        </Small>
+      </Box>
     </Box>
   )
 }
@@ -227,7 +267,6 @@ try {
   process.exit(1)
 }
 
-// Register as a watch client (not a real session)
 await client.call("register", {
   name: `watch-${process.pid}`,
   role: "member",
