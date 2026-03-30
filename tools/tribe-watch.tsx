@@ -186,7 +186,6 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           <Small>j/k nav  q quit</Small>
         </Box>
       </Box>
-      <Divider />
 
       {/* Sessions + detail */}
       <Box flexDirection="row">
