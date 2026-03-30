@@ -5,10 +5,10 @@
  * Keys: j/k navigate sessions, q/Esc quit
  */
 
-import React, { useState, useEffect, useCallback, useRef } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import {
   createTerm, render,
-  Box, Text, H1, H3, Muted, Small, Divider,
+  Box, Text, H1, Muted, Small, Divider,
   SelectList, useApp, useInput,
   type SelectOption,
 } from "@silvery/ag-react"
@@ -41,6 +41,8 @@ type LogEntry = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+const COL = { name: 18, role: 10, uptime: 10, src: 4 }
+
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
@@ -66,11 +68,11 @@ const EVENT_PREFIX: Record<LogEntry["type"], string> = {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Field({ label, value }: { label: string; value: string }) {
+function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Box>
-      <Box width={10}><Text bold>{label}</Text></Box>
-      <Text>{value}</Text>
+      <Box width={10}><Muted>{label}</Muted></Box>
+      <Text bold>{children}</Text>
     </Box>
   )
 }
@@ -93,7 +95,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
-  const [selectedIdx, setSelectedIdx] = useState(0)
+  const [selectedName, setSelectedName] = useState<string | null>(null)
 
   useInput((input, key) => {
     if (input === "q" || key.escape) {
@@ -106,7 +108,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     setLog((prev) => [...prev.slice(-200), entry])
   }, [])
 
-  // Periodic status refresh — abort signal cancels interval
+  // Periodic status refresh
   useEffect(() => {
     const { signal } = ac
     const poll = async () => {
@@ -130,7 +132,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   useEffect(() => {
     const { signal } = ac
     void client.call("subscribe").catch(() => {})
-    const handler = (method: string, params?: Record<string, unknown>) => {
+    client.onNotification((method, params) => {
       if (signal.aborted) return
       const t = now()
       if (method === "channel") {
@@ -145,13 +147,12 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       } else if (method === "reload") {
         addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
       }
-    }
-    client.onNotification(handler)
+    })
   }, [client, ac, addLog])
 
-  const selected = sessions[selectedIdx] ?? null
+  const selected = sessions.find((s) => s.name === selectedName) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: s.name,
+    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.source === "db" ? "db" : ""}`,
     value: s.name,
   }))
 
@@ -173,26 +174,11 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions + detail */}
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
-          <Text bold>{"NAME".padEnd(16)} {"ROLE".padEnd(8)} {"UPTIME".padEnd(8)} SRC</Text>
+          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
-              renderItem={(item) => {
-                const s = sessions.find((x) => x.name === item.value)
-                if (!s) return <Text>{item.label}</Text>
-                return (
-                  <Text>
-                    <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>{s.name.padEnd(16)}</Text>
-                    {" "}<Muted>{s.role.padEnd(8)}</Muted>
-                    {" "}{fmtDur(s.uptimeMs).padEnd(8)}
-                    <Muted>{s.source === "db" ? " db" : ""}</Muted>
-                  </Text>
-                )
-              }}
-              onChange={(item) => {
-                const idx = sessions.findIndex((s) => s.name === item.value)
-                if (idx >= 0) setSelectedIdx(idx)
-              }}
+              onChange={(item) => setSelectedName(item.value)}
             />
           ) : (
             <Muted>No sessions</Muted>
@@ -201,12 +187,12 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box flexGrow={2} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1} paddingY={1}>
           {selected ? (
             <>
-              <H3>{selected.name}</H3>
-              <Field label="Role" value={selected.role} />
-              <Field label="PID" value={String(selected.pid || "—")} />
-              <Field label="Uptime" value={fmtDur(selected.uptimeMs)} />
-              <Field label="Domains" value={selected.domains?.length ? selected.domains.join(", ") : "—"} />
-              <Field label="Source" value={selected.source ?? "—"} />
+              <DetailField label="Name"><Text bold color="$primary">{selected.name}</Text></DetailField>
+              <DetailField label="Role">{selected.role}</DetailField>
+              <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
+              <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
+              <DetailField label="Domains">{selected.domains?.length ? selected.domains.join(", ") : "—"}</DetailField>
+              <DetailField label="Source">{selected.source ?? "—"}</DetailField>
             </>
           ) : (
             <Muted>Select a session</Muted>
@@ -214,9 +200,10 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         </Box>
       </Box>
 
-      {/* Event log */}
-      <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="$border" paddingX={1} overflow="scroll">
-        <Text bold>Events</Text>
+      {/* Event log — no border for easy copy */}
+      <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="scroll">
+        <Text bold color="$primary">EVENTS</Text>
+        <Text>{" "}</Text>
         {log.length > 0
           ? log.map((e, i) => <EventEntry key={i} entry={e} />)
           : <Muted>Waiting for events...</Muted>
@@ -228,7 +215,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 }
 
 // ---------------------------------------------------------------------------
-// Run — async disposable lifecycle
+// Run
 // ---------------------------------------------------------------------------
 
 const { values } = parseArgs({
@@ -254,4 +241,6 @@ using term = createTerm()
 const ac = new AbortController()
 const { waitUntilExit } = await render(<App client={client} ac={ac} />, term)
 await waitUntilExit()
-ac.abort() // Signal all intervals/handlers to stop
+ac.abort()
+client.close()
+client.socket.unref() // Allow event loop to drain
