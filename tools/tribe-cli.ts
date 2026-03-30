@@ -168,23 +168,43 @@ function cmdSessions(showAll: boolean): void {
   db.close()
 }
 
-function cmdLog(limit: number): void {
+function cmdLog(limit: number, follow: boolean): void {
   const db = openDb()
   const rows = db.prepare("SELECT * FROM messages ORDER BY ts DESC LIMIT ?").all(limit) as Msg[]
-  if (!rows.length) {
-    console.log("No messages in tribe log.")
+
+  if (!follow) {
+    if (!rows.length) {
+      console.log("No messages in tribe log.")
+      db.close()
+      return
+    }
+    console.log(`TRIBE LOG \u2014 last ${rows.length} message${rows.length !== 1 ? "s" : ""}\n`)
+    for (const m of rows.reverse()) {
+      fmtMsg(m)
+    }
     db.close()
     return
   }
 
-  console.log(`TRIBE LOG \u2014 last ${rows.length} message${rows.length !== 1 ? "s" : ""}\n`)
-  for (const m of rows.reverse()) {
-    const to = m.recipient === "*" ? "all" : m.recipient
-    const txt = m.content.length > 120 ? m.content.slice(0, 117) + "..." : m.content
-    const bead = m.bead_id ? ` bead=${m.bead_id}` : ""
-    console.log(`  ${fmtTime(m.ts)}  ${pad(`${m.sender} \u2192 ${to}`, 28)}  [${m.type}]${bead} "${txt}"`)
-  }
-  db.close()
+  // Follow mode: print recent, then poll for new messages
+  console.log(`TRIBE LOG \u2014 follow mode (Ctrl+C to quit)\n`)
+  for (const m of rows.reverse()) fmtMsg(m)
+
+  let lastTs = rows.length ? Math.max(...rows.map((m) => m.ts)) : Date.now()
+  setInterval(() => {
+    const newMsgs = db.prepare("SELECT * FROM messages WHERE ts > ? ORDER BY ts ASC").all(lastTs) as Msg[]
+    for (const m of newMsgs) {
+      fmtMsg(m)
+      lastTs = m.ts
+    }
+  }, 1000)
+}
+
+function fmtMsg(m: Msg): void {
+  const to = m.recipient === "*" ? "all" : m.recipient
+  const txt = m.content.length > 120 ? m.content.slice(0, 117) + "..." : m.content
+  const bead = m.bead_id ? ` bead=${m.bead_id}` : ""
+  console.log(`  ${fmtTime(m.ts)}  ${pad(`${m.sender} \u2192 ${to}`, 28)}  [${m.type}]${bead} "${txt}"`)
 }
 
 function cmdSend(to: string, message: string): void {
@@ -315,88 +335,14 @@ function cmdReload(): void {
   console.log("Sent SIGHUP — daemon will hot-reload.")
 }
 
-async function cmdWatch(): Promise<void> {
-  const socketPath = findSocketPath()
-  let client: import("./lib/tribe/socket.ts").DaemonClient | null = null
-
-  // Try connecting to daemon
-  try {
-    const { connectToDaemon, connectOrStart } = await import("./lib/tribe/socket.ts")
-    client = await connectOrStart(socketPath)
-  } catch (err) {
-    console.error(`Cannot connect to daemon at ${socketPath}: ${err instanceof Error ? err.message : err}`)
-    console.error("Falling back to direct DB polling mode.\n")
-  }
-
-  if (client) {
-    // Daemon mode: subscribe and stream events
-    console.log("TRIBE WATCH — Live dashboard (Ctrl+C to quit)\n")
-
-    // Get initial status
-    const status = await client.call("cli_status") as {
-      sessions: Array<{ name: string; role: string; domains: string[]; uptimeMs: number }>
-      daemon: { uptime: number; clients: number; dbPath: string }
-    }
-    console.log(`Daemon: pid=${process.pid} uptime=${fmtDur(status.daemon.uptime * 1000)} clients=${status.daemon.clients}`)
-    console.log(`Sessions:`)
-    for (const s of status.sessions) {
-      console.log(`  ${pad(s.name, 20)} ${pad(s.role, 8)} ${fmtDur(s.uptimeMs)}`)
-    }
-    console.log(`\n--- Live events ---\n`)
-
-    // Subscribe to all notifications
-    await client.call("subscribe")
-
-    client.onNotification((method, params) => {
-      const ts = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      switch (method) {
-        case "channel": {
-          const from = params?.from ?? "?"
-          const type = params?.type ?? "notify"
-          const content = String(params?.content ?? "").slice(0, 120)
-          console.log(`${ts}  ${pad(String(from), 16)} [${type}] ${content}`)
-          break
-        }
-        case "session.joined":
-          console.log(`${ts}  + ${params?.name} joined (${params?.role ?? "member"})`)
-          break
-        case "session.left":
-          console.log(`${ts}  - ${params?.name} left`)
-          break
-        case "reload":
-          console.log(`${ts}  ↻ reload: ${params?.reason}`)
-          break
-        default:
-          console.log(`${ts}  [${method}] ${JSON.stringify(params)}`)
-      }
-    })
-
-    // Keep alive
-    process.on("SIGINT", () => {
-      client?.close()
-      process.exit(0)
-    })
-    await new Promise(() => {}) // Block forever
-  } else {
-    // Fallback: poll DB directly
-    console.log("TRIBE WATCH — Polling mode (no daemon) — Ctrl+C to quit\n")
-    let lastTs = Date.now()
-    const db = openDb()
-
-    const tick = () => {
-      const msgs = db.prepare("SELECT * FROM messages WHERE ts > ? ORDER BY ts ASC").all(lastTs) as Msg[]
-      for (const m of msgs) {
-        const to = m.recipient === "*" ? "all" : m.recipient
-        const txt = m.content.length > 100 ? m.content.slice(0, 97) + "..." : m.content
-        console.log(`${fmtTime(m.ts)}  ${pad(`${m.sender} → ${to}`, 28)} [${m.type}] "${txt}"`)
-        lastTs = m.ts
-      }
-    }
-
-    setInterval(tick, 2000)
-    tick()
-    await new Promise(() => {})
-  }
+function cmdWatch(): void {
+  // Launch the Silvery TUI watch app
+  const watchScript = resolve(dirname(new URL(import.meta.url).pathname), "tribe-watch.tsx")
+  const args = ["--socket", findSocketPath()]
+  const child = spawn(process.execPath, [watchScript, ...args], {
+    stdio: "inherit",
+  })
+  child.on("exit", (code) => process.exit(code ?? 0))
 }
 
 // --- CLI entry ---
@@ -406,6 +352,7 @@ const { positionals, values } = parseArgs({
   options: {
     limit: { type: "string", short: "n" },
     all: { type: "boolean", short: "a" },
+    follow: { type: "boolean", short: "f" },
     help: { type: "boolean", short: "h" },
     offline: { type: "boolean" },
   },
@@ -420,7 +367,7 @@ if (!cmd || values.help) {
 Commands:
   status            Show active sessions (name, role, domains, uptime, last heartbeat)
   send <to> <msg>   Send a message to a session
-  log [--limit N]   Show recent messages (default: 20)
+  log [-f] [-n N]   Show recent messages (-f to follow live)
   health            Run health diagnostics (stale sessions, unread messages)
   sessions [--all]  List sessions (--all includes dead/pruned)
   start             Start daemon in foreground (for debugging)
@@ -431,6 +378,7 @@ Commands:
 Options:
   -h, --help        Show this help
   -n, --limit N     Limit number of messages (log command)
+  -f, --follow      Follow mode — stream new messages live (log command)
   -a, --all         Show all sessions including dead (sessions command)
   --offline          Force direct DB access (skip daemon connection)`)
   process.exit(0)
@@ -451,7 +399,7 @@ switch (cmd) {
     break
   }
   case "log":
-    cmdLog(values.limit ? parseInt(values.limit as string, 10) : 20)
+    cmdLog(values.limit ? parseInt(values.limit as string, 10) : 20, !!values.follow)
     break
   case "health":
     cmdHealth()
