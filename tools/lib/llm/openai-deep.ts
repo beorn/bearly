@@ -168,8 +168,15 @@ async function handleStreamingResponse(
     }
   }
 
-  process.stderr.write(`\n⚠️  Research did not complete: ${pollResult.status}\n`)
-  return { fullText: pollResult.content || "", responseId, promptTokens: 0, completionTokens: 0 }
+  const status = pollResult.status
+  const partial = pollResult.content || ""
+  process.stderr.write(`\n⚠️  Research did not complete: ${status}\n`)
+  if (partial.length > 0) {
+    process.stderr.write(`Recovered ${partial.length} chars of partial content.\n`)
+  } else {
+    process.stderr.write(`ERROR: No content recovered from incomplete research (status: ${status}).\n`)
+  }
+  return { fullText: partial, responseId, promptTokens: 0, completionTokens: 0 }
 }
 
 /** Extract text and usage from a completed response object */

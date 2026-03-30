@@ -332,9 +332,14 @@ function buildMetaComment(meta?: OutputMeta): string {
   return `<!-- llm-meta: ${JSON.stringify(obj)} -->`
 }
 
-function finalizeOutput(content: string, meta?: OutputMeta): void {
+async function finalizeOutput(content: string, meta?: OutputMeta): Promise<void> {
   const metaComment = buildMetaComment(meta)
-  void Bun.write(outputFile, `${metaComment}\n\n${content}`)
+  try {
+    await Bun.write(outputFile, `${metaComment}\n\n${content}`)
+  } catch (err) {
+    process.stderr.write(`\nERROR: Failed to write output file ${outputFile}: ${err instanceof Error ? err.message : String(err)}\n`)
+    process.exit(1)
+  }
   persistToResearch(content, meta)
   process.stderr.write("\n")
   process.stderr.write(`Output written to: ${outputFile}\n`)
@@ -344,7 +349,7 @@ function finalizeOutput(content: string, meta?: OutputMeta): void {
 }
 
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */
-function finishResponse(
+async function finishResponse(
   content: string | undefined,
   model: { displayName: string },
   usage?: {
@@ -354,10 +359,16 @@ function finishResponse(
   },
   durationMs?: number,
   query?: string,
-): void {
-  if (!content) return
+): Promise<void> {
+  if (!content || content.trim().length === 0) {
+    process.stderr.write("\nERROR: Model returned empty response (no content). This is a silent failure.\n")
+    process.stderr.write(`Model: ${model.displayName}\n`)
+    if (usage) process.stderr.write(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}\n`)
+    if (durationMs) process.stderr.write(`Duration: ${Math.round(durationMs / 1000)}s\n`)
+    process.exit(1)
+  }
   const cost = usage ? estimateCost(model as any, usage.promptTokens, usage.completionTokens) : undefined
-  finalizeOutput(content, {
+  await finalizeOutput(content, {
     query,
     model: model.displayName,
     tokens: usage?.totalTokens,
@@ -710,7 +721,7 @@ async function askAndFinish(
     onToken: streamToken,
     imagePath,
   })
-  finishResponse(response.content, model, response.usage, response.durationMs, question)
+  await finishResponse(response.content, model, response.usage, response.durationMs, question)
 }
 
 /** Prompt user for Y/n confirmation; exit if declined */
@@ -998,8 +1009,12 @@ async function main() {
       modelOverride: deepModel.modelId,
     })
 
-    if (response.error) console.error(`Error: ${response.error}`)
-    finishResponse(response.content, response.model, response.usage, response.durationMs, topic)
+    if (response.error) {
+      process.stderr.write(`\nERROR: Deep research failed: ${response.error}\n`)
+      if (!response.content || response.content.trim().length === 0) process.exit(1)
+      process.stderr.write("Partial content recovered — writing what we have.\n")
+    }
+    await finishResponse(response.content, response.model, response.usage, response.durationMs, topic)
     return
   }
 
@@ -1113,7 +1128,7 @@ async function main() {
       if (process.stderr.isTTY) {
         console.error("\n" + debateContent)
       }
-      finalizeOutput(debateContent, {
+      await finalizeOutput(debateContent, {
         query: question,
         model: `${result.responses.length} models`,
         cost: formatCost(totalResponseCost(result.responses)),

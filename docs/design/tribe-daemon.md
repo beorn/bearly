@@ -203,6 +203,99 @@ Reconnection: on connect, daemon sends any undelivered messages (since last `del
 - Delete: plugins from proxy (daemon owns them)
 - /complete: grep Database in tribe.ts → 0 hits
 
+## CLI design
+
+The daemon transforms the CLI from a direct-DB reader to a socket client. Same commands, same output, but reliable (no SQLite contention) and live (real-time data from daemon's in-memory state).
+
+```
+bun tribe status          # Sessions with uptime, heartbeat, role, domains
+bun tribe sessions [--all]# List sessions (--all includes disconnected)
+bun tribe send <to> <msg> # Send message through daemon (immediate push)
+bun tribe log [--limit N] # Recent messages
+bun tribe health          # Diagnostics: stale sessions, unread messages, daemon uptime
+bun tribe start           # Start daemon in foreground (for debugging)
+bun tribe stop            # Stop daemon (SIGTERM)
+bun tribe reload          # Hot-reload daemon (SIGHUP)
+bun tribe retro           # Retrospective report (reads DB directly — offline OK)
+```
+
+### Implementation
+
+The CLI connects to the daemon socket and sends JSON-RPC requests. For read-only queries (`status`, `sessions`, `log`, `health`), the daemon returns its authoritative in-memory state plus DB-backed history. For writes (`send`), the daemon handles routing and persistence.
+
+```typescript
+// CLI request
+{"jsonrpc":"2.0","id":1,"method":"cli_status","params":{}}
+
+// Daemon response — real-time, no heartbeat staleness
+{"jsonrpc":"2.0","id":1,"result":{
+  "sessions": [...],
+  "daemon": { "uptime": 3600, "clients": 3, "dbPath": ".beads/tribe.db" }
+}}
+```
+
+New CLI methods (not in MCP proxy):
+
+| Method          | Purpose                            |
+| --------------- | ---------------------------------- |
+| `cli_status`    | Sessions + daemon info             |
+| `cli_log`       | Message history with limit/filter  |
+| `cli_health`    | Full diagnostics                   |
+| `cli_daemon`    | Daemon process info (PID, uptime)  |
+
+### Fallback
+
+If daemon is not running and `--offline` flag is set, CLI falls back to direct DB read (same as current behavior). This allows inspection even when the daemon is down.
+
+### Interactive mode (future)
+
+`bun tribe watch` — TUI dashboard showing live session status and message stream via persistent socket connection. Updates pushed from daemon in real-time.
+
+## Comparison with openclaw gateway
+
+openclaw's gateway is a mature reference architecture solving a related but different problem. Key patterns and how tribe differs:
+
+### Architecture
+
+| Aspect | openclaw gateway | tribe daemon |
+| --- | --- | --- |
+| **Process model** | Single long-running server (WebSocket + HTTP) | Single long-running daemon (Unix socket) |
+| **Client protocol** | WebSocket (remote-capable) | Unix domain socket (local-only) |
+| **Channels** | Telegram, WhatsApp, email, SMS, browser | Claude Code sessions (MCP) |
+| **Session tracking** | In-memory session map + heartbeat runner | In-memory session map + socket liveness |
+| **Storage** | None (stateless gateway, LLM handles state) | SQLite (messages, sessions, events persist) |
+| **Config** | YAML file, hot-reload via chokidar watcher | CLI args + env vars, hot-reload via fs.watch |
+| **Discovery** | DNS/LAN/Tailscale (network-based) | Unix socket path (filesystem-based) |
+| **Auth** | API keys, device auth, session tokens | Unix socket permissions (same-UID) |
+
+### Hot-reload comparison
+
+openclaw uses a hybrid reload system worth studying:
+
+1. **Chokidar file watcher** on config file → 300ms debounce → creates a `GatewayReloadPlan`
+2. **Reload plan classifies changes** as `hot` (apply in-place) vs `restart` (full process restart)
+3. **Hot reload** restarts individual subsystems: channels, cron, hooks, heartbeat — without full restart
+4. **Full restart** via SIGUSR1 with authorization gate: `authorizeGatewaySigusr1Restart()` must be called before the signal fires — prevents unauthorized external SIGUSR1
+5. **Platform-aware restart**: launchd (macOS) or systemd (Linux) for daemon supervision
+
+What we borrow:
+- **Authorized SIGUSR1**: Tribe daemon should gate SIGHUP re-exec behind authorization too — prevent stray signals from causing unexpected restarts
+- **Granular reload plan**: Some changes (config, plugin params) don't need re-exec — just re-read the value. Reserve re-exec for actual code changes.
+- **Subsystem restart**: The daemon can restart individual plugins (git poller, beads watcher) without full re-exec
+
+What we don't need:
+- **Remote networking**: tribe is same-machine, same-user — no WebSocket, no TLS, no discovery
+- **Channel abstraction**: tribe has one channel type (MCP session) — no multi-channel routing
+- **Config file watching**: tribe config is args/env, not a YAML file that changes at runtime
+
+### Key openclaw patterns to adopt
+
+1. **Restart sentinel** (`server-restart-sentinel.ts`): Before re-exec, write a sentinel file. New process reads it to know "I'm a restart, not a fresh start" — important for reconnection behavior.
+
+2. **Subsystem logger hierarchy** (`createSubsystemLogger`): Each subsystem gets a child logger for structured logging. Tribe daemon should do the same — `daemon`, `daemon/socket`, `daemon/plugins/git`, `daemon/plugins/beads`.
+
+3. **Reload plan** rather than blanket restart: classify changes and minimize disruption.
+
 ## What we keep
 
 - All `lib/tribe/` modules (database, handlers, messaging, session, etc.)
