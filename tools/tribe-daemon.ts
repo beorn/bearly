@@ -10,7 +10,7 @@
  */
 
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
-import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync } from "node:fs"
+import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync, readdirSync, readFileSync, watch } from "node:fs"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -604,6 +604,56 @@ process.on("SIGHUP", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Source file watcher — auto-SIGHUP on code changes
+// ---------------------------------------------------------------------------
+
+function computeSourceHash(): string {
+  const { createHash } = require("node:crypto")
+  const dir = require("node:path").dirname(new URL(import.meta.url).pathname)
+  const libDir = require("node:path").resolve(dir, "lib/tribe")
+  const files = [
+    require("node:path").resolve(dir, "tribe-daemon.ts"),
+    require("node:path").resolve(dir, "tribe-proxy.ts"),
+    ...(() => {
+      try {
+        return readdirSync(libDir).filter((f: string) => f.endsWith(".ts")).sort().map((f: string) => require("node:path").resolve(libDir, f))
+      } catch { return [] }
+    })(),
+  ]
+  const hash = createHash("md5")
+  for (const f of files) {
+    try { hash.update(readFileSync(f)) } catch { /* missing */ }
+  }
+  return hash.digest("hex").slice(0, 12)
+}
+
+let sourceHash = computeSourceHash()
+let reloadDebounce: ReturnType<typeof setTimeout> | null = null
+
+// Watch source directory for changes
+const sourceDir = require("node:path").dirname(new URL(import.meta.url).pathname)
+const libTribeDir = require("node:path").resolve(sourceDir, "lib/tribe")
+
+function onSourceChange(filename: string | null): void {
+  if (filename && !filename.endsWith(".ts")) return
+  if (reloadDebounce) clearTimeout(reloadDebounce)
+  reloadDebounce = setTimeout(() => {
+    const newHash = computeSourceHash()
+    if (newHash === sourceHash) return // No actual change
+    log(`Source changed (${sourceHash} → ${newHash}), triggering hot-reload`)
+    sourceHash = newHash
+    process.emit("SIGHUP")
+  }, 500)
+}
+
+// Watch both the tools dir (tribe-daemon.ts, tribe-proxy.ts) and lib/tribe/
+const watchers = [
+  watch(sourceDir, { persistent: false }, (_event, filename) => onSourceChange(filename)),
+  ...(existsSync(libTribeDir) ? [watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename))] : []),
+]
+log(`Watching source files for auto-reload`)
+
+// ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 
@@ -614,6 +664,8 @@ function shutdown(): void {
   clearInterval(heartbeatInterval)
   clearInterval(cleanupInterval)
   cancelQuitTimer()
+  for (const w of watchers) w.close()
+  if (reloadDebounce) clearTimeout(reloadDebounce)
 
   // Close all client connections
   for (const [, client] of clients) {
