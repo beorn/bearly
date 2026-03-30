@@ -174,7 +174,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions + detail */}
       <Box flexDirection="row">
         <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
-          <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
+          <Text bold color="$primary">{"  "}{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}SRC</Text>
           {items.length > 0 ? (
             <SelectList
               items={items}
