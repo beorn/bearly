@@ -139,12 +139,15 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
     switch (method) {
       case "register": {
         const clientPid = Number(p.pid ?? 0)
+        const claudeSessionName = (p.claudeSessionName as string) ?? null
         const requestedRole = String(p.role ?? "member") as "chief" | "member"
         const role = p.role ? requestedRole : detectRole(db, {} as any)
-        // Auto-name: use client PID (not daemon PID)
+        // Name priority: explicit --name > Claude session name > chief > member-<pid>
         let name: string
         if (p.name) {
           name = String(p.name)
+        } else if (claudeSessionName) {
+          name = claudeSessionName
         } else if (role === "chief") {
           name = "chief"
         } else {
