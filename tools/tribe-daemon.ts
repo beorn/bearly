@@ -99,7 +99,8 @@ type ClientSession = {
   project: string
   pid: number
   claudeSessionId: string | null
-  ctx: TribeContext // Per-client context for handler calls
+  conn: string // Connection path (socket or db)
+  ctx: TribeContext
   registeredAt: number
 }
 
@@ -167,6 +168,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           acquireLease(db, clientCtx.sessionId, name)
         }
 
+        const rel = (p: string) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p }
         const client: ClientSession = {
           socket: clients.get(connId)?.socket ?? null!,
           id: connId,
@@ -176,6 +178,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           project,
           pid,
           claudeSessionId,
+          conn: rel(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
         }
@@ -233,6 +236,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // CLI-specific methods
       case "cli_status": {
+        const rel = (p: string) => { const cwd = process.cwd(); return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p }
+        const dbConn = rel(String(DB_PATH))
+
         const sessions = Array.from(clients.values()).map((c) => ({
           name: c.name,
           role: c.role,
@@ -241,6 +247,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           claudeSessionId: c.claudeSessionId,
           connectedAt: c.registeredAt,
           uptimeMs: Date.now() - c.registeredAt,
+          source: "daemon" as const,
+          conn: c.conn,
         }))
 
         // Also include DB-backed sessions not connected to this daemon
@@ -249,7 +257,6 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC"
         ).all(t) as Array<{ name: string; role: string; domains: string; pid: number; started_at: number; heartbeat: number }>
 
-        // Merge: daemon-connected sessions take priority, add DB-only sessions
         const connectedNames = new Set(sessions.map(s => s.name))
         const dbOnly = dbSessions
           .filter(s => !connectedNames.has(s.name) && s.name !== "daemon")
@@ -262,15 +269,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             connectedAt: s.started_at,
             uptimeMs: Date.now() - s.started_at,
             source: "db" as const,
+            conn: dbConn,
           }))
 
-        const cwd = process.cwd()
-        const rel = (p: string) => p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
-
-        const allSessions = [
-          ...sessions.map(s => ({ ...s, source: "daemon" as const, conn: rel(SOCKET_PATH) })),
-          ...dbOnly.map(s => ({ ...s, conn: rel(String(DB_PATH)) })),
-        ]
+        const allSessions = [...sessions, ...dbOnly]
 
         return makeResponse(id, {
           sessions: allSessions,
@@ -444,6 +446,7 @@ function handleConnection(socket: NetSocket): void {
     project: process.cwd(),
     pid: 0,
     claudeSessionId: null,
+    conn: "",
     ctx: daemonCtx,
     registeredAt: Date.now(),
   }
