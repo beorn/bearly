@@ -5,15 +5,17 @@
  * Connects to the tribe daemon socket and displays:
  * - Session list (name, role, domains, uptime)
  * - Live event log (messages, joins, leaves, reloads)
- * - Daemon status (uptime, clients, DB path)
+ * - Daemon status bar
  *
  * Usage:
  *   bun tribe-watch.tsx                    # Auto-discover daemon
  *   bun tribe-watch.tsx --socket /path     # Explicit socket path
+ *
+ * Keys: q/Esc/Ctrl+C to quit
  */
 
 import React, { useState, useEffect, useCallback } from "react"
-import { createTerm, render, Box, Text } from "@silvery/ag-react"
+import { createTerm, render, Box, Text, H1, H2, Muted, Small, Divider, useInput, useContentRect } from "@silvery/ag-react"
 import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
 import { parseArgs } from "node:util"
 
@@ -78,67 +80,75 @@ function nowTs(): string {
 
 function SessionPanel({ sessions }: { sessions: SessionInfo[] }) {
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="$muted" padding={1}>
-      <Text $primary bold>Sessions ({sessions.length})</Text>
-      <Text $muted>{"  " + "NAME".padEnd(18) + "ROLE".padEnd(10) + "UPTIME"}</Text>
-      {sessions.map((s) => (
+    <Box flexDirection="column" padding={1}>
+      <H2>Sessions ({sessions.length})</H2>
+      <Muted>{"NAME".padEnd(20) + "ROLE".padEnd(10) + "UPTIME"}</Muted>
+      {sessions.filter((s) => !s.name.startsWith("watch-")).map((s) => (
         <Text key={s.name}>
-          {"  "}
-          <Text bold={s.role === "chief"} $success={s.role === "chief"}>
-            {s.name.padEnd(18)}
+          <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>
+            {s.name.padEnd(20)}
           </Text>
-          <Text $muted>{s.role.padEnd(10)}</Text>
-          <Text>{fmtDur(s.uptimeMs)}</Text>
+          <Muted>{s.role.padEnd(10)}</Muted>
+          {fmtDur(s.uptimeMs)}
         </Text>
       ))}
-      {sessions.length === 0 && <Text $muted>  No sessions connected</Text>}
+      {sessions.filter((s) => !s.name.startsWith("watch-")).length === 0 && (
+        <Muted>No sessions connected</Muted>
+      )}
     </Box>
   )
 }
 
-function EventLog({ entries, maxLines = 20 }: { entries: LogEntry[]; maxLines?: number }) {
+function EventLog({ entries }: { entries: LogEntry[] }) {
+  const rect = useContentRect()
+  const maxLines = Math.max(3, (rect?.height ?? 20) - 3)
   const visible = entries.slice(-maxLines)
+
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="$muted" padding={1} flexGrow={1}>
-      <Text $primary bold>Event Log</Text>
+    <Box flexDirection="column" padding={1} flexGrow={1}>
+      <H2>Events</H2>
       {visible.map((e, i) => (
-        <Text key={i}>
-          <Text $muted>{e.ts}  </Text>
-          {e.type === "join" && <Text $success>+ {e.text}</Text>}
-          {e.type === "leave" && <Text $warning>- {e.text}</Text>}
-          {e.type === "reload" && <Text $info>↻ {e.text}</Text>}
-          {e.type === "error" && <Text $danger>{e.text}</Text>}
+        <Text key={i} wrap="truncate">
+          <Small>{e.ts} </Small>
+          {e.type === "join" && <Text color="$success">+ {e.text}</Text>}
+          {e.type === "leave" && <Text color="$warning">- {e.text}</Text>}
+          {e.type === "reload" && <Text color="$accent">↻ {e.text}</Text>}
+          {e.type === "error" && <Text color="$error">{e.text}</Text>}
           {e.type === "message" && <Text>{e.text}</Text>}
         </Text>
       ))}
-      {visible.length === 0 && <Text $muted>  Waiting for events...</Text>}
+      {visible.length === 0 && <Muted>Waiting for events...</Muted>}
     </Box>
   )
 }
 
-function StatusBar({ daemon }: { daemon: DaemonInfo | null }) {
-  if (!daemon) return <Text $danger>  Connecting to daemon...</Text>
+function StatusBar({ daemon, exit }: { daemon: DaemonInfo | null; exit: () => void }) {
+  useInput((input, key) => {
+    if (input === "q" || key.escape) exit()
+  })
+
+  if (!daemon) return <Muted>  Connecting to daemon...</Muted>
   return (
     <Box paddingX={1}>
-      <Text $muted>
-        Daemon pid={daemon.pid} uptime={fmtDur(daemon.uptime * 1000)} clients={daemon.clients} | {daemon.socketPath} | Ctrl+C to quit
-      </Text>
+      <Small>
+        daemon:{daemon.pid} up:{fmtDur(daemon.uptime * 1000)} clients:{daemon.clients} | q/Esc to quit
+      </Small>
     </Box>
   )
 }
 
-function App({ client }: { client: DaemonClient }) {
+function App({ client, exit }: { client: DaemonClient; exit: () => void }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
 
   const addLog = useCallback((entry: LogEntry) => {
-    setLog((prev) => [...prev.slice(-100), entry])
+    setLog((prev) => [...prev.slice(-200), entry])
   }, [])
 
-  // Initial fetch + periodic refresh
+  // Periodic status refresh
   useEffect(() => {
-    const fetch = async () => {
+    const fetchStatus = async () => {
       try {
         const status = (await client.call("cli_status")) as {
           sessions: SessionInfo[]
@@ -147,15 +157,15 @@ function App({ client }: { client: DaemonClient }) {
         setSessions(status.sessions)
         setDaemon(status.daemon)
       } catch (err) {
-        addLog({ ts: nowTs(), text: `Status fetch failed: ${err}`, type: "error" })
+        addLog({ ts: nowTs(), text: `fetch failed: ${err}`, type: "error" })
       }
     }
-    void fetch()
-    const interval = setInterval(() => void fetch(), 5000)
+    void fetchStatus()
+    const interval = setInterval(() => void fetchStatus(), 5000)
     return () => clearInterval(interval)
   }, [client, addLog])
 
-  // Subscribe to live notifications
+  // Live notification stream
   useEffect(() => {
     void client.call("subscribe").catch(() => {})
 
@@ -165,7 +175,7 @@ function App({ client }: { client: DaemonClient }) {
         case "channel": {
           const from = String(params?.from ?? "?")
           const type = String(params?.type ?? "notify")
-          const content = String(params?.content ?? "").slice(0, 100)
+          const content = String(params?.content ?? "").slice(0, 120)
           addLog({ ts, text: `${from.padEnd(14)} [${type}] ${content}`, type: "message" })
           break
         }
@@ -183,17 +193,21 @@ function App({ client }: { client: DaemonClient }) {
   }, [client, addLog])
 
   return (
-    <Box flexDirection="column" width="100%">
-      <Box>
-        <Text bold $primary> TRIBE WATCH </Text>
+    <Box flexDirection="column" width="100%" height="100%">
+      <Box paddingX={1}>
+        <H1>Tribe Watch</H1>
       </Box>
-      <Box flexDirection="row" gap={1}>
-        <Box width={50}>
+      <Divider />
+      <Box flexDirection="row" flexGrow={1}>
+        <Box width={44} borderStyle="single" borderColor="$border">
           <SessionPanel sessions={sessions} />
         </Box>
-        <EventLog entries={log} />
+        <Box flexGrow={1} borderStyle="single" borderColor="$border">
+          <EventLog entries={log} />
+        </Box>
       </Box>
-      <StatusBar daemon={daemon} />
+      <Divider />
+      <StatusBar daemon={daemon} exit={exit} />
     </Box>
   )
 }
@@ -213,5 +227,24 @@ try {
   process.exit(1)
 }
 
+// Register as a watch client (not a real session)
+await client.call("register", {
+  name: `watch-${process.pid}`,
+  role: "member",
+  domains: [],
+  project: process.cwd(),
+  pid: process.pid,
+})
+
 using term = createTerm()
-await render(<App client={client} />, term)
+
+function exit() {
+  client.close()
+  term[Symbol.dispose]()
+  process.exit(0)
+}
+
+process.on("SIGINT", exit)
+process.on("SIGTERM", exit)
+
+await render(<App client={client} exit={exit} />, term)
