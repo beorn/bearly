@@ -108,6 +108,23 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     setLog((prev) => [...prev.slice(-200), entry])
   }, [])
 
+  // Seed with recent messages from DB
+  useEffect(() => {
+    void (async () => {
+      try {
+        const result = (await client.call("cli_log", { limit: 20 })) as {
+          messages: Array<{ sender: string; recipient: string; type: string; content: string; ts: number }>
+        }
+        const seed: LogEntry[] = (result.messages ?? []).map((m) => {
+          const t = new Date(m.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+          const to = m.recipient === "*" ? "all" : m.recipient
+          return { ts: t, text: `${m.sender} → ${to}  [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
+        })
+        if (seed.length > 0) setLog(seed)
+      } catch { /* best effort */ }
+    })()
+  }, [])
+
   // Periodic status refresh
   useEffect(() => {
     const { signal } = ac
