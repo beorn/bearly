@@ -80,11 +80,21 @@ export function resolveDbPath(args: TribeArgs, beadsDir: string | null): string 
   return resolve(tribeDir, "tribe.db")
 }
 
-/** Auto-detect role: if no chief exists (or chief is dead), become chief; otherwise member */
+/** Auto-detect role: if a valid leader lease or live chief exists, become member; otherwise chief */
 export function detectRole(db: Database, args: TribeArgs): TribeRole {
   if (args.role) return args.role as TribeRole
+  // Check leader lease first (authoritative — survives heartbeat gaps)
+  try {
+    const lease = db
+      .prepare("SELECT holder_name FROM leadership WHERE role = 'chief' AND lease_until > $now")
+      .get({ $now: Date.now() }) as { holder_name: string } | null
+    if (lease) return "member"
+  } catch {
+    // leadership table may not exist yet (first run) — fall through to heartbeat check
+  }
+  // Fallback: check for live chief by heartbeat
   const threshold = Date.now() - 30_000
-  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ?").get(threshold)
+  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold)
   return liveChief ? "member" : "chief"
 }
 
