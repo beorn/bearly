@@ -1,24 +1,13 @@
 #!/usr/bin/env bun
 /**
  * Tribe CLI — Inspect and interact with the tribe from the terminal.
- *
- * Usage:
- *   bun tribe status          # Active sessions with uptime and heartbeat
- *   bun tribe send <to> <msg> # Send a message to a session
- *   bun tribe log [--limit N] # Recent messages (default: 20)
- *   bun tribe health          # Diagnostics: stale sessions, unread messages
- *   bun tribe sessions [--all]# List sessions (--all includes dead/pruned)
- *   bun tribe start           # Start daemon in foreground
- *   bun tribe stop            # Stop daemon
- *   bun tribe reload          # Hot-reload daemon (SIGHUP)
- *   bun tribe watch           # Live dashboard (updates pushed from daemon)
  */
 import { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { parseArgs } from "node:util"
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
+import { Command, int } from "@silvery/commander"
 
 // --- DB discovery ---
 
@@ -347,79 +336,64 @@ function cmdWatch(): void {
 
 // --- CLI entry ---
 
-const { positionals, values } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    limit: { type: "string", short: "n" },
-    all: { type: "boolean", short: "a" },
-    follow: { type: "boolean", short: "f" },
-    help: { type: "boolean", short: "h" },
-    offline: { type: "boolean" },
-  },
-  allowPositionals: true,
-  strict: false,
-})
+const program = new Command("tribe")
+  .description("Tribe CLI — coordination, monitoring, daemon control")
+  .version("0.7.0")
+  .addHelpSection("Examples:", [
+    ["tribe status", "Show active sessions"],
+    ["tribe log -f", "Follow live message stream"],
+    ["tribe watch", "Full TUI dashboard"],
+    ["tribe send chief \"Ready for work\"", "Message the chief"],
+  ])
 
-const cmd = positionals[0]
-if (!cmd || values.help) {
-  console.log(`Usage: bun tribe <command> [options]
+program
+  .command("status")
+  .description("Show active sessions with uptime and heartbeat")
+  .action(() => cmdStatus())
 
-Commands:
-  status            Show active sessions (name, role, domains, uptime, last heartbeat)
-  send <to> <msg>   Send a message to a session
-  log [-f] [-n N]   Show recent messages (-f to follow live)
-  health            Run health diagnostics (stale sessions, unread messages)
-  sessions [--all]  List sessions (--all includes dead/pruned)
-  start             Start daemon in foreground (for debugging)
-  stop              Stop daemon (SIGTERM)
-  reload            Hot-reload daemon (SIGHUP)
-  watch             Live dashboard — stream events in real-time
+program
+  .command("sessions")
+  .description("List sessions")
+  .option("-a, --all", "Include dead/pruned sessions")
+  .action((opts) => cmdSessions(!!opts.all))
 
-Options:
-  -h, --help        Show this help
-  -n, --limit N     Limit number of messages (log command)
-  -f, --follow      Follow mode — stream new messages live (log command)
-  -a, --all         Show all sessions including dead (sessions command)
-  --offline          Force direct DB access (skip daemon connection)`)
-  process.exit(0)
-}
+program
+  .command("send")
+  .description("Send a message to a session")
+  .argument("<to>", "Target session name")
+  .argument("<message...>", "Message text")
+  .action((to, message) => cmdSend(to, message.join(" ")))
 
-switch (cmd) {
-  case "status":
-    cmdStatus()
-    break
-  case "send": {
-    const to = positionals[1],
-      msg = positionals.slice(2).join(" ")
-    if (!to || !msg) {
-      console.error("Usage: bun tribe send <to> <message>")
-      process.exit(1)
-    }
-    cmdSend(to, msg)
-    break
-  }
-  case "log":
-    cmdLog(values.limit ? parseInt(values.limit as string, 10) : 20, !!values.follow)
-    break
-  case "health":
-    cmdHealth()
-    break
-  case "sessions":
-    cmdSessions(!!values.all)
-    break
-  case "start":
-    cmdStart()
-    break
-  case "stop":
-    cmdStop()
-    break
-  case "reload":
-    cmdReload()
-    break
-  case "watch":
-    void cmdWatch()
-    break
-  default:
-    console.error(`Unknown command: ${cmd}\nRun with --help to see available commands.`)
-    process.exit(1)
-}
+program
+  .command("log")
+  .description("Show recent messages")
+  .option("-n, --limit <n>", "Number of messages", int, 20)
+  .option("-f, --follow", "Follow live — stream new messages")
+  .action((opts) => cmdLog(opts.limit, !!opts.follow))
+
+program
+  .command("health")
+  .description("Run health diagnostics")
+  .action(() => cmdHealth())
+
+program
+  .command("start")
+  .description("Start daemon in foreground")
+  .action(() => cmdStart())
+
+program
+  .command("stop")
+  .description("Stop daemon (SIGTERM)")
+  .action(() => cmdStop())
+
+program
+  .command("reload")
+  .description("Hot-reload daemon code (SIGHUP)")
+  .action(() => cmdReload())
+
+program
+  .command("watch")
+  .description("Live TUI dashboard — sessions + event stream")
+  .action(() => cmdWatch())
+
+program.parse()
