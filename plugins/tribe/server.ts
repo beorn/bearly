@@ -53,8 +53,13 @@ function resolveDbPath(args, beadsDir) {
 function detectRole(db, args) {
   if (args.role)
     return args.role;
+  try {
+    const lease = db.prepare("SELECT holder_name FROM leadership WHERE role = 'chief' AND lease_until > $now").get({ $now: Date.now() });
+    if (lease)
+      return "member";
+  } catch {}
   const threshold = Date.now() - 30000;
-  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ?").get(threshold);
+  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold);
   return liveChief ? "member" : "chief";
 }
 function detectName(db, role, args) {
