@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect, useCallback } from "react"
 import {
-  createTerm, render,
+  createTerm, render, patchConsole,
   Box, Text, H1, Muted, Small, Divider,
   SelectList, useApp, useInput,
   type SelectOption,
@@ -79,7 +79,7 @@ function DetailField({ label, children }: { label: string; children: React.React
 
 function EventEntry({ entry }: { entry: LogEntry }) {
   return (
-    <Text wrap="truncate">
+    <Text>
       <Small>{entry.ts} </Small>
       <Text color={EVENT_COLORS[entry.type]}>{EVENT_PREFIX[entry.type]}{entry.text}</Text>
     </Text>
@@ -258,6 +258,7 @@ await client.call("register", {
 })
 
 using term = createTerm()
+patchConsole() // Redirect console.log/warn/error to stderr (prevents loggily leaking into alt screen)
 const ac = new AbortController()
 const { waitUntilExit } = await render(<App client={client} ac={ac} />, term)
 await waitUntilExit()
