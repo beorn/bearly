@@ -159,7 +159,16 @@ daemon.onNotification((method, params) => {
     }).catch(() => {})
   } else if (method === "reload") {
     process.stderr.write(`[tribe-proxy] Daemon requests reload: ${params?.reason}\n`)
-    // TODO: re-exec proxy for code updates
+    // Re-exec proxy to pick up code changes
+    setTimeout(() => {
+      daemon.close()
+      const { spawn } = require("node:child_process")
+      const child = spawn(process.execPath, process.argv.slice(1), {
+        stdio: "inherit",
+        env: process.env,
+      })
+      child.on("exit", (code: number | null) => process.exit(code ?? 0))
+    }, 500)
   }
 })
 

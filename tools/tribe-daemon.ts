@@ -12,6 +12,7 @@
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
 import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync } from "node:fs"
 import { parseArgs } from "node:util"
+import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import {
   resolveSocketPath,
@@ -73,7 +74,7 @@ const daemonCtx = createTribeContext({
   db,
   stmts,
   sessionId: DAEMON_SESSION_ID,
-  sessionRole: "chief", // Daemon is the authority
+  sessionRole: "member", // Daemon is neutral — doesn't claim chief role
   initialName: "daemon",
   domains: [],
   claudeSessionId: null,
@@ -104,6 +105,9 @@ type ClientSession = {
 
 const clients = new Map<string, ClientSession>() // connId → session
 const socketToClient = new Map<NetSocket, string>() // socket → connId
+
+/** No-op handler opts for daemon-side tool calls (no MCP session to clean up) */
+const DAEMON_HANDLER_OPTS = { cleanup: () => {}, userRenamed: false, setUserRenamed: () => {} } as const
 
 function broadcastNotification(method: string, params?: Record<string, unknown>, exclude?: string): void {
   const msg = makeNotification(method, params)
@@ -218,11 +222,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
 
-        const result = await handleToolCall(ctx, method, p, {
-          cleanup: () => {},
-          userRenamed: false,
-          setUserRenamed: () => {},
-        })
+        const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
 
         // After handling, push any new messages to recipients
         // (The handler writes to DB; we need to check for new messages and push)
@@ -489,6 +489,8 @@ function handleConnection(socket: NetSocket): void {
 
   socket.on("error", (err) => {
     log(`Client error (${connId.slice(0, 8)}): ${err.message}`)
+    // Error triggers close event, which handles cleanup
+    socket.destroy()
   })
 }
 
