@@ -204,7 +204,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             <Muted>No sessions</Muted>
           )}
         </Box>
-        <Box width={30} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1} paddingY={1}>
+        <Box width={30} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
           {selected ? (
             <>
               <DetailField label="Name"><Text bold color="$primary">{selected.name}</Text></DetailField>
