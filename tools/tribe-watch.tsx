@@ -5,7 +5,7 @@
  * Keys: j/k navigate sessions, q/Esc quit
  */
 
-import React, { useState, useEffect, useCallback } from "react"
+import React, { useState, useEffect, useCallback, useRef } from "react"
 import {
   createTerm, render,
   Box, Text, H1, H3, Muted, Small, Divider,
@@ -14,33 +14,6 @@ import {
 } from "@silvery/ag-react"
 import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
 import { parseArgs } from "node:util"
-
-// ---------------------------------------------------------------------------
-// Args & connect
-// ---------------------------------------------------------------------------
-
-const { values } = parseArgs({
-  options: { socket: { type: "string" } },
-  strict: false,
-})
-
-const SOCKET_PATH = resolveSocketPath(values.socket as string | undefined)
-
-let client: DaemonClient
-try {
-  client = await connectOrStart(SOCKET_PATH)
-} catch (err) {
-  process.stderr.write(`Failed to connect to daemon: ${err instanceof Error ? err.message : err}\n`)
-  process.exit(1)
-}
-
-await client.call("register", {
-  name: `watch-${process.pid}`,
-  role: "member",
-  domains: [],
-  project: process.cwd(),
-  pid: process.pid,
-})
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,24 +51,15 @@ function fmtDur(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
-function ts(): string {
+function now(): string {
   return new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 }
 
 const EVENT_COLORS: Record<LogEntry["type"], string | undefined> = {
-  join: "$success",
-  leave: "$warning",
-  reload: "$info",
-  error: "$error",
-  message: undefined,
+  join: "$success", leave: "$warning", reload: "$info", error: "$error", message: undefined,
 }
-
 const EVENT_PREFIX: Record<LogEntry["type"], string> = {
-  join: "+ ",
-  leave: "- ",
-  reload: "↻ ",
-  error: "",
-  message: "",
+  join: "+ ", leave: "- ", reload: "↻ ", error: "", message: "",
 }
 
 // ---------------------------------------------------------------------------
@@ -112,12 +76,10 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function EventEntry({ entry }: { entry: LogEntry }) {
-  const color = EVENT_COLORS[entry.type]
-  const prefix = EVENT_PREFIX[entry.type]
   return (
     <Text wrap="truncate">
       <Small>{entry.ts} </Small>
-      <Text color={color}>{prefix}{entry.text}</Text>
+      <Text color={EVENT_COLORS[entry.type]}>{EVENT_PREFIX[entry.type]}{entry.text}</Text>
     </Text>
   )
 }
@@ -126,7 +88,7 @@ function EventEntry({ entry }: { entry: LogEntry }) {
 // App
 // ---------------------------------------------------------------------------
 
-function App() {
+function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const { exit } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
@@ -135,7 +97,7 @@ function App() {
 
   useInput((input, key) => {
     if (input === "q" || key.escape) {
-      client.close()
+      ac.abort()
       exit()
     }
   })
@@ -144,27 +106,33 @@ function App() {
     setLog((prev) => [...prev.slice(-200), entry])
   }, [])
 
-  // Periodic status refresh
+  // Periodic status refresh — abort signal cancels interval
   useEffect(() => {
+    const { signal } = ac
     const poll = async () => {
+      if (signal.aborted) return
       try {
         const s = (await client.call("cli_status")) as { sessions: SessionInfo[]; daemon: DaemonInfo }
+        if (signal.aborted) return
         setSessions(s.sessions.filter((x) => !x.name.startsWith("watch-")))
         setDaemon(s.daemon)
-      } catch (err) {
-        addLog({ ts: ts(), text: `fetch failed: ${err}`, type: "error" })
+      } catch {
+        if (!signal.aborted) addLog({ ts: now(), text: "status fetch failed", type: "error" })
       }
     }
     void poll()
     const id = setInterval(() => void poll(), 5000)
+    signal.addEventListener("abort", () => clearInterval(id))
     return () => clearInterval(id)
-  }, [addLog])
+  }, [client, ac, addLog])
 
   // Live notifications
   useEffect(() => {
+    const { signal } = ac
     void client.call("subscribe").catch(() => {})
-    client.onNotification((method, params) => {
-      const t = ts()
+    const handler = (method: string, params?: Record<string, unknown>) => {
+      if (signal.aborted) return
+      const t = now()
       if (method === "channel") {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
@@ -177,8 +145,9 @@ function App() {
       } else if (method === "reload") {
         addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
       }
-    })
-  }, [addLog])
+    }
+    client.onNotification(handler)
+  }, [client, ac, addLog])
 
   const selected = sessions[selectedIdx] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
@@ -211,16 +180,12 @@ function App() {
               renderItem={(item) => {
                 const s = sessions.find((x) => x.name === item.value)
                 if (!s) return <Text>{item.label}</Text>
-                const name = s.name.padEnd(16)
-                const role = s.role.padEnd(8)
-                const uptime = fmtDur(s.uptimeMs).padEnd(8)
-                const src = s.source === "db" ? " db" : ""
                 return (
                   <Text>
-                    <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>{name}</Text>
-                    {" "}<Muted>{role}</Muted>
-                    {" "}{uptime}
-                    <Muted>{src}</Muted>
+                    <Text bold={s.role === "chief"} color={s.role === "chief" ? "$primary" : undefined}>{s.name.padEnd(16)}</Text>
+                    {" "}<Muted>{s.role.padEnd(8)}</Muted>
+                    {" "}{fmtDur(s.uptimeMs).padEnd(8)}
+                    <Muted>{s.source === "db" ? " db" : ""}</Muted>
                   </Text>
                 )
               }}
@@ -249,7 +214,7 @@ function App() {
         </Box>
       </Box>
 
-      {/* Event log — overflow=scroll handles height + indicators */}
+      {/* Event log */}
       <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="$border" paddingX={1} overflow="scroll">
         <Text bold>Events</Text>
         {log.length > 0
@@ -263,11 +228,30 @@ function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Run
+// Run — async disposable lifecycle
 // ---------------------------------------------------------------------------
 
+const { values } = parseArgs({
+  options: { socket: { type: "string" } },
+  strict: false,
+})
+
+const SOCKET_PATH = resolveSocketPath(values.socket as string | undefined)
+
+await using client = Object.assign(await connectOrStart(SOCKET_PATH), {
+  [Symbol.asyncDispose]: async function(this: DaemonClient) { this.close() },
+})
+
+await client.call("register", {
+  name: `watch-${process.pid}`,
+  role: "member",
+  domains: [],
+  project: process.cwd(),
+  pid: process.pid,
+})
+
 using term = createTerm()
-const { waitUntilExit } = await render(<App />, term)
+const ac = new AbortController()
+const { waitUntilExit } = await render(<App client={client} ac={ac} />, term)
 await waitUntilExit()
-client.close()
-process.exit(0)
+ac.abort() // Signal all intervals/handlers to stop
