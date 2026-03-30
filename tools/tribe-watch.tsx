@@ -178,7 +178,10 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           {items.length > 0 ? (
             <SelectList
               items={items}
-              onChange={(item) => setSelectedName(item.value)}
+              onHighlight={(idx) => {
+                const s = sessions[idx]
+                if (s) setSelectedName(s.name)
+              }}
             />
           ) : (
             <Muted>No sessions</Muted>
