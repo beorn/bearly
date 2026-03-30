@@ -221,7 +221,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       </Box>
 
       {/* Event log — no border for easy copy */}
-      <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="scroll">
+      <Box flexDirection="column" flexGrow={1} overflow="scroll">
         <Text bold color="$primary">EVENTS</Text>
         <Text>{" "}</Text>
         {log.length > 0
