@@ -50,7 +50,7 @@ type LogEntry = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const COL = { name: 18, role: 10, uptime: 10 }
+const COL = { name: 18, role: 10, pid: 8, uptime: 10 }
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -197,7 +197,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
   const selected = sessions.find((s) => s.name === selectedName) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
     value: s.name,
   }))
 
@@ -227,6 +227,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           <Text bold color="$primary">
             {"NAME".padEnd(COL.name)}
             {"ROLE".padEnd(COL.role)}
+            {"PID".padEnd(COL.pid)}
             {"UPTIME".padEnd(COL.uptime)}CONN
           </Text>
           {items.length > 0 ? (
