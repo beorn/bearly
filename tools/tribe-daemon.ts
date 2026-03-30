@@ -264,9 +264,12 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             source: "db" as const,
           }))
 
+        const cwd = process.cwd()
+        const rel = (p: string) => p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
+
         const allSessions = [
-          ...sessions.map(s => ({ ...s, source: "daemon" as const })),
-          ...dbOnly,
+          ...sessions.map(s => ({ ...s, source: "daemon" as const, conn: rel(SOCKET_PATH) })),
+          ...dbOnly.map(s => ({ ...s, conn: rel(String(DB_PATH)) })),
         ]
 
         return makeResponse(id, {
