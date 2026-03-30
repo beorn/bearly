@@ -189,10 +189,10 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       </Box>
 
       {/* Sessions + detail */}
+      <Divider />
       <Box flexDirection="row">
-        <Box flexGrow={3} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
+        <Box flexGrow={3} flexDirection="column">
           <Text bold color="$primary">{"NAME".padEnd(COL.name)}{"ROLE".padEnd(COL.role)}{"UPTIME".padEnd(COL.uptime)}CONN</Text>
-
           {items.length > 0 ? (
             <SelectList
               items={items}
@@ -206,7 +206,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             <Muted>No sessions</Muted>
           )}
         </Box>
-        <Box width={30} flexDirection="column" borderStyle="single" borderColor="$border" paddingX={1}>
+        <Box width={30} flexDirection="column" paddingX={1}>
           {selected ? (
             <>
               <DetailField label="Name"><Text bold color="$primary">{selected.name}</Text></DetailField>
@@ -221,6 +221,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           )}
         </Box>
       </Box>
+      <Divider />
 
       {/* Event log — no border for easy copy */}
       <Box flexDirection="column" flexGrow={1} overflow="scroll">
