@@ -58,7 +58,7 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 10, id: 14, role: 8, pid: 8, uptime: 8 }
+const COL = { name: 18, project: 24, role: 8, pid: 8, uptime: 8 }
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -209,7 +209,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${(s.projectId ?? "").padEnd(COL.id)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? "direct" : ""}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs)}`,
     value: s.id,
   }))
 
@@ -235,10 +235,9 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           <Text bold color="$primary">
             {"NAME".padEnd(COL.name)}
             {"PROJECT".padEnd(COL.project)}
-            {"ID".padEnd(COL.id)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            {"UP".padEnd(COL.uptime)}PEER
+            UP
           </Text>
           {items.length > 0 ? (
             <SelectList items={items} indicator="" />
