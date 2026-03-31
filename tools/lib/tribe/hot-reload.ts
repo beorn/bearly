@@ -28,10 +28,10 @@ export type HotReloadOpts = {
 
 /**
  * Watch source files for changes and re-exec the current process.
- * Returns a cleanup function that stops watching.
+ * Returns a disposable that stops watching. Use with `using`.
  * Returns null if not running from source (bundled).
  */
-export function setupHotReload(opts: HotReloadOpts): (() => void) | null {
+export function setupHotReload(opts: HotReloadOpts): Disposable | null {
   const { importMetaUrl, extraFiles = [], extraDirs = [], onReload, debounceMs = 500 } = opts
 
   // Only activate for source runs (file:// URLs in the repo)
@@ -107,8 +107,10 @@ export function setupHotReload(opts: HotReloadOpts): (() => void) | null {
 
   log.info?.(`Watching ${getSourceFiles().length} source files for hot-reload`)
 
-  return () => {
-    if (debounceTimer) clearTimeout(debounceTimer)
-    for (const w of watchers) w.close()
+  return {
+    [Symbol.dispose]() {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      for (const w of watchers) w.close()
+    },
   }
 }

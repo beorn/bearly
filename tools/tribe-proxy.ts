@@ -379,19 +379,9 @@ function cleanupPeerSocket(): void {
   }
 }
 
-const shutdown = () => {
-  proxyAc.abort()
-  stopReload?.()
-  cleanupPeerSocket()
-  daemon.close()
-  process.exit(0)
-}
-process.on("SIGINT", shutdown)
-process.on("SIGTERM", shutdown)
-
 // Hot-reload: re-exec on source changes (only when running from source, not bundled)
 import { setupHotReload } from "./lib/tribe/hot-reload.ts"
-const stopReload = setupHotReload({
+using _reload = setupHotReload({
   importMetaUrl: import.meta.url,
   onReload: () => {
     proxyAc.abort()
@@ -399,6 +389,15 @@ const stopReload = setupHotReload({
     daemon.close()
   },
 })
+
+const shutdown = () => {
+  proxyAc.abort()
+  cleanupPeerSocket()
+  daemon.close()
+  process.exit(0)
+}
+process.on("SIGINT", shutdown)
+process.on("SIGTERM", shutdown)
 process.on("exit", cleanupPeerSocket)
 
 // Connect MCP to Claude Code
