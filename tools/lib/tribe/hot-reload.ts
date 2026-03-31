@@ -40,15 +40,19 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
   if (!importMetaUrl.startsWith("file://")) return null
 
   const scriptPath = new URL(importMetaUrl).pathname
-  const scriptName = scriptPath.split("/").pop()?.replace(/\.(ts|tsx)$/, "") ?? "unknown"
+  const reloadScriptName =
+    scriptPath
+      .split("/")
+      .pop()
+      ?.replace(/\.(ts|tsx)$/, "") ?? "unknown"
   const sourceDir = dirname(scriptPath)
   const libTribeDir = resolve(sourceDir, "lib/tribe")
 
   // Log if this is a hot-reloaded instance
   if (process.env.__TRIBE_HOT_RELOAD === "1") {
     delete process.env.__TRIBE_HOT_RELOAD
-    log.info?.(`Hot-reloaded: ${scriptName}`)
-    logActivity?.("reload", `${scriptName} hot-reloaded`)
+    log.info?.(`Hot-reloaded: ${reloadScriptName}`)
+    logActivity?.("reload", `${reloadScriptName} hot-reloaded`)
   }
 
   // Detect all source files to hash
@@ -92,7 +96,7 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
       const newHash = computeHash()
       if (newHash === currentHash) return
       log.info?.(`Source changed (${currentHash} → ${newHash}), re-execing`)
-      logActivity?.("reload", `${scriptName} reloading (${currentHash} → ${newHash})`)
+      logActivity?.("reload", `${reloadScriptName} reloading (${currentHash} → ${newHash})`)
 
       // Stop watching BEFORE spawning to prevent fork bombs
       for (const w of watchers) w.close()
@@ -136,17 +140,6 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
     }
   }
 
-  // Detect if this is a hot-reload (env flag set by previous instance)
-  const scriptName =
-    scriptPath
-      .split("/")
-      .pop()
-      ?.replace(/\.(ts|tsx)$/, "") ?? "unknown"
-  if (process.env.__TRIBE_HOT_RELOAD) {
-    log.info?.(`Hot-reloaded (hash: ${currentHash})`)
-    logActivity?.("reload", `${scriptName} hot-reloaded`)
-    delete process.env.__TRIBE_HOT_RELOAD
-  }
   log.info?.(`Watching ${getSourceFiles().length} source files for hot-reload`)
 
   return {
