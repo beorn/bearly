@@ -75,7 +75,11 @@ function shortSocket(p: string): string {
   return p.split("/").pop() ?? p
 }
 
-type ColWidths = { name: number; role: number; project: number; pid: number; up: number }
+type ColWidths = { name: number; role: number; project: number; pid: number; up: number; conn: number }
+
+function fmtConn(s: SessionInfo): string {
+  return shortSocket(s.peerSocket ?? s.conn ?? "")
+}
 
 function computeColWidths(sessions: SessionInfo[]): ColWidths {
   const w = (header: string, values: string[]) => Math.max(header.length, ...values.map((v) => v.length)) + 2
@@ -85,12 +89,11 @@ function computeColWidths(sessions: SessionInfo[]): ColWidths {
     project: w("PROJECT", sessions.map((s) => fmtProject(s))),
     pid: w("PID", sessions.map((s) => String(s.pid || ""))),
     up: w("UP", sessions.map((s) => fmtDur(s.uptimeMs))),
+    conn: w("CONNECTION", sessions.map((s) => fmtConn(s))),
   }
 }
 
 function SessionRow({ s, col }: { s: SessionInfo; col: ColWidths }) {
-  const conn = shortSocket(s.peerSocket ?? s.conn ?? "")
-  const res = s.resources?.join(",") ?? ""
   return (
     <Box>
       <Box width={col.name}><Text>{s.name}</Text></Box>
@@ -98,7 +101,8 @@ function SessionRow({ s, col }: { s: SessionInfo; col: ColWidths }) {
       <Box width={col.project}><Text>{fmtProject(s)}</Text></Box>
       <Box width={col.pid}><Text>{String(s.pid || "")}</Text></Box>
       <Box width={col.up}><Text>{fmtDur(s.uptimeMs)}</Text></Box>
-      <Box flexGrow={1}><Text>{conn}{res ? `  ${res}` : ""}</Text></Box>
+      <Box width={col.conn}><Text>{fmtConn(s)}</Text></Box>
+      <Box flexGrow={1}><Text>{s.resources?.join(",") ?? ""}</Text></Box>
     </Box>
   )
 }
@@ -111,7 +115,8 @@ function TableHeader({ col }: { col: ColWidths }) {
       <Box width={col.project}><Text bold color="$primary">PROJECT</Text></Box>
       <Box width={col.pid}><Text bold color="$primary">PID</Text></Box>
       <Box width={col.up}><Text bold color="$primary">UP</Text></Box>
-      <Box flexGrow={1}><Text bold color="$primary">CONNECTION</Text></Box>
+      <Box width={col.conn}><Text bold color="$primary">CONNECTION</Text></Box>
+      <Box flexGrow={1}><Text bold color="$primary">RESOURCES</Text></Box>
     </Box>
   )
 }
