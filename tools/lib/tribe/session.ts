@@ -193,25 +193,31 @@ export function cleanupOldPrunedSessions(ctx: TribeContext): void {
   }
 }
 
-/** Delete old data based on TTL: reads after 7 days, messages/events/aliases after 30 days */
+/** Delete old data based on TTL: reads/messages/events after 7 days, aliases after 30 days */
 export function cleanupOldData(ctx: TribeContext): void {
-  const READS_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
-  const DATA_TTL = 30 * 24 * 60 * 60 * 1000 // 30 days
+  const SHORT_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
+  const LONG_TTL = 30 * 24 * 60 * 60 * 1000 // 30 days
   const now_ms = Date.now()
 
-  const readsDel = ctx.db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - READS_TTL })
-  const eventsDel = ctx.db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-  const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
+  const readsDel = ctx.db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
+  const eventsDel = ctx.db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
+  const eventLogDel = ctx.db.prepare("DELETE FROM event_log WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
+  const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
   const aliasesDel = ctx.db
     .prepare("DELETE FROM aliases WHERE renamed_at < $cutoff")
-    .run({ $cutoff: now_ms - DATA_TTL })
+    .run({ $cutoff: now_ms - LONG_TTL })
   // Clean dedup keys older than 1 day (they only need to survive the poll race window)
   ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 })
 
-  const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
+  const total =
+    (readsDel.changes ?? 0) +
+    (eventsDel.changes ?? 0) +
+    (eventLogDel.changes ?? 0) +
+    (msgsDel.changes ?? 0) +
+    (aliasesDel.changes ?? 0)
   if (total > 0) {
     log.info?.(
-      `cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted`,
+      `cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${eventLogDel.changes} event_log, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted`,
     )
   }
 }
