@@ -163,6 +163,25 @@ async function fetchRepoEvents(repo: string, headers: Record<string, string>): P
   return ghFetch<GitHubEvent[]>(`/repos/${repo}/events?per_page=30`, headers)
 }
 
+/** Fetch all non-archived, non-fork repos for the authenticated user */
+async function fetchUserRepos(headers: Record<string, string>): Promise<string[]> {
+  const repos: string[] = []
+  let page = 1
+  while (true) {
+    const batch = await ghFetch<Array<{ full_name: string; archived: boolean; fork: boolean }>>(
+      `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner`,
+      headers,
+    )
+    if (batch.length === 0) break
+    for (const r of batch) {
+      if (!r.archived && !r.fork) repos.push(r.full_name)
+    }
+    if (batch.length < 100) break
+    page++
+  }
+  return repos
+}
+
 async function fetchWorkflowRuns(
   repo: string,
   headers: Record<string, string>,
@@ -170,10 +189,7 @@ async function fetchWorkflowRuns(
 ): Promise<WorkflowRun[]> {
   const params = new URLSearchParams({ per_page: "20" })
   if (status) params.set("status", status)
-  const data = await ghFetch<{ workflow_runs: WorkflowRun[] }>(
-    `/repos/${repo}/actions/runs?${params}`,
-    headers,
-  )
+  const data = await ghFetch<{ workflow_runs: WorkflowRun[] }>(`/repos/${repo}/actions/runs?${params}`, headers)
   return data.workflow_runs
 }
 
@@ -193,7 +209,7 @@ export function formatEvent(
     case "PushEvent": {
       if (!eventTypes.includes("push")) return null
       const commits = payload.commits as Array<{ sha: string; message: string }> | undefined
-      const count = (payload.size as number) ?? commits?.length ?? 0
+      const count = commits?.length ?? (payload.size as number) ?? 0
       const branch = (payload.ref as string)?.replace("refs/heads/", "") ?? "unknown"
       const lastMsg = commits?.[commits.length - 1]?.message?.split("\n")[0] ?? ""
       const url = `https://github.com/${repo}/compare/${(payload.before as string)?.slice(0, 7)}...${(payload.head as string)?.slice(0, 7)}`
@@ -369,8 +385,7 @@ export function githubPlugin(): TribePlugin {
               const formatted = formatEvent(event, eventTypes)
               if (!formatted) continue
 
-              // Broadcast to all sessions
-              ctx.sendMessage("*", `${formatted.line}\n${formatted.url}`, `github:${formatted.type}`)
+              ctx.sendMessage("*", `${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
             }
 
             // Update cursor
@@ -417,7 +432,7 @@ export function githubPlugin(): TribePlugin {
               const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
               const line = `[workflow] ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
 
-              ctx.sendMessage("*", `${line}\n${run.html_url}`, `github:workflow`)
+              ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
             }
           } catch (err) {
             log.error?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
