@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
+import { createTimers } from "./timers.ts"
 import type { TribePlugin, PluginContext } from "./plugins.ts"
 
 const log = createLogger("tribe:github")
@@ -357,7 +358,6 @@ export function githubPlugin(): TribePlugin {
           for (const r of userRepos) repos.add(r)
           const all = Array.from(repos).sort()
           log.info?.(`monitoring ${all.length} repos: ${all.join(", ")}`)
-          ctx.sendMessage("*", `GitHub monitoring ${all.length} repos: ${all.join(", ")}`, "github:status")
         })
         .catch((err) => {
           log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
@@ -455,8 +455,11 @@ export function githubPlugin(): TribePlugin {
         }
       }
 
+      const ac = new AbortController()
+      const timers = createTimers(ac.signal)
+
       // Rate limit status logging
-      const rateLimitInterval = setInterval(
+      timers.setInterval(
         () => {
           log.info?.(
             `rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag`,
@@ -469,19 +472,16 @@ export function githubPlugin(): TribePlugin {
       void pollEvents()
 
       // Regular polling
-      const eventPollInterval = setInterval(() => void pollEvents(), pollIntervalSec * 1000)
+      timers.setInterval(() => void pollEvents(), pollIntervalSec * 1000)
 
       // Workflow polling (every 60s, separate endpoint)
-      const workflowPollInterval = setInterval(() => void pollWorkflows(), 60_000)
+      timers.setInterval(() => void pollWorkflows(), 60_000)
       // Initial workflow poll after short delay
-      const workflowInitTimeout = setTimeout(() => void pollWorkflows(), 5_000)
+      timers.setTimeout(() => void pollWorkflows(), 5_000)
 
       // Cleanup
       return () => {
-        clearInterval(eventPollInterval)
-        clearInterval(workflowPollInterval)
-        clearInterval(rateLimitInterval)
-        clearTimeout(workflowInitTimeout)
+        ac.abort()
         saveCursor(cursorPath, cursorState)
       }
     },
