@@ -20,7 +20,8 @@ import {
   useInput,
   type SelectOption,
 } from "@silvery/ag-react"
-import { resolveSocketPath, createReconnectingClient, type DaemonClient } from "./lib/tribe/socket.ts"
+import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/tribe/socket.ts"
+import { resolveProjectName, resolveProjectId } from "./lib/tribe/config.ts"
 import { parseArgs } from "node:util"
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ type SessionInfo = {
   domains: string[]
   pid: number
   projectName?: string
+  projectId?: string
+  peerSocket?: string | null
   uptimeMs: number
   claudeSessionId?: string | null
   source?: "daemon" | "db"
@@ -94,7 +97,7 @@ const EVENT_PREFIX: Record<LogEntry["type"], string> = {
 function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Box>
-      <Box width={10}>
+      <Box width={12}>
         <Muted>{label}</Muted>
       </Box>
       <Text bold>{children}</Text>
@@ -168,7 +171,19 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       try {
         const s = (await client.call("cli_status")) as { sessions: SessionInfo[]; daemon: DaemonInfo }
         if (signal.aborted) return
-        setSessions(s.sessions.filter((x) => !x.name.startsWith("watch-")))
+        // Inject daemon as a session row
+        const daemonSession: SessionInfo = {
+          id: "daemon",
+          name: "daemon",
+          role: "daemon",
+          pid: s.daemon.pid,
+          projectName: "",
+          domains: [],
+          uptimeMs: s.daemon.uptime * 1000,
+          source: "daemon",
+          conn: s.daemon.socketPath?.replace(process.cwd() + "/", ""),
+        }
+        setSessions([daemonSession, ...s.sessions.filter((x) => !x.name.startsWith("watch-"))])
         setDaemon(s.daemon)
       } catch (err) {
         if (!signal.aborted)
@@ -204,7 +219,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
   const selected = sessions.find((s) => s.id === selectedId) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? "direct" : s.conn ?? ""}`,
     value: s.id,
   }))
 
@@ -214,25 +229,9 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       <Box justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
-          {daemon && (
-            <Box gap={2}>
-              <Small>
-                <Muted>PID</Muted> {daemon.pid}
-              </Small>
-              <Small>
-                <Muted>UP</Muted> {fmtDur(daemon.uptime * 1000)}
-              </Small>
-              <Small>
-                <Muted>CWD</Muted> {process.cwd().replace(process.env.HOME ?? "", "~")}
-              </Small>
-              <Small>
-                <Muted>DB</Muted> {daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"}
-              </Small>
-              <Small>
-                <Muted>SOCK</Muted> {daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}
-              </Small>
-            </Box>
-          )}
+          <Small>
+            <Muted>{process.cwd().replace(process.env.HOME ?? "", "~")}</Muted>
+          </Small>
         </Box>
         <Box alignItems="center">
           <Small>j/k nav q quit</Small>
@@ -248,7 +247,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"PROJECT".padEnd(COL.project)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            {"UPTIME".padEnd(COL.uptime)}CONN
+            {"UPTIME".padEnd(COL.uptime)}PEER
           </Text>
           {items.length > 0 ? (
             <SelectList
@@ -270,11 +269,12 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
                 {selected.name}
               </Text>
               <DetailField label="Project">{selected.projectName ?? "—"}</DetailField>
+              <DetailField label="Project ID">{selected.projectId ?? "—"}</DetailField>
               <DetailField label="Role">{selected.role}</DetailField>
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
               <DetailField label="Domains">{selected.domains?.length ? selected.domains.join(", ") : "—"}</DetailField>
-              <DetailField label="Conn">{selected.conn ?? "—"}</DetailField>
+              <DetailField label="Peer">{selected.peerSocket?.replace(process.env.HOME ?? "", "~") ?? "—"}</DetailField>
             </>
           ) : (
             <Muted>Select a session</Muted>
@@ -316,6 +316,9 @@ await using client = Object.assign(
         role: "member",
         domains: [],
         project: process.cwd(),
+        projectName: resolveProjectName(),
+        projectId: resolveProjectId(),
+        protocolVersion: TRIBE_PROTOCOL_VERSION,
         pid: process.pid,
       })
       void c.call("subscribe").catch(() => {})
