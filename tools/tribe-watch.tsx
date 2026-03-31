@@ -58,7 +58,7 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 10, role: 10, pid: 8, uptime: 10 }
+const COL = { name: 18, project: 10, id: 14, role: 8, pid: 8, uptime: 8 }
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -97,17 +97,6 @@ const EVENT_PREFIX: Record<LogEntry["type"], string> = {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Box>
-      <Box width={12}>
-        <Muted>{label}</Muted>
-      </Box>
-      <Text bold>{children}</Text>
-    </Box>
-  )
-}
-
 function EventEntry({ entry }: { entry: LogEntry }) {
   return (
     <Text>
@@ -132,7 +121,6 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useInput((input, key) => {
     if (input === "q" || key.escape || (key.ctrl && input === "c")) {
@@ -220,9 +208,8 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     })
   }, [ac, addLog])
 
-  const selected = sessions.find((s) => s.id === selectedId) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? "direct" : s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${(s.projectId ?? "").padEnd(COL.id)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? "direct" : ""}`,
     value: s.id,
   }))
 
@@ -244,43 +231,19 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions + detail */}
       <Divider />
       <Box flexDirection="row">
-        <Box flexGrow={3} flexDirection="column">
+        <Box flexGrow={1} flexDirection="column">
           <Text bold color="$primary">
             {"NAME".padEnd(COL.name)}
             {"PROJECT".padEnd(COL.project)}
+            {"ID".padEnd(COL.id)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            {"UPTIME".padEnd(COL.uptime)}PEER
+            {"UP".padEnd(COL.uptime)}PEER
           </Text>
           {items.length > 0 ? (
-            <SelectList
-              items={items}
-              indicator=""
-              onHighlight={(idx) => {
-                const s = sessions[idx]
-                if (s) setSelectedId(s.id)
-              }}
-            />
+            <SelectList items={items} indicator="" />
           ) : (
             <Muted>No sessions</Muted>
-          )}
-        </Box>
-        <Box width={30} flexDirection="column" paddingX={1}>
-          {selected ? (
-            <>
-              <Text bold color="$primary">
-                {selected.name}
-              </Text>
-              <DetailField label="Project">{selected.projectName ?? "—"}</DetailField>
-              <DetailField label="Project ID">{selected.projectId ?? "—"}</DetailField>
-              <DetailField label="Role">{selected.role}</DetailField>
-              <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
-              <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
-              <DetailField label="Domains">{selected.domains?.length ? selected.domains.join(", ") : "—"}</DetailField>
-              <DetailField label="Peer">{selected.peerSocket ? shortPath(selected.peerSocket) : "—"}</DetailField>
-            </>
-          ) : (
-            <Muted>Select a session</Muted>
           )}
         </Box>
       </Box>
