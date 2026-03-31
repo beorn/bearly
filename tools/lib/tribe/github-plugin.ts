@@ -213,12 +213,13 @@ export function formatEvent(
     case "PushEvent": {
       if (!eventTypes.includes("push")) return null
       const commits = payload.commits as Array<{ sha: string; message: string }> | undefined
-      const count = commits?.length ?? (payload.size as number) ?? 0
+      const count = commits?.length ?? (payload.distinct_size as number) ?? (payload.size as number) ?? 0
       const branch = (payload.ref as string)?.replace("refs/heads/", "") ?? "unknown"
       const lastMsg = commits?.[commits.length - 1]?.message?.split("\n")[0] ?? ""
       const url = `https://github.com/${repo}/compare/${(payload.before as string)?.slice(0, 7)}...${(payload.head as string)?.slice(0, 7)}`
+      const countStr = count > 0 ? `${count} commit${count !== 1 ? "s" : ""}` : "changes"
       return {
-        line: `[push] ${actor} pushed ${count} commit${count !== 1 ? "s" : ""} to ${branch} — ${lastMsg}`,
+        line: `[push] ${repo}: ${actor} pushed ${countStr} to ${branch} — ${lastMsg}`,
         type: "push",
         url,
       }
@@ -230,7 +231,7 @@ export function formatEvent(
       const action = payload.action as string
       if (!pr) return null
       return {
-        line: `[pr] ${actor} ${action} PR #${pr.number}: ${pr.title}`,
+        line: `[pr] ${repo}: ${actor} ${action} PR #${pr.number}: ${pr.title}`,
         type: "pr",
         url: pr.html_url,
       }
@@ -243,7 +244,7 @@ export function formatEvent(
       const prTitle = (payload.pull_request as { title: string })?.title
       if (!review) return null
       return {
-        line: `[review] ${actor} ${review.state} review on PR #${prNum}: ${prTitle}`,
+        line: `[review] ${repo}: ${actor} ${review.state} review on PR #${prNum}: ${prTitle}`,
         type: "pr",
         url: review.html_url,
       }
@@ -256,7 +257,7 @@ export function formatEvent(
       if (!comment) return null
       const body = comment.body.split("\n")[0].slice(0, 80)
       return {
-        line: `[pr-comment] ${actor} commented on PR #${prNumC}: ${body}`,
+        line: `[pr-comment] ${repo}: ${actor} commented on PR #${prNumC}: ${body}`,
         type: "pr",
         url: comment.html_url,
       }
@@ -268,7 +269,7 @@ export function formatEvent(
       const issueAction = payload.action as string
       if (!issue) return null
       return {
-        line: `[issue] ${actor} ${issueAction} #${issue.number}: ${issue.title}`,
+        line: `[issue] ${repo}: ${actor} ${issueAction} #${issue.number}: ${issue.title}`,
         type: "issue",
         url: issue.html_url,
       }
@@ -281,7 +282,7 @@ export function formatEvent(
       if (!issueC || !commentC) return null
       const bodyC = commentC.body.split("\n")[0].slice(0, 80)
       return {
-        line: `[issue-comment] ${actor} on #${issueC.number}: ${bodyC}`,
+        line: `[issue-comment] ${repo}: ${actor} on #${issueC.number}: ${bodyC}`,
         type: "issue",
         url: commentC.html_url,
       }
@@ -442,7 +443,7 @@ export function githubPlugin(): TribePlugin {
                     ? "FAILED"
                     : String(run.conclusion).toUpperCase()
               const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
-              const line = `[workflow] ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
+              const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
 
               ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
             }
