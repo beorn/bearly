@@ -6,17 +6,17 @@ Reusable Claude Code tools — coordination, testing, research, refactoring.
 
 ## Tools
 
-| Tool           | Description                                                                | Entry Point                   |
-| -------------- | -------------------------------------------------------------------------- | ----------------------------- |
-| `refactor`     | Batch rename, replace, API migration (run `--help` for guide)              | `bun tools/refactor.ts`       |
-| `llm`          | Multi-LLM research, consensus, deep research, local models                 | `bun tools/llm.ts`            |
-| `recall`       | Session history search, LLM synthesis, file recovery                       | `bun tools/recall.ts`         |
+| Tool           | Description                                                                       | Entry Point                   |
+| -------------- | --------------------------------------------------------------------------------- | ----------------------------- |
+| `refactor`     | Batch rename, replace, API migration (run `--help` for guide)                     | `bun tools/refactor.ts`       |
+| `llm`          | Multi-LLM research, consensus, deep research, local models                        | `bun tools/llm.ts`            |
+| `recall`       | Session history search, LLM synthesis, file recovery                              | `bun tools/recall.ts`         |
 | `tribe-cli`    | Tribe CLI: status, send, log, health, sessions, retro, start, stop, reload, watch | `bun tools/tribe-cli.ts`      |
-| `tribe-daemon` | Cross-session coordination daemon (single process, Unix socket IPC)        | `bun tools/tribe-daemon.ts`   |
-| `tribe-proxy`  | Thin MCP proxy connecting to tribe daemon                                  | `bun tools/tribe-proxy.ts`    |
-| `github`       | GitHub notifications MCP channel (push, PR, CI, issues)                    | `bun tools/github-channel.ts` |
-| `tty`          | TTY testing MCP server (Bun PTY + xterm-headless)                          | MCP server + CLI              |
-| `worktree`     | Git worktree management with submodules                                    | `bun tools/worktree.ts`       |
+| `tribe-daemon` | Cross-session coordination daemon (single process, Unix socket IPC)               | `bun tools/tribe-daemon.ts`   |
+| `tribe-proxy`  | Thin MCP proxy connecting to tribe daemon                                         | `bun tools/tribe-proxy.ts`    |
+| `github`       | GitHub notifications (tribe plugin — push, PR, CI, issues for all user repos)     | tribe daemon plugin           |
+| `tty`          | TTY testing MCP server (Bun PTY + xterm-headless)                                 | MCP server + CLI              |
+| `worktree`     | Git worktree management with submodules                                           | `bun tools/worktree.ts`       |
 
 ### Plugin System
 

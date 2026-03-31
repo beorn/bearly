@@ -36,12 +36,10 @@ Thin (~230 lines). No DB access, no polling, no state:
 ## Socket Discovery
 
 ```
---socket flag > TRIBE_SOCKET env > user-level socket (if exists) > .beads/tribe.sock > user-level socket (create)
+--socket flag > TRIBE_SOCKET env > user-level socket (~/.local/share/tribe/tribe.sock)
 ```
 
-User-level socket: `$XDG_RUNTIME_DIR/tribe.sock` or `~/.local/share/tribe/tribe.sock`.
-
-Default behavior: prefers a single user-level daemon shared across projects. Falls back to per-project `.beads/tribe.sock` if a user-level socket doesn't exist yet. Sessions carry a `projectName` field resolved from `.beads/config.yaml` or the directory name, enabling project-namespaced coordination from a single daemon.
+One socket per user. `$XDG_RUNTIME_DIR/tribe.sock` if available, otherwise `~/.local/share/tribe/tribe.sock`. No per-project sockets.
 
 ## Lifecycle
 
