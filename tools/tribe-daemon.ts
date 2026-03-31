@@ -26,13 +26,7 @@ import {
   type JsonRpcMessage,
   type JsonRpcRequest,
 } from "./lib/tribe/socket.ts"
-import {
-  parseTribeArgs,
-  parseSessionDomains,
-  resolveDbPath,
-  detectRole,
-  detectName,
-} from "./lib/tribe/config.ts"
+import { parseTribeArgs, parseSessionDomains, resolveDbPath, detectRole, detectName } from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall } from "./lib/tribe/handlers.ts"
@@ -231,7 +225,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         }
 
         const client: ClientSession = {
-          socket: clients.get(connId)!.socket, // Socket set during handleConnection
+          socket: clients.get(connId)!.socket,
           id: connId,
           name,
           role,
@@ -298,6 +292,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       // CLI-specific methods
       case "cli_status": {
         const dbConn = relPath(String(DB_PATH))
+        const now = Date.now()
 
         const sessions = Array.from(clients.values()).map((c) => ({
           id: c.id,
@@ -308,13 +303,12 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           projectName: c.projectName,
           claudeSessionId: c.claudeSessionId,
           connectedAt: c.registeredAt,
-          uptimeMs: Date.now() - c.registeredAt,
+          uptimeMs: now - c.registeredAt,
           source: "daemon" as const,
           conn: c.conn,
         }))
 
-        // Also include DB-backed sessions not connected to this daemon
-        const t = Date.now() - 30_000
+        const t = now - 30_000
         const dbSessions = db
           .prepare(
             "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC",
@@ -339,7 +333,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             pid: s.pid,
             claudeSessionId: null,
             connectedAt: s.started_at,
-            uptimeMs: Date.now() - s.started_at,
+            uptimeMs: now - s.started_at,
             source: "db" as const,
             conn: dbConn,
           }))
