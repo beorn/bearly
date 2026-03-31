@@ -260,7 +260,7 @@ Message format rules:
 Don't over-communicate — only broadcast when it changes what someone else should know.`
 
 mcp = new Server(
-  { name: "tribe", version: "0.2.0" },
+  { name: "tribe", version: "0.8.1" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },

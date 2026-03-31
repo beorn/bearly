@@ -353,7 +353,7 @@ function cmdWatch(): void {
 
 const program = new Command("tribe")
   .description("Tribe CLI — coordination, monitoring, daemon control")
-  .version("0.7.0")
+  .version("0.8.1")
   .addHelpSection("Examples:", [
     ["tribe status", "Show active sessions"],
     ["tribe log -f", "Follow live message stream"],

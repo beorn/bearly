@@ -75,7 +75,7 @@ const QUIT_TIMEOUT = parseInt(String(daemonArgs["quit-timeout"]), 10)
 const INHERIT_FD = daemonArgs.fd ? parseInt(String(daemonArgs.fd), 10) : null
 
 // ---------------------------------------------------------------------------
-// Database bootstrap (same as tribe.ts)
+// Database bootstrap
 // ---------------------------------------------------------------------------
 
 const tribeArgs = parseTribeArgs()

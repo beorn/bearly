@@ -85,7 +85,7 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
     return hash.digest("hex").slice(0, 12)
   }
 
-  let currentHash = computeHash()
+  const currentHash = computeHash()
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   const watchers: FSWatcher[] = []
 

@@ -72,4 +72,4 @@ Collect responses and present as a table.
 
 - If tribe tools are not available (MCP server not loaded), tell the user to launch with: `claude --dangerously-load-development-channels server:tribe`
 - `/tribe whoami` reads from the MCP server instructions (check if "chief" or "member" appears)
-- The tribe DB location is determined by the server (typically `.beads/tribe.db` in the project root)
+- The tribe DB is at `~/.local/share/tribe/tribe.db` (user-level default), or `.beads/tribe.db` if a `.beads/` dir exists, or explicit via `--db`/`TRIBE_DB`

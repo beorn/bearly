@@ -1,6 +1,6 @@
 # tribe
 
-Cross-session coordination for Claude Code. Multiple sessions discover each other, exchange messages, and coordinate work via a shared SQLite bus.
+Cross-session coordination for Claude Code. Multiple sessions discover each other, exchange messages, and coordinate work through a shared daemon.
 
 One session becomes **chief** (coordinator); the rest are **members** (workers). Role is auto-detected — the first session becomes chief.
 
@@ -14,27 +14,25 @@ claude plugin install tribe@bearly
 claude --dangerously-load-development-channels server:tribe
 ```
 
-## How it works
+## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
-│   Chief     │────▶│  .beads/tribe.db │◀────│  Member 1   │
-│  (session)  │     │   SQLite WAL     │     │  (session)  │
-└─────────────┘     └──────────────────┘     └─────────────┘
-                           ▲
-                    ┌──────┘
-               ┌─────────────┐
-               │  Member 2   │
-               │  (session)  │
-               └─────────────┘
+┌─────────────┐          ┌─────────────────┐          ┌─────────────┐
+│   Chief     │──proxy──▶│  Tribe Daemon   │◀──proxy──│  Member 1   │
+│  (Claude)   │          │  (Unix socket)  │          │  (Claude)   │
+└─────────────┘          └────────┬────────┘          └─────────────┘
+                                  │
+                         ┌────────┴────────┐
+                         │  tribe.db       │
+                         │  (SQLite WAL)   │
+                         └─────────────────┘
 ```
 
-- **SQLite WAL** as shared message bus — no daemon, handles concurrent access
-- **MCP channels** push messages into Claude Code's context as `<channel>` tags
-- **Per-session read tracking** — broadcasts aren't marked "read" globally
-- **Priority ordering** — assign > request > query > status > notify
-- **PID liveness checking** — dead sessions auto-pruned
-- **Heartbeat** every 10s for liveness detection
+- **Daemon** — single process per project, manages sessions, routes messages, runs plugins
+- **Proxy** — thin MCP server per Claude Code session, forwards tool calls to daemon via Unix socket
+- **Direct peer messaging** — proxies can send messages directly to each other for lower latency
+- **Plugins** run in the daemon (git, beads, github) and activate based on environment
+- **DB** at `~/.local/share/tribe/tribe.db` (user-level default), or `.beads/tribe.db` if present
 
 ## Commands
 
@@ -52,6 +50,18 @@ Once installed, use `/tribe` in Claude Code:
 | `/tribe history`           | Recent messages                    |
 | `/tribe rename <name>`     | Rename this session                |
 
+## CLI
+
+```bash
+tribe status          # Show active sessions
+tribe log -f          # Follow live message stream
+tribe retro --since 2h  # Retro report for last 2 hours
+tribe watch           # Full TUI dashboard
+tribe start           # Start daemon in foreground
+tribe stop            # Stop daemon
+tribe reload          # Hot-reload daemon code (SIGHUP)
+```
+
 ## Message types
 
 | Type       | Priority    | Use                           |
@@ -64,74 +74,17 @@ Once installed, use `/tribe` in Claude Code:
 | `status`   | 5           | Status update                 |
 | `notify`   | 6 (lowest)  | General notification          |
 
-## Roles
+## Plugins
 
-Role is auto-detected: the first session to join becomes **chief**; subsequent sessions become **members**. Override with `--role chief` or `--role member`.
+Plugins run in the daemon and activate automatically when their dependencies are available:
 
-### Chief (coordinator)
-
-The chief routes work, tracks progress, and keeps the user informed. It does not do implementation work itself. Responsibilities:
-
-- **Route work** to members by matching their registered domains
-- **Track status** by periodically querying members and aggregating responses
-- **Detect dead members** and release their bead claims
-- **Prevent conflicts** by serializing access to shared files (package.json, tsconfig, etc.)
-- **Relay user messages** (e.g., from Telegram) to the right member
-
-See `skills/tribe/chief.md` for full instructions.
-
-### Member (worker)
-
-Members do the actual implementation work. They coordinate with chief, not each other. Responsibilities:
-
-- **Report status** when claiming beads, committing, getting blocked, or becoming available
-- **Ask before editing shared files** — chief serializes access to prevent merge conflicts
-- **Report infrastructure changes** — multi-file refactors, worktree creation, dependency additions
-- **Respond to queries promptly** — chief needs timely status to coordinate effectively
-
-See `skills/tribe/member.md` for full instructions.
-
-## Plugin Architecture
-
-Tribe has a plugin system for optional capabilities that activate based on the environment.
-
-### Standalone operation
-
-Tribe works without beads or any other external dependency. The database location is resolved in order:
-
-1. `--db` flag or `TRIBE_DB` env var (explicit path)
-2. `.beads/tribe.db` (if a `.beads/` directory exists in the project tree)
-3. `~/.local/share/tribe/tribe.db` (standalone fallback)
-
-### Built-in plugins
-
-Plugins activate automatically when their dependencies are available:
-
-| Plugin  | Activates when       | What it does                                    |
-| ------- | -------------------- | ----------------------------------------------- |
-| `git`   | Inside a git repo    | Reports new commits to chief every 30s          |
-| `beads` | `.beads/` dir exists | Reports bead claims/closures to chief every 30s |
-
-If a plugin's dependencies aren't present, it silently disables itself -- no configuration needed.
-
-### Custom plugins
-
-Implement the `TribePlugin` interface from `tools/lib/tribe/plugins.ts`:
-
-```typescript
-interface TribePlugin {
-  name: string
-  available(): boolean
-  start?(ctx: PluginContext): (() => void) | void
-  instructions?(): string
-}
-```
-
-Add your plugin to the plugins array in `tools/tribe-daemon.ts` alongside the built-in ones.
+| Plugin   | Activates when       | What it does                                                |
+| -------- | -------------------- | ----------------------------------------------------------- |
+| `git`    | Inside a git repo    | Broadcasts new commits to all sessions                      |
+| `beads`  | `.beads/` dir exists | Broadcasts bead claims/closures                             |
+| `github` | `gh auth` available  | Monitors repos, broadcasts push/PR/CI/issue events          |
 
 ## Configuration
-
-The server auto-detects role and name. Override via CLI args or env vars:
 
 ```bash
 # CLI args
@@ -143,7 +96,7 @@ TRIBE_NAME=silvery TRIBE_ROLE=member TRIBE_DOMAINS=silvery,flexily
 
 ## npm
 
-Published as [`tribe-wire`](https://www.npmjs.com/package/tribe-wire) on npm.
+Published as [`@bearly/tribe`](https://www.npmjs.com/package/@bearly/tribe) on npm.
 
 ## License
 
