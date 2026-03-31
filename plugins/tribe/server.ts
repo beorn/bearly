@@ -1,300 +1,16 @@
 #!/usr/bin/env bun
 // @bun
-const __defProp = Object.defineProperty
-const __returnValue = (v) => v
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue)
-}
-const __export = (target, all) => {
-  for (const name in all)
-    __defProp(target, name, {
-      get: all[name],
-      enumerable: true,
-      configurable: true,
-      set: __exportSetter.bind(all, name),
-    })
-}
-const __esm = (fn, res) => () => (fn?.((fn = 0)), res)
-const __require = import.meta.require
 
-// tools/tribe-retro.ts
-const exports_tribe_retro = {}
-__export(exports_tribe_retro, {
-  parseDuration: () => parseDuration,
-  generateRetro: () => generateRetro,
-  formatMarkdown: () => formatMarkdown,
-})
-import { Database as Database2 } from "bun:sqlite"
-import { existsSync as existsSync3 } from "fs"
-import { dirname as dirname2, resolve as resolve3 } from "path"
-import { parseArgs as parseArgs2 } from "util"
-function findBeadsDir2() {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const candidate = resolve3(dir, ".beads")
-    if (existsSync3(candidate)) return candidate
-    dir = dirname2(dir)
-  }
-  return resolve3(process.cwd(), ".beads")
-}
-function parseDuration(s) {
-  const match = s.match(/^(\d+(?:\.\d+)?)\s*(s|m|h|d)$/)
-  if (!match) throw new Error(`Invalid duration: "${s}" \u2014 use e.g. "2h", "30m", "1d"`)
-  return parseFloat(match[1]) * DURATION_MULTIPLIERS[match[2]]
-}
-function formatDuration(ms) {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3600000) {
-    const m2 = Math.floor(ms / 60000)
-    const s = Math.round((ms % 60000) / 1000)
-    return s > 0 ? `${m2}m ${s}s` : `${m2}m`
-  }
-  const h = Math.floor(ms / 3600000)
-  const m = Math.round((ms % 3600000) / 60000)
-  return m > 0 ? `${h}h ${m}m` : `${h}h`
-}
-function makeMember(name, role, domains) {
-  return { name, role, domains, sent: 0, received: 0, byType: {}, beads: new Set(), avgResponseMs: null }
-}
-function getOrCreateMember(map, name) {
-  let m = map.get(name)
-  if (!m) {
-    m = makeMember(name, "unknown", [])
-    map.set(name, m)
-  }
-  return m
-}
-function computeResponseTimes(messages) {
-  const times = new Map()
-  const answeredIds = new Set()
-  const queryMap = new Map()
-  const pendingByRecipient = new Map()
-  for (const msg of messages) {
-    if (msg.type === "query") {
-      queryMap.set(msg.id, { sender: msg.sender, ts: msg.ts })
-      if (msg.recipient !== "*") {
-        const arr = pendingByRecipient.get(msg.recipient) ?? []
-        arr.push({ id: msg.id, ts: msg.ts })
-        pendingByRecipient.set(msg.recipient, arr)
-      }
-    }
-    if (msg.type === "response") {
-      let queryTs
-      if (msg.ref && queryMap.has(msg.ref)) {
-        queryTs = queryMap.get(msg.ref).ts
-        answeredIds.add(msg.ref)
-      } else {
-        const pending = pendingByRecipient.get(msg.sender)
-        if (pending && pending.length > 0) {
-          const q = pending.shift()
-          queryTs = q.ts
-          answeredIds.add(q.id)
-        }
-      }
-      if (queryTs !== undefined) {
-        const arr = times.get(msg.sender) ?? []
-        arr.push(msg.ts - queryTs)
-        times.set(msg.sender, arr)
-      }
-    }
-  }
-  return { times, answeredIds }
-}
-function generateRetro(db, sinceMs) {
-  const now = Date.now()
-  const windowStart = sinceMs ? now - sinceMs : getEarliestTimestamp(db)
-  const windowEnd = now
-  const messages = db.prepare("SELECT * FROM messages WHERE ts >= ? ORDER BY ts ASC").all(windowStart)
-  const sessions = db
-    .prepare("SELECT * FROM sessions WHERE started_at <= ? AND heartbeat >= ?")
-    .all(windowEnd, windowStart)
-  const sessionNames = new Set(sessions.map((s) => s.name))
-  for (const sender of new Set(messages.map((m) => m.sender))) {
-    if (!sessionNames.has(sender)) {
-      const s = db.prepare("SELECT * FROM sessions WHERE name = ?").get(sender)
-      if (s) {
-        sessions.push(s)
-        sessionNames.add(s.name)
-      }
-    }
-  }
-  const memberMap = new Map()
-  for (const s of sessions) memberMap.set(s.name, makeMember(s.name, s.role, JSON.parse(s.domains)))
-  const byType = {}
-  for (const msg of messages) {
-    byType[msg.type] = (byType[msg.type] ?? 0) + 1
-    const sender = getOrCreateMember(memberMap, msg.sender)
-    sender.sent++
-    sender.byType[msg.type] = (sender.byType[msg.type] ?? 0) + 1
-    if (msg.bead_id) sender.beads.add(msg.bead_id)
-    const beadRefs = msg.content.match(/\bkm-[\w.-]+/g)
-    if (beadRefs) for (const ref of beadRefs) sender.beads.add(ref)
-    if (msg.recipient === "*") {
-      for (const [name, m] of memberMap) {
-        if (name !== msg.sender) m.received++
-      }
-    } else {
-      getOrCreateMember(memberMap, msg.recipient).received++
-    }
-  }
-  const { times: responseTimes, answeredIds } = computeResponseTimes(messages)
-  for (const [name, t] of responseTimes) {
-    const member = memberMap.get(name)
-    if (member && t.length > 0) member.avgResponseMs = t.reduce((a, b) => a + b, 0) / t.length
-  }
-  const unansweredQueries = messages.filter((m) => m.type === "query" && !answeredIds.has(m.id)).length
-  const allTimes = [...responseTimes.values()].flat()
-  const avgResponseTime = allTimes.length > 0 ? allTimes.reduce((a, b) => a + b, 0) / allTimes.length : null
-  const longestResponse = allTimes.length > 0 ? Math.max(...allTimes) : null
-  let longestResponseMember = null
-  if (longestResponse !== null) {
-    for (const [name, t] of responseTimes)
-      if (t.includes(longestResponse)) {
-        longestResponseMember = name
-        break
-      }
-  }
-  const timeline = []
-  const events = db.prepare("SELECT * FROM events WHERE ts >= ? ORDER BY ts ASC").all(windowStart)
-  const eventFormatters = {
-    "session.joined": (ev, data) => `${ev.session} joined (${data.role ?? "member"})`,
-    "session.left": (ev) => `${ev.session} left`,
-    "session.renamed": (_, data) => `${data.old_name} renamed to ${data.new_name}`,
-    "message.broadcast": (ev) => `${ev.session} broadcast a message`,
-  }
-  for (const ev of events) {
-    const fmt = eventFormatters[ev.type]
-    if (fmt) {
-      const text = fmt(ev, ev.data ? JSON.parse(ev.data) : {})
-      if (text) timeline.push({ time: formatTime(ev.ts), event: text, ts: ev.ts })
-    }
-  }
-  const msgFormatters = {
-    assign: (m) => `${m.sender} assigned to ${m.recipient}: ${snippet(m.content)}`,
-    request: (m) => `${m.sender} requested from ${m.recipient}: ${snippet(m.content)}`,
-    verdict: (m) => `${m.recipient} received verdict: ${snippet(m.content)}`,
-  }
-  for (const msg of messages) {
-    const fmt = msgFormatters[msg.type]
-    if (fmt) timeline.push({ time: formatTime(msg.ts), event: fmt(msg), ts: msg.ts })
-  }
-  timeline.sort((a, b) => a.ts - b.ts)
-  const memberList = [...memberMap.values()]
-    .filter((m) => m.sent > 0 || m.received > 0)
-    .sort((a, b) => b.sent - a.sent)
-    .map((m) => ({
-      name: m.name,
-      role: m.role,
-      domains: m.domains,
-      sent: m.sent,
-      received: m.received,
-      beads_mentioned: [...m.beads].sort(),
-      avg_response: m.avgResponseMs !== null ? formatDuration(m.avgResponseMs) : null,
-    }))
-  const durationMs = windowEnd - windowStart
-  return {
-    generated_at: new Date().toISOString(),
-    window: { start: windowStart, end: windowEnd, duration_ms: durationMs },
-    summary: {
-      duration: formatDuration(durationMs),
-      members: memberList.length,
-      total_messages: messages.length,
-      by_type: byType,
-    },
-    members: memberList,
-    timeline: timeline.map(({ time, event }) => ({ time, event })),
-    coordination: {
-      unanswered_queries: unansweredQueries,
-      avg_response_time: avgResponseTime !== null ? formatDuration(avgResponseTime) : null,
-      longest_response: longestResponse !== null ? formatDuration(longestResponse) : null,
-      longest_response_member: longestResponseMember,
-    },
-  }
-}
-function getEarliestTimestamp(db) {
-  const row = db.prepare("SELECT MIN(ts) as min_ts FROM messages").get()
-  if (row?.min_ts) return row.min_ts
-  const session = db.prepare("SELECT MIN(started_at) as min_ts FROM sessions").get()
-  return session?.min_ts ?? Date.now()
-}
-function formatMarkdown(report) {
-  const lines = []
-  lines.push(`# Tribe Retro \u2014 ${formatDate(report.window.start)}`, "")
-  lines.push("## Summary")
-  lines.push(`- Duration: ${report.summary.duration}`)
-  lines.push(`- Members: ${report.summary.members} active (${report.members.map((m) => m.name).join(", ")})`)
-  const typeBreakdown = Object.entries(report.summary.by_type)
-    .map(([t, c]) => `${c} ${t}`)
-    .join(", ")
-  lines.push(`- Messages: ${report.summary.total_messages} total (${typeBreakdown})`, "")
-  if (report.members.length > 0) {
-    lines.push("## Per-Member Activity")
-    lines.push("| Member | Sent | Received | Beads Mentioned | Avg Response |")
-    lines.push("|--------|------|----------|-----------------|--------------|")
-    for (const m of report.members)
-      lines.push(
-        `| ${m.name} | ${m.sent} | ${m.received} | ${m.beads_mentioned.length} | ${m.avg_response ?? "\u2014"} |`,
-      )
-    lines.push("")
-  }
-  if (report.timeline.length > 0) {
-    lines.push("## Timeline")
-    for (const ev of report.timeline) lines.push(`- ${ev.time} \u2014 ${ev.event}`)
-    lines.push("")
-  }
-  lines.push("## Coordination Health")
-  lines.push(`- Unanswered queries: ${report.coordination.unanswered_queries}`)
-  lines.push(`- Average response time: ${report.coordination.avg_response_time ?? "\u2014"}`)
-  if (report.coordination.longest_response)
-    lines.push(
-      `- Longest response: ${report.coordination.longest_response} (${report.coordination.longest_response_member})`,
-    )
-  lines.push("")
-  return lines.join(`
-`)
-}
-function main() {
-  const dbPath = args.db ?? resolve3(findBeadsDir2(), "tribe.db")
-  if (!existsSync3(dbPath)) {
-    console.error(`No tribe database found at ${dbPath}`)
-    process.exit(1)
-  }
-  const db = new Database2(dbPath, { readonly: true })
-  db.run("PRAGMA busy_timeout = 5000")
-  const sinceMs = args.since ? parseDuration(args.since) : undefined
-  const report = generateRetro(db, sinceMs)
-  console.log(args.format === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report))
-  db.close()
-}
-let args,
-  DURATION_MULTIPLIERS,
-  formatTime = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
-  formatDate = (ts) => new Date(ts).toISOString().slice(0, 10),
-  snippet = (s, n = 80) => (s.length > n ? s.slice(0, n) + "..." : s)
-const init_tribe_retro = __esm(() => {
-  ;({ values: args } = parseArgs2({
-    options: {
-      since: { type: "string", default: undefined },
-      format: { type: "string", default: "markdown" },
-      db: { type: "string", default: undefined },
-    },
-    strict: false,
-  }))
-  DURATION_MULTIPLIERS = { s: 1000, m: 60000, h: 3600000, d: 86400000 }
-  main()
-})
-
-// tools/tribe.ts
-import { Server } from "@modelcontextprotocol/sdk/server/index.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { randomUUID as randomUUID3 } from "crypto"
+// tools/tribe-proxy.ts
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 // tools/lib/tribe/config.ts
-import { existsSync, mkdirSync } from "fs"
-import { dirname, resolve } from "path"
-import { parseArgs } from "util"
+import { createHash } from "crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
+import { basename, dirname, resolve } from "path";
+import { parseArgs } from "util";
 function parseTribeArgs() {
   const { values } = parseArgs({
     options: {
@@ -302,1055 +18,693 @@ function parseTribeArgs() {
       role: { type: "string", default: process.env.TRIBE_ROLE },
       domains: { type: "string", default: process.env.TRIBE_DOMAINS ?? "" },
       db: { type: "string", default: process.env.TRIBE_DB },
-      "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
+      socket: { type: "string", default: process.env.TRIBE_SOCKET },
+      "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" }
     },
-    strict: false,
-  })
-  return values
+    strict: false
+  });
+  return values;
 }
 function parseSessionDomains(args) {
-  return String(args.domains ?? "")
-    .split(",")
-    .filter(Boolean)
+  return String(args.domains ?? "").split(",").filter(Boolean);
 }
-function findBeadsDir() {
-  let dir = process.cwd()
+function findBeadsDir(from) {
+  let dir = from ?? process.cwd();
   while (dir !== "/") {
-    const candidate = resolve(dir, ".beads")
-    if (existsSync(candidate)) return candidate
-    dir = dirname(dir)
+    const candidate = resolve(dir, ".beads");
+    if (existsSync(candidate))
+      return candidate;
+    dir = dirname(dir);
   }
-  return null
+  return null;
 }
-function resolveDbPath(args, beadsDir) {
-  if (args.db) return String(args.db)
-  if (process.env.TRIBE_DB) return process.env.TRIBE_DB
-  if (beadsDir) return resolve(beadsDir, "tribe.db")
-  const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
-  const tribeDir = resolve(xdgData, "tribe")
-  mkdirSync(tribeDir, { recursive: true })
-  return resolve(tribeDir, "tribe.db")
-}
-function detectRole(db, args) {
-  if (args.role) return args.role
-  try {
-    const lease = db
-      .prepare("SELECT holder_name FROM leadership WHERE role = 'chief' AND lease_until > $now")
-      .get({ $now: Date.now() })
-    if (lease) return "member"
-  } catch {}
-  const threshold = Date.now() - 30000
-  const liveChief = db
-    .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
-    .get(threshold)
-  return liveChief ? "member" : "chief"
-}
-function detectName(db, role, args) {
-  if (args.name) return String(args.name)
-  if (role === "chief") return "chief"
-  const pidName = `member-${process.pid}`
-  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
-  if (!taken) return pidName
-  return `member-${process.pid}-${Math.random().toString(36).slice(2, 5)}`
+function resolveProjectName(cwd) {
+  const dir = cwd ?? process.cwd();
+  const beadsDir = findBeadsDir(dir);
+  if (beadsDir) {
+    const projectRoot = dirname(beadsDir);
+    const depth = dir.replace(projectRoot, "").split("/").filter(Boolean).length;
+    if (depth <= 2) {
+      const configPath = resolve(beadsDir, "config.yaml");
+      if (existsSync(configPath)) {
+        try {
+          const content = readFileSync(configPath, "utf-8");
+          const match = content.match(/^project:\s*["']?(\w+)["']?/m);
+          if (match?.[1])
+            return match[1].toLowerCase();
+        } catch {}
+      }
+      return basename(projectRoot).toLowerCase();
+    }
+  }
+  return basename(dir).toLowerCase();
 }
 function resolveClaudeSessionId() {
-  return process.env.CLAUDE_SESSION_ID ?? process.env.BD_ACTOR?.replace("claude:", "") ?? null
+  return process.env.CLAUDE_SESSION_ID ?? process.env.BD_ACTOR?.replace("claude:", "") ?? null;
 }
 function resolveClaudeSessionName() {
-  return process.env.CLAUDE_SESSION_NAME ?? null
+  return process.env.CLAUDE_SESSION_NAME ?? null;
 }
-
-// tools/lib/tribe/database.ts
-import { Database } from "bun:sqlite"
-function openDatabase(path) {
-  const db = new Database(path, { create: true })
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA busy_timeout = 5000")
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
-		id         TEXT PRIMARY KEY,
-		name       TEXT NOT NULL UNIQUE,
-		role       TEXT NOT NULL,
-		domains    TEXT NOT NULL DEFAULT '[]',
-		pid        INTEGER NOT NULL,
-		cwd        TEXT,
-		claude_session_id TEXT,
-		claude_session_name TEXT,
-		started_at INTEGER NOT NULL,
-		heartbeat  INTEGER NOT NULL,
-		pruned_at  INTEGER
-	)`)
+function resolveProjectId(cwd) {
+  const dir = cwd ?? process.cwd();
   try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
-  } catch {}
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_name TEXT")
-  } catch {}
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN pruned_at INTEGER")
-  } catch {}
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_ts INTEGER")
-  } catch {}
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_seq INTEGER DEFAULT 0")
-  } catch {}
-  db.run(`CREATE TABLE IF NOT EXISTS aliases (
-		old_name   TEXT PRIMARY KEY,
-		session_id TEXT NOT NULL,
-		renamed_at INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
-		id         TEXT PRIMARY KEY,
-		type       TEXT NOT NULL,
-		sender     TEXT NOT NULL,
-		recipient  TEXT NOT NULL,
-		content    TEXT NOT NULL,
-		bead_id    TEXT,
-		ref        TEXT,
-		ts         INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS cursors (
-		session_id   TEXT PRIMARY KEY,
-		last_read_ts INTEGER NOT NULL,
-		last_seq     INTEGER DEFAULT 0
-	)`)
-  try {
-    db.run("ALTER TABLE cursors ADD COLUMN last_seq INTEGER DEFAULT 0")
-  } catch {}
-  db.run(`CREATE TABLE IF NOT EXISTS reads (
-		message_id TEXT NOT NULL,
-		session_id TEXT NOT NULL,
-		read_at    INTEGER NOT NULL,
-		PRIMARY KEY (message_id, session_id)
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS events (
-		id       TEXT PRIMARY KEY,
-		type     TEXT NOT NULL,
-		session  TEXT,
-		bead_id  TEXT,
-		data     TEXT,
-		ts       INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS retros (
-		id          TEXT PRIMARY KEY,
-		tribe_start INTEGER NOT NULL,
-		tribe_end   INTEGER NOT NULL,
-		members     TEXT NOT NULL,
-		metrics     TEXT NOT NULL,
-		lessons     TEXT NOT NULL,
-		full_md     TEXT NOT NULL,
-		ts          INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS dedup (
-		key        TEXT PRIMARY KEY,
-		session_id TEXT NOT NULL,
-		ts         INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS leadership (
-		role         TEXT PRIMARY KEY DEFAULT 'chief',
-		holder_id    TEXT NOT NULL,
-		holder_name  TEXT NOT NULL,
-		term         INTEGER NOT NULL DEFAULT 1,
-		lease_until  INTEGER NOT NULL,
-		acquired_at  INTEGER NOT NULL
-	)`)
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_aliases_session ON aliases(session_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_bead ON events(bead_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_pruned ON sessions(pruned_at, heartbeat)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
-  return db
-}
-function createStatements(db) {
-  return {
-    upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now, NULL)
-		ON CONFLICT(id) DO UPDATE SET
-			name = $name, role = $role, domains = $domains,
-			pid = $pid, cwd = $cwd, claude_session_id = $claude_session_id,
-			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
-	`),
-    heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now, pruned_at = NULL WHERE id = $id"),
-    pollMessages: db.prepare(`
-		SELECT rowid, * FROM messages
-		WHERE rowid > $last_seq
-		AND id NOT IN (SELECT message_id FROM reads WHERE session_id = $session_id)
-		AND (
-			recipient = $name
-			OR recipient = '*'
-			OR recipient IN (SELECT old_name FROM aliases WHERE session_id = $session_id)
-		)
-		ORDER BY
-			CASE type
-				WHEN 'assign' THEN 0
-				WHEN 'request' THEN 1
-				WHEN 'verdict' THEN 2
-				WHEN 'query' THEN 3
-				WHEN 'response' THEN 4
-				WHEN 'status' THEN 5
-				WHEN 'notify' THEN 6
-				ELSE 7
-			END,
-			rowid ASC
-	`),
-    markRead: db.prepare(
-      "INSERT OR IGNORE INTO reads (message_id, session_id, read_at) VALUES ($message_id, $session_id, $now)",
-    ),
-    getCursor: db.prepare("SELECT last_read_ts, last_seq FROM cursors WHERE session_id = $session_id"),
-    upsertCursor: db.prepare(`
-		INSERT INTO cursors (session_id, last_read_ts, last_seq)
-		VALUES ($session_id, $ts, $seq)
-		ON CONFLICT(session_id) DO UPDATE SET last_read_ts = $ts, last_seq = $seq
-	`),
-    insertMessage: db.prepare(`
-		INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
-		VALUES ($id, $type, $sender, $recipient, $content, $bead_id, $ref, $ts)
-	`),
-    insertEvent: db.prepare(`
-		INSERT INTO events (id, type, session, bead_id, data, ts)
-		VALUES ($id, $type, $session, $bead_id, $data, $ts)
-	`),
-    liveSessions: db.prepare(`
-		SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
-		FROM sessions
-		WHERE heartbeat > $threshold AND pruned_at IS NULL
-	`),
-    allSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
-    ),
-    messageHistory: db.prepare(`
-		SELECT * FROM messages
-		WHERE (sender = $name OR recipient = $name OR recipient = '*')
-		ORDER BY ts DESC
-		LIMIT $limit
-	`),
-    checkNameTaken: db.prepare(
-      "SELECT id FROM sessions WHERE name = $name AND id != $session_id AND pruned_at IS NULL",
-    ),
-    insertAlias: db.prepare(`
-		INSERT OR REPLACE INTO aliases (old_name, session_id, renamed_at)
-		VALUES ($old_name, $session_id, $now)
-	`),
-    renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
-    pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now, name = $pruned_name WHERE id = $id"),
-    updateSessionMeta: db.prepare(`
-		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
-		WHERE id = $id
-	`),
-    hasRecentMessage: db.prepare(`
-		SELECT 1 FROM messages WHERE content LIKE $prefix || '%' AND ts > $since LIMIT 1
-	`),
-    claimDedup: db.prepare("INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)"),
-    cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),
-    updateLastDelivered: db.prepare(
-      "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id",
-    ),
-    getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
-    activeSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
-    ),
-    deleteOldPrunedSessions: db.prepare("DELETE FROM sessions WHERE pruned_at IS NOT NULL AND pruned_at < $cutoff"),
-  }
-}
-
-// tools/lib/tribe/lease.ts
-const LEASE_DURATION_MS = 60000
-function acquireLease(db, id, name) {
-  const leaseUntil = Date.now() + LEASE_DURATION_MS
-  const acquired = Date.now()
-  try {
-    db.run(
-      `INSERT INTO leadership (role, holder_id, holder_name, term, lease_until, acquired_at)
-       VALUES ('chief', $id, $name, 1, $lease_until, $acquired)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired },
-    )
-    return true
+    const real = realpathSync(dir);
+    return createHash("sha256").update(real).digest("hex").slice(0, 12);
   } catch {
-    const result = db.run(
-      `UPDATE leadership SET holder_id = $id, holder_name = $name, term = term + 1,
-         lease_until = $lease_until, acquired_at = $acquired
-       WHERE role = 'chief' AND (lease_until < $now OR holder_id = $id)`,
-      { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() },
-    )
-    return result.changes > 0
+    return createHash("sha256").update(dir).digest("hex").slice(0, 12);
   }
 }
-function isLeaseHolder(db, id) {
-  const row = db
-    .prepare("SELECT holder_id FROM leadership WHERE role = 'chief' AND holder_id = $id AND lease_until > $now")
-    .get({ $id: id, $now: Date.now() })
-  return !!row
+
+// tools/lib/tribe/socket.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync, readFileSync as readFileSync2 } from "fs";
+import { resolve as resolve2, dirname as dirname2 } from "path";
+import { createConnection } from "net";
+import { spawn } from "child_process";
+
+// ../loggily/src/colors.ts
+var _process = typeof process !== "undefined" ? process : undefined;
+var enabled = _process?.env?.["FORCE_COLOR"] !== undefined && _process?.env?.["FORCE_COLOR"] !== "0" ? true : _process?.env?.["NO_COLOR"] !== undefined ? false : _process?.stdout?.isTTY ?? false;
+function wrap(open, close) {
+  if (!enabled)
+    return (str) => str;
+  return (str) => open + str + close;
 }
-function getLeaseInfo(db) {
-  return db
-    .prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'")
-    .get()
+var colors = {
+  dim: wrap("\x1B[2m", "\x1B[22m"),
+  blue: wrap("\x1B[34m", "\x1B[39m"),
+  yellow: wrap("\x1B[33m", "\x1B[39m"),
+  red: wrap("\x1B[31m", "\x1B[39m"),
+  magenta: wrap("\x1B[35m", "\x1B[39m"),
+  cyan: wrap("\x1B[36m", "\x1B[39m")
+};
+
+// ../loggily/src/tracing.ts
+var currentIdFormat = "simple";
+var simpleSpanCounter = 0;
+var simpleTraceCounter = 0;
+function randomHex(bytes) {
+  const uuid = crypto.randomUUID().replace(/-/g, "");
+  return uuid.slice(0, bytes * 2);
+}
+function generateSpanId() {
+  if (currentIdFormat === "w3c") {
+    return randomHex(8);
+  }
+  return `sp_${(++simpleSpanCounter).toString(36)}`;
+}
+function generateTraceId() {
+  if (currentIdFormat === "w3c") {
+    return randomHex(16);
+  }
+  return `tr_${(++simpleTraceCounter).toString(36)}`;
+}
+var sampleRate = 1;
+function shouldSample() {
+  if (sampleRate >= 1)
+    return true;
+  if (sampleRate <= 0)
+    return false;
+  return Math.random() < sampleRate;
 }
 
-// tools/lib/tribe/context.ts
-function createTribeContext(opts) {
-  let currentName = opts.initialName
+// ../loggily/src/core.ts
+var _process2 = typeof process !== "undefined" ? process : undefined;
+function getEnv(key) {
+  return _process2?.env?.[key];
+}
+function writeStderr(text) {
+  if (_process2?.stderr?.write) {
+    _process2.stderr.write(text + `
+`);
+  } else {
+    console.error(text);
+  }
+}
+var writers = [];
+var suppressConsole = false;
+var outputMode = "console";
+var LOG_LEVEL_PRIORITY = {
+  trace: 0,
+  debug: 1,
+  info: 2,
+  warn: 3,
+  error: 4,
+  silent: 5
+};
+var envLogLevel = getEnv("LOG_LEVEL")?.toLowerCase();
+var currentLogLevel = envLogLevel === "trace" || envLogLevel === "debug" || envLogLevel === "info" || envLogLevel === "warn" || envLogLevel === "error" || envLogLevel === "silent" ? envLogLevel : "info";
+var traceEnv = getEnv("TRACE");
+var spansEnabled = traceEnv === "1" || traceEnv === "true";
+var traceFilter = null;
+if (traceEnv && traceEnv !== "1" && traceEnv !== "true") {
+  traceFilter = new Set(traceEnv.split(",").map((s) => s.trim()));
+  spansEnabled = true;
+}
+function parseNamespaceFilter(input) {
+  const includeList = [];
+  const excludeList = [];
+  for (const part of input) {
+    if (part.startsWith("-")) {
+      excludeList.push(part.slice(1));
+    } else {
+      includeList.push(part);
+    }
+  }
   return {
-    db: opts.db,
-    stmts: opts.stmts,
-    sessionId: opts.sessionId,
-    sessionRole: opts.sessionRole,
-    domains: opts.domains,
-    claudeSessionId: opts.claudeSessionId,
-    claudeSessionName: opts.claudeSessionName,
-    getName: () => currentName,
-    setName: (name) => {
-      currentName = name
+    includes: includeList.length > 0 ? new Set(includeList) : null,
+    excludes: excludeList.length > 0 ? new Set(excludeList) : null
+  };
+}
+var debugEnv = getEnv("DEBUG");
+var debugIncludes = null;
+var debugExcludes = null;
+if (debugEnv) {
+  const parts = debugEnv.split(",").map((s) => s.trim());
+  const parsed = parseNamespaceFilter(parts);
+  debugIncludes = parsed.includes;
+  if (debugIncludes && [...debugIncludes].some((p) => p === "*" || p === "1" || p === "true")) {
+    debugIncludes = new Set(["*"]);
+  }
+  debugExcludes = parsed.excludes;
+  if (LOG_LEVEL_PRIORITY[currentLogLevel] > LOG_LEVEL_PRIORITY.debug) {
+    currentLogLevel = "debug";
+  }
+}
+var envLogFormat = getEnv("LOG_FORMAT")?.toLowerCase();
+var currentLogFormat = envLogFormat === "json" ? "json" : envLogFormat === "console" ? "console" : "console";
+function useJsonFormat() {
+  return currentLogFormat === "json" || getEnv("NODE_ENV") === "production" || getEnv("TRACE_FORMAT") === "json";
+}
+var _getContextTags = null;
+var _getContextParent = null;
+var _enterContext = null;
+var _exitContext = null;
+function shouldLog(level) {
+  return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[currentLogLevel];
+}
+function shouldTraceNamespace(namespace) {
+  if (!spansEnabled)
+    return false;
+  if (!traceFilter)
+    return true;
+  return matchesNamespaceSet(namespace, traceFilter);
+}
+function safeStringify(value) {
+  const seen = new WeakSet;
+  return JSON.stringify(value, (_key, val) => {
+    if (typeof val === "bigint")
+      return val.toString();
+    if (typeof val === "symbol")
+      return val.toString();
+    if (val instanceof Error)
+      return { message: val.message, stack: val.stack, name: val.name };
+    if (typeof val === "object" && val !== null) {
+      if (seen.has(val))
+        return "[Circular]";
+      seen.add(val);
+    }
+    return val;
+  });
+}
+function formatConsole(namespace, level, message, data) {
+  const time = colors.dim(new Date().toISOString().split("T")[1]?.split(".")[0] || "");
+  let levelStr = "";
+  switch (level) {
+    case "trace":
+      levelStr = colors.dim("TRACE");
+      break;
+    case "debug":
+      levelStr = colors.dim("DEBUG");
+      break;
+    case "info":
+      levelStr = colors.blue("INFO");
+      break;
+    case "warn":
+      levelStr = colors.yellow("WARN");
+      break;
+    case "error":
+      levelStr = colors.red("ERROR");
+      break;
+    case "span":
+      levelStr = colors.magenta("SPAN");
+      break;
+  }
+  const ns = colors.cyan(namespace);
+  let output = `${time} ${levelStr} ${ns} ${message}`;
+  if (data && Object.keys(data).length > 0) {
+    output += ` ${colors.dim(safeStringify(data))}`;
+  }
+  return output;
+}
+function formatJSON(namespace, level, message, data) {
+  const entry = {
+    time: new Date().toISOString(),
+    level,
+    name: namespace,
+    msg: message,
+    ...data
+  };
+  return safeStringify(entry);
+}
+function matchesNamespaceSet(namespace, set) {
+  if (set.has("*"))
+    return true;
+  for (const filter of set) {
+    if (namespace === filter || namespace.startsWith(filter + ":")) {
+      return true;
+    }
+  }
+  return false;
+}
+function shouldDebugNamespace(namespace) {
+  if (!debugIncludes && !debugExcludes)
+    return true;
+  if (debugExcludes && matchesNamespaceSet(namespace, debugExcludes)) {
+    return false;
+  }
+  if (debugIncludes)
+    return matchesNamespaceSet(namespace, debugIncludes);
+  return true;
+}
+function resolveMessage(msg) {
+  return typeof msg === "function" ? msg() : msg;
+}
+function writeLog(namespace, level, message, data) {
+  if (!shouldLog(level))
+    return;
+  if (!shouldDebugNamespace(namespace))
+    return;
+  const resolved = resolveMessage(message);
+  const contextTags = _getContextTags?.();
+  const mergedData = contextTags && Object.keys(contextTags).length > 0 ? { ...contextTags, ...data } : data;
+  const formatted = useJsonFormat() ? formatJSON(namespace, level, resolved, mergedData) : formatConsole(namespace, level, resolved, mergedData);
+  for (const w of writers)
+    w(formatted, level);
+  if (suppressConsole || outputMode === "writers-only")
+    return;
+  if (outputMode === "stderr") {
+    writeStderr(formatted);
+    return;
+  }
+  switch (level) {
+    case "trace":
+    case "debug":
+      console.debug(formatted);
+      break;
+    case "info":
+      console.info(formatted);
+      break;
+    case "warn":
+      console.warn(formatted);
+      break;
+    case "error":
+      console.error(formatted);
+      break;
+  }
+}
+function writeSpan(namespace, duration, attrs) {
+  if (!shouldTraceNamespace(namespace))
+    return;
+  if (!shouldDebugNamespace(namespace))
+    return;
+  const message = `(${duration}ms)`;
+  const formatted = useJsonFormat() ? formatJSON(namespace, "span", message, { duration, ...attrs }) : formatConsole(namespace, "span", message, { duration, ...attrs });
+  for (const w of writers)
+    w(formatted, "span");
+  if (!suppressConsole)
+    writeStderr(formatted);
+}
+function createSpanDataProxy(getFields, attrs) {
+  const READONLY_KEYS = new Set(["id", "traceId", "parentId", "startTime", "endTime", "duration"]);
+  return new Proxy(attrs, {
+    get(_target, prop) {
+      if (READONLY_KEYS.has(prop)) {
+        return getFields()[prop];
+      }
+      return attrs[prop];
     },
-  }
-}
-
-// tools/lib/tribe/session.ts
-import { randomUUID as randomUUID2 } from "crypto"
-import { existsSync as existsSync2, readFileSync } from "fs"
-import { resolve as resolve2 } from "path"
-
-// tools/lib/tribe/messaging.ts
-import { randomUUID } from "crypto"
-function sendMessage(ctx, recipient, content, type = "notify", bead_id, ref) {
-  const id = randomUUID()
-  ctx.stmts.insertMessage.run({
-    $id: id,
-    $type: type,
-    $sender: ctx.getName(),
-    $recipient: recipient,
-    $content: content,
-    $bead_id: bead_id ?? null,
-    $ref: ref ?? null,
-    $ts: Date.now(),
-  })
-  return { id }
-}
-function logEvent(ctx, type, bead_id, data) {
-  ctx.stmts.insertEvent.run({
-    $id: randomUUID(),
-    $type: type,
-    $session: ctx.getName(),
-    $bead_id: bead_id ?? null,
-    $data: data ? JSON.stringify(data) : null,
-    $ts: Date.now(),
-  })
-}
-
-// tools/lib/tribe/session.ts
-function registerSession(ctx) {
-  try {
-    ctx.stmts.upsertSession.run({
-      $id: ctx.sessionId,
-      $name: ctx.getName(),
-      $role: ctx.sessionRole,
-      $domains: JSON.stringify(ctx.domains),
-      $pid: process.pid,
-      $cwd: process.cwd(),
-      $claude_session_id: ctx.claudeSessionId,
-      $claude_session_name: ctx.claudeSessionName,
-      $now: Date.now(),
-    })
-  } catch {
-    const fallbackName = `${ctx.getName()}-${Math.random().toString(36).slice(2, 5)}`
-    process.stderr.write(`[tribe] name "${ctx.getName()}" taken, using "${fallbackName}"
-`)
-    ctx.setName(fallbackName)
-    ctx.stmts.upsertSession.run({
-      $id: ctx.sessionId,
-      $name: ctx.getName(),
-      $role: ctx.sessionRole,
-      $domains: JSON.stringify(ctx.domains),
-      $pid: process.pid,
-      $cwd: process.cwd(),
-      $claude_session_id: ctx.claudeSessionId,
-      $claude_session_name: ctx.claudeSessionName,
-      $now: Date.now(),
-    })
-  }
-  ctx.stmts.insertEvent.run({
-    $id: randomUUID2(),
-    $type: "session.joined",
-    $session: ctx.getName(),
-    $bead_id: null,
-    $data: JSON.stringify({ name: ctx.getName(), role: ctx.sessionRole, domains: ctx.domains }),
-    $ts: Date.now(),
-  })
-  const cursor = ctx.stmts.getCursor.get({ $session_id: ctx.sessionId })
-  if (!cursor) {
-    let initialTs = 0
-    let initialSeq = 0
-    if (ctx.claudeSessionId) {
-      const prior = ctx.db
-        .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
-        )
-        .get({ $csid: ctx.claudeSessionId, $id: ctx.sessionId })
-      if (prior?.last_delivered_ts) {
-        initialTs = prior.last_delivered_ts
-        initialSeq = prior.last_delivered_seq ?? 0
-        process.stderr.write(`[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}
-`)
+    set(_target, prop, value) {
+      if (READONLY_KEYS.has(prop)) {
+        return false;
       }
+      attrs[prop] = value;
+      return true;
     }
-    if (initialSeq === 0) {
-      const priorByPid = ctx.db
-        .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY heartbeat DESC LIMIT 1",
-        )
-        .get({ $pid: process.pid, $id: ctx.sessionId })
-      if (priorByPid?.last_delivered_seq) {
-        initialTs = priorByPid.last_delivered_ts ?? 0
-        initialSeq = priorByPid.last_delivered_seq
-        process.stderr.write(`[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}
-`)
-      }
+  });
+}
+function createLoggerImpl(name, props, spanMeta, parentSpanId, traceId, traceSampled = true) {
+  const log = (level, msgOrError, data) => {
+    if (msgOrError instanceof Error) {
+      const err = msgOrError;
+      writeLog(name, level, err.message, {
+        ...props,
+        ...data,
+        error_type: err.name,
+        error_stack: err.stack,
+        error_code: err.code
+      });
+    } else {
+      writeLog(name, level, msgOrError, { ...props, ...data });
     }
-    if (initialSeq === 0) {
-      const latest = ctx.db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get()
-      if (latest?.max_seq) {
-        initialSeq = latest.max_seq
-        initialTs = Date.now()
-        process.stderr.write(`[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}
-`)
-      }
-    }
-    if (initialSeq === 0 && initialTs > 0) {
-      const maxRow = ctx.db
-        .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-        .get({ $ts: initialTs })
-      initialSeq = maxRow?.max_rowid ?? 0
-      process.stderr.write(`[tribe] migrated ts cursor to seq=${initialSeq}
-`)
-    }
-    ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: initialTs, $seq: initialSeq })
-  } else if (!cursor.last_seq) {
-    const maxRow = ctx.db
-      .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-      .get({ $ts: cursor.last_read_ts })
-    const migratedSeq = maxRow?.max_rowid ?? 0
-    ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: cursor.last_read_ts, $seq: migratedSeq })
-    process.stderr.write(`[tribe] migrated existing cursor to seq=${migratedSeq}
-`)
-  }
-}
-function resolveTranscriptPath(claudeSessionId) {
-  if (!claudeSessionId) return null
-  const cwd = process.cwd()
-  const projectKey = "-" + cwd.replace(/\//g, "-")
-  const transcriptPath = resolve2(process.env.HOME ?? "~", ".claude/projects", projectKey, `${claudeSessionId}.jsonl`)
-  return existsSync2(transcriptPath) ? transcriptPath : null
-}
-function readTranscriptSlug(transcriptPath) {
-  if (!transcriptPath) return null
-  try {
-    const size = Bun.file(transcriptPath).size
-    if (size === 0) return null
-    const text = new TextDecoder().decode(
-      new Uint8Array(readFileSync(transcriptPath).buffer.slice(Math.max(0, size - 4096))),
-    )
-    const lines = text.trimEnd().split(`
-`)
-    const lastLine = lines[lines.length - 1]
-    if (!lastLine) return null
-    const data = JSON.parse(lastLine)
-    return data.slug ?? null
-  } catch {
-    return null
-  }
-}
-function tryInitialRename(ctx, transcriptPath) {
-  if (!ctx.getName().startsWith("member-")) return
-  const slug = readTranscriptSlug(transcriptPath)
-  if (!slug || slug === ctx.getName()) return
-  const existing = ctx.stmts.checkNameTaken.get({ $name: slug, $session_id: ctx.sessionId })
-  if (existing) return
-  const oldName = ctx.getName()
-  ctx.stmts.insertAlias.run({ $old_name: oldName, $session_id: ctx.sessionId, $now: Date.now() })
-  ctx.stmts.renameSession.run({ $new_name: slug, $session_id: ctx.sessionId })
-  ctx.setName(slug)
-  sendMessage(ctx, "*", `Member "${oldName}" is now "${slug}"`, "notify")
-  logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
-  process.stderr.write(`[tribe] initial name from /rename: ${oldName} \u2192 ${slug}
-`)
-}
-function cleanupOldPrunedSessions(ctx) {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000
-  const result = ctx.stmts.deleteOldPrunedSessions.run({ $cutoff: cutoff })
-  if (result.changes > 0) {
-    process.stderr.write(`[tribe] cleaned up ${result.changes} old pruned session(s)
-`)
-  }
-}
-function cleanupOldData(ctx) {
-  const READS_TTL = 7 * 24 * 60 * 60 * 1000
-  const DATA_TTL = 30 * 24 * 60 * 60 * 1000
-  const now_ms = Date.now()
-  const readsDel = ctx.db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - READS_TTL })
-  const eventsDel = ctx.db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-  const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - DATA_TTL })
-  const aliasesDel = ctx.db
-    .prepare("DELETE FROM aliases WHERE renamed_at < $cutoff")
-    .run({ $cutoff: now_ms - DATA_TTL })
-  ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 })
-  const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
-  if (total > 0) {
-    process.stderr
-      .write(`[tribe] cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted
-`)
-  }
-}
-function sendHeartbeat(ctx) {
-  const session = ctx.db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get(ctx.sessionId)
-  if (session?.pruned_at) {
-    logEvent(ctx, "session.rejoined", undefined, {
-      name: ctx.getName(),
-      role: ctx.sessionRole,
-      domains: ctx.domains,
-    })
-    process.stderr.write(`[tribe] ${ctx.getName()} rejoined tribe (was pruned)
-`)
-    registerSession(ctx)
-    return
-  }
-  ctx.stmts.heartbeat.run({ $id: ctx.sessionId, $now: Date.now() })
-  if (ctx.sessionRole === "chief") {
-    acquireLease(ctx.db, ctx.sessionId, ctx.getName())
-  }
-}
-
-// tools/lib/tribe/validation.ts
-function validateName(name) {
-  if (!/^[a-z0-9][a-z0-9_.-]{0,31}$/.test(name)) {
-    return "Name must be 1-32 chars: lowercase letters, digits, hyphens, underscores, dots. Must start with letter or digit."
-  }
-  return null
-}
-function sanitizeMessage(content) {
-  const cleaned = content.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, "")
-  if (cleaned.length > 4096) return cleaned.slice(0, 4093) + "..."
-  return cleaned
-}
-
-// tools/lib/tribe/handlers.ts
-function handleToolCall(ctx, name, a, opts) {
-  switch (name) {
-    case "tribe_send":
-      return handleSend(ctx, a)
-    case "tribe_broadcast":
-      return handleBroadcast(ctx, a)
-    case "tribe_sessions":
-      return handleSessions(ctx, a)
-    case "tribe_history":
-      return handleHistory(ctx, a)
-    case "tribe_rename":
-      return handleRename(ctx, a, opts)
-    case "tribe_join":
-      return handleJoin(ctx, a)
-    case "tribe_health":
-      return handleHealth(ctx)
-    case "tribe_reload":
-      return handleReload(ctx, a, opts.cleanup)
-    case "tribe_retro":
-      return handleRetro(ctx, a)
-    case "tribe_leadership":
-      return handleLeadership(ctx)
-    default:
-      throw new Error(`Unknown tool: ${name}`)
-  }
-}
-function handleSend(ctx, a) {
-  const msgType = a.type ?? "notify"
-  if ((msgType === "assign" || msgType === "verdict") && !isLeaseHolder(ctx.db, ctx.sessionId)) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }),
-        },
-      ],
-    }
-  }
-  const sanitized = sanitizeMessage(a.message)
-  const result = sendMessage(ctx, a.to, sanitized, msgType, a.bead, a.ref)
-  logEvent(ctx, `message.sent.${msgType}`, a.bead, {
-    to: a.to,
-    message_id: result.id,
-  })
-  return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
-}
-function handleBroadcast(ctx, a) {
-  const sanitized = sanitizeMessage(a.message)
-  const result = sendMessage(ctx, "*", sanitized, a.type ?? "notify", a.bead)
-  logEvent(ctx, "message.broadcast", a.bead, { message_id: result.id })
-  return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
-}
-function handleSessions(ctx, a) {
-  const threshold = Date.now() - 30000
-  const rows = ctx.stmts.allSessions.all()
-  const dead = []
-  for (const r of rows) {
-    if (r.pid === process.pid) continue
-    if (r.pruned_at) continue
-    try {
-      process.kill(r.pid, 0)
-    } catch {
-      dead.push(r.name)
-      const pruneTs = Date.now()
-      ctx.stmts.pruneSession.run({ $id: r.id, $now: pruneTs, $pruned_name: `${r.name}-pruned-${pruneTs}` })
-    }
-  }
-  const liveRows = a.all ? ctx.stmts.allSessions.all() : ctx.stmts.liveSessions.all({ $threshold: threshold })
-  const sessions = liveRows.map((r) => ({
-    name: r.name,
-    role: r.role,
-    domains: JSON.parse(r.domains),
-    pid: r.pid,
-    cwd: r.cwd,
-    claude_session_id: r.claude_session_id,
-    claude_session_name: r.claude_session_name,
-    alive: r.heartbeat > threshold && !r.pruned_at,
-    pruned: !!r.pruned_at,
-    uptime_min: Math.round((Date.now() - r.started_at) / 60000),
-    last_heartbeat_sec: Math.round((Date.now() - r.heartbeat) / 1000),
-  }))
-  const result = { sessions }
-  if (dead.length > 0) result.pruned = dead
-  return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }
-}
-function handleHistory(ctx, a) {
-  const who = a.with ?? ctx.getName()
-  const limit = a.limit ?? 20
-  const rows = ctx.stmts.messageHistory.all({ $name: who, $limit: limit })
-  const messages = rows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    from: r.sender,
-    to: r.recipient,
-    content: r.content,
-    bead: r.bead_id,
-    ref: r.ref,
-    ts: new Date(r.ts).toISOString(),
-    read: !!r.read_at,
-  }))
-  return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) }] }
-}
-function handleRename(ctx, a, opts) {
-  const newName = a.new_name
-  const nameError = validateName(newName)
-  if (nameError) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: nameError }) }] }
-  }
-  const existing = ctx.stmts.checkNameTaken.get({ $name: newName, $session_id: ctx.sessionId })
-  if (existing) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${newName}" is already taken` }) }] }
-  }
-  const oldName = ctx.getName()
-  ctx.stmts.insertAlias.run({ $old_name: oldName, $session_id: ctx.sessionId, $now: Date.now() })
-  ctx.stmts.renameSession.run({ $new_name: newName, $session_id: ctx.sessionId })
-  ctx.setName(newName)
-  opts.setUserRenamed(true)
-  sendMessage(ctx, "*", `Member "${oldName}" is now "${newName}"`, "notify")
-  logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: newName })
-  return {
-    content: [{ type: "text", text: JSON.stringify({ renamed: true, old_name: oldName, new_name: newName }) }],
-  }
-}
-function handleJoin(ctx, a) {
-  const joinName = a.name
-  const joinRole = a.role ?? ctx.sessionRole
-  const joinDomains = a.domains ?? ctx.domains
-  const joinNameError = validateName(joinName)
-  if (joinNameError) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: joinNameError }) }] }
-  }
-  const taken = ctx.stmts.checkNameTaken.get({ $name: joinName, $session_id: ctx.sessionId })
-  if (taken) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
-  }
-  if (joinRole === "chief") {
-    const leased = acquireLease(ctx.db, ctx.sessionId, joinName)
-    if (!leased) {
-      const info = getLeaseInfo(ctx.db)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }),
-          },
-        ],
-      }
-    }
-  }
-  const prevName = ctx.getName()
-  if (joinName !== prevName) {
-    ctx.stmts.insertAlias.run({ $old_name: prevName, $session_id: ctx.sessionId, $now: Date.now() })
-  }
-  ctx.stmts.updateSessionMeta.run({
-    $id: ctx.sessionId,
-    $name: joinName,
-    $role: joinRole,
-    $domains: JSON.stringify(joinDomains),
-    $now: Date.now(),
-  })
-  ctx.setName(joinName)
-  logEvent(ctx, "session.joined", undefined, { name: joinName, role: joinRole, domains: joinDomains, rejoin: true })
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          joined: true,
-          name: joinName,
-          role: joinRole,
-          domains: joinDomains,
-          previous_name: joinName !== prevName ? prevName : undefined,
-        }),
-      },
-    ],
-  }
-}
-function handleHealth(ctx) {
-  const threshold = Date.now() - 30000
-  const silentThreshold = Date.now() - 300000
-  const activeSessions = ctx.stmts.activeSessions.all()
-  const pruned = []
-  for (const s of activeSessions) {
-    if (s.pid === process.pid) continue
-    try {
-      process.kill(s.pid, 0)
-    } catch {
-      pruned.push(s.name)
-      const pruneTs = Date.now()
-      ctx.stmts.pruneSession.run({ $id: s.id, $now: pruneTs, $pruned_name: `${s.name}-pruned-${pruneTs}` })
-    }
-  }
-  cleanupOldPrunedSessions(ctx)
-  const liveSessions = ctx.stmts.activeSessions.all()
-  const members = liveSessions.map((s) => {
-    const alive = s.heartbeat > threshold
-    const lastMsg = ctx.db
-      .prepare("SELECT ts FROM messages WHERE sender = $name ORDER BY ts DESC LIMIT 1")
-      .get({ $name: s.name })
-    const lastMsgAge = lastMsg ? Date.now() - lastMsg.ts : null
-    const warnings = []
-    if (!alive) warnings.push("heartbeat timeout \u2014 session may be dead")
-    if (alive && lastMsgAge && lastMsgAge > silentThreshold) {
-      warnings.push(`no message in ${Math.round(lastMsgAge / 60000)} min`)
-    }
-    if (!alive && !lastMsg) warnings.push("never sent a message")
-    return {
-      name: s.name,
-      role: s.role,
-      domains: JSON.parse(s.domains),
-      alive,
-      last_message: lastMsgAge ? `${Math.round(lastMsgAge / 60000)} min ago` : "never",
-      warnings,
-    }
-  })
-  const unread = ctx.db
-    .prepare(`
-			SELECT m.recipient, COUNT(*) as count FROM messages m
-			WHERE m.recipient != '*'
-			AND NOT EXISTS (
-				SELECT 1 FROM reads r
-				JOIN sessions s ON r.session_id = s.id
-				WHERE r.message_id = m.id AND s.name = m.recipient
-			)
-			GROUP BY m.recipient
-		`)
-    .all()
-  const stats = {
-    messages: ctx.db.prepare("SELECT COUNT(*) as n FROM messages").get()?.n ?? 0,
-    events: ctx.db.prepare("SELECT COUNT(*) as n FROM events").get()?.n ?? 0,
-    reads: ctx.db.prepare("SELECT COUNT(*) as n FROM reads").get()?.n ?? 0,
-  }
-  const result = { members, unread, stats, checked_at: new Date().toISOString() }
-  if (pruned.length > 0) result.pruned = pruned
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(result, null, 2),
-      },
-    ],
-  }
-}
-function handleReload(ctx, a, cleanup) {
-  const reason = a.reason ?? "manual reload"
-  logEvent(ctx, "session.reload", undefined, { name: ctx.getName(), reason })
-  process.stderr.write(`[tribe] reloading: ${reason}
-`)
-  setTimeout(() => {
-    cleanup()
-    const args2 = process.argv.slice(1)
-    process.stderr.write(`[tribe] exec: ${process.execPath} ${args2.join(" ")}
-`)
-    const child = Bun.spawn([process.execPath, ...args2], {
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-      env: process.env,
-    })
-    child.exited.then((code) => process.exit(code ?? 0))
-  }, 100)
-  return {
-    content: [{ type: "text", text: JSON.stringify({ reloading: true, reason, pid: process.pid }) }],
-  }
-}
-async function handleRetro(ctx, a) {
-  const {
-    generateRetro: generateRetro2,
-    formatMarkdown: formatMarkdown2,
-    parseDuration: parseDuration2,
-  } = await Promise.resolve().then(() => (init_tribe_retro(), exports_tribe_retro))
-  const sinceStr = a.since
-  let sinceMs
-  if (sinceStr) {
-    try {
-      sinceMs = parseDuration2(sinceStr)
-    } catch {
-      return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] }
-    }
-  }
-  const fmt = a.format ?? "markdown"
-  const report = generateRetro2(ctx.db, sinceMs)
-  const text = fmt === "json" ? JSON.stringify(report, null, 2) : formatMarkdown2(report)
-  return { content: [{ type: "text", text }] }
-}
-function handleLeadership(ctx) {
-  const info = getLeaseInfo(ctx.db)
-  if (!info) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) }],
-    }
-  }
-  const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(
-          {
-            holder_name: info.holder_name,
-            holder_id: info.holder_id,
-            term: info.term,
-            expires_in_seconds: expiresIn,
-            expired: expiresIn === 0,
-            acquired_at: new Date(info.acquired_at).toISOString(),
-          },
-          null,
-          2,
-        ),
-      },
-    ],
-  }
-}
-
-// tools/lib/tribe/polling.ts
-function createPoller(ctx, mcp) {
-  let polling = false
-  return async function pollMessages() {
-    if (polling) return
-    polling = true
-    try {
-      try {
-        const cursor = ctx.stmts.getCursor.get({ $session_id: ctx.sessionId })
-        const lastSeq = cursor?.last_seq ?? 0
-        const rows = ctx.stmts.pollMessages.all({
-          $last_seq: lastSeq,
-          $name: ctx.getName(),
-          $session_id: ctx.sessionId,
-        })
-        const incoming = rows.filter((r) => r.sender !== ctx.getName())
-        for (const msg of incoming) {
-          const meta = {
-            from: msg.sender,
-            type: msg.type,
-            message_id: msg.id,
-          }
-          if (msg.bead_id) meta.bead = msg.bead_id
-          if (msg.ref) meta.ref = msg.ref
-          await mcp.notification({
-            method: "notifications/claude/channel",
-            params: { content: msg.content, meta },
-          })
-          ctx.stmts.markRead.run({ $message_id: msg.id, $session_id: ctx.sessionId, $now: Date.now() })
+  };
+  const logger = {
+    name,
+    props: Object.freeze({ ...props }),
+    get spanData() {
+      if (!spanMeta)
+        return null;
+      return createSpanDataProxy(() => ({
+        id: spanMeta.id,
+        traceId: spanMeta.traceId,
+        parentId: spanMeta.parentId,
+        startTime: spanMeta.startTime,
+        endTime: spanMeta.endTime,
+        duration: spanMeta.endTime !== null ? spanMeta.endTime - spanMeta.startTime : Date.now() - spanMeta.startTime
+      }), spanMeta.attrs);
+    },
+    trace: (msg, data) => log("trace", msg, data),
+    debug: (msg, data) => log("debug", msg, data),
+    info: (msg, data) => log("info", msg, data),
+    warn: (msg, data) => log("warn", msg, data),
+    error: (msgOrError, data) => log("error", msgOrError, data),
+    logger(namespace, childProps) {
+      const childName = namespace ? `${name}:${namespace}` : name;
+      const mergedProps = { ...props, ...childProps };
+      return createLoggerImpl(childName, mergedProps, null, parentSpanId, traceId, traceSampled);
+    },
+    span(namespace, childProps) {
+      const childName = namespace ? `${name}:${namespace}` : name;
+      const mergedProps = { ...props, ...childProps };
+      const newSpanId = generateSpanId();
+      let resolvedParentId = parentSpanId;
+      let resolvedTraceId = traceId;
+      if (!resolvedParentId && _getContextParent) {
+        const ctxParent = _getContextParent();
+        if (ctxParent) {
+          resolvedParentId = ctxParent.spanId;
+          resolvedTraceId = resolvedTraceId || ctxParent.traceId;
         }
-        if (rows.length > 0) {
-          const maxSeq = Math.max(...rows.map((r) => r.rowid))
-          const maxTs = Math.max(...rows.map((r) => r.ts))
-          ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: maxTs, $seq: maxSeq })
-          if (incoming.length > 0) {
-            ctx.stmts.updateLastDelivered.run({ $id: ctx.sessionId, $ts: maxTs, $seq: maxSeq })
-          }
+      }
+      const isNewTrace = !resolvedTraceId;
+      const finalTraceId = resolvedTraceId || generateTraceId();
+      const sampled = isNewTrace ? shouldSample() : traceSampled;
+      const newSpanData = {
+        id: newSpanId,
+        traceId: finalTraceId,
+        parentId: resolvedParentId,
+        startTime: Date.now(),
+        endTime: null,
+        duration: null,
+        attrs: {}
+      };
+      const spanLogger = createLoggerImpl(childName, mergedProps, newSpanData, newSpanId, finalTraceId, sampled);
+      _enterContext?.(newSpanId, finalTraceId, resolvedParentId);
+      spanLogger[Symbol.dispose] = () => {
+        if (newSpanData.endTime !== null)
+          return;
+        newSpanData.endTime = Date.now();
+        newSpanData.duration = newSpanData.endTime - newSpanData.startTime;
+        if (collectSpans) {
+          collectedSpans.push(createSpanDataProxy(() => ({
+            id: newSpanData.id,
+            traceId: newSpanData.traceId,
+            parentId: newSpanData.parentId,
+            startTime: newSpanData.startTime,
+            endTime: newSpanData.endTime,
+            duration: newSpanData.duration
+          }), { ...newSpanData.attrs }));
         }
-      } catch {}
-    } finally {
-      polling = false
+        _exitContext?.(newSpanId);
+        if (sampled) {
+          writeSpan(childName, newSpanData.duration, {
+            span_id: newSpanData.id,
+            trace_id: newSpanData.traceId,
+            parent_id: newSpanData.parentId,
+            ...mergedProps,
+            ...newSpanData.attrs
+          });
+        }
+      };
+      return spanLogger;
+    },
+    child(context) {
+      if (typeof context === "string") {
+        return this.logger(context);
+      }
+      return createLoggerImpl(name, { ...props, ...context }, null, parentSpanId, traceId, traceSampled);
+    },
+    end() {
+      if (spanMeta?.endTime === null) {
+        this[Symbol.dispose]?.();
+      }
     }
-  }
+  };
+  return logger;
 }
-
-// tools/lib/tribe/plugins.ts
-import { existsSync as existsSync4, statSync, readFileSync as readFileSync2 } from "fs"
-import { readFile } from "fs/promises"
-import { resolve as resolve4 } from "path"
-function beadsPlugin(opts = { beadsDir: null }) {
-  return {
-    name: "beads",
-    available() {
-      if (!opts.beadsDir) return false
-      const issuesPath = resolve4(opts.beadsDir, "backup/issues.jsonl")
-      return existsSync4(issuesPath)
-    },
-    start(ctx) {
-      if (!opts.beadsDir) return
-      const issuesPath = resolve4(opts.beadsDir, "backup/issues.jsonl")
-      if (!existsSync4(issuesPath)) return
-      let lastMtime = 0
-      const reportedStates = new Map()
-      try {
-        lastMtime = statSync(issuesPath).mtimeMs
-        for (const line of readFileSync2(issuesPath, "utf8")
-          .split(`
-`)
-          .filter(Boolean)) {
-          try {
-            const entry = JSON.parse(line)
-            if (!entry.id) continue
-            const matchesName = !!ctx.sessionName && !!entry.claimed_by?.includes(ctx.sessionName)
-            const matchesSession = !!ctx.claudeSessionId && !!entry.claimed_by?.includes(ctx.claudeSessionId)
-            if (matchesName || matchesSession) {
-              reportedStates.set(entry.id, "claimed")
-            }
-            if (entry.status === "closed") {
-              reportedStates.set(entry.id, "closed")
-            }
-          } catch {}
+function createPlainLogger(name, props) {
+  return createLoggerImpl(name, props || {}, null, null, null);
+}
+var collectedSpans = [];
+var collectSpans = false;
+function createLogger(name, props) {
+  const baseLog = createPlainLogger(name, props);
+  return new Proxy(baseLog, {
+    get(target, prop) {
+      if (prop in LOG_LEVEL_PRIORITY && prop !== "silent") {
+        const current = LOG_LEVEL_PRIORITY[currentLogLevel];
+        if (LOG_LEVEL_PRIORITY[prop] < current) {
+          return;
         }
-      } catch {}
-      const interval = setInterval(async () => {
-        if (!ctx.hasChief()) return
-        try {
-          const stat = statSync(issuesPath)
-          if (stat.mtimeMs === lastMtime) return
-          lastMtime = stat.mtimeMs
-          const content = await readFile(issuesPath, "utf8")
-          for (const line of content
-            .split(`
-`)
-            .filter(Boolean)) {
-            try {
-              const entry = JSON.parse(line)
-              if (!entry.id) continue
-              const matchesName = !!ctx.sessionName && !!entry.claimed_by?.includes(ctx.sessionName)
-              const matchesSession = !!ctx.claudeSessionId && !!entry.claimed_by?.includes(ctx.claudeSessionId)
-              const isMyClaim = matchesName || matchesSession
-              if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
-                reportedStates.set(entry.id, "claimed")
-                if (ctx.claimDedup(`claimed:${entry.id}`)) {
-                  ctx.sendMessage("chief", `Claimed: ${entry.id} \u2014 ${entry.title}`, "status", entry.id)
-                }
-              }
-              if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
-                reportedStates.set(entry.id, "closed")
-                if (ctx.claimDedup(`closed:${entry.id}`)) {
-                  ctx.sendMessage("chief", `Closed: ${entry.id} \u2014 ${entry.title}`, "status", entry.id)
-                }
-              }
-            } catch {}
-          }
-        } catch {}
-      }, 30000)
-      return () => clearInterval(interval)
-    },
-    instructions() {
-      return "- Beads integration active: use `bd create`, `bd update`, `bd close` for task tracking"
-    },
-  }
+      }
+      return target[prop];
+    }
+  });
 }
-function gitPlugin() {
-  return {
-    name: "git",
-    available() {
+// tools/lib/tribe/socket.ts
+var log = createLogger("tribe:socket");
+var TRIBE_PROTOCOL_VERSION = 2;
+function resolveSocketPath(socketArg) {
+  if (socketArg)
+    return socketArg;
+  if (process.env.TRIBE_SOCKET)
+    return process.env.TRIBE_SOCKET;
+  const xdg = process.env.XDG_RUNTIME_DIR;
+  const userSocket = xdg ? resolve2(xdg, "tribe.sock") : resolve2(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock");
+  if (existsSync2(userSocket))
+    return userSocket;
+  const beadsDir = findBeadsDir();
+  if (beadsDir)
+    return resolve2(beadsDir, "tribe.sock");
+  return userSocket;
+}
+function resolvePeerSocketPath(sessionId) {
+  const xdg = process.env.XDG_RUNTIME_DIR;
+  const dir = xdg ?? resolve2(process.env.HOME ?? "/tmp", ".local/share/tribe");
+  return resolve2(dir, `s-${sessionId.slice(0, 12)}.sock`);
+}
+function isRequest(msg) {
+  return "method" in msg && "id" in msg;
+}
+function isResponse(msg) {
+  return "id" in msg && !("method" in msg);
+}
+function isNotification(msg) {
+  return "method" in msg && !("id" in msg);
+}
+function makeRequest(id, method, params) {
+  return JSON.stringify({ jsonrpc: "2.0", id, method, params }) + `
+`;
+}
+function makeResponse(id, result) {
+  return JSON.stringify({ jsonrpc: "2.0", id, result }) + `
+`;
+}
+function makeError(id, code, message) {
+  return JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + `
+`;
+}
+function makeNotification(method, params) {
+  return JSON.stringify({ jsonrpc: "2.0", method, params }) + `
+`;
+}
+function createLineParser(onMessage) {
+  let buffer = "";
+  return (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(`
+`);
+    buffer = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed)
+        continue;
       try {
-        const { execSync } = __require("child_process")
-        execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" })
-        return true
+        onMessage(JSON.parse(trimmed));
       } catch {
-        return false
+        log.warn?.(`Invalid JSON: ${trimmed.slice(0, 100)}`);
       }
-    },
-    start(ctx) {
-      const { execSync } = __require("child_process")
-      let lastHead = ""
-      try {
-        lastHead = execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" }).trim()
-      } catch {}
-      const interval = setInterval(async () => {
-        if (!ctx.hasChief()) return
-        try {
-          const proc = Bun.spawn(["git", "log", "--oneline", "-1", "HEAD"], {
-            cwd: process.cwd(),
-            stdout: "pipe",
-            stderr: "ignore",
-          })
-          const out = await new Response(proc.stdout).text()
-          const line = out.trim()
-          const head = line.split(" ")[0] ?? ""
-          if (head && lastHead && head !== lastHead) {
-            if (ctx.claimDedup(`commit:${head}`)) {
-              ctx.sendMessage("chief", `Committed: ${line}`, "status")
-            }
-            try {
-              const diffProc = Bun.spawn(["git", "diff", "--name-only", lastHead, head], {
-                cwd: process.cwd(),
-                stdout: "pipe",
-                stderr: "ignore",
-              })
-              const diffOut = await new Response(diffProc.stdout).text()
-              if (diffOut.includes("tools/tribe.ts") || diffOut.includes("tools/lib/tribe/")) {
-                process.stderr.write(`[tribe] tribe code changed in ${head}, auto-reloading
-`)
-                ctx.triggerReload?.(`tribe code changed in ${head}`)
+    }
+  };
+}
+function connectToDaemon(socketPath) {
+  return new Promise((resolve3, reject) => {
+    const socket = createConnection(socketPath);
+    const pending = new Map;
+    const notificationHandlers = [];
+    let nextId = 1;
+    const parse = createLineParser((msg) => {
+      if (isResponse(msg)) {
+        const p = pending.get(msg.id);
+        if (p) {
+          pending.delete(msg.id);
+          if (msg.error)
+            p.reject(new Error(msg.error.message));
+          else
+            p.resolve(msg.result);
+        }
+      } else if (isNotification(msg)) {
+        for (const h of notificationHandlers)
+          h(msg.method, msg.params);
+      }
+    });
+    socket.on("data", parse);
+    socket.on("error", reject);
+    socket.once("connect", () => {
+      socket.removeListener("error", reject);
+      socket.on("error", (err) => {
+        log.error?.(`Connection error: ${err.message}`);
+        for (const [, p] of pending)
+          p.reject(err);
+        pending.clear();
+      });
+      let timeouts = 0;
+      const client = {
+        call(method, params) {
+          return new Promise((res, rej) => {
+            const id = nextId++;
+            pending.set(id, { resolve: res, reject: rej });
+            socket.write(makeRequest(id, method, params));
+            const timer = setTimeout(() => {
+              if (!pending.delete(id))
+                return;
+              rej(new Error(`Request ${method} timed out`));
+              if (++timeouts >= 3) {
+                log.warn?.(`${timeouts} consecutive timeouts, destroying connection`);
+                socket.destroy();
               }
-            } catch {}
+            }, 1e4);
+            timer.unref?.();
+          }).then((v) => {
+            timeouts = 0;
+            return v;
+          });
+        },
+        notify(method, params) {
+          socket.write(makeNotification(method, params));
+        },
+        onNotification(handler) {
+          notificationHandlers.push(handler);
+        },
+        close() {
+          for (const [, p] of pending)
+            p.reject(new Error("Connection closed"));
+          pending.clear();
+          socket.end();
+        },
+        socket
+      };
+      resolve3(client);
+    });
+  });
+}
+async function connectOrStart(socketPath, opts) {
+  try {
+    return await connectToDaemon(socketPath);
+  } catch (err) {
+    const code = err.code;
+    if (code !== "ECONNREFUSED" && code !== "ENOENT")
+      throw err;
+  }
+  if (existsSync2(socketPath)) {
+    try {
+      unlinkSync(socketPath);
+    } catch {}
+  }
+  const socketDir = dirname2(socketPath);
+  if (!existsSync2(socketDir))
+    mkdirSync2(socketDir, { recursive: true });
+  const script = opts?.daemonScript ?? resolve2(dirname2(new URL(import.meta.url).pathname), "../../tribe-daemon.ts");
+  const daemonArgs = ["--socket", socketPath];
+  if (opts?.dbPath)
+    daemonArgs.push("--db", opts.dbPath);
+  const child = spawn(process.execPath, [script, ...daemonArgs], {
+    detached: true,
+    stdio: "ignore",
+    env: process.env
+  });
+  child.unref();
+  for (let attempt = 0;attempt < 10; attempt++) {
+    await new Promise((r) => setTimeout(r, Math.min(100 * 2 ** attempt, 2000)));
+    try {
+      return await connectToDaemon(socketPath);
+    } catch {}
+  }
+  throw new Error(`Failed to connect to tribe daemon at ${socketPath} after starting it`);
+}
+async function createReconnectingClient(opts) {
+  const { socketPath, onConnect, onDisconnect, onReconnect, maxAttempts = 30 } = opts;
+  let current = await connectOrStart(socketPath);
+  await onConnect(current);
+  let closed = false;
+  const setupReconnect = () => {
+    current.socket.on("close", () => {
+      if (closed)
+        return;
+      onDisconnect?.();
+      (async () => {
+        for (let attempt = 0;attempt < maxAttempts; attempt++) {
+          if (closed)
+            return;
+          const delay = Math.min(500 * 2 ** attempt, 1e4);
+          await new Promise((r) => setTimeout(r, delay));
+          if (closed)
+            return;
+          try {
+            current = await connectOrStart(socketPath);
+            await onConnect(current);
+            setupReconnect();
+            onReconnect?.();
+            return;
+          } catch {
+            log.warn?.(`Reconnect attempt ${attempt + 1} failed`);
           }
-          if (head) lastHead = head
-        } catch {}
-      }, 30000)
-      return () => clearInterval(interval)
-    },
-  }
-}
-function loadPlugins(plugins, ctx) {
-  const cleanups = []
-  for (const plugin of plugins) {
-    if (!plugin.available()) {
-      process.stderr.write(`[tribe] plugin ${plugin.name}: not available (skipped)
-`)
-      continue
+        }
+        log.error?.(`Failed to reconnect after ${maxAttempts} attempts`);
+      })();
+    });
+  };
+  setupReconnect();
+  return new Proxy(current, {
+    get(_, prop) {
+      if (prop === "close")
+        return () => {
+          closed = true;
+          current.close();
+        };
+      return current[prop];
     }
-    process.stderr.write(`[tribe] plugin ${plugin.name}: active
-`)
-    if (plugin.start) {
-      const cleanup = plugin.start(ctx)
-      if (cleanup) cleanups.push(cleanup)
-    }
-  }
-  return () => {
-    for (const fn of cleanups) fn()
-  }
+  });
 }
+
+// tools/tribe-proxy.ts
+import { createServer } from "net";
+import { existsSync as existsSync3, unlinkSync as unlinkSync2, mkdirSync as mkdirSync3, chmodSync } from "fs";
+import { dirname as dirname3 } from "path";
+import { spawn as spawn2 } from "child_process";
+import { randomUUID } from "crypto";
 
 // tools/lib/tribe/tools-list.ts
-const TOOLS_LIST = [
+var TOOLS_LIST = [
   {
     name: "tribe_send",
     description: "Send a message to a specific tribe member",
@@ -1363,13 +717,13 @@ const TOOLS_LIST = [
           type: "string",
           description: "Message type",
           enum: ["assign", "status", "query", "response", "notify", "request", "verdict"],
-          default: "notify",
+          default: "notify"
         },
         bead: { type: "string", description: "Associated bead ID (optional)" },
-        ref: { type: "string", description: "Reference to a previous message ID (optional)" },
+        ref: { type: "string", description: "Reference to a previous message ID (optional)" }
       },
-      required: ["to", "message"],
-    },
+      required: ["to", "message"]
+    }
   },
   {
     name: "tribe_broadcast",
@@ -1382,12 +736,12 @@ const TOOLS_LIST = [
           type: "string",
           description: "Message type",
           enum: ["notify", "status"],
-          default: "notify",
+          default: "notify"
         },
-        bead: { type: "string", description: "Associated bead ID (optional)" },
+        bead: { type: "string", description: "Associated bead ID (optional)" }
       },
-      required: ["message"],
-    },
+      required: ["message"]
+    }
   },
   {
     name: "tribe_sessions",
@@ -1395,9 +749,9 @@ const TOOLS_LIST = [
     inputSchema: {
       type: "object",
       properties: {
-        all: { type: "boolean", description: "Include dead sessions (default: false)" },
-      },
-    },
+        all: { type: "boolean", description: "Include dead sessions (default: false)" }
+      }
+    }
   },
   {
     name: "tribe_history",
@@ -1406,9 +760,9 @@ const TOOLS_LIST = [
       type: "object",
       properties: {
         with: { type: "string", description: "Filter to messages involving this session" },
-        limit: { type: "number", description: "Max messages to return (default: 20)" },
-      },
-    },
+        limit: { type: "number", description: "Max messages to return (default: 20)" }
+      }
+    }
   },
   {
     name: "tribe_rename",
@@ -1416,18 +770,18 @@ const TOOLS_LIST = [
     inputSchema: {
       type: "object",
       properties: {
-        new_name: { type: "string", description: "New session name" },
+        new_name: { type: "string", description: "New session name" }
       },
-      required: ["new_name"],
-    },
+      required: ["new_name"]
+    }
   },
   {
     name: "tribe_health",
     description: "Diagnostic: check for silent members, stale beads, unread messages",
     inputSchema: {
       type: "object",
-      properties: {},
-    },
+      properties: {}
+    }
   },
   {
     name: "tribe_join",
@@ -1439,296 +793,315 @@ const TOOLS_LIST = [
         role: {
           type: "string",
           description: "Session role",
-          enum: ["chief", "member"],
+          enum: ["chief", "member"]
         },
         domains: {
           type: "array",
           items: { type: "string" },
-          description: "Domain expertise areas (e.g. ['silvery', 'flexily'])",
-        },
+          description: "Domain expertise areas (e.g. ['silvery', 'flexily'])"
+        }
       },
-      required: ["name", "role"],
-    },
+      required: ["name", "role"]
+    }
   },
   {
     name: "tribe_reload",
-    description:
-      "Hot-reload the tribe MCP server \u2014 re-exec with latest code from disk. Use after tribe.ts is updated to pick up fixes without restarting the Claude Code session.",
+    description: "Hot-reload the tribe MCP server \u2014 re-exec with latest code from disk. Use after tribe code is updated to pick up fixes without restarting the Claude Code session.",
     inputSchema: {
       type: "object",
       properties: {
         reason: {
           type: "string",
-          description: "Why the reload is needed (logged to events)",
-        },
-      },
-    },
+          description: "Why the reload is needed (logged to events)"
+        }
+      }
+    }
   },
   {
     name: "tribe_retro",
-    description:
-      "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
+    description: "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
     inputSchema: {
       type: "object",
       properties: {
         since: {
           type: "string",
-          description: 'Duration to look back (e.g. "2h", "30m", "1d"). Default: entire session.',
+          description: 'Duration to look back (e.g. "2h", "30m", "1d"). Default: entire session.'
         },
         format: {
           type: "string",
           description: "Output format",
           enum: ["markdown", "json"],
-          default: "markdown",
-        },
-      },
-    },
+          default: "markdown"
+        }
+      }
+    }
   },
   {
     name: "tribe_leadership",
     description: "Show the current chief lease holder, term number, and time until expiry",
     inputSchema: {
       type: "object",
-      properties: {},
-    },
-  },
-]
+      properties: {}
+    }
+  }
+];
 
-// tools/tribe.ts
-import { createHash } from "crypto"
-import { readdirSync, readFileSync as readFileSync3, existsSync as existsSync5 } from "fs"
-import { resolve as resolve5, dirname as dirname4 } from "path"
-function computeSourceHash() {
-  const dir = dirname4(new URL(import.meta.url).pathname)
-  const files = [
-    resolve5(dir, "tribe.ts"),
-    ...(() => {
-      const libDir = resolve5(dir, "lib/tribe")
-      if (!existsSync5(libDir)) return []
-      return readdirSync(libDir)
-        .filter((f) => f.endsWith(".ts"))
-        .sort()
-        .map((f) => resolve5(libDir, f))
-    })(),
-  ]
-  const hash = createHash("md5")
-  for (const f of files) {
+// tools/tribe-proxy.ts
+var log2 = createLogger("tribe:proxy");
+var args = parseTribeArgs();
+var SOCKET_PATH = resolveSocketPath(args.socket);
+var SESSION_DOMAINS = parseSessionDomains(args);
+var CLAUDE_SESSION_ID = resolveClaudeSessionId();
+var CLAUDE_SESSION_NAME = resolveClaudeSessionName();
+log2.info?.(`Connecting to daemon at ${SOCKET_PATH}`);
+var myName = "pending";
+var myRole = "member";
+var mySessionId = randomUUID();
+var PROJECT_NAME = resolveProjectName();
+var PEER_SOCKET_PATH = resolvePeerSocketPath(mySessionId);
+var peerServer = null;
+var mcp;
+function sendChannel(content, meta) {
+  if (!mcp)
+    return;
+  mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {});
+}
+function startPeerServer() {
+  const socketDir = dirname3(PEER_SOCKET_PATH);
+  if (!existsSync3(socketDir))
+    mkdirSync3(socketDir, { recursive: true });
+  if (existsSync3(PEER_SOCKET_PATH)) {
     try {
-      hash.update(readFileSync3(f))
+      unlinkSync2(PEER_SOCKET_PATH);
     } catch {}
   }
-  return hash.digest("hex").slice(0, 12)
+  const server = createServer((socket) => {
+    const parse = createLineParser((msg) => {
+      if (!isRequest(msg))
+        return;
+      const req = msg;
+      const { method, params, id } = req;
+      try {
+        switch (method) {
+          case "tribe.send": {
+            sendChannel(String(params?.content ?? ""), {
+              from: String(params?.from ?? "unknown"),
+              type: String(params?.type ?? "notify"),
+              bead: params?.bead_id ? String(params.bead_id) : undefined,
+              message_id: String(params?.message_id ?? randomUUID())
+            });
+            socket.write(makeResponse(id, { delivered: true }));
+            break;
+          }
+          default:
+            socket.write(makeError(id, -32601, `Method not found: ${method}`));
+        }
+      } catch (err) {
+        socket.write(makeError(id, -32603, err instanceof Error ? err.message : String(err)));
+      }
+    });
+    socket.on("data", parse);
+    socket.on("error", () => {});
+  });
+  server.listen(PEER_SOCKET_PATH, () => {
+    try {
+      chmodSync(PEER_SOCKET_PATH, 384);
+    } catch {}
+    log2.info?.(`Peer socket listening at ${PEER_SOCKET_PATH}`);
+  });
+  server.on("error", (err) => {
+    log2.warn?.(`Peer server error: ${err.message}`);
+  });
+  return server;
 }
-const SOURCE_HASH = computeSourceHash()
-const HASH_FILE = resolve5(
-  process.env.TRIBE_DB ?? findBeadsDir() ?? resolve5(process.env.HOME ?? "~", ".local/share/tribe"),
-  ".tribe-source-hash",
-)
-try {
-  const stored = existsSync5(HASH_FILE) ? readFileSync3(HASH_FILE, "utf8").trim() : ""
-  if (stored && stored !== SOURCE_HASH) {
-    process.stderr.write(`[tribe] source hash changed (${stored} \u2192 ${SOURCE_HASH}), re-execing
-`)
-    Bun.write(HASH_FILE, SOURCE_HASH)
-    const child = Bun.spawn([process.execPath, ...process.argv.slice(1)], {
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-      env: { ...process.env, BUN_RUNTIME_TRANSPILER_CACHE: "0" },
-    })
-    child.exited.then((code) => process.exit(code ?? 0))
-    await new Promise(() => {})
+peerServer = startPeerServer();
+async function sendDirect(peerSocketPath, message) {
+  try {
+    const client = await connectToDaemon(peerSocketPath);
+    try {
+      await client.call("tribe.send", message);
+      return true;
+    } finally {
+      client.close();
+    }
+  } catch {
+    return false;
   }
-  Bun.write(HASH_FILE, SOURCE_HASH)
-} catch {}
-const args2 = parseTribeArgs()
-const SESSION_DOMAINS = parseSessionDomains(args2)
-const SESSION_ID = randomUUID3()
-const CLAUDE_SESSION_ID = resolveClaudeSessionId()
-const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
-const BEADS_DIR = findBeadsDir()
-const DB_PATH = resolveDbPath(args2, BEADS_DIR)
-const db = openDatabase(String(DB_PATH))
-const SESSION_ROLE = detectRole(db, args2)
-const SESSION_NAME = detectName(db, SESSION_ROLE, args2)
-const stmts = createStatements(db)
-const ctx = createTribeContext({
-  db,
-  stmts,
-  sessionId: SESSION_ID,
-  sessionRole: SESSION_ROLE,
-  initialName: SESSION_NAME,
+}
+var registerParams = {
+  ...args.name ? { name: args.name } : {},
+  ...args.role ? { role: args.role } : {},
   domains: SESSION_DOMAINS,
+  project: process.cwd(),
+  projectName: PROJECT_NAME,
+  projectId: resolveProjectId(),
+  protocolVersion: TRIBE_PROTOCOL_VERSION,
+  peerSocket: PEER_SOCKET_PATH,
+  pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
-  claudeSessionName: CLAUDE_SESSION_NAME,
-})
-process.stderr.write(`[tribe] ${ctx.getName()} (${SESSION_ROLE}) joining tribe at ${DB_PATH}
-`)
-process.stderr.write(`[tribe] claude_session_id=${CLAUDE_SESSION_ID ?? "none"}
-`)
-if (SESSION_DOMAINS.length > 0) {
-  process.stderr.write(`[tribe] domains: ${SESSION_DOMAINS.join(", ")}
-`)
-}
-if (SESSION_ROLE === "chief") {
-  const leased = acquireLease(db, SESSION_ID, SESSION_NAME)
-  process.stderr.write(`[tribe] leader lease: ${leased ? "acquired" : "held by another"}
-`)
-}
-const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
+  claudeSessionName: CLAUDE_SESSION_NAME
+};
+var daemon = await createReconnectingClient({
+  socketPath: SOCKET_PATH,
+  async onConnect(client) {
+    const reg = await client.call("register", registerParams);
+    myName = reg.name;
+    myRole = reg.role;
+    log2.info?.(`Registered as ${myName} (${myRole})`);
+    client.call("subscribe").catch(() => {});
+  },
+  onDisconnect() {
+    log2.warn?.(`Daemon connection lost`);
+  },
+  onReconnect() {
+    log2.info?.(`Reconnected to daemon`);
+  }
+});
+var joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area and role="member". Do not use "chief" unless explicitly told. No need to call tribe_sessions or tribe_history afterward \u2014 just join silently and continue.`;
+var chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
 You are the chief of a tribe \u2014 a coordinator for multiple Claude Code sessions working on the same project.
+
+${joinInstruction}
 
 Coordination protocol:
 - Use tribe_sessions() to see who's online and their domains
 - Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
 - Use tribe_broadcast(message) to announce changes that affect everyone
 - Use tribe_health() to check for silent members or conflicts
-- If beads are available (bd command exists), use bd create/update/close for persistent task tracking
-
-When a member sends a "status" message, update any relevant tracking.
-When a member sends a "request" message, check for conflicts before approving.
-When a member sends a "query" message, either answer directly or route to the right member.
-When a member goes silent (tribe_health shows warning), send a query to check on them.
-If a member dies (heartbeat timeout), reassign their beads to another member.
 
 Message format rules:
 - Keep messages SHORT \u2014 1-3 lines max. No essays.
 - Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- For sync broadcasts: keep the template concise, ask for one-line responses.
-- Don't send overlapping sync/rollcall requests \u2014 one at a time, wait for responses.
-- Batch-acknowledge: if you receive many messages at once, one summary covers all.`
-const memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
+- Batch-acknowledge: if you receive many messages at once, one summary covers all.`;
+var memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
 You are a tribe member \u2014 a worker session coordinated by the chief.
+
+${joinInstruction}
 
 Coordination protocol:
 - When you claim a bead, send a status to chief
 - When you commit a fix, send a status to chief with the commit hash
 - When you're blocked, send a status to chief immediately \u2014 include what would unblock you
 - Before editing vendor/ or shared files, send a request to chief asking for OK
-- If you discover a new bug, create a bead and notify the tribe
-- When all assigned work is done, send a status: "Available"
 - Respond to query messages promptly
-
-Infrastructure reporting \u2014 notify chief when you:
-- Begin or complete a multi-file refactor (others may not be able to build)
-- Need an npm package that hasn't been published yet
-- Create or merge a git worktree
-- Modify shared config (package.json, tsconfig, .mcp.json)
-- Experience slowdowns (CPU contention from concurrent test runs, etc.)
 
 Message format rules:
 - Keep messages SHORT \u2014 1-3 lines max. No essays.
 - Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- For sync responses: "Session: name | Idle: Xm | Closed: N beads | Blockers: none | Available"
-- For status: "Claimed km-foo.bar" or "Committed abc1234 fix(scope): message" or "Available"
-- For blocking: "Blocked on km-foo.bar \u2014 need X to unblock"
-- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed" (one line, not per-message)
-- NEVER respond to messages individually if you received a batch \u2014 one summary response covers all.
+- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed"
 
-Don't over-communicate \u2014 only send messages when it changes what someone else should do.`
-const mcp = new Server(
-  { name: "tribe", version: "0.1.0" },
-  {
-    capabilities: {
-      experimental: { "claude/channel": {} },
-      tools: {},
-    },
-    instructions: SESSION_ROLE === "chief" ? chiefInstructions : memberInstructions,
+Don't over-communicate \u2014 only send messages when it changes what someone else should do.`;
+mcp = new Server({ name: "tribe", version: "0.2.0" }, {
+  capabilities: {
+    experimental: { "claude/channel": {} },
+    tools: {}
   },
-)
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS_LIST }))
-let userRenamed = false
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: toolArgs } = req.params
-  const a = toolArgs ?? {}
-  return handleToolCall(ctx, name, a, {
-    cleanup,
-    userRenamed,
-    setUserRenamed: (v) => {
-      userRenamed = v
-    },
-  })
-})
-registerSession(ctx)
-cleanupOldPrunedSessions(ctx)
-cleanupOldData(ctx)
-const transcriptPath = resolveTranscriptPath(CLAUDE_SESSION_ID)
-tryInitialRename(ctx, transcriptPath)
-const heartbeatInterval = setInterval(() => sendHeartbeat(ctx), 1e4)
-const pollMessages = createPoller(ctx, mcp)
-const pollInterval = setInterval(() => void pollMessages(), 1000)
-const cleanupDataInterval = setInterval(() => cleanupOldData(ctx), 6 * 60 * 60 * 1000)
-const pluginCtx = {
-  sendMessage(to, content, type, beadId) {
-    sendMessage(ctx, to, content, type, beadId)
-  },
-  hasChief() {
-    const threshold = Date.now() - 30000
-    return !!db
-      .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
-      .get(threshold)
-  },
-  hasRecentMessage(contentPrefix) {
-    const since = Date.now() - 300000
-    return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
-  },
-  claimDedup(key) {
-    try {
-      db.run("BEGIN IMMEDIATE")
-      const result = stmts.claimDedup.run({ $key: key, $session_id: SESSION_ID, $ts: Date.now() })
-      db.run("COMMIT")
-      return result.changes > 0
-    } catch {
-      try {
-        db.run("ROLLBACK")
-      } catch {}
-      return false
-    }
-  },
-  sessionName: ctx.getName(),
-  sessionId: SESSION_ID,
-  claudeSessionId: CLAUDE_SESSION_ID,
-  triggerReload(reason) {
-    logEvent(ctx, "session.reload", undefined, { name: ctx.getName(), reason, auto: true })
-    process.stderr.write(`[tribe] auto-reload: ${reason}
-`)
+  instructions: myRole === "chief" ? chiefInstructions : memberInstructions
+});
+var nudgeSent = false;
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
+    nudgeSent = true;
     setTimeout(() => {
-      cleanup()
-      const argv = process.argv.slice(1)
-      const child = Bun.spawn([process.execPath, ...argv], {
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-        env: process.env,
-      })
-      child.exited.then((code) => process.exit(code ?? 0))
-    }, 500)
-  },
-}
-const plugins = args2["auto-report"] !== false ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })] : []
-const stopPlugins = loadPlugins(plugins, pluginCtx)
-let cleaned = false
-function cleanup() {
-  if (cleaned) return
-  cleaned = true
-  clearInterval(heartbeatInterval)
-  clearInterval(pollInterval)
-  clearInterval(cleanupDataInterval)
-  stopPlugins()
+      sendChannel(`Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history \u2014 just join silently and continue.`, { from: "tribe-proxy", type: "system" });
+    }, 500);
+  }
+  return { tools: TOOLS_LIST };
+});
+mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const { name, arguments: toolArgs } = req.params;
+  const a = toolArgs ?? {};
   try {
-    logEvent(ctx, "session.left", undefined, { name: ctx.getName() })
-    db.close()
-  } catch {}
+    if (name === "tribe_send" && a.to && typeof a.to === "string") {
+      const directResult = await trySendDirect(a);
+      if (directResult)
+        return directResult;
+    }
+    const result = await daemon.call(name, a);
+    if (name === "tribe_join" || name === "tribe_rename") {
+      const r = result;
+      try {
+        const data = JSON.parse(r.content[0]?.text ?? "{}");
+        if (data.name)
+          myName = data.name;
+        if (data.role)
+          myRole = data.role;
+      } catch {}
+    }
+    return result;
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : err}` }]
+    };
+  }
+});
+async function trySendDirect(a) {
+  const target = String(a.to);
+  try {
+    const discovery = await daemon.call("discover", { name: target });
+    const peer = discovery.results.find((r) => r.name === target);
+    if (!peer?.peerSocket)
+      return null;
+    const messageId = randomUUID();
+    const sent = await sendDirect(peer.peerSocket, {
+      from: myName,
+      type: String(a.type ?? "notify"),
+      content: String(a.message ?? ""),
+      bead_id: a.bead_id ? String(a.bead_id) : undefined,
+      message_id: messageId
+    });
+    if (!sent)
+      return null;
+    daemon.call("log_event", {
+      type: "message.sent",
+      meta: { to: target, from: myName, direct: true, message_id: messageId }
+    }).catch(() => {});
+    log2.info?.(`Direct message sent to ${target}`);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ sent: true, to: target, direct: true }) }]
+    };
+  } catch {
+    return null;
+  }
 }
-process.on("SIGINT", () => {
-  cleanup()
-  process.exit(0)
-})
-process.on("SIGTERM", () => {
-  cleanup()
-  process.exit(0)
-})
-process.on("exit", cleanup)
-await mcp.connect(new StdioServerTransport())
+function cleanupPeerSocket() {
+  if (peerServer) {
+    peerServer.close();
+    peerServer = null;
+  }
+  if (existsSync3(PEER_SOCKET_PATH)) {
+    try {
+      unlinkSync2(PEER_SOCKET_PATH);
+    } catch {}
+  }
+}
+var shutdown = () => {
+  cleanupPeerSocket();
+  daemon.close();
+  process.exit(0);
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+process.on("exit", cleanupPeerSocket);
+await mcp.connect(new StdioServerTransport);
+daemon.onNotification((method, params) => {
+  if (method === "channel") {
+    sendChannel(String(params?.content ?? ""), {
+      from: String(params?.from ?? "unknown"),
+      type: String(params?.type ?? "notify"),
+      bead: params?.bead_id ? String(params.bead_id) : undefined,
+      message_id: params?.message_id ? String(params.message_id) : undefined
+    });
+  } else if (method === "session.joined" || method === "session.left") {
+    const action = method === "session.joined" ? "joined" : "left";
+    sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" });
+  } else if (method === "reload") {
+    log2.info?.(`Daemon requests reload: ${params?.reason}`);
+    setTimeout(() => {
+      daemon.close();
+      spawn2(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on("exit", (code) => process.exit(code ?? 0));
+    }, 500);
+  }
+});
