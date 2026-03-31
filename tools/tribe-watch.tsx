@@ -34,6 +34,7 @@ type SessionInfo = {
   role: string
   domains: string[]
   pid: number
+  project?: string
   projectName?: string
   projectId?: string
   peerSocket?: string | null
@@ -58,7 +59,13 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 24, role: 8, pid: 8, uptime: 8 }
+const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8 }
+
+function fmtProject(s: SessionInfo): string {
+  if (!s.project) return ""
+  const id = s.projectId ? ` (${s.projectId})` : ""
+  return `${shortPath(s.project)}${id}`
+}
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -209,7 +216,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : s.conn ?? ""}`,
     value: s.id,
   }))
 

@@ -328,6 +328,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           role: c.role,
           domains: c.domains,
           pid: c.pid,
+          project: c.project,
           projectName: c.projectName,
           projectId: c.projectId,
           claudeSessionId: c.claudeSessionId,
