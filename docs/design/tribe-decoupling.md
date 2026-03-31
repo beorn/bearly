@@ -108,6 +108,31 @@ Some coordination messages go through the daemon because they target all session
 
 These are rare, small, and don't carry resource data.
 
+### 5. Observability via event log
+
+With peer-to-peer messages the daemon loses visibility. Proxies fire-and-forget log events to the daemon for centralized observability:
+
+```ts
+// After sending a direct message, proxy logs the event (not the content)
+daemon.call("log", { type: "message.sent", project: "km", to: "chief", ts: Date.now() })
+
+// After accessing a remote resource
+daemon.call("log", { type: "resource.accessed", project: "km", resource: "beads", action: "list" })
+```
+
+```sql
+CREATE TABLE event_log (
+  id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  session_id TEXT,
+  project TEXT,
+  type TEXT,        -- "message.sent", "resource.accessed", "session.joined"
+  meta TEXT          -- JSON: { to, resource, action, ... }
+);
+```
+
+Best-effort, append-only. If the daemon is slow or down, log events are dropped — observability never blocks coordination. This powers `tribe watch`, `tribe retro`, and debugging.
+
 ## Plugin Interface
 
 ```ts
@@ -178,6 +203,9 @@ discover(query: { project?, resource?, name? }): DiscoveryResult[]
 
 // Coordination
 broadcast(scope: string, message: CoordMessage): void
+
+// Observability (fire-and-forget)
+log(event: { type, project?, meta? }): void
 ```
 
 No `send`, no `forward`, no `handleToolCall`. The daemon doesn't move data — it answers "where is X?" and "who has Y?".
