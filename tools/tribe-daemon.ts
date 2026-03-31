@@ -677,6 +677,24 @@ if (INHERIT_FD !== null) {
   server.listen({ fd: INHERIT_FD })
   log(`Inherited socket fd ${INHERIT_FD} (hot-reload)`)
 } else {
+  // Check if another daemon is already running
+  if (existsSync(PID_PATH)) {
+    try {
+      const existingPid = parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10)
+      if (!isNaN(existingPid)) {
+        try {
+          process.kill(existingPid, 0) // Throws if dead
+          log(`Another daemon is already running (pid ${existingPid}), exiting`)
+          process.exit(0)
+        } catch {
+          // PID is dead — stale file, continue startup
+        }
+      }
+    } catch {
+      /* can't read PID file */
+    }
+  }
+
   // Fresh start: clean up stale socket, create new one
   if (existsSync(SOCKET_PATH)) {
     try {
