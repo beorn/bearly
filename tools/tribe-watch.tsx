@@ -309,10 +309,20 @@ await using client = Object.assign(
   },
 )
 
+// Hot-reload: re-exec on source changes
+import { setupHotReload } from "./lib/tribe/hot-reload.ts"
+const stopReload = setupHotReload({
+  importMetaUrl: import.meta.url,
+  onReload: () => {
+    client.close()
+  },
+})
+
 using term = createTerm()
 const ac = new AbortController()
 const handle = render(<App client={client} ac={ac} />, term, { patchConsole: true })
 await handle.run()
 ac.abort()
+stopReload?.()
 client.close()
 client.socket.unref()
