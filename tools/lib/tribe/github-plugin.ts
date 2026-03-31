@@ -375,13 +375,7 @@ export function githubPlugin(): TribePlugin {
             const repoCursor = cursorState.repos[r]
             const lastSeenId = repoCursor?.lastEventId
 
-            const newEvents: GitHubEvent[] = []
-            for (const event of events) {
-              if (event.id === lastSeenId) break
-              newEvents.push(event)
-            }
-
-            // First poll: set cursor without delivering historical events
+            // First poll or no cursor: set cursor without delivering
             if (!lastSeenId) {
               if (events.length > 0) {
                 cursorState.repos[r] = {
@@ -393,8 +387,16 @@ export function githubPlugin(): TribePlugin {
               continue
             }
 
-            // Process newest-last for chronological order
-            for (const event of newEvents.reverse()) {
+            // Collect new events (stop at cursor)
+            const newEvents: GitHubEvent[] = []
+            for (const event of events) {
+              if (event.id === lastSeenId) break
+              newEvents.push(event)
+            }
+
+            // Cap at 3 events per repo per poll to avoid flooding on cursor miss
+            const capped = newEvents.slice(0, 3)
+            for (const event of capped.reverse()) {
               const formatted = formatEvent(event, eventTypes)
               if (!formatted) continue
 
