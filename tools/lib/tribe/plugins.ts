@@ -14,6 +14,7 @@ import { existsSync, statSync, readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { resolve, dirname } from "node:path"
 import { createLogger } from "loggily"
+import { findBeadsDir } from "./config.ts"
 
 const log = createLogger("tribe:plugins")
 
@@ -50,19 +51,21 @@ export interface PluginContext {
 // Built-in plugin: Beads auto-reporter
 // ---------------------------------------------------------------------------
 
-export function beadsPlugin(opts: { beadsDir: string | null } = { beadsDir: null }): TribePlugin {
+export function beadsPlugin(): TribePlugin {
+  const beadsDir = findBeadsDir()
+
   return {
     name: "beads",
 
     available() {
-      if (!opts.beadsDir) return false
-      const issuesPath = resolve(opts.beadsDir, "backup/issues.jsonl")
+      if (!beadsDir) return false
+      const issuesPath = resolve(beadsDir, "backup/issues.jsonl")
       return existsSync(issuesPath)
     },
 
     start(ctx) {
-      if (!opts.beadsDir) return
-      const issuesPath = resolve(opts.beadsDir, "backup/issues.jsonl")
+      if (!beadsDir) return
+      const issuesPath = resolve(beadsDir, "backup/issues.jsonl")
       if (!existsSync(issuesPath)) return
 
       let lastMtime = 0

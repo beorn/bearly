@@ -1,43 +1,35 @@
 #!/usr/bin/env bun
 /**
  * Tribe CLI — Inspect and interact with the tribe from the terminal.
+ *
+ * Connects to the tribe daemon via Unix socket (no direct DB access).
  */
-import { Database } from "bun:sqlite"
-import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
 import { Command, int } from "@silvery/commander"
+import { resolveSocketPath, connectToDaemon, readDaemonPid } from "./lib/tribe/socket.ts"
 
-// --- DB discovery ---
+// --- Daemon connection ---
 
-function findTribeDb(): string | null {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const p = resolve(dir, ".beads/tribe.db")
-    if (existsSync(p)) return p
-    dir = dirname(dir)
+async function callDaemon(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  const socketPath = resolveSocketPath()
+  try {
+    const client = await connectToDaemon(socketPath)
+    try {
+      const result = await client.call(method, params)
+      return result
+    } finally {
+      client.close()
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "ECONNREFUSED" || code === "ENOENT") {
+      console.error(`No daemon running (socket: ${socketPath})`)
+      console.error(`Start one with: tribe start`)
+      process.exit(1)
+    }
+    throw err
   }
-  return null
-}
-
-function openDb(writable = false): Database {
-  const path = findTribeDb()
-  if (!path) {
-    console.error("No .beads/tribe.db found (walked up from cwd)")
-    process.exit(1)
-  }
-  const db = writable ? new Database(path) : new Database(path, { readonly: true })
-  db.exec(writable ? "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000" : "PRAGMA busy_timeout = 3000")
-  return db
-}
-
-function hasColumn(db: Database, table: string, col: string): boolean {
-  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === col)
-}
-
-function liveWhere(db: Database): string {
-  return hasColumn(db, "sessions", "pruned_at") ? "heartbeat > ? AND pruned_at IS NULL" : "heartbeat > ?"
 }
 
 // --- Formatting ---
@@ -71,16 +63,20 @@ function pad(s: string, n: number): string {
 
 // --- Types ---
 
-interface Session {
+interface SessionInfo {
   id: string
   name: string
   role: string
-  domains: string
+  domains: string[]
   pid: number
-  started_at: number
-  heartbeat: number
-  pruned_at: number | null
+  projectName?: string
+  claudeSessionId: string | null
+  connectedAt: number
+  uptimeMs: number
+  source: "daemon" | "db"
+  conn?: string
 }
+
 interface Msg {
   id: string
   type: string
@@ -93,100 +89,120 @@ interface Msg {
 
 // --- Commands ---
 
-function cmdStatus(): void {
-  const db = openDb(),
-    now = Date.now(),
-    t = now - 30_000
-  const rows = db
-    .prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`)
-    .all(t) as Session[]
-  if (!rows.length) {
+async function cmdStatus(): Promise<void> {
+  const result = (await callDaemon("cli_status")) as {
+    sessions: SessionInfo[]
+    daemon: { pid: number; uptime: number; clients: number; dbPath: string; socketPath: string }
+  }
+  const { sessions, daemon } = result
+
+  if (!sessions.length) {
     console.log("No active tribe sessions.")
-    db.close()
     return
   }
 
-  console.log(`TRIBE STATUS \u2014 ${rows.length} session${rows.length !== 1 ? "s" : ""} active\n`)
-  const nW = Math.max(4, ...rows.map((r) => r.name.length))
-  const rW = Math.max(4, ...rows.map((r) => r.role.length))
+  console.log(`TRIBE STATUS \u2014 ${sessions.length} session${sessions.length !== 1 ? "s" : ""} active\n`)
+  const nW = Math.max(4, ...sessions.map((r) => r.name.length))
+  const rW = Math.max(4, ...sessions.map((r) => r.role.length))
   const dW = Math.max(
     7,
-    ...rows.map((r) => {
-      const d = JSON.parse(r.domains) as string[]
+    ...sessions.map((r) => {
+      const d = r.domains ?? []
       return (d.length ? d.join(", ") : "\u2014").length
     }),
   )
-  console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("DOMAINS", dW)}  ${pad("UPTIME", 10)}  LAST SEEN`)
-  for (const r of rows) {
-    const d = JSON.parse(r.domains) as string[]
+  console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("DOMAINS", dW)}  ${pad("UPTIME", 10)}  SOURCE`)
+  for (const r of sessions) {
+    const d = r.domains ?? []
     console.log(
-      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(d.length ? d.join(", ") : "\u2014", dW)}  ${pad(fmtDur(now - r.started_at), 10)}  ${fmtAge(now - r.heartbeat)}`,
+      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(d.length ? d.join(", ") : "\u2014", dW)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${r.source}`,
     )
   }
-  db.close()
+  console.log(`\n  Daemon: pid=${daemon.pid}, uptime=${fmtDur(daemon.uptime * 1000)}, clients=${daemon.clients}`)
 }
 
-function cmdSessions(showAll: boolean): void {
-  const db = openDb(),
-    now = Date.now(),
-    t = now - 30_000
-  const rows = showAll
-    ? (db.prepare("SELECT * FROM sessions ORDER BY heartbeat DESC").all() as Session[])
-    : (db
-        .prepare(`SELECT * FROM sessions WHERE ${liveWhere(db)} ORDER BY role DESC, started_at ASC`)
-        .all(t) as Session[])
-  if (!rows.length) {
-    console.log(showAll ? "No tribe sessions in database." : "No active tribe sessions.")
-    db.close()
+async function cmdSessions(showAll: boolean): Promise<void> {
+  const result = (await callDaemon("cli_status")) as {
+    sessions: SessionInfo[]
+    daemon: { pid: number; uptime: number; clients: number }
+  }
+  let sessions = result.sessions
+
+  if (!showAll) {
+    sessions = sessions.filter((s) => s.source === "daemon")
+  }
+
+  if (!sessions.length) {
+    console.log(showAll ? "No tribe sessions." : "No active tribe sessions.")
     return
   }
 
-  console.log(`TRIBE SESSIONS \u2014 ${rows.length} ${showAll ? "all" : "active"}\n`)
-  const nW = Math.max(4, ...rows.map((r) => r.name.length))
-  const rW = Math.max(4, ...rows.map((r) => r.role.length))
+  console.log(`TRIBE SESSIONS \u2014 ${sessions.length} ${showAll ? "all" : "active"}\n`)
+  const nW = Math.max(4, ...sessions.map((r) => r.name.length))
+  const rW = Math.max(4, ...sessions.map((r) => r.role.length))
   console.log(
-    `  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  ${pad("LAST SEEN", 10)}  STATUS`,
+    `  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  SOURCE`,
   )
-  for (const r of rows) {
-    const alive = r.heartbeat > t && r.pruned_at == null
-    const st = r.pruned_at != null ? "pruned" : alive ? "alive" : "dead"
+  for (const r of sessions) {
     console.log(
-      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(now - r.started_at), 10)}  ${pad(fmtAge(now - r.heartbeat), 10)}  ${st}`,
+      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${r.source}`,
     )
   }
-  db.close()
 }
 
-function cmdLog(limit: number, follow: boolean): void {
-  const db = openDb()
-  const rows = db.prepare("SELECT * FROM messages ORDER BY ts DESC LIMIT ?").all(limit) as Msg[]
+async function cmdLog(limit: number, follow: boolean): Promise<void> {
+  const result = (await callDaemon("cli_log", { limit })) as { messages: Msg[] }
+  const rows = result.messages
 
   if (!follow) {
     if (!rows.length) {
       console.log("No messages in tribe log.")
-      db.close()
       return
     }
     console.log(`TRIBE LOG \u2014 last ${rows.length} message${rows.length !== 1 ? "s" : ""}\n`)
-    for (const m of rows.reverse()) {
+    for (const m of rows) {
       fmtMsg(m)
     }
-    db.close()
     return
   }
 
-  // Follow mode: print recent, then poll for new messages
+  // Follow mode: print recent, then subscribe to daemon notifications
   console.log(`TRIBE LOG \u2014 follow mode (Ctrl+C to quit)\n`)
-  for (const m of rows.reverse()) fmtMsg(m)
+  for (const m of rows) fmtMsg(m)
 
-  let lastTs = rows.length ? Math.max(...rows.map((m) => m.ts)) : Date.now()
-  setInterval(() => {
-    const newMsgs = db.prepare("SELECT * FROM messages WHERE ts > ? ORDER BY ts ASC").all(lastTs) as Msg[]
-    for (const m of newMsgs) {
-      fmtMsg(m)
-      lastTs = m.ts
+  // For follow mode, keep the daemon connection open and listen for notifications
+  const socketPath = resolveSocketPath()
+  const client = await connectToDaemon(socketPath)
+  client.onNotification((method, params) => {
+    if (method === "channel") {
+      const ts = Date.now()
+      const from = String(params?.from ?? "unknown")
+      const type = String(params?.type ?? "notify")
+      const content = String(params?.content ?? "")
+      const to = "all"
+      console.log(`  ${fmtTime(ts)}  ${pad(`${from} \u2192 ${to}`, 28)}  [${type}] "${content.length > 120 ? content.slice(0, 117) + "..." : content}"`)
+    } else if (method === "session.joined" || method === "session.left") {
+      const name = String(params?.name ?? "unknown")
+      const action = method === "session.joined" ? "joined" : "left"
+      console.log(`  ${fmtTime(Date.now())}  [system] ${name} ${action} the tribe`)
     }
-  }, 1000)
+  })
+  // Subscribe to push notifications
+  await client.call("subscribe")
+  // Also poll for new DB messages periodically
+  let lastTs = rows.length ? Math.max(...rows.map((m) => m.ts)) : Date.now()
+  setInterval(async () => {
+    try {
+      const newResult = (await client.call("cli_log", { limit: 50 })) as { messages: Msg[] }
+      const newMsgs = newResult.messages.filter((m) => m.ts > lastTs)
+      for (const m of newMsgs) {
+        fmtMsg(m)
+        lastTs = m.ts
+      }
+    } catch {
+      // Connection lost
+    }
+  }, 2000)
 }
 
 function fmtMsg(m: Msg): void {
@@ -196,121 +212,71 @@ function fmtMsg(m: Msg): void {
   console.log(`  ${fmtTime(m.ts)}  ${pad(`${m.sender} \u2192 ${to}`, 28)}  [${m.type}]${bead} "${txt}"`)
 }
 
-function cmdSend(to: string, message: string): void {
-  const db = openDb(true)
-  const session = db.prepare("SELECT name FROM sessions WHERE name = ?").get(to) as { name: string } | null
-  if (!session) {
-    const all = db.prepare("SELECT name FROM sessions").all() as Array<{ name: string }>
-    console.error(`Unknown session: "${to}"`)
-    if (all.length) console.error(`Known sessions: ${all.map((r) => r.name).join(", ")}`)
-    db.close()
-    process.exit(1)
-  }
-  const id = randomUUID()
-  db.prepare(
-    "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, "notify", "cli", to, message, null, null, Date.now())
-  console.log(`Sent message to ${to} (id: ${id.slice(0, 8)})`)
-  db.close()
+async function cmdSend(to: string, message: string): Promise<void> {
+  await callDaemon("tribe_send", { to, message, type: "notify" })
+  console.log(`Sent message to ${to}`)
 }
 
-function cmdHealth(): void {
-  const db = openDb(),
-    now = Date.now(),
-    t = now - 30_000,
-    silentT = now - 300_000
-  const hasPruned = hasColumn(db, "sessions", "pruned_at")
-  const sessions = (
-    hasPruned
-      ? db.prepare("SELECT * FROM sessions WHERE pruned_at IS NULL").all()
-      : db.prepare("SELECT * FROM sessions").all()
-  ) as Session[]
+async function cmdHealth(): Promise<void> {
+  const result = (await callDaemon("cli_health")) as {
+    content: Array<{ type: string; text: string }>
+    daemon: { pid: number; uptime: number; clients: number }
+  }
 
   console.log("TRIBE HEALTH DIAGNOSTICS\n")
-  const issues: string[] = []
-  let aliveN = 0,
-    deadN = 0
-  for (const s of sessions) {
-    const alive = s.heartbeat > t
-    alive ? aliveN++ : deadN++
-    if (!alive) {
-      issues.push(`[DEAD] ${s.name} \u2014 last heartbeat ${fmtAge(now - s.heartbeat)}`)
-      continue
+  // The health response comes from tribe_health handler, which returns MCP-formatted content
+  try {
+    const text = result.content?.[0]?.text ?? JSON.stringify(result)
+    const data = JSON.parse(text) as Record<string, unknown>
+    for (const [key, value] of Object.entries(data)) {
+      if (key === "sessions" && Array.isArray(value)) {
+        console.log(`  Sessions: ${(value as Array<Record<string, unknown>>).length}`)
+        for (const s of value as Array<Record<string, string>>) {
+          console.log(`    ${s.name} (${s.role}) — ${s.status}`)
+        }
+      } else if (key === "issues" && Array.isArray(value)) {
+        if ((value as unknown[]).length) {
+          console.log("\n  Issues:")
+          for (const i of value as string[]) console.log(`    ${i}`)
+        } else {
+          console.log("\n  No issues detected.")
+        }
+      }
     }
-    const last = db.prepare("SELECT ts FROM messages WHERE sender = ? ORDER BY ts DESC LIMIT 1").get(s.name) as {
-      ts: number
-    } | null
-    if (last && now - last.ts > silentT)
-      issues.push(`[SILENT] ${s.name} \u2014 alive but last message ${fmtAge(now - last.ts)}`)
-    else if (!last) issues.push(`[SILENT] ${s.name} \u2014 alive but never sent a message`)
+    if (result.daemon) {
+      console.log(`\n  Daemon: pid=${result.daemon.pid}, uptime=${fmtDur(result.daemon.uptime * 1000)}, clients=${result.daemon.clients}`)
+    }
+  } catch {
+    // Fallback: just print the raw result
+    console.log(JSON.stringify(result, null, 2))
   }
-  console.log(`  Sessions: ${aliveN} alive, ${deadN} dead`)
-
-  const unread = db
-    .prepare(`
-    SELECT m.recipient, COUNT(*) as count FROM messages m
-    WHERE m.recipient != '*' AND NOT EXISTS (
-      SELECT 1 FROM reads r JOIN sessions s ON r.session_id = s.id
-      WHERE r.message_id = m.id AND s.name = m.recipient
-    ) GROUP BY m.recipient`)
-    .all() as Array<{ recipient: string; count: number }>
-
-  if (unread.length) {
-    console.log("\n  Unread messages:")
-    for (const u of unread) console.log(`    ${u.recipient}: ${u.count} unread`)
-  } else console.log("  Unread messages: none")
-  if (issues.length) {
-    console.log("\n  Issues:")
-    for (const i of issues) console.log(`    ${i}`)
-  } else console.log("\n  No issues detected.")
-  db.close()
 }
 
 // --- Daemon management ---
 
-function findSocketPath(): string {
-  // Reuse the same discovery as the daemon
-  const beadsDir = findTribeDb()?.replace(/\/tribe\.db$/, "")
-  if (beadsDir) return resolve(beadsDir, "tribe.sock")
-  return `/tmp/tribe-${process.getuid?.() ?? process.pid}.sock`
-}
-
-function findPidPath(): string {
-  return findSocketPath().replace(/\.sock$/, ".pid")
-}
-
-function readPid(): number | null {
-  try {
-    const pid = parseInt(readFileSync(findPidPath(), "utf-8").trim(), 10)
-    if (isNaN(pid)) return null
-    try {
-      process.kill(pid, 0)
-      return pid
-    } catch {
-      return null
-    }
-  } catch {
-    return null
-  }
+function getSocketPath(): string {
+  return resolveSocketPath()
 }
 
 function cmdStart(): void {
-  const pid = readPid()
+  const socketPath = getSocketPath()
+  const pid = readDaemonPid(socketPath)
   if (pid) {
     console.log(`Daemon already running (pid=${pid})`)
     return
   }
   const daemonScript = resolve(dirname(new URL(import.meta.url).pathname), "tribe-daemon.ts")
   console.log(`Starting tribe daemon in foreground...`)
-  console.log(`Socket: ${findSocketPath()}`)
-  const child = spawn(process.execPath, [daemonScript, "--socket", findSocketPath(), "--foreground"], {
+  console.log(`Socket: ${socketPath}`)
+  const child = spawn(process.execPath, [daemonScript, "--socket", socketPath, "--foreground"], {
     stdio: "inherit",
   })
   child.on("exit", (code) => process.exit(code ?? 0))
 }
 
 function cmdStop(): void {
-  const pid = readPid()
+  const socketPath = getSocketPath()
+  const pid = readDaemonPid(socketPath)
   if (!pid) {
     console.log("No daemon running.")
     return
@@ -321,7 +287,8 @@ function cmdStop(): void {
 }
 
 function cmdReload(): void {
-  const pid = readPid()
+  const socketPath = getSocketPath()
+  const pid = readDaemonPid(socketPath)
   if (!pid) {
     console.log("No daemon running.")
     return
@@ -332,9 +299,9 @@ function cmdReload(): void {
 }
 
 function cmdWatch(): void {
-  // Launch the Silvery TUI watch app
+  const socketPath = getSocketPath()
   const watchScript = resolve(dirname(new URL(import.meta.url).pathname), "tribe-watch.tsx")
-  const args = ["--socket", findSocketPath()]
+  const args = ["--socket", socketPath]
   const child = spawn(process.execPath, [watchScript, ...args], {
     stdio: "inherit",
   })
@@ -356,32 +323,32 @@ const program = new Command("tribe")
 program
   .command("status")
   .description("Show active sessions with uptime and heartbeat")
-  .action(() => cmdStatus())
+  .action(() => void cmdStatus())
 
 program
   .command("sessions")
   .description("List sessions")
   .option("-a, --all", "Include dead/pruned sessions")
-  .action((opts) => cmdSessions(!!opts.all))
+  .action((opts) => void cmdSessions(!!opts.all))
 
 program
   .command("send")
   .description("Send a message to a session")
   .argument("<to>", "Target session name")
   .argument("<message...>", "Message text")
-  .action((to, message) => cmdSend(to, message.join(" ")))
+  .action((to, message) => void cmdSend(to, message.join(" ")))
 
 program
   .command("log")
   .description("Show recent messages")
   .option("-n, --limit <n>", "Number of messages", int, 20)
   .option("-f, --follow", "Follow live — stream new messages")
-  .action((opts) => cmdLog(opts.limit, !!opts.follow))
+  .action((opts) => void cmdLog(opts.limit, !!opts.follow))
 
 program
   .command("health")
   .description("Run health diagnostics")
-  .action(() => cmdHealth())
+  .action(() => void cmdHealth())
 
 program
   .command("start")

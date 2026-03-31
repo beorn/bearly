@@ -10,7 +10,7 @@
  */
 
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
-import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync, readdirSync, readFileSync, watch } from "node:fs"
+import { existsSync, unlinkSync, writeFileSync, chmodSync, readdirSync, readFileSync, watch } from "node:fs"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
@@ -29,7 +29,6 @@ import {
 import {
   parseTribeArgs,
   parseSessionDomains,
-  findBeadsDir,
   resolveDbPath,
   detectRole,
   detectName,
@@ -55,6 +54,7 @@ function log(msg: string): void {
 const { values: daemonArgs } = parseArgs({
   options: {
     socket: { type: "string" },
+    db: { type: "string" },
     fd: { type: "string" },
     "quit-timeout": { type: "string", default: "30" },
     foreground: { type: "boolean", default: false },
@@ -72,8 +72,9 @@ const INHERIT_FD = daemonArgs.fd ? parseInt(String(daemonArgs.fd), 10) : null
 // ---------------------------------------------------------------------------
 
 const tribeArgs = parseTribeArgs()
-const BEADS_DIR = findBeadsDir()
-const DB_PATH = resolveDbPath(tribeArgs, BEADS_DIR)
+// --db from daemon args takes priority over parseTribeArgs
+if (daemonArgs.db) tribeArgs.db = daemonArgs.db as string
+const DB_PATH = resolveDbPath(tribeArgs)
 const db = openDatabase(String(DB_PATH))
 const stmts = createStatements(db)
 
@@ -488,7 +489,7 @@ const pluginCtx: PluginContext = {
   },
 }
 
-const plugins = [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })]
+const plugins = [gitPlugin(), beadsPlugin()]
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Push new plugin-generated messages to clients every second
@@ -608,20 +609,6 @@ if (INHERIT_FD !== null) {
 // Write PID file (owner-only)
 writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 })
 
-// Ensure .beads dir is owner-only
-try {
-  const beadsDir = findBeadsDir()
-  if (beadsDir) {
-    const st = statSync(beadsDir)
-    if ((st.mode & 0o077) !== 0) {
-      chmodSync(beadsDir, 0o700)
-      log(`Hardened .beads/ permissions to 0700`)
-    }
-  }
-} catch {
-  /* best effort */
-}
-
 // ---------------------------------------------------------------------------
 // Auto-quit timer
 // ---------------------------------------------------------------------------
@@ -703,13 +690,22 @@ function computeSourceHash(): string {
     pathResolve(sourceDir, "tribe-proxy.ts"),
     ...(() => {
       try {
-        return readdirSync(libTribeDir).filter((f) => f.endsWith(".ts")).sort().map((f) => pathResolve(libTribeDir, f))
-      } catch { return [] }
+        return readdirSync(libTribeDir)
+          .filter((f) => f.endsWith(".ts"))
+          .sort()
+          .map((f) => pathResolve(libTribeDir, f))
+      } catch {
+        return []
+      }
     })(),
   ]
   const hash = createHash("md5")
   for (const f of files) {
-    try { hash.update(readFileSync(f)) } catch { /* missing */ }
+    try {
+      hash.update(readFileSync(f))
+    } catch {
+      /* missing */
+    }
   }
   return hash.digest("hex").slice(0, 12)
 }

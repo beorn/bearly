@@ -26,7 +26,6 @@ import { randomUUID } from "node:crypto"
 import {
   parseTribeArgs,
   parseSessionDomains,
-  findBeadsDir,
   resolveDbPath,
   detectRole,
   detectName,
@@ -88,6 +87,8 @@ const SOURCE_HASH = computeSourceHash()
 
 // Check if a prior process stored a different hash — if so, we're stale (Bun cache)
 // Uses a simple file marker since the DB isn't open yet
+import { findBeadsDir } from "./lib/tribe/config.ts"
+
 const HASH_FILE = resolve(
   process.env.TRIBE_DB ?? findBeadsDir() ?? resolve(process.env.HOME ?? "~", ".local/share/tribe"),
   ".tribe-source-hash",
@@ -125,8 +126,7 @@ const SESSION_DOMAINS = parseSessionDomains(args)
 const SESSION_ID = randomUUID()
 const CLAUDE_SESSION_ID = resolveClaudeSessionId()
 const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
-const BEADS_DIR = findBeadsDir()
-const DB_PATH = resolveDbPath(args, BEADS_DIR)
+const DB_PATH = resolveDbPath(args)
 
 const db = openDatabase(String(DB_PATH))
 const SESSION_ROLE = detectRole(db, args)
@@ -320,7 +320,7 @@ const pluginCtx: PluginContext = {
     }, 500)
   },
 }
-const plugins = args["auto-report"] !== false ? [gitPlugin(), beadsPlugin({ beadsDir: BEADS_DIR })] : []
+const plugins = args["auto-report"] !== false ? [gitPlugin(), beadsPlugin()] : []
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Cleanup on exit (guard against double-close)

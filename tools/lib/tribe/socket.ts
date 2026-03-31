@@ -211,7 +211,7 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
 // ---------------------------------------------------------------------------
 
 /** Try connecting; if daemon not running, start it and retry */
-export async function connectOrStart(socketPath: string, daemonScript?: string): Promise<DaemonClient> {
+export async function connectOrStart(socketPath: string, opts?: { daemonScript?: string; dbPath?: string }): Promise<DaemonClient> {
   // Try connecting first
   try {
     return await connectToDaemon(socketPath)
@@ -234,8 +234,10 @@ export async function connectOrStart(socketPath: string, daemonScript?: string):
   if (!existsSync(socketDir)) mkdirSync(socketDir, { recursive: true })
 
   // Start daemon
-  const script = daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../tribe-daemon.ts")
-  const child = spawn(process.execPath, [script, "--socket", socketPath], {
+  const script = opts?.daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../tribe-daemon.ts")
+  const daemonArgs = ["--socket", socketPath]
+  if (opts?.dbPath) daemonArgs.push("--db", opts.dbPath)
+  const child = spawn(process.execPath, [script, ...daemonArgs], {
     detached: true,
     stdio: "ignore",
     env: process.env,

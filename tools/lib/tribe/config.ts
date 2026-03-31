@@ -86,7 +86,9 @@ export function resolveProjectName(cwd?: string): string {
           const content = readFileSync(configPath, "utf-8")
           const match = content.match(/^project:\s*["']?(\w+)["']?/m)
           if (match) return match[1].toLowerCase()
-        } catch { /* fallback */ }
+        } catch {
+          /* fallback */
+        }
       }
       return basename(projectRoot).toLowerCase()
     }
@@ -96,9 +98,10 @@ export function resolveProjectName(cwd?: string): string {
 }
 
 /** DB location: --db flag > TRIBE_DB env > .beads/tribe.db > ~/.local/share/tribe/tribe.db */
-export function resolveDbPath(args: TribeArgs, beadsDir: string | null): string {
+export function resolveDbPath(args: TribeArgs): string {
   if (args.db) return String(args.db)
   if (process.env.TRIBE_DB) return process.env.TRIBE_DB
+  const beadsDir = findBeadsDir()
   if (beadsDir) return resolve(beadsDir, "tribe.db")
   // No .beads/ found — use XDG data dir
   const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
