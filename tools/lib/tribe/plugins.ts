@@ -99,7 +99,6 @@ export function beadsPlugin(): TribePlugin {
       }
 
       timers.setInterval(async () => {
-        if (!ctx.hasChief()) return
         try {
           const stat = statSync(issuesPath)
           if (stat.mtimeMs === lastMtime) return
@@ -117,14 +116,14 @@ export function beadsPlugin(): TribePlugin {
               if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
                 reportedStates.set(entry.id, "claimed")
                 if (ctx.claimDedup(`claimed:${entry.id}`)) {
-                  ctx.sendMessage("chief", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                  ctx.sendMessage("*", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
               }
               // Only report closures for beads this session claimed (not all closures)
               if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
                 reportedStates.set(entry.id, "closed")
                 if (ctx.claimDedup(`closed:${entry.id}`)) {
-                  ctx.sendMessage("chief", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                  ctx.sendMessage("*", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
                 }
               }
             } catch {
@@ -176,7 +175,6 @@ export function gitPlugin(): TribePlugin {
       const timers = createTimers(ac.signal)
 
       timers.setInterval(async () => {
-        if (!ctx.hasChief()) return
         try {
           const proc = Bun.spawn(["git", "log", "--oneline", "-1", "HEAD"], {
             cwd: process.cwd(),
@@ -189,7 +187,7 @@ export function gitPlugin(): TribePlugin {
           if (head && lastHead && head !== lastHead) {
             // Atomic dedup: first session to claim this commit hash wins
             if (ctx.claimDedup(`commit:${head}`)) {
-              ctx.sendMessage("chief", `Committed: ${line}`, "status")
+              ctx.sendMessage("*", `Committed: ${line}`, "status")
             }
             // Auto-reload if tribe code changed in this commit
             try {

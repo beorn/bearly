@@ -277,6 +277,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         broadcastNotification("session.joined", { name, role, domains }, connId)
         logEvent(daemonCtx, "session.joined", undefined, { name, role, via: "daemon" })
+        sendMessage(daemonCtx, "*", `${name} joined (${role})`, "session")
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
@@ -631,6 +632,7 @@ function handleConnection(socket: NetSocket): void {
       log(`Client disconnected: ${client.name}`)
       broadcastNotification("session.left", { name: client.name }, connId)
       logEvent(daemonCtx, "session.left", undefined, { name: client.name, via: "daemon" })
+      sendMessage(daemonCtx, "*", `${client.name} left`, "session")
 
       // Prune the session in DB
       try {
