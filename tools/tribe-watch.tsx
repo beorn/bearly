@@ -117,6 +117,9 @@ function EventEntry({ entry }: { entry: LogEntry }) {
 // App
 // ---------------------------------------------------------------------------
 
+type ConnectionEvent = { ts: string; text: string; type: LogEntry["type"] }
+const connectionEvents: ConnectionEvent[] = []
+
 function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const { exit } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -154,11 +157,13 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     })()
   }, [])
 
-  // Periodic status refresh
+  // Periodic status refresh + drain connection events
   useEffect(() => {
     const { signal } = ac
     const poll = async () => {
       if (signal.aborted) return
+      // Drain any connection events from the reconnecting client
+      while (connectionEvents.length > 0) addLog(connectionEvents.shift()!)
       try {
         const s = (await client.call("cli_status")) as { sessions: SessionInfo[]; daemon: DaemonInfo }
         if (signal.aborted) return
@@ -311,6 +316,12 @@ await using client = Object.assign(
         pid: process.pid,
       })
       void c.call("subscribe").catch(() => {})
+    },
+    onDisconnect() {
+      connectionEvents.push({ ts: now(), text: "daemon disconnected, reconnecting...", type: "error" })
+    },
+    onReconnect() {
+      connectionEvents.push({ ts: now(), text: "reconnected to daemon", type: "join" })
     },
   }),
   {
