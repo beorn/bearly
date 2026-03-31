@@ -38,9 +38,18 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
 
   // Only activate for source runs (file:// URLs in the repo)
   if (!importMetaUrl.startsWith("file://")) return null
+
   const scriptPath = new URL(importMetaUrl).pathname
+  const scriptName = scriptPath.split("/").pop()?.replace(/\.(ts|tsx)$/, "") ?? "unknown"
   const sourceDir = dirname(scriptPath)
   const libTribeDir = resolve(sourceDir, "lib/tribe")
+
+  // Log if this is a hot-reloaded instance
+  if (process.env.__TRIBE_HOT_RELOAD === "1") {
+    delete process.env.__TRIBE_HOT_RELOAD
+    log.info?.(`Hot-reloaded: ${scriptName}`)
+    logActivity?.("reload", `${scriptName} hot-reloaded`)
+  }
 
   // Detect all source files to hash
   function getSourceFiles(): string[] {
@@ -84,14 +93,21 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
       if (newHash === currentHash) return
       log.info?.(`Source changed (${currentHash} → ${newHash}), re-execing`)
       logActivity?.("reload", `${scriptName} reloading (${currentHash} → ${newHash})`)
-      currentHash = newHash
+
+      // Stop watching BEFORE spawning to prevent fork bombs
+      for (const w of watchers) w.close()
+      watchers.length = 0
+
       onReload?.()
-      // Re-exec with same args
+
+      // Spawn replacement then exit immediately
       const child = spawn(process.execPath, process.argv.slice(1), {
         stdio: "inherit",
         env: { ...process.env, __TRIBE_HOT_RELOAD: "1" },
+        detached: true,
       })
-      child.on("exit", (code) => process.exit(code ?? 0))
+      child.unref()
+      process.exit(0)
     }, debounceMs)
   }
 

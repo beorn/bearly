@@ -318,12 +318,8 @@ await using client = Object.assign(
   },
 )
 
-// Hot-reload: re-exec on source changes
-import { setupHotReload } from "./lib/tribe/hot-reload.ts"
-using _reload = setupHotReload({
-  importMetaUrl: import.meta.url,
-  onReload: () => client.close(),
-})
+// No hot-reload for TUI apps — spawn+inherit corrupts terminal.
+// Restart watch manually after code changes.
 
 using term = createTerm()
 const ac = new AbortController()
