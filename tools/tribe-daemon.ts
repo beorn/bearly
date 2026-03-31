@@ -143,19 +143,14 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
 }
 
 /** Single entry point for all observable activities.
- *  Persists to DB (watch sees on startup) + broadcasts live (watch sees immediately).
- *  Use this instead of separate broadcastNotification + sendMessage + logEvent calls. */
-function logActivity(
-  type: string,
-  content: string,
-  opts?: { exclude?: string; persist?: boolean; broadcast?: boolean },
-): void {
-  const { exclude, persist = true, broadcast = true } = opts ?? {}
-  if (persist) {
-    sendMessage(daemonCtx, "*", content, type)
-  }
-  if (broadcast) {
-    broadcastNotification("channel", { from: "daemon", type, content }, exclude)
+ *  Persists to DB (for cli_log / watch history) AND pushes to all connected clients.
+ *  Advances lastDelivered to prevent pushNewMessages from re-delivering. */
+function logActivity(type: string, content: string): void {
+  const ts = Date.now()
+  sendMessage(daemonCtx, "*", content, type)
+  for (const [connId] of clients) {
+    pushToClient(connId, "channel", { from: "daemon", type, content })
+    lastDelivered.set(connId, ts)
   }
 }
 
@@ -293,7 +288,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         cancelQuitTimer()
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
-        logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}`, { exclude: connId })
+        logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}`)
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
@@ -336,7 +331,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           client.name = ctx.getName()
           client.role = ctx.getRole()
           if (oldName !== client.name || oldRole !== client.role) {
-            logActivity("session", `${oldName} → ${client.name} (${client.role})`, { exclude: connId })
+            logActivity("session", `${oldName} → ${client.name} (${client.role})`)
           }
         }
 
@@ -650,7 +645,7 @@ function handleConnection(socket: NetSocket): void {
     const client = clients.get(connId)
     if (client && client.name !== `pending-${connId.slice(0, 6)}`) {
       log(`Client disconnected: ${client.name}`)
-      logActivity("session", `${client.name} left`, { exclude: connId })
+      logActivity("session", `${client.name} left`)
 
       // Prune the session in DB
       try {
