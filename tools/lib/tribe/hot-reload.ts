@@ -22,6 +22,8 @@ export type HotReloadOpts = {
   extraDirs?: string[]
   /** Callback before re-exec (cleanup) */
   onReload?: () => void
+  /** Broadcast activity to tribe (for watch/daemon visibility) */
+  logActivity?: (type: string, content: string) => void
   /** Debounce ms (default: 500) */
   debounceMs?: number
 }
@@ -32,7 +34,7 @@ export type HotReloadOpts = {
  * Returns null if not running from source (bundled).
  */
 export function setupHotReload(opts: HotReloadOpts): Disposable | null {
-  const { importMetaUrl, extraFiles = [], extraDirs = [], onReload, debounceMs = 500 } = opts
+  const { importMetaUrl, extraFiles = [], extraDirs = [], onReload, logActivity, debounceMs = 500 } = opts
 
   // Only activate for source runs (file:// URLs in the repo)
   if (!importMetaUrl.startsWith("file://")) return null
@@ -81,12 +83,13 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
       const newHash = computeHash()
       if (newHash === currentHash) return
       log.info?.(`Source changed (${currentHash} → ${newHash}), re-execing`)
+      logActivity?.("reload", `${scriptName} reloading (${currentHash} → ${newHash})`)
       currentHash = newHash
       onReload?.()
       // Re-exec with same args
       const child = spawn(process.execPath, process.argv.slice(1), {
         stdio: "inherit",
-        env: process.env,
+        env: { ...process.env, __TRIBE_HOT_RELOAD: "1" },
       })
       child.on("exit", (code) => process.exit(code ?? 0))
     }, debounceMs)
@@ -117,6 +120,17 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
     }
   }
 
+  // Detect if this is a hot-reload (env flag set by previous instance)
+  const scriptName =
+    scriptPath
+      .split("/")
+      .pop()
+      ?.replace(/\.(ts|tsx)$/, "") ?? "unknown"
+  if (process.env.__TRIBE_HOT_RELOAD) {
+    log.info?.(`Hot-reloaded (hash: ${currentHash})`)
+    logActivity?.("reload", `${scriptName} hot-reloaded`)
+    delete process.env.__TRIBE_HOT_RELOAD
+  }
   log.info?.(`Watching ${getSourceFiles().length} source files for hot-reload`)
 
   return {

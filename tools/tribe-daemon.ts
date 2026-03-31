@@ -435,6 +435,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           String(p.type ?? ""),
           p.meta ? JSON.stringify(p.meta) : null,
         )
+        // If content is provided, also broadcast via logActivity for watch visibility
+        if (p.content) logActivity(String(p.type ?? "event"), String(p.content))
         return makeResponse(id, { ok: true })
       }
 
@@ -736,6 +738,7 @@ function cancelQuitTimer(): void {
 
 process.on("SIGHUP", () => {
   log("SIGHUP received — re-exec for hot-reload")
+  logActivity("reload", "daemon hot-reloading")
 
   // Pass the socket fd to the new process
   const socketFd = (server as any)._handle?.fd
