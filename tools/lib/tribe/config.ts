@@ -76,19 +76,22 @@ export function resolveProjectName(cwd?: string): string {
   const dir = cwd ?? process.cwd()
   const beadsDir = findBeadsDir(dir)
   if (beadsDir) {
-    // Try reading project name from beads config
-    const configPath = resolve(beadsDir, "config.yaml")
-    if (existsSync(configPath)) {
-      try {
-        const content = readFileSync(configPath, "utf-8")
-        const match = content.match(/^project:\s*["']?(\w+)["']?/m)
-        if (match) return match[1].toLowerCase()
-      } catch { /* fallback */ }
+    const projectRoot = dirname(beadsDir)
+    // Only use .beads/ if it's nearby (skip ~/.beads/ found far up the tree)
+    const depth = dir.replace(projectRoot, "").split("/").filter(Boolean).length
+    if (depth <= 2) {
+      const configPath = resolve(beadsDir, "config.yaml")
+      if (existsSync(configPath)) {
+        try {
+          const content = readFileSync(configPath, "utf-8")
+          const match = content.match(/^project:\s*["']?(\w+)["']?/m)
+          if (match) return match[1].toLowerCase()
+        } catch { /* fallback */ }
+      }
+      return basename(projectRoot).toLowerCase()
     }
-    // Use the directory containing .beads/ as the project name
-    return basename(dirname(beadsDir)).toLowerCase()
   }
-  // No .beads/ — use cwd directory name
+  // No nearby .beads/ — use cwd directory name
   return basename(dir).toLowerCase()
 }
 
