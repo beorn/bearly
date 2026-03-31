@@ -29,9 +29,7 @@ export function resolveSocketPath(socketArg?: string): string {
 
   // Always use user-level daemon socket (one daemon per user)
   const xdg = process.env.XDG_RUNTIME_DIR
-  return xdg
-    ? resolve(xdg, "tribe.sock")
-    : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
+  return xdg ? resolve(xdg, "tribe.sock") : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
 }
 
 /** Resolve PID file path (same directory as socket) */
@@ -299,7 +297,7 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (closed) return
           const delay = Math.min(500 * 2 ** attempt, 10_000)
-          await new Promise((r) => setTimeout(r, delay))
+          await new Promise((r) => { const t = setTimeout(r, delay); (t as { unref?: () => void }).unref?.() })
           if (closed) return
           try {
             current = await connectOrStart(socketPath)
@@ -324,6 +322,7 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
         return () => {
           closed = true
           current.close()
+          current.socket.unref()
         }
       return (current as Record<string | symbol, unknown>)[prop]
     },

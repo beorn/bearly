@@ -220,7 +220,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       if (method === "channel") {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
-        const content = String(params?.content ?? "").slice(0, 120)
+        const content = String(params?.content ?? "")
         addLog({ ts: t, text: `${from} [${type}] ${content}`, type: "message" })
       } else if (method === "session.joined") {
         addLog({ ts: t, text: `${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
