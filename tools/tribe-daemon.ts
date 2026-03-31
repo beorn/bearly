@@ -292,7 +292,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         clients.set(connId, client)
         cancelQuitTimer()
 
-        logActivity("session", `${name} joined (${role})`, { exclude: connId })
+        const shortProject = project.replace(process.env.HOME ?? "", "~")
+        logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}`, { exclude: connId })
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 

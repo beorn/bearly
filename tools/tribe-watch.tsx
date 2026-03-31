@@ -72,12 +72,12 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8, res: 16 }
+const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8, conn: 30 }
 
 function fmtProject(s: SessionInfo): string {
   if (!s.project) return ""
-  const id = s.projectId ? ` (${s.projectId})` : ""
-  return `${shortPath(s.project)}${id}`
+  const id = s.projectId ? `(${s.projectId}) ` : ""
+  return `${id}${shortPath(s.project)}`
 }
 
 function fmtDur(ms: number): string {
@@ -163,7 +163,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const seed: LogEntry[] = (result.messages ?? []).map((m) => {
           const t = fmtTime(m.ts)
           const to = m.recipient === "*" ? "all" : m.recipient
-          return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
+          return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content}`, type: "message" as const }
         })
         if (seed.length > 0) setLog(seed)
       } catch {
@@ -236,7 +236,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${(s.resources?.join(",") ?? "").padEnd(COL.res)}${s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")}`,
+    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${(s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")).padEnd(COL.conn)}${s.resources?.join(",") ?? ""}`,
     value: s.id,
   }))
 
@@ -262,7 +262,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
             {"UP".padEnd(COL.uptime)}
-            {"RES".padEnd(COL.res)}CONN
+            {"CONN".padEnd(COL.conn)}RESOURCES
           </Text>
           {items.length > 0 ? <SelectList items={items} indicator="" /> : <Muted>No sessions</Muted>}
         </Box>
