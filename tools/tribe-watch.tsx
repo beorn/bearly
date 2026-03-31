@@ -55,6 +55,9 @@ type LogEntry = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+const HOME = process.env.HOME ?? ""
+const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
+
 const COL = { name: 18, project: 10, role: 10, pid: 8, uptime: 10 }
 
 function fmtDur(ms: number): string {
@@ -181,7 +184,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           domains: [],
           uptimeMs: s.daemon.uptime * 1000,
           source: "daemon",
-          conn: s.daemon.socketPath?.replace(process.cwd() + "/", ""),
+          conn: s.daemon.socketPath ? shortPath(s.daemon.socketPath) : undefined,
         }
         setSessions([daemonSession, ...s.sessions.filter((x) => !x.name.startsWith("watch-"))])
         setDaemon(s.daemon)
@@ -230,7 +233,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
           <Small>
-            <Muted>{process.cwd().replace(process.env.HOME ?? "", "~")}</Muted>
+            <Muted>{shortPath(process.cwd())}</Muted>
           </Small>
         </Box>
         <Box alignItems="center">
@@ -274,7 +277,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
               <DetailField label="Domains">{selected.domains?.length ? selected.domains.join(", ") : "—"}</DetailField>
-              <DetailField label="Peer">{selected.peerSocket?.replace(process.env.HOME ?? "", "~") ?? "—"}</DetailField>
+              <DetailField label="Peer">{selected.peerSocket ? shortPath(selected.peerSocket) : "—"}</DetailField>
             </>
           ) : (
             <Muted>Select a session</Muted>
