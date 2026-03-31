@@ -13,7 +13,7 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
@@ -52,26 +52,9 @@ export function detectRepoFromGit(dir?: string): string | null {
   }
 }
 
-/** Detect GitHub repos from local git remotes: cwd + vendor/* submodules */
-function detectLocalRepos(): string[] {
-  const repos = new Set<string>()
-  const main = detectRepoFromGit()
-  if (main) repos.add(main)
-  try {
-    const vendorDir = resolve(process.cwd(), "vendor")
-    if (existsSync(vendorDir)) {
-      for (const entry of readdirSync(vendorDir)) {
-        const subdir = resolve(vendorDir, entry)
-        if (statSync(subdir).isDirectory()) {
-          const repo = detectRepoFromGit(subdir)
-          if (repo) repos.add(repo)
-        }
-      }
-    }
-  } catch {
-    /* best effort */
-  }
-  return Array.from(repos)
+/** Detect GitHub repo from cwd's git remote (for fast startup before API call) */
+function detectLocalRepo(): string | null {
+  return detectRepoFromGit()
 }
 
 /** Fetch all non-archived, non-fork repos owned by the authenticated user */
@@ -361,9 +344,11 @@ export function githubPlugin(): TribePlugin {
       // Track recently seen workflow URLs for dedup
       const seenWorkflowUrls = new Set<string>()
 
-      // Start with local repos, then discover all user repos async
-      const repos = new Set<string>(detectLocalRepos())
-      log.info?.(`local repos: ${Array.from(repos).join(", ") || "none"}`)
+      // Start with local repo for fast startup, then discover all user repos via API
+      const repos = new Set<string>()
+      const local = detectLocalRepo()
+      if (local) repos.add(local)
+      log.info?.(`local repo: ${local ?? "none"}`)
 
       // Async: fetch all user repos and merge
       void fetchUserRepos(githubHeaders).then((userRepos) => {
