@@ -6,7 +6,20 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react"
-import { createTerm, render, Box, Text, H1, Muted, Small, Divider, Table, useApp, useInput, type Column } from "@silvery/ag-react"
+import {
+  createTerm,
+  render,
+  Box,
+  Text,
+  H1,
+  Muted,
+  Small,
+  Divider,
+  Table,
+  useApp,
+  useInput,
+  type Column,
+} from "@silvery/ag-react"
 import {
   resolveSocketPath,
   createReconnectingClient,
@@ -248,11 +261,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
       {/* Sessions table */}
       <Divider />
-      {sessions.length > 0 ? (
-        <Table data={sessions} columns={sessionColumns} />
-      ) : (
-        <Muted>No sessions</Muted>
-      )}
+      {sessions.length > 0 ? <Table data={sessions} columns={sessionColumns} /> : <Muted>No sessions</Muted>}
       <Divider />
 
       {/* Event log — no border for easy copy */}

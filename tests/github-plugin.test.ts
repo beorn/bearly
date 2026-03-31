@@ -11,7 +11,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 
-import { formatEvent, loadCursor, saveCursor, getGitHubToken, detectRepoFromGit } from "../tools/lib/tribe/github-plugin.ts"
+import {
+  formatEvent,
+  loadCursor,
+  saveCursor,
+  getGitHubToken,
+  detectRepoFromGit,
+} from "../tools/lib/tribe/github-plugin.ts"
 
 // ---------------------------------------------------------------------------
 // formatEvent
@@ -235,7 +241,9 @@ describe("cursor persistence", () => {
   afterEach(() => {
     try {
       if (existsSync(cursorPath)) unlinkSync(cursorPath)
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   })
 
   test("loadCursor returns empty state for missing file", () => {

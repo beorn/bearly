@@ -51,7 +51,9 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
             if (f.endsWith(".ts")) files.push(resolve(dir, f))
           }
         }
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     }
     return files.sort()
   }
@@ -59,7 +61,11 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
   function computeHash(): string {
     const hash = createHash("md5")
     for (const f of getSourceFiles()) {
-      try { hash.update(readFileSync(f)) } catch { /* missing */ }
+      try {
+        hash.update(readFileSync(f))
+      } catch {
+        /* missing */
+      }
     }
     return hash.digest("hex").slice(0, 12)
   }
@@ -89,19 +95,25 @@ export function setupHotReload(opts: HotReloadOpts): Disposable | null {
   // Watch source directory and lib/tribe
   try {
     watchers.push(watch(sourceDir, { persistent: false }, (_e, f) => onChange(f)))
-  } catch { /* dir missing */ }
+  } catch {
+    /* dir missing */
+  }
 
   if (existsSync(libTribeDir)) {
     try {
       watchers.push(watch(libTribeDir, { persistent: false }, (_e, f) => onChange(f)))
-    } catch { /* dir missing */ }
+    } catch {
+      /* dir missing */
+    }
   }
 
   for (const dir of extraDirs) {
     if (existsSync(dir)) {
       try {
         watchers.push(watch(dir, { persistent: false }, (_e, f) => onChange(f)))
-      } catch { /* dir missing */ }
+      } catch {
+        /* dir missing */
+      }
     }
   }
 

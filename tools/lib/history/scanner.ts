@@ -23,12 +23,7 @@ import { isProviderAvailable } from "../llm/providers"
 import { log, ONE_HOUR_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 import type { RecallSearchResult } from "./recall-shared.ts"
 import { recall, parseTimeToMs } from "./search.ts"
-import {
-  SYNTHESIS_PROMPT,
-  raceLlmModels,
-  formatResultsForLlm,
-  type LlmRaceModelResult,
-} from "./synthesize.ts"
+import { SYNTHESIS_PROMPT, raceLlmModels, formatResultsForLlm, type LlmRaceModelResult } from "./synthesize.ts"
 import { ensureProjectSourcesIndexed } from "./project-sources.ts"
 
 // ============================================================================

@@ -236,10 +236,17 @@ RECOVERY (for interrupted deep research)
 // --- Keywords that trigger specific modes ---
 
 const KEYWORDS = [
-  "quick", "cheap", "mini", "nano",
-  "opinion", "pro", "debate",
-  "recover", "partials",
-  "update-pricing", "list-models",
+  "quick",
+  "cheap",
+  "mini",
+  "nano",
+  "opinion",
+  "pro",
+  "debate",
+  "recover",
+  "partials",
+  "update-pricing",
+  "list-models",
 ]
 
 // --- Shared options for dispatch functions ---
@@ -316,7 +323,9 @@ async function main() {
         }
         console.error()
       }
-    } catch { /* History not indexed */ }
+    } catch {
+      /* History not indexed */
+    }
 
     await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`))
     return
@@ -327,10 +336,15 @@ async function main() {
     if (!topic) error("Usage: llm --deep <topic>")
     setOutputSlug(topic)
     await runDeep({
-      topic, modelOverride, streamToken,
+      topic,
+      modelOverride,
+      streamToken,
       buildContext: buildContextFromFlags,
-      outputFile, sessionTag,
-      skipRecover: hasFlag("--no-recover"), skipConfirm, dryRun: hasFlag("--dry-run"),
+      outputFile,
+      sessionTag,
+      skipRecover: hasFlag("--no-recover"),
+      skipConfirm,
+      dryRun: hasFlag("--dry-run"),
     })
     return
   }
@@ -344,7 +358,10 @@ async function main() {
   }
 
   switch (command) {
-    case "quick": case "cheap": case "mini": case "nano": {
+    case "quick":
+    case "cheap":
+    case "mini":
+    case "nano": {
       const q = getQuestion()
       if (!q) error("Usage: llm quick <question>")
       setOutputSlug(q)
@@ -372,8 +389,11 @@ async function main() {
       await runDebate({
         question: q,
         buildContext: buildContextFromFlags,
-        outputFile, sessionTag,
-        skipRecover: hasFlag("--no-recover"), skipConfirm, dryRun: hasFlag("--dry-run"),
+        outputFile,
+        sessionTag,
+        skipRecover: hasFlag("--no-recover"),
+        skipConfirm,
+        dryRun: hasFlag("--dry-run"),
       })
       break
     }

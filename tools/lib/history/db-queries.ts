@@ -5,13 +5,7 @@
 import { Database } from "bun:sqlite"
 import * as path from "path"
 import * as fs from "fs"
-import type {
-  SessionRecord,
-  MessageRecord,
-  ContentType,
-  ContentRecord,
-  SessionIndexEntry,
-} from "./types.ts"
+import type { SessionRecord, MessageRecord, ContentType, ContentRecord, SessionIndexEntry } from "./types.ts"
 import { PROJECTS_DIR, PLANS_DIR, TODOS_DIR } from "./db-schema.ts"
 
 // ============================================================================

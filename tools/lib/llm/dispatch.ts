@@ -11,20 +11,8 @@ import { listPartials, findPartialByResponseId, cleanupPartials } from "./persis
 import { consensus } from "./consensus"
 import { isProviderAvailable, getProviderEnvVar } from "./providers"
 import { getDb, closeDb, ftsSearchWithSnippet } from "../history/db"
-import {
-  estimateCost,
-  formatCost,
-  getBestAvailableModel,
-  getModel,
-  MODELS,
-  type Model,
-  type ModelMode,
-} from "./types"
-import {
-  isPricingStale,
-  cacheCurrentPricing,
-  PRICING_SOURCES,
-} from "./pricing"
+import { estimateCost, formatCost, getBestAvailableModel, getModel, MODELS, type Model, type ModelMode } from "./types"
+import { isPricingStale, cacheCurrentPricing, PRICING_SOURCES } from "./pricing"
 
 const log = createLogger("bearly:llm")
 
@@ -343,7 +331,18 @@ export async function askAndFinish(options: {
   outputFile: string
   sessionTag: string
 }): Promise<void> {
-  const { question, modelMode, level, header, modelOverride, imagePath, streamToken, buildContext, outputFile, sessionTag } = options
+  const {
+    question,
+    modelMode,
+    level,
+    header,
+    modelOverride,
+    imagePath,
+    streamToken,
+    buildContext,
+    outputFile,
+    sessionTag,
+  } = options
   const { finishResponse } = await import("./format")
 
   const context = await buildContext(question)
@@ -475,7 +474,9 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
         // Check if stale (>30 min for deep research is suspicious)
         const partialAge = Date.now() - new Date(partial.metadata.startedAt).getTime()
         if (partialAge > 30 * 60 * 1000) {
-          console.error(`    ⚠️  Still ${recovered.status} after ${Math.round(partialAge / 60000)}m — likely stale, removing`)
+          console.error(
+            `    ⚠️  Still ${recovered.status} after ${Math.round(partialAge / 60000)}m — likely stale, removing`,
+          )
           const { completePartial } = await import("./persistence")
           completePartial(partial.path, { delete: true })
         } else {
@@ -580,7 +581,15 @@ export async function runDeep(options: {
     if (!response.content || response.content.trim().length === 0) process.exit(1)
     log.warn?.("Partial content recovered — writing what we have.")
   }
-  await finishResponse(response.content, response.model, outputFile, sessionTag, response.usage, response.durationMs, topic)
+  await finishResponse(
+    response.content,
+    response.model,
+    outputFile,
+    sessionTag,
+    response.usage,
+    response.durationMs,
+    topic,
+  )
 }
 
 /** Run multi-model debate command */

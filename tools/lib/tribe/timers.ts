@@ -69,15 +69,22 @@ export function createTimers(signal: AbortSignal): ManagedTimers {
 
     delay(ms: number): Promise<void> {
       return new Promise((resolve, reject) => {
-        if (signal.aborted) { reject(signal.reason); return }
+        if (signal.aborted) {
+          reject(signal.reason)
+          return
+        }
         const t = globalThis.setTimeout(resolve, ms)
         ;(t as { unref?: () => void }).unref?.()
         timeouts.add(t)
-        signal.addEventListener("abort", () => {
-          globalThis.clearTimeout(t)
-          timeouts.delete(t)
-          reject(signal.reason)
-        }, { once: true })
+        signal.addEventListener(
+          "abort",
+          () => {
+            globalThis.clearTimeout(t)
+            timeouts.delete(t)
+            reject(signal.reason)
+          },
+          { once: true },
+        )
       })
     },
   }
