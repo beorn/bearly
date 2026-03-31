@@ -1,4 +1,4 @@
-# tribe
+# @bearly/tribe
 
 Cross-session coordination for Claude Code. Multiple sessions discover each other, exchange messages, and coordinate work through a shared daemon.
 
@@ -6,13 +6,34 @@ One session becomes **chief** (coordinator); the rest are **members** (workers).
 
 ## Install
 
-```bash
-# As a Claude Code plugin
-claude plugin install tribe@bearly
+Add to your project's `.mcp.json`:
 
-# Launch with channel support (required during research preview)
-claude --dangerously-load-development-channels server:tribe
+```json
+{
+  "mcpServers": {
+    "tribe": {
+      "command": "bunx",
+      "args": ["--bun", "@bearly/tribe"]
+    }
+  }
+}
 ```
+
+Or install globally:
+
+```bash
+npm install -g @bearly/tribe
+```
+
+## tribe watch — Live Dashboard
+
+See all sessions, messages, and events in real time:
+
+```bash
+tribe watch
+```
+
+The watch TUI shows active sessions, recent messages, git commits, bead updates, and GitHub events in a single terminal view. Built with [Silvery](https://silvery.dev).
 
 ## Architecture
 
@@ -30,9 +51,7 @@ claude --dangerously-load-development-channels server:tribe
 
 - **Daemon** — single process per project, manages sessions, routes messages, runs plugins
 - **Proxy** — thin MCP server per Claude Code session, forwards tool calls to daemon via Unix socket
-- **Direct peer messaging** — proxies can send messages directly to each other for lower latency
 - **Plugins** run in the daemon (git, beads, github) and activate based on environment
-- **DB** at `~/.local/share/tribe/tribe.db` (user-level default), or `.beads/tribe.db` if present
 
 ## Commands
 
@@ -53,16 +72,16 @@ Once installed, use `/tribe` in Claude Code:
 ## CLI
 
 ```bash
+tribe watch           # Live TUI dashboard (sessions, messages, events)
 tribe status          # Show active sessions
 tribe log -f          # Follow live message stream
 tribe retro --since 2h  # Retro report for last 2 hours
-tribe watch           # Full TUI dashboard
 tribe start           # Start daemon in foreground
 tribe stop            # Stop daemon
-tribe reload          # Hot-reload daemon code (SIGHUP)
+tribe reload          # Hot-reload daemon code
 ```
 
-## Message types
+## Message Types
 
 | Type       | Priority    | Use                           |
 | ---------- | ----------- | ----------------------------- |
@@ -83,20 +102,6 @@ Plugins run in the daemon and activate automatically when their dependencies are
 | `git`    | Inside a git repo    | Broadcasts new commits to all sessions                      |
 | `beads`  | `.beads/` dir exists | Broadcasts bead claims/closures                             |
 | `github` | `gh auth` available  | Monitors repos, broadcasts push/PR/CI/issue events          |
-
-## Configuration
-
-```bash
-# CLI args
-bun server.ts --name silvery --role member --domains silvery,flexily
-
-# Environment
-TRIBE_NAME=silvery TRIBE_ROLE=member TRIBE_DOMAINS=silvery,flexily
-```
-
-## npm
-
-Published as [`@bearly/tribe`](https://www.npmjs.com/package/@bearly/tribe) on npm.
 
 ## License
 
