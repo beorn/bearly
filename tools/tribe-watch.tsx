@@ -6,18 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react"
-import {
-  createTerm,
-  render,
-  Box,
-  Text,
-  H1,
-  Muted,
-  Small,
-  Divider,
-  useApp,
-  useInput,
-} from "@silvery/ag-react"
+import { createTerm, render, Box, Text, H1, Muted, Small, Divider, Table, useApp, useInput, type Column } from "@silvery/ag-react"
 import {
   resolveSocketPath,
   createReconnectingClient,
@@ -75,51 +64,15 @@ function shortSocket(p: string): string {
   return p.split("/").pop() ?? p
 }
 
-type ColWidths = { name: number; role: number; project: number; pid: number; up: number; conn: number }
-
-function fmtConn(s: SessionInfo): string {
-  return shortSocket(s.peerSocket ?? s.conn ?? "")
-}
-
-function computeColWidths(sessions: SessionInfo[]): ColWidths {
-  const w = (header: string, values: string[]) => Math.max(header.length, ...values.map((v) => v.length)) + 2
-  return {
-    name: w("NAME", sessions.map((s) => s.name)),
-    role: w("ROLE", sessions.map((s) => s.role)),
-    project: w("PROJECT", sessions.map((s) => fmtProject(s))),
-    pid: w("PID", sessions.map((s) => String(s.pid || ""))),
-    up: w("UP", sessions.map((s) => fmtDur(s.uptimeMs))),
-    conn: w("CONNECTION", sessions.map((s) => fmtConn(s))),
-  }
-}
-
-function SessionRow({ s, col }: { s: SessionInfo; col: ColWidths }) {
-  return (
-    <Box>
-      <Box width={col.name}><Text>{s.name}</Text></Box>
-      <Box width={col.role}><Text>{s.role}</Text></Box>
-      <Box width={col.project}><Text>{fmtProject(s)}</Text></Box>
-      <Box width={col.pid}><Text>{String(s.pid || "")}</Text></Box>
-      <Box width={col.up}><Text>{fmtDur(s.uptimeMs)}</Text></Box>
-      <Box width={col.conn}><Text>{fmtConn(s)}</Text></Box>
-      <Box flexGrow={1}><Text>{s.resources?.join(",") ?? ""}</Text></Box>
-    </Box>
-  )
-}
-
-function TableHeader({ col }: { col: ColWidths }) {
-  return (
-    <Box>
-      <Box width={col.name}><Text bold color="$primary">NAME</Text></Box>
-      <Box width={col.role}><Text bold color="$primary">ROLE</Text></Box>
-      <Box width={col.project}><Text bold color="$primary">PROJECT</Text></Box>
-      <Box width={col.pid}><Text bold color="$primary">PID</Text></Box>
-      <Box width={col.up}><Text bold color="$primary">UP</Text></Box>
-      <Box width={col.conn}><Text bold color="$primary">CONNECTION</Text></Box>
-      <Box flexGrow={1}><Text bold color="$primary">RESOURCES</Text></Box>
-    </Box>
-  )
-}
+const sessionColumns: Column<SessionInfo>[] = [
+  { header: "NAME", key: "name" },
+  { header: "ROLE", key: "role" },
+  { header: "PROJECT", render: (s) => fmtProject(s) },
+  { header: "PID", render: (s) => String(s.pid || "") },
+  { header: "UP", render: (s) => fmtDur(s.uptimeMs) },
+  { header: "CONNECTION", render: (s) => shortSocket(s.peerSocket ?? s.conn ?? "") },
+  { header: "RESOURCES", render: (s) => s.resources?.join(",") ?? "", grow: true },
+]
 
 function fmtProject(s: SessionInfo): string {
   if (!s.project) return ""
@@ -295,21 +248,11 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
       {/* Sessions table */}
       <Divider />
-      <Box flexDirection="column">
-        {(() => {
-          const col = computeColWidths(sessions)
-          return (
-            <>
-              <TableHeader col={col} />
-              {sessions.length > 0 ? (
-                sessions.map((s) => <SessionRow key={s.id} s={s} col={col} />)
-              ) : (
-                <Muted>No sessions</Muted>
-              )}
-            </>
-          )
-        })()}
-      </Box>
+      {sessions.length > 0 ? (
+        <Table data={sessions} columns={sessionColumns} />
+      ) : (
+        <Muted>No sessions</Muted>
+      )}
       <Divider />
 
       {/* Event log — no border for easy copy */}
