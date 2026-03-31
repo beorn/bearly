@@ -320,7 +320,6 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // CLI-specific methods
       case "cli_status": {
-        const dbConn = relPath(String(DB_PATH))
         const now = Date.now()
 
         const sessions = Array.from(clients.values()).map((c) => ({
@@ -339,42 +338,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           conn: c.conn,
         }))
 
-        const t = now - 30_000
-        const dbSessions = db
-          .prepare(
-            "SELECT name, role, domains, pid, project_id, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC",
-          )
-          .all(t) as Array<{
-          name: string
-          role: string
-          domains: string
-          pid: number
-          project_id: string | null
-          started_at: number
-          heartbeat: number
-        }>
-
-        const connectedNames = new Set(sessions.map((s) => s.name))
-        const dbOnly = dbSessions
-          .filter((s) => !connectedNames.has(s.name) && s.name !== "daemon")
-          .map((s) => ({
-            id: `db-${s.name}-${s.pid}`,
-            name: s.name,
-            role: s.role,
-            domains: JSON.parse(s.domains || "[]") as string[],
-            pid: s.pid,
-            projectId: s.project_id,
-            claudeSessionId: null,
-            connectedAt: s.started_at,
-            uptimeMs: now - s.started_at,
-            source: "db" as const,
-            conn: dbConn,
-          }))
-
-        const allSessions = [...sessions, ...dbOnly]
-
         return makeResponse(id, {
-          sessions: allSessions,
+          sessions,
           daemon: {
             pid: process.pid,
             uptime: Math.floor((Date.now() - startedAt) / 1000),

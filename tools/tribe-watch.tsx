@@ -172,7 +172,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           domains: [],
           uptimeMs: s.daemon.uptime * 1000,
           source: "daemon",
-          conn: s.daemon.socketPath ? shortPath(s.daemon.socketPath) : undefined,
+          peerSocket: s.daemon.socketPath,
         }
         setSessions([daemonSession, ...s.sessions.filter((x) => !x.name.startsWith("watch-"))])
         setDaemon(s.daemon)
@@ -209,7 +209,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : ""}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : s.conn ?? ""}`,
     value: s.id,
   }))
 
@@ -219,9 +219,6 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       <Box justifyContent="space-between">
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
-          <Small>
-            <Muted>{shortPath(process.cwd())}</Muted>
-          </Small>
         </Box>
         <Box alignItems="center">
           <Small>j/k nav q quit</Small>
@@ -237,7 +234,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"PROJECT".padEnd(COL.project)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            {"UP".padEnd(COL.uptime)}PEER
+            {"UP".padEnd(COL.uptime)}CONN
           </Text>
           {items.length > 0 ? (
             <SelectList items={items} indicator="" />
