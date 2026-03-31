@@ -7,7 +7,10 @@ import { existsSync, unlinkSync, readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
+import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
+
+const log = createLogger("tribe:socket")
 
 // ---------------------------------------------------------------------------
 // Socket discovery
@@ -102,7 +105,7 @@ export function createLineParser(onMessage: (msg: JsonRpcMessage) => void): (chu
       try {
         onMessage(JSON.parse(trimmed))
       } catch {
-        process.stderr.write(`[tribe-socket] Invalid JSON: ${trimmed.slice(0, 100)}\n`)
+        log.warn?.(`Invalid JSON: ${trimmed.slice(0, 100)}`)
       }
     }
   }
@@ -150,26 +153,31 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
     socket.once("connect", () => {
       socket.removeListener("error", reject)
       socket.on("error", (err) => {
-        process.stderr.write(`[tribe-socket] Connection error: ${err.message}\n`)
+        log.error?.(`Connection error: ${err.message}`)
         // Reject all pending calls
         for (const [, p] of pending) p.reject(err)
         pending.clear()
       })
 
+      let timeouts = 0
       const client: DaemonClient = {
         call(method, params) {
           return new Promise((res, rej) => {
             const id = nextId++
             pending.set(id, { resolve: res, reject: rej })
             socket.write(makeRequest(id, method, params))
-            // Timeout after 30s — unref so it doesn't block exit
             const timer = setTimeout(() => {
-              if (pending.has(id)) {
-                pending.delete(id)
-                rej(new Error(`Request ${method} timed out`))
+              if (!pending.delete(id)) return
+              rej(new Error(`Request ${method} timed out`))
+              if (++timeouts >= 3) {
+                log.warn?.(`${timeouts} consecutive timeouts, destroying connection`)
+                socket.destroy()
               }
-            }, 30_000)
-            if (typeof timer === "object" && "unref" in timer) timer.unref()
+            }, 10_000)
+            timer.unref?.()
+          }).then((v) => {
+            timeouts = 0
+            return v
           })
         },
         notify(method, params) {
@@ -208,7 +216,11 @@ export async function connectOrStart(socketPath: string, daemonScript?: string):
 
   // Clean up stale socket file
   if (existsSync(socketPath)) {
-    try { unlinkSync(socketPath) } catch { /* ignore */ }
+    try {
+      unlinkSync(socketPath)
+    } catch {
+      /* ignore */
+    }
   }
 
   // Start daemon
@@ -233,6 +245,62 @@ export async function connectOrStart(socketPath: string, daemonScript?: string):
   throw new Error(`Failed to connect to tribe daemon at ${socketPath} after starting it`)
 }
 
+// ---------------------------------------------------------------------------
+// Reconnecting client
+// ---------------------------------------------------------------------------
+
+export type ReconnectingClientOpts = {
+  socketPath: string
+  /** Called after each successful (re)connect — use for register/subscribe */
+  onConnect: (client: DaemonClient) => Promise<void>
+  /** Called on disconnect (before reconnect attempt) */
+  onDisconnect?: () => void
+  /** Called on successful reconnect */
+  onReconnect?: () => void
+  /** Max reconnect attempts (default: 30) */
+  maxAttempts?: number
+}
+
+/**
+ * Create a client that auto-reconnects on disconnect.
+ * Wraps connectOrStart + register/subscribe in a single reusable pattern.
+ */
+export async function createReconnectingClient(opts: ReconnectingClientOpts): Promise<DaemonClient> {
+  const { socketPath, onConnect, onDisconnect, onReconnect, maxAttempts = 30 } = opts
+  let current = await connectOrStart(socketPath)
+  await onConnect(current)
+
+  const setupReconnect = () => {
+    current.socket.on("close", () => {
+      onDisconnect?.()
+      void (async () => {
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          const delay = Math.min(500 * 2 ** attempt, 10_000)
+          await new Promise((r) => setTimeout(r, delay))
+          try {
+            current = await connectOrStart(socketPath)
+            await onConnect(current)
+            setupReconnect()
+            onReconnect?.()
+            return
+          } catch {
+            log.warn?.(`Reconnect attempt ${attempt + 1} failed`)
+          }
+        }
+        log.error?.(`Failed to reconnect after ${maxAttempts} attempts`)
+      })()
+    })
+  }
+  setupReconnect()
+
+  // Return a proxy that always delegates to the current client
+  return new Proxy(current, {
+    get(_, prop) {
+      return (current as Record<string | symbol, unknown>)[prop]
+    },
+  }) as DaemonClient
+}
+
 /** Read PID from PID file, or null */
 export function readDaemonPid(socketPath: string): number | null {
   const pidPath = resolvePidPath(socketPath)
@@ -240,7 +308,12 @@ export function readDaemonPid(socketPath: string): number | null {
     const pid = parseInt(readFileSync(pidPath, "utf-8").trim(), 10)
     if (isNaN(pid)) return null
     // Check if process is alive
-    try { process.kill(pid, 0); return pid } catch { return null }
+    try {
+      process.kill(pid, 0)
+      return pid
+    } catch {
+      return null
+    }
   } catch {
     return null
   }

@@ -11,8 +11,11 @@
  * - Polling: retrieves completed responses by interaction ID
  */
 
+import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+
+const log = createLogger("bearly:llm:gemini")
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
@@ -147,7 +150,7 @@ Please provide:
       errorMessage = `Invalid request: ${errorMessage}`
     }
 
-    process.stderr.write(`\n❌ Gemini deep research error: ${errorMessage}\n`)
+    log.error?.(`Gemini deep research error: ${errorMessage}`)
 
     return {
       model,
@@ -270,7 +273,7 @@ async function queryWithStreaming(
 
   // If stream ended without completing, poll for result
   if (!completed && interactionId) {
-    process.stderr.write("\n⏳ Stream ended, polling for completion...\n")
+    log.info?.("Stream ended, polling for completion...")
     const result = await pollForGeminiCompletion(interactionId, {
       intervalMs: 10_000,
       maxAttempts: 120,
@@ -359,7 +362,7 @@ async function queryWithPolling(
   }
 
   // Poll until complete
-  process.stderr.write(`⏳ Deep research started (${interactionId}), polling...\n`)
+  log.info?.(`Deep research started (${interactionId}), polling...`)
   const result = await pollForGeminiCompletion(interactionId, {
     intervalMs: 10_000,
     maxAttempts: 120, // 20 min max

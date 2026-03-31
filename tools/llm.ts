@@ -11,6 +11,7 @@
  * Streaming tokens shown on stderr only when running in an interactive terminal (TTY).
  */
 
+import { createLogger } from "loggily"
 import { ask, research, queryModel } from "./lib/llm/research"
 import { retrieveResponse, pollForCompletion } from "./lib/llm/openai-deep"
 import { listPartials, findPartialByResponseId, cleanupPartials } from "./lib/llm/persistence"
@@ -34,6 +35,8 @@ import {
   PRICING_SOURCES,
 } from "./lib/llm/pricing"
 import { getDb, closeDb, findSimilarQueries, ftsSearchWithSnippet } from "./lib/history/db"
+
+const log = createLogger("bearly:llm")
 
 // Initialize pricing on startup
 initializePricing()
@@ -337,7 +340,7 @@ async function finalizeOutput(content: string, meta?: OutputMeta): Promise<void>
   try {
     await Bun.write(outputFile, `${metaComment}\n\n${content}`)
   } catch (err) {
-    process.stderr.write(`\nERROR: Failed to write output file ${outputFile}: ${err instanceof Error ? err.message : String(err)}\n`)
+    log.error?.(`Failed to write output file ${outputFile}: ${err instanceof Error ? err.message : String(err)}`)
     process.exit(1)
   }
   persistToResearch(content, meta)
@@ -361,10 +364,10 @@ async function finishResponse(
   query?: string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
-    process.stderr.write("\nERROR: Model returned empty response (no content). This is a silent failure.\n")
-    process.stderr.write(`Model: ${model.displayName}\n`)
-    if (usage) process.stderr.write(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}\n`)
-    if (durationMs) process.stderr.write(`Duration: ${Math.round(durationMs / 1000)}s\n`)
+    log.error?.("Model returned empty response (no content). This is a silent failure.")
+    log.error?.(`Model: ${model.displayName}`)
+    if (usage) log.error?.(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}`)
+    if (durationMs) log.error?.(`Duration: ${Math.round(durationMs / 1000)}s`)
     process.exit(1)
   }
   const cost = usage ? estimateCost(model as any, usage.promptTokens, usage.completionTokens) : undefined
@@ -1010,9 +1013,9 @@ async function main() {
     })
 
     if (response.error) {
-      process.stderr.write(`\nERROR: Deep research failed: ${response.error}\n`)
+      log.error?.(`Deep research failed: ${response.error}`)
       if (!response.content || response.content.trim().length === 0) process.exit(1)
-      process.stderr.write("Partial content recovered — writing what we have.\n")
+      log.warn?.("Partial content recovered — writing what we have.")
     }
     await finishResponse(response.content, response.model, response.usage, response.durationMs, topic)
     return

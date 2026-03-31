@@ -25,7 +25,14 @@ import {
   type JsonRpcMessage,
   type JsonRpcRequest,
 } from "./lib/tribe/socket.ts"
-import { parseTribeArgs, parseSessionDomains, findBeadsDir, resolveDbPath, detectRole, detectName } from "./lib/tribe/config.ts"
+import {
+  parseTribeArgs,
+  parseSessionDomains,
+  findBeadsDir,
+  resolveDbPath,
+  detectRole,
+  detectName,
+} from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall } from "./lib/tribe/handlers.ts"
@@ -33,6 +40,12 @@ import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
 import { acquireLease } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
+import { createLogger } from "loggily"
+
+const _log = createLogger("tribe:daemon")
+function log(msg: string): void {
+  _log.info?.(msg)
+}
 
 // ---------------------------------------------------------------------------
 // Parse args
@@ -128,6 +141,33 @@ function pushToClient(connId: string, method: string, params?: Record<string, un
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Make a path relative to cwd */
+function relPath(p: string): string {
+  const cwd = process.cwd()
+  return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
+}
+
+/** Generate a unique member-<pid> name, with random suffix if taken */
+function generateMemberName(pid: number, connId: string): string {
+  const pidName = `member-${pid || connId.slice(0, 6)}`
+  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
+  return taken ? `member-${pid}-${Math.random().toString(36).slice(2, 5)}` : pidName
+}
+
+/** Deduplicate name against connected clients */
+function deduplicateName(name: string): string {
+  const connectedNames = new Set(Array.from(clients.values()).map((c) => c.name))
+  if (!connectedNames.has(name)) return name
+  const base = name
+  let suffix = 2
+  while (connectedNames.has(`${base}-${suffix}`)) suffix++
+  return `${base}-${suffix}`
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC handler
 // ---------------------------------------------------------------------------
 
@@ -140,48 +180,52 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       case "register": {
         const clientPid = Number(p.pid ?? 0)
         const claudeSessionName = (p.claudeSessionName as string) ?? null
-        const requestedRole = String(p.role ?? "member") as "chief" | "member"
-        const role = p.role ? requestedRole : detectRole(db, {} as any)
-        // Name priority: explicit --name > Claude session name > chief > member-<pid>
+        const claudeSessionId = (p.claudeSessionId as string) ?? null
+        const role = String(p.role ?? "member") as "chief" | "member"
+
+        // Name priority: explicit > Claude session name > recovered from DB > role-based > pid-based
         let name: string
         if (p.name) {
           name = String(p.name)
         } else if (claudeSessionName) {
           name = claudeSessionName
-        } else if (role === "chief") {
-          name = "chief"
         } else {
-          const pidName = `member-${clientPid || connId.slice(0, 6)}`
-          const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
-          name = taken ? `member-${clientPid}-${Math.random().toString(36).slice(2, 5)}` : pidName
+          // Try recovering name from previous session with same Claude session ID
+          const prev = claudeSessionId
+            ? (db
+                .prepare(
+                  "SELECT name FROM sessions WHERE claude_session_id = ? AND pruned_at IS NULL ORDER BY heartbeat DESC LIMIT 1",
+                )
+                .get(claudeSessionId) as { name: string } | null)
+            : null
+          if (prev && !prev.name.startsWith("member-") && !prev.name.startsWith("pending-")) {
+            name = prev.name
+          } else {
+            name = role === "chief" ? "chief" : generateMemberName(clientPid, connId)
+          }
         }
+        name = deduplicateName(name)
+
         const domains = (p.domains as string[]) ?? []
         const project = String(p.project ?? process.cwd())
         const pid = Number(p.pid ?? 0)
-        const claudeSessionId = (p.claudeSessionId as string) ?? null
 
-        // Create a per-client context so handlers work per-session
         const clientCtx = createTribeContext({
           db,
           stmts,
           sessionId: randomUUID(),
-          sessionRole: role as "chief" | "member",
+          sessionRole: role,
           initialName: name,
           domains,
           claudeSessionId,
-          claudeSessionName: (p.claudeSessionName as string) ?? null,
+          claudeSessionName,
         })
 
-        // Register in DB
         registerSession(clientCtx)
         if (role === "chief") {
           acquireLease(db, clientCtx.sessionId, name)
         }
 
-        const rel = (p: string) => {
-          const cwd = process.cwd()
-          return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
-        }
         const client: ClientSession = {
           socket: clients.get(connId)?.socket ?? null!,
           id: connId,
@@ -191,7 +235,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           project,
           pid,
           claudeSessionId,
-          conn: rel(SOCKET_PATH),
+          conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
         }
@@ -243,6 +287,17 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
 
+        // Sync client registry after name/role changes
+        if ((method === "tribe_join" || method === "tribe_rename") && client) {
+          const oldName = client.name
+          const oldRole = client.role
+          client.name = ctx.getName()
+          client.role = ctx.getRole()
+          if (oldName !== client.name || oldRole !== client.role) {
+            broadcastNotification("session.joined", { name: client.name, role: client.role, previous: oldName }, connId)
+          }
+        }
+
         // After handling, push any new messages to recipients
         // (The handler writes to DB; we need to check for new messages and push)
         pushNewMessages()
@@ -252,13 +307,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // CLI-specific methods
       case "cli_status": {
-        const rel = (p: string) => {
-          const cwd = process.cwd()
-          return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
-        }
-        const dbConn = rel(String(DB_PATH))
+        const dbConn = relPath(String(DB_PATH))
 
         const sessions = Array.from(clients.values()).map((c) => ({
+          id: c.id,
           name: c.name,
           role: c.role,
           domains: c.domains,
@@ -289,6 +341,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const dbOnly = dbSessions
           .filter((s) => !connectedNames.has(s.name) && s.name !== "daemon")
           .map((s) => ({
+            id: `db-${s.name}-${s.pid}`,
             name: s.name,
             role: s.role,
             domains: JSON.parse(s.domains || "[]") as string[],
@@ -752,14 +805,5 @@ function shutdown(): void {
 
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
-
-// ---------------------------------------------------------------------------
-// Logging
-// ---------------------------------------------------------------------------
-
-function log(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 19)
-  process.stderr.write(`[tribe-daemon ${ts}] ${msg}\n`)
-}
 
 log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)

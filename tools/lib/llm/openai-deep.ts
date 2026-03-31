@@ -18,8 +18,11 @@
  */
 
 import OpenAI from "openai"
+import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+
+const log = createLogger("bearly:llm:openai")
 
 let client: OpenAI | undefined
 
@@ -120,7 +123,7 @@ async function handleStreamingResponse(
       topic,
       startedAt: new Date().toISOString(),
     })
-    process.stderr.write(`🔑 Response ID: ${responseId} (recoverable with 'bun llm recover')\n`)
+    log.info?.(`Response ID: ${responseId} (recoverable with 'bun llm recover')`)
   }
 
   // Step 3: If already completed (fast models), extract immediately
@@ -137,7 +140,7 @@ async function handleStreamingResponse(
   }
 
   // Step 4: Poll until complete — no streaming, just check periodically
-  process.stderr.write("⏳ Research in progress...\n")
+  log.info?.("Research in progress...")
   const pollResult = await pollForCompletion(responseId, {
     intervalMs: 5_000,
     maxAttempts: 180,
@@ -170,11 +173,11 @@ async function handleStreamingResponse(
 
   const status = pollResult.status
   const partial = pollResult.content || ""
-  process.stderr.write(`\n⚠️  Research did not complete: ${status}\n`)
+  log.warn?.(`Research did not complete: ${status}`)
   if (partial.length > 0) {
-    process.stderr.write(`Recovered ${partial.length} chars of partial content.\n`)
+    log.info?.(`Recovered ${partial.length} chars of partial content`)
   } else {
-    process.stderr.write(`ERROR: No content recovered from incomplete research (status: ${status}).\n`)
+    log.error?.(`No content recovered from incomplete research (status: ${status})`)
   }
   return { fullText: partial, responseId, promptTokens: 0, completionTokens: 0 }
 }
@@ -211,7 +214,7 @@ async function handleStreamDisconnect(
   partialPath: string,
   onToken?: (token: string) => void,
 ): Promise<{ fullText: string; promptTokens: number; completionTokens: number; completed: boolean }> {
-  process.stderr.write("\n⏳ Stream disconnected, polling for background response...\n")
+  log.info?.("Stream disconnected, polling for background response...")
   let fullText = currentText
   let promptTokens = 0
   let completionTokens = 0
@@ -306,7 +309,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     }
   } catch (error) {
     const errorMessage = formatApiError(error)
-    process.stderr.write(`\n❌ Deep research error: ${errorMessage}\n`)
+    log.error?.(`Deep research error: ${errorMessage}`)
     return {
       model,
       content: "",

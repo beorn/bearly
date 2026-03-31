@@ -283,8 +283,15 @@ function readPid(): number | null {
   try {
     const pid = parseInt(readFileSync(findPidPath(), "utf-8").trim(), 10)
     if (isNaN(pid)) return null
-    try { process.kill(pid, 0); return pid } catch { return null }
-  } catch { return null }
+    try {
+      process.kill(pid, 0)
+      return pid
+    } catch {
+      return null
+    }
+  } catch {
+    return null
+  }
 }
 
 function cmdStart(): void {
@@ -343,7 +350,7 @@ const program = new Command("tribe")
     ["tribe status", "Show active sessions"],
     ["tribe log -f", "Follow live message stream"],
     ["tribe watch", "Full TUI dashboard"],
-    ["tribe send chief \"Ready for work\"", "Message the chief"],
+    ['tribe send chief "Ready for work"', "Message the chief"],
   ])
 
 program

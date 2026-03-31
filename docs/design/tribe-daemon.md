@@ -24,7 +24,7 @@ The daemon is the single owner of all shared state:
 
 ## MCP Proxy
 
-Thin (~100 lines). No DB access, no polling, no state:
+Thin (~230 lines). No DB access, no polling, no state:
 
 1. Discover daemon socket
 2. Connect (auto-start daemon if not running)
@@ -128,14 +128,14 @@ Daemon responds with session assignment:
 
 ## Session Lifecycle
 
-| Event | Daemon action |
-| --- | --- |
-| Client connects + registers | Add to session map, assign name/role, notify others |
-| Client sends tool call | Execute against DB, return result |
-| Bead change detected | Push notification to relevant clients (claimed_by match) |
-| Git commit detected | Push notification to ONE client (round-robin or chief) |
-| Client disconnects | Remove from session map, notify others, start quit timer if last |
-| SIGHUP | Re-exec, transfer socket fd, new process re-reads DB state |
+| Event                       | Daemon action                                                    |
+| --------------------------- | ---------------------------------------------------------------- |
+| Client connects + registers | Add to session map, assign name/role, notify others              |
+| Client sends tool call      | Execute against DB, return result                                |
+| Bead change detected        | Push notification to relevant clients (claimed_by match)         |
+| Git commit detected         | Push notification to ONE client (round-robin or chief)           |
+| Client disconnects          | Remove from session map, notify others, start quit timer if last |
+| SIGHUP                      | Re-exec, transfer socket fd, new process re-reads DB state       |
 
 ## Message Delivery
 
@@ -165,12 +165,12 @@ bun tribe retro           # Retrospective report
 
 CLI connects to daemon via same socket protocol. Additional JSON-RPC methods:
 
-| Method | Purpose |
-| --- | --- |
+| Method       | Purpose                                                |
+| ------------ | ------------------------------------------------------ |
 | `cli_status` | Sessions + daemon info (uptime, client count, DB path) |
-| `cli_log` | Message history with limit/filter |
-| `cli_health` | Full diagnostics |
-| `cli_daemon` | Daemon process info |
+| `cli_log`    | Message history with limit/filter                      |
+| `cli_health` | Full diagnostics                                       |
+| `cli_daemon` | Daemon process info                                    |
 
 Fallback: `--offline` flag → direct DB read when daemon is not running.
 

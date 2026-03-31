@@ -13,6 +13,9 @@
 import { existsSync, statSync, readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { resolve, dirname } from "node:path"
+import { createLogger } from "loggily"
+
+const log = createLogger("tribe:plugins")
 
 export interface TribePlugin {
   name: string
@@ -187,7 +190,7 @@ export function gitPlugin(): TribePlugin {
               })
               const diffOut = await new Response(diffProc.stdout).text()
               if (diffOut.includes("tools/tribe.ts") || diffOut.includes("tools/lib/tribe/")) {
-                process.stderr.write(`[tribe] tribe code changed in ${head}, auto-reloading\n`)
+                log.info?.(`tribe code changed in ${head}, auto-reloading`)
                 ctx.triggerReload?.(`tribe code changed in ${head}`)
               }
             } catch {
@@ -214,10 +217,10 @@ export function loadPlugins(plugins: TribePlugin[], ctx: PluginContext): () => v
 
   for (const plugin of plugins) {
     if (!plugin.available()) {
-      process.stderr.write(`[tribe] plugin ${plugin.name}: not available (skipped)\n`)
+      log.info?.(`plugin ${plugin.name}: not available (skipped)`)
       continue
     }
-    process.stderr.write(`[tribe] plugin ${plugin.name}: active\n`)
+    log.info?.(`plugin ${plugin.name}: active`)
     if (plugin.start) {
       const cleanup = plugin.start(ctx)
       if (cleanup) cleanups.push(cleanup)

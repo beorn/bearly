@@ -30,6 +30,7 @@ export type TribeArgs = {
   role?: string
   domains?: string
   db?: string
+  socket?: string
   "auto-report"?: boolean
 }
 
@@ -44,6 +45,7 @@ export function parseTribeArgs(): TribeArgs {
       role: { type: "string", default: process.env.TRIBE_ROLE },
       domains: { type: "string", default: process.env.TRIBE_DOMAINS ?? "" },
       db: { type: "string", default: process.env.TRIBE_DB },
+      socket: { type: "string", default: process.env.TRIBE_SOCKET },
       "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
     },
     strict: false,
@@ -94,7 +96,9 @@ export function detectRole(db: Database, args: TribeArgs): TribeRole {
   }
   // Fallback: check for live chief by heartbeat
   const threshold = Date.now() - 30_000
-  const liveChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL").get(threshold)
+  const liveChief = db
+    .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
+    .get(threshold)
   return liveChief ? "member" : "chief"
 }
 

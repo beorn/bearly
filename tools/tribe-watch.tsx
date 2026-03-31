@@ -20,7 +20,7 @@ import {
   useInput,
   type SelectOption,
 } from "@silvery/ag-react"
-import { resolveSocketPath, connectOrStart, type DaemonClient } from "./lib/tribe/socket.ts"
+import { resolveSocketPath, createReconnectingClient, type DaemonClient } from "./lib/tribe/socket.ts"
 import { parseArgs } from "node:util"
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,7 @@ import { parseArgs } from "node:util"
 // ---------------------------------------------------------------------------
 
 type SessionInfo = {
+  id: string
   name: string
   role: string
   domains: string[]
@@ -62,8 +63,12 @@ function fmtDur(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
+const TIME_FMT = { hour: "2-digit", minute: "2-digit", second: "2-digit" } as const
 function now(): string {
-  return new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  return new Date().toLocaleTimeString("en-GB", TIME_FMT)
+}
+function fmtTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString("en-GB", TIME_FMT)
 }
 
 const EVENT_COLORS: Record<LogEntry["type"], string | undefined> = {
@@ -117,7 +122,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [daemon, setDaemon] = useState<DaemonInfo | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
-  const [selectedName, setSelectedName] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useInput((input, key) => {
     if (input === "q" || key.escape || (key.ctrl && input === "c")) {
@@ -138,11 +143,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           messages: Array<{ sender: string; recipient: string; type: string; content: string; ts: number }>
         }
         const seed: LogEntry[] = (result.messages ?? []).map((m) => {
-          const t = new Date(m.ts).toLocaleTimeString("en-GB", {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          })
+          const t = fmtTime(m.ts)
           const to = m.recipient === "*" ? "all" : m.recipient
           return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content.slice(0, 100)}`, type: "message" as const }
         })
@@ -163,20 +164,20 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         if (signal.aborted) return
         setSessions(s.sessions.filter((x) => !x.name.startsWith("watch-")))
         setDaemon(s.daemon)
-      } catch {
-        if (!signal.aborted) addLog({ ts: now(), text: "status fetch failed", type: "error" })
+      } catch (err) {
+        if (!signal.aborted)
+          addLog({ ts: now(), text: `status fetch failed: ${err instanceof Error ? err.message : err}`, type: "error" })
       }
     }
     void poll()
     const id = setInterval(() => void poll(), 5000)
     signal.addEventListener("abort", () => clearInterval(id))
     return () => clearInterval(id)
-  }, [client, ac, addLog])
+  }, [ac, addLog])
 
-  // Live notifications
+  // Live notifications — client is a reconnecting proxy, so this works across reconnects
   useEffect(() => {
     const { signal } = ac
-    void client.call("subscribe").catch(() => {})
     client.onNotification((method, params) => {
       if (signal.aborted) return
       const t = now()
@@ -193,12 +194,12 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
       }
     })
-  }, [client, ac, addLog])
+  }, [ac, addLog])
 
-  const selected = sessions.find((s) => s.name === selectedName) ?? sessions[0] ?? null
+  const selected = sessions.find((s) => s.id === selectedId) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
     label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
-    value: s.name,
+    value: s.id,
   }))
 
   return (
@@ -208,11 +209,23 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box gap={2} alignItems="center">
           <H1>Tribe Watch</H1>
           {daemon && (
-            <Small>
-              pid:{daemon.pid} cwd:{process.cwd().replace(process.env.HOME ?? "", "~")} up:{fmtDur(daemon.uptime * 1000)} db:
-              {daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"} sock:
-              {daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}
-            </Small>
+            <Box gap={2}>
+              <Small>
+                <Muted>PID</Muted> {daemon.pid}
+              </Small>
+              <Small>
+                <Muted>UP</Muted> {fmtDur(daemon.uptime * 1000)}
+              </Small>
+              <Small>
+                <Muted>CWD</Muted> {process.cwd().replace(process.env.HOME ?? "", "~")}
+              </Small>
+              <Small>
+                <Muted>DB</Muted> {daemon.dbPath?.replace(process.cwd() + "/", "") ?? "?"}
+              </Small>
+              <Small>
+                <Muted>SOCK</Muted> {daemon.socketPath?.replace(process.cwd() + "/", "") ?? "?"}
+              </Small>
+            </Box>
           )}
         </Box>
         <Box alignItems="center">
@@ -236,7 +249,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
               indicator=""
               onHighlight={(idx) => {
                 const s = sessions[idx]
-                if (s) setSelectedName(s.name)
+                if (s) setSelectedId(s.id)
               }}
             />
           ) : (
@@ -246,7 +259,9 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box width={30} flexDirection="column" paddingX={1}>
           {selected ? (
             <>
-              <Text bold color="$primary">{selected.name}</Text>
+              <Text bold color="$primary">
+                {selected.name}
+              </Text>
               <DetailField label="Role">{selected.role}</DetailField>
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>
@@ -282,20 +297,28 @@ const { values } = parseArgs({
 })
 
 const SOCKET_PATH = resolveSocketPath(values.socket as string | undefined)
+const WATCH_NAME = `watch-${process.pid}`
 
-await using client = Object.assign(await connectOrStart(SOCKET_PATH), {
-  [Symbol.asyncDispose]: async function (this: DaemonClient) {
-    this.close()
+await using client = Object.assign(
+  await createReconnectingClient({
+    socketPath: SOCKET_PATH,
+    async onConnect(c) {
+      await c.call("register", {
+        name: WATCH_NAME,
+        role: "member",
+        domains: [],
+        project: process.cwd(),
+        pid: process.pid,
+      })
+      void c.call("subscribe").catch(() => {})
+    },
+  }),
+  {
+    [Symbol.asyncDispose]: async function (this: DaemonClient) {
+      this.close()
+    },
   },
-})
-
-await client.call("register", {
-  name: `watch-${process.pid}`,
-  role: "member",
-  domains: [],
-  project: process.cwd(),
-  pid: process.pid,
-})
+)
 
 using term = createTerm()
 const ac = new AbortController()

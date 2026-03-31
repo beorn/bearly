@@ -3,7 +3,10 @@
  */
 
 import type { Database } from "bun:sqlite"
+import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
+
+const log = createLogger("tribe:handlers")
 import { validateName, sanitizeMessage } from "./validation.ts"
 import { isLeaseHolder, acquireLease, getLeaseInfo } from "./lease.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
@@ -264,6 +267,7 @@ function handleJoin(ctx: TribeContext, a: ToolArgs): ToolResult {
     $now: Date.now(),
   })
   ctx.setName(joinName)
+  ctx.setRole(joinRole as "chief" | "member")
 
   logEvent(ctx, "session.joined", undefined, { name: joinName, role: joinRole, domains: joinDomains, rejoin: true })
 
@@ -378,14 +382,14 @@ function handleHealth(ctx: TribeContext): ToolResult {
 function handleReload(ctx: TribeContext, a: ToolArgs, cleanup: () => void): ToolResult {
   const reason = (a.reason as string) ?? "manual reload"
   logEvent(ctx, "session.reload", undefined, { name: ctx.getName(), reason })
-  process.stderr.write(`[tribe] reloading: ${reason}\n`)
+  log.info?.(`reloading: ${reason}`)
 
   // Schedule re-exec after responding to the tool call
   setTimeout(() => {
     cleanup()
     // Re-exec the same script with the same args — picks up latest code from disk
     const args = process.argv.slice(1) // drop the bun/node executable
-    process.stderr.write(`[tribe] exec: ${process.execPath} ${args.join(" ")}\n`)
+    log.info?.(`exec: ${process.execPath} ${args.join(" ")}`)
     // Use Bun.spawn to replace the process
     const child = Bun.spawn([process.execPath, ...args], {
       stdin: "inherit",

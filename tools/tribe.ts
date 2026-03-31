@@ -52,6 +52,9 @@ import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createHash } from "node:crypto"
 import { readdirSync, readFileSync, existsSync } from "node:fs"
 import { resolve, dirname } from "node:path"
+import { createLogger } from "loggily"
+
+const log = createLogger("tribe")
 
 // ---------------------------------------------------------------------------
 // Source version check — re-exec if code changed since this process started
@@ -93,7 +96,7 @@ const HASH_FILE = resolve(
 try {
   const stored = existsSync(HASH_FILE) ? readFileSync(HASH_FILE, "utf8").trim() : ""
   if (stored && stored !== SOURCE_HASH) {
-    process.stderr.write(`[tribe] source hash changed (${stored} → ${SOURCE_HASH}), re-execing\n`)
+    log.info?.(`source hash changed (${stored} → ${SOURCE_HASH}), re-execing`)
     // Write new hash before re-exec
     Bun.write(HASH_FILE, SOURCE_HASH)
     // Re-exec with fresh Bun compilation
@@ -141,17 +144,17 @@ const ctx = createTribeContext({
   claudeSessionName: CLAUDE_SESSION_NAME,
 })
 
-// Log startup info to stderr (visible in Claude Code debug logs)
-process.stderr.write(`[tribe] ${ctx.getName()} (${SESSION_ROLE}) joining tribe at ${DB_PATH}\n`)
-process.stderr.write(`[tribe] claude_session_id=${CLAUDE_SESSION_ID ?? "none"}\n`)
+// Log startup info (visible when DEBUG=tribe is set)
+log.info?.(`${ctx.getName()} (${SESSION_ROLE}) joining tribe at ${DB_PATH}`)
+log.info?.(`claude_session_id=${CLAUDE_SESSION_ID ?? "none"}`)
 if (SESSION_DOMAINS.length > 0) {
-  process.stderr.write(`[tribe] domains: ${SESSION_DOMAINS.join(", ")}\n`)
+  log.info?.(`domains: ${SESSION_DOMAINS.join(", ")}`)
 }
 
 // Acquire leadership lease on startup if chief
 if (SESSION_ROLE === "chief") {
   const leased = acquireLease(db, SESSION_ID, SESSION_NAME)
-  process.stderr.write(`[tribe] leader lease: ${leased ? "acquired" : "held by another"}\n`)
+  log.info?.(`leader lease: ${leased ? "acquired" : "held by another"}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +306,7 @@ const pluginCtx: PluginContext = {
   claudeSessionId: CLAUDE_SESSION_ID,
   triggerReload(reason: string) {
     logEvent(ctx, "session.reload", undefined, { name: ctx.getName(), reason, auto: true })
-    process.stderr.write(`[tribe] auto-reload: ${reason}\n`)
+    log.info?.(`auto-reload: ${reason}`)
     setTimeout(() => {
       cleanup()
       const argv = process.argv.slice(1)

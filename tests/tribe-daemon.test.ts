@@ -6,7 +6,7 @@
  * connectToDaemon/makeRequest, and verifies JSON-RPC responses.
  */
 
-import { describe, it, expect, afterEach, beforeEach } from "vitest"
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync } from "node:fs"
 import { createConnection, type Socket } from "node:net"
@@ -52,18 +52,14 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 5000, int
 
 /** Spawn a daemon process on the given socket path, wait for it to be connectable */
 async function spawnDaemon(socketPath: string, extraArgs: string[] = []): Promise<ChildProcess> {
-  const child = spawn(
-    process.execPath,
-    [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2", ...extraArgs],
-    {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: {
-        ...process.env,
-        // Prevent daemon from picking up project's .beads/ — tests are self-contained
-        TRIBE_DB: `/tmp/tribe-test-${randomUUID().slice(0, 8)}.db`,
-      },
+  const child = spawn(process.execPath, [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2", ...extraArgs], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: {
+      ...process.env,
+      // Prevent daemon from picking up project's .beads/ — tests are self-contained
+      TRIBE_DB: `/tmp/tribe-test-${randomUUID().slice(0, 8)}.db`,
     },
-  )
+  })
 
   // Wait for socket to appear (daemon is listening)
   await waitFor(() => existsSync(socketPath), 5000)
@@ -96,7 +92,7 @@ describe("socket utilities", () => {
   describe("resolvePidPath", () => {
     it("puts .pid next to socket", () => {
       expect(resolvePidPath("/tmp/tribe.sock")).toBe("/tmp/tribe.pid")
-      expect(resolvePidPath("/var/run/test/daemon.sock")).toBe("/var/run/test/daemon.pid")
+      expect(resolvePidPath("/var/run/test/daemon.sock")).toBe("/var/run/test/tribe.pid")
     })
   })
 
@@ -209,6 +205,7 @@ describe("socket utilities", () => {
     })
 
     it("handles invalid JSON without crashing", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {})
       const messages: JsonRpcMessage[] = []
       const parse = createLineParser((msg) => messages.push(msg))
 
@@ -389,9 +386,9 @@ describe("tribe daemon integration", () => {
       const client = await connect()
       const result = (await client.call("register", { role: "member" })) as Record<string, unknown>
 
-      // Should get a generated name like "client-xxxxxx"
+      // Should get a generated name like "member-<pid>" or "member-<connId>"
       expect(typeof result.name).toBe("string")
-      expect((result.name as string).startsWith("client-")).toBe(true)
+      expect((result.name as string).startsWith("member-")).toBe(true)
     }, 10_000)
 
     it("second client sees chief reference", async () => {

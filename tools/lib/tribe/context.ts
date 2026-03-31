@@ -18,10 +18,10 @@ export type TribeContext = {
   domains: string[]
   claudeSessionId: string | null
   claudeSessionName: string | null
-  /** Get current name (may change after rename) */
   getName(): string
-  /** Set current name (after rename) */
   setName(name: string): void
+  getRole(): TribeRole
+  setRole(role: TribeRole): void
 }
 
 export function createTribeContext(opts: {
@@ -35,17 +35,27 @@ export function createTribeContext(opts: {
   claudeSessionName: string | null
 }): TribeContext {
   let currentName = opts.initialName
+  let currentRole = opts.sessionRole
   return {
     db: opts.db,
     stmts: opts.stmts,
     sessionId: opts.sessionId,
-    sessionRole: opts.sessionRole,
+    get sessionRole() {
+      return currentRole
+    },
+    set sessionRole(r: TribeRole) {
+      currentRole = r
+    },
     domains: opts.domains,
     claudeSessionId: opts.claudeSessionId,
     claudeSessionName: opts.claudeSessionName,
     getName: () => currentName,
-    setName: (name: string) => {
-      currentName = name
+    setName: (n: string) => {
+      currentName = n
+    },
+    getRole: () => currentRole,
+    setRole: (r: TribeRole) => {
+      currentRole = r
     },
   }
 }

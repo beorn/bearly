@@ -24,6 +24,9 @@ import { execSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
+import { createLogger } from "loggily"
+
+const log = createLogger("bearly:github")
 
 // ---------------------------------------------------------------------------
 // Config
@@ -116,7 +119,7 @@ function getReposSync(): string[] {
 let REPOS: string[]
 if (String(args.repos) === "all") {
   REPOS = await fetchUserRepos()
-  process.stderr.write(`[github] Discovered ${REPOS.length} repos for authenticated user\n`)
+  log.info?.(`Discovered ${REPOS.length} repos for authenticated user`)
 } else {
   REPOS = getReposSync()
 }
@@ -232,12 +235,14 @@ async function ghFetch<T>(path: string): Promise<T> {
     if (res.status === 403 && body.includes("rate limit")) {
       const reset = res.headers.get("x-ratelimit-reset")
       const resetIn = reset ? Math.ceil((parseInt(reset, 10) * 1000 - Date.now()) / 60000) : "?"
-      process.stderr.write(`[github] RATE LIMITED — resets in ${resetIn} min. Calls made: ${apiCallsMade}, saved by ETag: ${apiCallsSaved}\n`)
+      log.warn?.(
+        `RATE LIMITED — resets in ${resetIn} min. Calls made: ${apiCallsMade}, saved by ETag: ${apiCallsSaved}`,
+      )
     }
     throw new Error(`GitHub API ${res.status}: ${body.slice(0, 200)}`)
   }
 
-  const data = await res.json() as T
+  const data = (await res.json()) as T
   const etag = res.headers.get("etag")
   if (etag) etagCache.set(url, { etag, data })
   return data
@@ -617,7 +622,7 @@ async function pollGitHubEvents(): Promise<void> {
         saveCursor(cursorState)
       }
     } catch (err) {
-      process.stderr.write(`[github] Error polling ${repo}: ${err instanceof Error ? err.message : err}\n`)
+      log.error?.(`Error polling ${repo}: ${err instanceof Error ? err.message : err}`)
     }
   }
 }
@@ -674,9 +679,7 @@ async function pollWorkflowRuns(): Promise<void> {
         })
       }
     } catch (err) {
-      process.stderr.write(
-        `[github] Error polling workflows for ${repo}: ${err instanceof Error ? err.message : err}\n`,
-      )
+      log.error?.(`Error polling workflows for ${repo}: ${err instanceof Error ? err.message : err}`)
     }
   }
 }
@@ -685,14 +688,19 @@ async function pollWorkflowRuns(): Promise<void> {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-process.stderr.write(`[github] Monitoring ${REPOS.length} repos\n`)
-process.stderr.write(`[github] Poll interval: ${POLL_INTERVAL_SEC}s, event types: ${EVENT_TYPES.join(", ")}\n`)
-process.stderr.write(`[github] Cursor file: ${CURSOR_PATH}\n`)
+log.info?.(`Monitoring ${REPOS.length} repos`)
+log.info?.(`Poll interval: ${POLL_INTERVAL_SEC}s, event types: ${EVENT_TYPES.join(", ")}`)
+log.info?.(`Cursor file: ${CURSOR_PATH}`)
 
 // Rate limit status every 5 minutes
-setInterval(() => {
-  process.stderr.write(`[github] Rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag cache.\n`)
-}, 5 * 60 * 1000)
+setInterval(
+  () => {
+    log.info?.(
+      `Rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag cache.`,
+    )
+  },
+  5 * 60 * 1000,
+)
 
 // Initial poll
 void pollGitHubEvents()

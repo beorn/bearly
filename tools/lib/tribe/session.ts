@@ -5,7 +5,10 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
+
+const log = createLogger("tribe:session")
 import { acquireLease } from "./lease.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
 
@@ -29,7 +32,7 @@ export function registerSession(ctx: TribeContext): void {
   } catch {
     // Name collision — add random suffix and retry
     const fallbackName = `${ctx.getName()}-${Math.random().toString(36).slice(2, 5)}`
-    process.stderr.write(`[tribe] name "${ctx.getName()}" taken, using "${fallbackName}"\n`)
+    log.warn?.(`name "${ctx.getName()}" taken, using "${fallbackName}"`)
     ctx.setName(fallbackName)
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
@@ -76,7 +79,7 @@ export function registerSession(ctx: TribeContext): void {
       if (prior?.last_delivered_ts) {
         initialTs = prior.last_delivered_ts
         initialSeq = prior.last_delivered_seq ?? 0
-        process.stderr.write(`[tribe] recovered cursor from prior session (claude_session_id): seq=${initialSeq}\n`)
+        log.info?.(`recovered cursor from prior session (claude_session_id): seq=${initialSeq}`)
       }
     }
     // Strategy 2: match by PID (works for /mcp reconnect — same PID, new MCP process)
@@ -92,7 +95,7 @@ export function registerSession(ctx: TribeContext): void {
       if (priorByPid?.last_delivered_seq) {
         initialTs = priorByPid.last_delivered_ts ?? 0
         initialSeq = priorByPid.last_delivered_seq
-        process.stderr.write(`[tribe] recovered cursor from prior session (PID match): seq=${initialSeq}\n`)
+        log.info?.(`recovered cursor from prior session (PID match): seq=${initialSeq}`)
       }
     }
     // Strategy 3: if no prior session found, skip to current latest (avoid replaying entire history)
@@ -103,7 +106,7 @@ export function registerSession(ctx: TribeContext): void {
       if (latest?.max_seq) {
         initialSeq = latest.max_seq
         initialTs = Date.now()
-        process.stderr.write(`[tribe] no prior cursor found, skipping to latest: seq=${initialSeq}\n`)
+        log.info?.(`no prior cursor found, skipping to latest: seq=${initialSeq}`)
       }
     }
     // Backward compat: if no seq available, bootstrap from current max rowid
@@ -112,7 +115,7 @@ export function registerSession(ctx: TribeContext): void {
         .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
         .get({ $ts: initialTs }) as { max_rowid: number | null } | null
       initialSeq = maxRow?.max_rowid ?? 0
-      process.stderr.write(`[tribe] migrated ts cursor to seq=${initialSeq}\n`)
+      log.info?.(`migrated ts cursor to seq=${initialSeq}`)
     }
     ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: initialTs, $seq: initialSeq })
   } else if (!cursor.last_seq) {
@@ -122,7 +125,7 @@ export function registerSession(ctx: TribeContext): void {
       .get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
     const migratedSeq = maxRow?.max_rowid ?? 0
     ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: cursor.last_read_ts, $seq: migratedSeq })
-    process.stderr.write(`[tribe] migrated existing cursor to seq=${migratedSeq}\n`)
+    log.info?.(`migrated existing cursor to seq=${migratedSeq}`)
   }
 }
 
@@ -172,7 +175,7 @@ export function tryInitialRename(ctx: TribeContext, transcriptPath: string | nul
   ctx.setName(slug)
   sendMessage(ctx, "*", `Member "${oldName}" is now "${slug}"`, "notify")
   logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
-  process.stderr.write(`[tribe] initial name from /rename: ${oldName} → ${slug}\n`)
+  log.info?.(`initial name from /rename: ${oldName} → ${slug}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +187,7 @@ export function cleanupOldPrunedSessions(ctx: TribeContext): void {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000
   const result = ctx.stmts.deleteOldPrunedSessions.run({ $cutoff: cutoff })
   if (result.changes > 0) {
-    process.stderr.write(`[tribe] cleaned up ${result.changes} old pruned session(s)\n`)
+    log.info?.(`cleaned up ${result.changes} old pruned session(s)`)
   }
 }
 
@@ -205,8 +208,8 @@ export function cleanupOldData(ctx: TribeContext): void {
 
   const total = (readsDel.changes ?? 0) + (eventsDel.changes ?? 0) + (msgsDel.changes ?? 0) + (aliasesDel.changes ?? 0)
   if (total > 0) {
-    process.stderr.write(
-      `[tribe] cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted\n`,
+    log.info?.(
+      `cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted`,
     )
   }
 }
@@ -226,7 +229,7 @@ export function sendHeartbeat(ctx: TribeContext): void {
       role: ctx.sessionRole,
       domains: ctx.domains,
     })
-    process.stderr.write(`[tribe] ${ctx.getName()} rejoined tribe (was pruned)\n`)
+    log.info?.(`${ctx.getName()} rejoined tribe (was pruned)`)
     // Re-register to restore name (pruning renames to free the original name)
     registerSession(ctx)
     return
