@@ -109,7 +109,7 @@ export const TOOLS_LIST = [
   {
     name: "tribe_reload",
     description:
-      "Hot-reload the tribe MCP server — re-exec with latest code from disk. Use after tribe.ts is updated to pick up fixes without restarting the Claude Code session.",
+      "Hot-reload the tribe MCP server — re-exec with latest code from disk. Use after tribe code is updated to pick up fixes without restarting the Claude Code session.",
     inputSchema: {
       type: "object" as const,
       properties: {

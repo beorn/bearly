@@ -192,7 +192,7 @@ export function gitPlugin(): TribePlugin {
                 stderr: "ignore",
               })
               const diffOut = await new Response(diffProc.stdout).text()
-              if (diffOut.includes("tools/tribe.ts") || diffOut.includes("tools/lib/tribe/")) {
+              if (diffOut.includes("tools/tribe-proxy.ts") || diffOut.includes("tools/tribe-daemon.ts") || diffOut.includes("tools/lib/tribe/")) {
                 log.info?.(`tribe code changed in ${head}, auto-reloading`)
                 ctx.triggerReload?.(`tribe code changed in ${head}`)
               }
