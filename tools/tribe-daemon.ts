@@ -489,7 +489,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // Client heartbeat — keeps session alive in DB
       case "heartbeat": {
-        if (client?.ctx) sendHeartbeat(client.ctx)
+        const hbClient = clients.get(connId)
+        if (hbClient?.ctx) sendHeartbeat(hbClient.ctx)
         return makeResponse(id, { ok: true })
       }
 

@@ -243,7 +243,13 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           const content = String(params?.content ?? "")
           const msgId = params?.message_id as string | undefined
           const logType =
-            type === "session" ? (content.includes("left") ? "leave" : "join") : type === "reload" ? "reload" : "message"
+            type === "session"
+              ? content.includes("left")
+                ? "leave"
+                : "join"
+              : type === "reload"
+                ? "reload"
+                : "message"
           addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType }, msgId)
         } else if (method === "session.joined") {
           addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
@@ -350,5 +356,4 @@ const ac = new AbortController()
 const handle = render(<App client={client} ac={ac} />, term, { patchConsole: true })
 await handle.run()
 ac.abort()
-client.close()
-client.socket.unref()
+// client.close() handled by `await using` above

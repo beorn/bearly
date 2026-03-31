@@ -138,6 +138,7 @@ interface WorkflowRun {
 
 // ETag cache — 304 responses don't count against GitHub rate limit
 const etagCache = new Map<string, { etag: string; data: unknown }>()
+const ETAG_CACHE_MAX = 200
 
 let apiCallsMade = 0
 let apiCallsSaved = 0
@@ -179,7 +180,13 @@ export async function ghFetch<T>(path: string, headers: Record<string, string>):
 
   const data = (await res.json()) as T
   const etag = res.headers.get("etag")
-  if (etag) etagCache.set(url, { etag, data })
+  if (etag) {
+    etagCache.set(url, { etag, data })
+    if (etagCache.size > ETAG_CACHE_MAX) {
+      const oldest = etagCache.keys().next().value!
+      etagCache.delete(oldest)
+    }
+  }
   return data
 }
 

@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process"
+
 /**
  * Tribe plugin system — optional capabilities that enhance tribe coordination.
  *
@@ -154,7 +156,7 @@ export function gitPlugin(): TribePlugin {
 
     available() {
       try {
-        const { execSync } = require("node:child_process")
+
         execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" })
         return true
       } catch {
