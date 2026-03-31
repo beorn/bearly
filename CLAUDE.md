@@ -6,8 +6,8 @@ The root `bearly` package is `private: true` at version `0.0.0` — it is never 
 
 ## Packages
 
-| Package | npm | Description | Entry Point |
-|---------|-----|-------------|-------------|
+| Package         | npm                                                | Description                                            | Entry Point      |
+| --------------- | -------------------------------------------------- | ------------------------------------------------------ | ---------------- |
 | `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Cross-session coordination (daemon, proxy, watch, CLI) | `plugins/tribe/` |
 
 Future packages (not yet extracted): `@bearly/recall`, `@bearly/llm`, `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
@@ -15,6 +15,7 @@ Future packages (not yet extracted): `@bearly/recall`, `@bearly/llm`, `@bearly/r
 ### Package Independence Rules
 
 Each package in `plugins/` must:
+
 - Have its own `package.json` with version, name, description
 - Have its own `README.md` describing usage independently of bearly
 - Have its own `CHANGELOG.md` tracking releases
@@ -26,37 +27,38 @@ Each package in `plugins/` must:
 
 These live in `tools/` and run from source. They will eventually become independent packages.
 
-| Tool | Description | Entry Point |
-|------|-------------|-------------|
-| `refactor` | Batch rename, replace, API migration | `bun tools/refactor.ts` |
-| `llm` | Multi-LLM research, consensus, deep research | `bun tools/llm.ts` |
-| `recall` | Session history search, LLM synthesis | `bun tools/recall.ts` |
-| `tty` | TTY testing MCP server | `bun tools/tty.ts` |
-| `worktree` | Git worktree management with submodules | `bun tools/worktree.ts` |
+| Tool             | Description                                                 | Entry Point                   |
+| ---------------- | ----------------------------------------------------------- | ----------------------------- |
+| `refactor`       | Batch rename, replace, API migration                        | `bun tools/refactor.ts`       |
+| `llm`            | Multi-LLM research, consensus, deep research                | `bun tools/llm.ts`            |
+| `recall`         | Session history search, LLM synthesis                       | `bun tools/recall.ts`         |
+| `tty`            | TTY testing MCP server                                      | `bun tools/tty.ts`            |
+| `worktree`       | Git worktree management with submodules                     | `bun tools/worktree.ts`       |
 | `github-channel` | GitHub notifications (deprecated — use tribe github plugin) | `bun tools/github-channel.ts` |
 
 ### Tribe Tools (part of @bearly/tribe)
 
-| Tool | Description | Entry Point |
-|------|-------------|-------------|
+| Tool           | Description                                             | Entry Point                 |
+| -------------- | ------------------------------------------------------- | --------------------------- |
 | `tribe-daemon` | Coordination daemon (discovery broker, Unix socket IPC) | `bun tools/tribe-daemon.ts` |
-| `tribe-proxy` | MCP proxy connecting Claude Code to daemon | `bun tools/tribe-proxy.ts` |
-| `tribe-cli` | CLI: status, send, log, health, sessions, retro, watch | `bun tools/tribe-cli.ts` |
-| `tribe-watch` | Live TUI dashboard (React/Silvery) | `bun tools/tribe-watch.tsx` |
+| `tribe-proxy`  | MCP proxy connecting Claude Code to daemon              | `bun tools/tribe-proxy.ts`  |
+| `tribe-cli`    | CLI: status, send, log, health, sessions, retro, watch  | `bun tools/tribe-cli.ts`    |
+| `tribe-watch`  | Live TUI dashboard (React/Silvery)                      | `bun tools/tribe-watch.tsx` |
 
 ### Plugin System
 
 Tribe supports plugins for optional capabilities. Plugins gracefully degrade.
 
-| Plugin | Activates when | What it does |
-|--------|---------------|-------------|
-| `git` | Inside a git repo | Broadcasts new commits to all sessions |
-| `beads` | `.beads/` dir exists | Broadcasts bead claims/closures |
-| `github` | `gh auth` available | Monitors all user repos, broadcasts push/PR/CI/issue events |
+| Plugin   | Activates when       | What it does                                                |
+| -------- | -------------------- | ----------------------------------------------------------- |
+| `git`    | Inside a git repo    | Broadcasts new commits to all sessions                      |
+| `beads`  | `.beads/` dir exists | Broadcasts bead claims/closures                             |
+| `github` | `gh auth` available  | Monitors all user repos, broadcasts push/PR/CI/issue events |
 
 ## Skills
 
 See `skills/` for Claude Code skill definitions:
+
 - `batch-refactor/` — Batch refactoring workflow
 - `llm/` — Multi-LLM queries
 - `tty/` — Terminal app testing

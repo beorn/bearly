@@ -1,10 +1,37 @@
 #!/usr/bin/env bun
 // @bun
-
-// tools/tribe-proxy.ts
-import { Server } from "@modelcontextprotocol/sdk/server/index.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+const __using = (stack, value, async) => {
+  if (value != null) {
+    if (typeof value !== "object" && typeof value !== "function")
+      throw TypeError('Object expected to be assigned to "using" declaration')
+    let dispose
+    if (async) dispose = value[Symbol.asyncDispose]
+    if (dispose === undefined) dispose = value[Symbol.dispose]
+    if (typeof dispose !== "function") throw TypeError("Object not disposable")
+    stack.push([async, dispose, value])
+  } else if (async) {
+    stack.push([async])
+  }
+  return value
+}
+const __callDispose = (stack, error, hasError) => {
+  const fail = (e) =>
+      (error = hasError
+        ? new SuppressedError(e, error, "An error was suppressed during disposal")
+        : ((hasError = true), e)),
+    next = (it) => {
+      while ((it = stack.pop())) {
+        try {
+          const result = it[1]?.call(it[2])
+          if (it[0]) return Promise.resolve(result).then(next, (e) => (fail(e), next()))
+        } catch (e) {
+          fail(e)
+        }
+      }
+      if (hasError) throw error
+    }
+  return next()
+}
 
 // tools/lib/tribe/config.ts
 import { createHash } from "crypto"
@@ -788,13 +815,6 @@ async function createReconnectingClient(opts) {
   })
 }
 
-// tools/tribe-proxy.ts
-import { createServer } from "net"
-import { existsSync as existsSync3, unlinkSync as unlinkSync2, mkdirSync as mkdirSync3, chmodSync } from "fs"
-import { dirname as dirname3 } from "path"
-import { spawn as spawn2 } from "child_process"
-import { randomUUID } from "crypto"
-
 // tools/lib/tribe/tools-list.ts
 const TOOLS_LIST = [
   {
@@ -940,31 +960,101 @@ const TOOLS_LIST = [
   },
 ]
 
+// tools/lib/tribe/hot-reload.ts
+import { createHash as createHash2 } from "crypto"
+import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync3, watch } from "fs"
+import { dirname as dirname3, resolve as resolve3 } from "path"
+import { spawn as spawn2 } from "child_process"
+const log2 = createLogger("tribe:reload")
+function setupHotReload(opts) {
+  const { importMetaUrl, extraFiles = [], extraDirs = [], onReload, debounceMs = 500 } = opts
+  if (!importMetaUrl.startsWith("file://")) return null
+  const scriptPath = new URL(importMetaUrl).pathname
+  const sourceDir = dirname3(scriptPath)
+  const libTribeDir = resolve3(sourceDir, "lib/tribe")
+  function getSourceFiles() {
+    const files = [scriptPath, ...extraFiles]
+    const dirs = [libTribeDir, ...extraDirs]
+    for (const dir of dirs) {
+      try {
+        if (existsSync3(dir)) {
+          for (const f of readdirSync(dir)) {
+            if (f.endsWith(".ts")) files.push(resolve3(dir, f))
+          }
+        }
+      } catch {}
+    }
+    return files.sort()
+  }
+  function computeHash() {
+    const hash = createHash2("md5")
+    for (const f of getSourceFiles()) {
+      try {
+        hash.update(readFileSync3(f))
+      } catch {}
+    }
+    return hash.digest("hex").slice(0, 12)
+  }
+  let currentHash = computeHash()
+  let debounceTimer = null
+  const watchers = []
+  function onChange(filename) {
+    if (filename && !filename.endsWith(".ts") && !filename.endsWith(".tsx")) return
+    if (debounceTimer) clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => {
+      const newHash = computeHash()
+      if (newHash === currentHash) return
+      log2.info?.(`Source changed (${currentHash} \u2192 ${newHash}), re-execing`)
+      currentHash = newHash
+      onReload?.()
+      const child = spawn2(process.execPath, process.argv.slice(1), {
+        stdio: "inherit",
+        env: process.env,
+      })
+      child.on("exit", (code) => process.exit(code ?? 0))
+    }, debounceMs)
+  }
+  try {
+    watchers.push(watch(sourceDir, { persistent: false }, (_e, f) => onChange(f)))
+  } catch {}
+  if (existsSync3(libTribeDir)) {
+    try {
+      watchers.push(watch(libTribeDir, { persistent: false }, (_e, f) => onChange(f)))
+    } catch {}
+  }
+  for (const dir of extraDirs) {
+    if (existsSync3(dir)) {
+      try {
+        watchers.push(watch(dir, { persistent: false }, (_e, f) => onChange(f)))
+      } catch {}
+    }
+  }
+  log2.info?.(`Watching ${getSourceFiles().length} source files for hot-reload`)
+  return {
+    [Symbol.dispose]() {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      for (const w of watchers) w.close()
+    },
+  }
+}
+
 // tools/tribe-proxy.ts
-const log2 = createLogger("tribe:proxy")
-const proxyAc = new AbortController()
-const timers = createTimers(proxyAc.signal)
-const args = parseTribeArgs()
-const SOCKET_PATH = resolveSocketPath(args.socket)
-const SESSION_DOMAINS = parseSessionDomains(args)
-const CLAUDE_SESSION_ID = resolveClaudeSessionId()
-const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
-log2.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
-let myName = "pending"
-let myRole = "member"
-const mySessionId = randomUUID()
-const PROJECT_NAME = resolveProjectName()
-const PEER_SOCKET_PATH = resolvePeerSocketPath(mySessionId)
-let peerServer = null
-let mcp
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import { createServer } from "net"
+import { existsSync as existsSync4, unlinkSync as unlinkSync2, mkdirSync as mkdirSync3, chmodSync } from "fs"
+import { dirname as dirname4 } from "path"
+import { spawn as spawn3 } from "child_process"
+import { randomUUID } from "crypto"
 function sendChannel(content, meta) {
   if (!mcp) return
   mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {})
 }
 function startPeerServer() {
-  const socketDir = dirname3(PEER_SOCKET_PATH)
-  if (!existsSync3(socketDir)) mkdirSync3(socketDir, { recursive: true })
-  if (existsSync3(PEER_SOCKET_PATH)) {
+  const socketDir = dirname4(PEER_SOCKET_PATH)
+  if (!existsSync4(socketDir)) mkdirSync3(socketDir, { recursive: true })
+  if (existsSync4(PEER_SOCKET_PATH)) {
     try {
       unlinkSync2(PEER_SOCKET_PATH)
     } catch {}
@@ -1000,14 +1090,13 @@ function startPeerServer() {
     try {
       chmodSync(PEER_SOCKET_PATH, 384)
     } catch {}
-    log2.info?.(`Peer socket listening at ${PEER_SOCKET_PATH}`)
+    log3.info?.(`Peer socket listening at ${PEER_SOCKET_PATH}`)
   })
   server.on("error", (err) => {
-    log2.warn?.(`Peer server error: ${err.message}`)
+    log3.warn?.(`Peer server error: ${err.message}`)
   })
   return server
 }
-peerServer = startPeerServer()
 async function sendDirect(peerSocketPath, message) {
   try {
     const client = await connectToDaemon(peerSocketPath)
@@ -1021,122 +1110,6 @@ async function sendDirect(peerSocketPath, message) {
     return false
   }
 }
-const registerParams = {
-  ...(args.name ? { name: args.name } : {}),
-  ...(args.role ? { role: args.role } : {}),
-  domains: SESSION_DOMAINS,
-  project: process.cwd(),
-  projectName: PROJECT_NAME,
-  projectId: resolveProjectId(),
-  protocolVersion: TRIBE_PROTOCOL_VERSION,
-  peerSocket: PEER_SOCKET_PATH,
-  pid: process.pid,
-  claudeSessionId: CLAUDE_SESSION_ID,
-  claudeSessionName: CLAUDE_SESSION_NAME,
-}
-const daemon = await createReconnectingClient({
-  socketPath: SOCKET_PATH,
-  async onConnect(client) {
-    const reg = await client.call("register", registerParams)
-    myName = reg.name
-    myRole = reg.role
-    log2.info?.(`Registered as ${myName} (${myRole})`)
-    client.call("subscribe").catch(() => {})
-  },
-  onDisconnect() {
-    log2.warn?.(`Daemon connection lost`)
-  },
-  onReconnect() {
-    log2.info?.(`Reconnected to daemon`)
-  },
-})
-timers.setInterval(() => {
-  daemon.call("heartbeat").catch(() => {})
-}, 15000)
-const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area and role="member". Do not use "chief" unless explicitly told. No need to call tribe_sessions or tribe_history afterward \u2014 just join silently and continue.`
-const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
-
-You are the chief of a tribe \u2014 a coordinator for multiple Claude Code sessions working on the same project.
-
-${joinInstruction}
-
-Coordination protocol:
-- Use tribe_sessions() to see who's online and their domains
-- Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
-- Use tribe_broadcast(message) to announce changes that affect everyone
-- Use tribe_health() to check for silent members or conflicts
-
-Message format rules:
-- Keep messages SHORT \u2014 1-3 lines max. No essays.
-- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- Batch-acknowledge: if you receive many messages at once, one summary covers all.`
-const memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
-
-You are a tribe member \u2014 a worker session coordinated by the chief.
-
-${joinInstruction}
-
-Coordination protocol:
-- When you START work on a task, broadcast what you're doing: tribe_send(to="*", message="starting: <task>")
-- When you FINISH a task or commit, broadcast: tribe_send(to="*", message="done: <summary>")
-- When you claim a bead, broadcast: tribe_send(to="*", message="claimed: <bead-id> \u2014 <title>")
-- When you're blocked, broadcast immediately \u2014 include what would unblock you
-- Before editing vendor/ or shared files, send a request to chief asking for OK
-- Respond to query messages promptly
-
-Message format rules:
-- Keep messages SHORT \u2014 1-3 lines max. No essays.
-- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed"
-
-Don't over-communicate \u2014 only broadcast when it changes what someone else should know.`
-mcp = new Server(
-  { name: "tribe", version: "0.2.0" },
-  {
-    capabilities: {
-      experimental: { "claude/channel": {} },
-      tools: {},
-    },
-    instructions: myRole === "chief" ? chiefInstructions : memberInstructions,
-  },
-)
-let nudgeSent = false
-mcp.setRequestHandler(ListToolsRequestSchema, async () => {
-  if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
-    nudgeSent = true
-    timers.setTimeout(() => {
-      sendChannel(
-        `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history \u2014 just join silently and continue.`,
-        { from: "tribe-proxy", type: "system" },
-      )
-    }, 500)
-  }
-  return { tools: TOOLS_LIST }
-})
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: toolArgs } = req.params
-  const a = toolArgs ?? {}
-  try {
-    if (name === "tribe_send" && a.to && typeof a.to === "string") {
-      const directResult = await trySendDirect(a)
-      if (directResult) return directResult
-    }
-    const result = await daemon.call(name, a)
-    if (name === "tribe_join" || name === "tribe_rename") {
-      const r = result
-      try {
-        const data = JSON.parse(r.content[0]?.text ?? "{}")
-        if (data.name) myName = data.name
-        if (data.role) myRole = data.role
-      } catch {}
-    }
-    return result
-  } catch (err) {
-    return {
-      content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : err}` }],
-    }
-  }
-})
 async function trySendDirect(a) {
   const target = String(a.to)
   try {
@@ -1158,7 +1131,7 @@ async function trySendDirect(a) {
         meta: { to: target, from: myName, direct: true, message_id: messageId },
       })
       .catch(() => {})
-    log2.info?.(`Direct message sent to ${target}`)
+    log3.info?.(`Direct message sent to ${target}`)
     return {
       content: [{ type: "text", text: JSON.stringify({ sent: true, to: target, direct: true }) }],
     }
@@ -1171,40 +1144,193 @@ function cleanupPeerSocket() {
     peerServer.close()
     peerServer = null
   }
-  if (existsSync3(PEER_SOCKET_PATH)) {
+  if (existsSync4(PEER_SOCKET_PATH)) {
     try {
       unlinkSync2(PEER_SOCKET_PATH)
     } catch {}
   }
 }
-const shutdown = () => {
-  proxyAc.abort()
-  cleanupPeerSocket()
-  daemon.close()
-  process.exit(0)
-}
-process.on("SIGINT", shutdown)
-process.on("SIGTERM", shutdown)
-process.on("exit", cleanupPeerSocket)
-await mcp.connect(new StdioServerTransport())
-daemon.onNotification((method, params) => {
-  if (method === "channel") {
-    sendChannel(String(params?.content ?? ""), {
-      from: String(params?.from ?? "unknown"),
-      type: String(params?.type ?? "notify"),
-      bead: params?.bead_id ? String(params.bead_id) : undefined,
-      message_id: params?.message_id ? String(params.message_id) : undefined,
-    })
-  } else if (method === "session.joined" || method === "session.left") {
-    const action = method === "session.joined" ? "joined" : "left"
-    sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
-  } else if (method === "reload") {
-    log2.info?.(`Daemon requests reload: ${params?.reason}`)
-    timers.setTimeout(() => {
-      daemon.close()
-      spawn2(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on("exit", (code) =>
-        process.exit(code ?? 0),
-      )
-    }, 500)
+const __stack = []
+try {
+  var log3 = createLogger("tribe:proxy")
+  const proxyAc = new AbortController()
+  const timers = createTimers(proxyAc.signal)
+  const args = parseTribeArgs()
+  const SOCKET_PATH = resolveSocketPath(args.socket)
+  const SESSION_DOMAINS = parseSessionDomains(args)
+  const CLAUDE_SESSION_ID = resolveClaudeSessionId()
+  const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
+  log3.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
+  var myName = "pending"
+  let myRole = "member"
+  const mySessionId = randomUUID()
+  const PROJECT_NAME = resolveProjectName()
+  var PEER_SOCKET_PATH = resolvePeerSocketPath(mySessionId)
+  var peerServer = null
+  var mcp
+  peerServer = startPeerServer()
+  const registerParams = {
+    ...(args.name ? { name: args.name } : {}),
+    ...(args.role ? { role: args.role } : {}),
+    domains: SESSION_DOMAINS,
+    project: process.cwd(),
+    projectName: PROJECT_NAME,
+    projectId: resolveProjectId(),
+    protocolVersion: TRIBE_PROTOCOL_VERSION,
+    peerSocket: PEER_SOCKET_PATH,
+    pid: process.pid,
+    claudeSessionId: CLAUDE_SESSION_ID,
+    claudeSessionName: CLAUDE_SESSION_NAME,
   }
-})
+  var daemon = await createReconnectingClient({
+    socketPath: SOCKET_PATH,
+    async onConnect(client) {
+      const reg = await client.call("register", registerParams)
+      myName = reg.name
+      myRole = reg.role
+      log3.info?.(`Registered as ${myName} (${myRole})`)
+      client.call("subscribe").catch(() => {})
+    },
+    onDisconnect() {
+      log3.warn?.(`Daemon connection lost`)
+    },
+    onReconnect() {
+      log3.info?.(`Reconnected to daemon`)
+    },
+  })
+  timers.setInterval(() => {
+    daemon.call("heartbeat").catch(() => {})
+  }, 15000)
+  const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area and role="member". Do not use "chief" unless explicitly told. No need to call tribe_sessions or tribe_history afterward \u2014 just join silently and continue.`
+  const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
+
+You are the chief of a tribe \u2014 a coordinator for multiple Claude Code sessions working on the same project.
+
+${joinInstruction}
+
+Coordination protocol:
+- Use tribe_sessions() to see who's online and their domains
+- Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
+- Use tribe_broadcast(message) to announce changes that affect everyone
+- Use tribe_health() to check for silent members or conflicts
+
+Message format rules:
+- Keep messages SHORT \u2014 1-3 lines max. No essays.
+- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
+- Batch-acknowledge: if you receive many messages at once, one summary covers all.`
+  const memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
+
+You are a tribe member \u2014 a worker session coordinated by the chief.
+
+${joinInstruction}
+
+Coordination protocol:
+- When you START work on a task, broadcast what you're doing: tribe_send(to="*", message="starting: <task>")
+- When you FINISH a task or commit, broadcast: tribe_send(to="*", message="done: <summary>")
+- When you claim a bead, broadcast: tribe_send(to="*", message="claimed: <bead-id> \u2014 <title>")
+- When you're blocked, broadcast immediately \u2014 include what would unblock you
+- Before editing vendor/ or shared files, send a request to chief asking for OK
+- Respond to query messages promptly
+
+Message format rules:
+- Keep messages SHORT \u2014 1-3 lines max. No essays.
+- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
+- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed"
+
+Don't over-communicate \u2014 only broadcast when it changes what someone else should know.`
+  mcp = new Server(
+    { name: "tribe", version: "0.2.0" },
+    {
+      capabilities: {
+        experimental: { "claude/channel": {} },
+        tools: {},
+      },
+      instructions: myRole === "chief" ? chiefInstructions : memberInstructions,
+    },
+  )
+  let nudgeSent = false
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+    if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
+      nudgeSent = true
+      timers.setTimeout(() => {
+        sendChannel(
+          `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history \u2014 just join silently and continue.`,
+          { from: "tribe-proxy", type: "system" },
+        )
+      }, 500)
+    }
+    return { tools: TOOLS_LIST }
+  })
+  mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const { name, arguments: toolArgs } = req.params
+    const a = toolArgs ?? {}
+    try {
+      if (name === "tribe_send" && a.to && typeof a.to === "string") {
+        const directResult = await trySendDirect(a)
+        if (directResult) return directResult
+      }
+      const result = await daemon.call(name, a)
+      if (name === "tribe_join" || name === "tribe_rename") {
+        const r = result
+        try {
+          const data = JSON.parse(r.content[0]?.text ?? "{}")
+          if (data.name) myName = data.name
+          if (data.role) myRole = data.role
+        } catch {}
+      }
+      return result
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : err}` }],
+      }
+    }
+  })
+  const _reload = __using(
+    __stack,
+    setupHotReload({
+      importMetaUrl: import.meta.url,
+      onReload: () => {
+        proxyAc.abort()
+        cleanupPeerSocket()
+        daemon.close()
+      },
+    }),
+    0,
+  )
+  const shutdown = () => {
+    proxyAc.abort()
+    cleanupPeerSocket()
+    daemon.close()
+    process.exit(0)
+  }
+  process.on("SIGINT", shutdown)
+  process.on("SIGTERM", shutdown)
+  process.on("exit", cleanupPeerSocket)
+  await mcp.connect(new StdioServerTransport())
+  daemon.onNotification((method, params) => {
+    if (method === "channel") {
+      sendChannel(String(params?.content ?? ""), {
+        from: String(params?.from ?? "unknown"),
+        type: String(params?.type ?? "notify"),
+        bead: params?.bead_id ? String(params.bead_id) : undefined,
+        message_id: params?.message_id ? String(params.message_id) : undefined,
+      })
+    } else if (method === "session.joined" || method === "session.left") {
+      const action = method === "session.joined" ? "joined" : "left"
+      sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
+    } else if (method === "reload") {
+      log3.info?.(`Daemon requests reload: ${params?.reason}`)
+      timers.setTimeout(() => {
+        daemon.close()
+        spawn3(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on("exit", (code) =>
+          process.exit(code ?? 0),
+        )
+      }, 500)
+    }
+  })
+} catch (_catch) {
+  var _err = _catch,
+    _hasErr = 1
+} finally {
+  __callDispose(__stack, _err, _hasErr)
+}

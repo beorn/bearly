@@ -383,7 +383,9 @@ function cleanupPeerSocket(): void {
 import { setupHotReload } from "./lib/tribe/hot-reload.ts"
 using _reload = setupHotReload({
   importMetaUrl: import.meta.url,
-  logActivity: (type, content) => { daemon.call("log_event", { type, content }).catch(() => {}) },
+  logActivity: (type, content) => {
+    daemon.call("log_event", { type, content }).catch(() => {})
+  },
   onReload: () => {
     proxyAc.abort()
     cleanupPeerSocket()
