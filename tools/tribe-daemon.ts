@@ -528,7 +528,7 @@ function pushNewMessages(): void {
 const pluginCtx: PluginContext = {
   sendMessage(to, content, type, beadId) {
     sendMessage(daemonCtx, to, content, type, beadId)
-    // Delivery happens via pushInterval (1s) — no immediate push to avoid duplicates
+    pushNewMessages()
   },
   hasChief() {
     for (const [, c] of clients) {
