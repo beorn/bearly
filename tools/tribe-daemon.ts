@@ -105,6 +105,7 @@ type ClientSession = {
   role: string
   domains: string[]
   project: string
+  projectName: string
   pid: number
   claudeSessionId: string | null
   conn: string // Connection path (socket or db)
@@ -208,6 +209,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         const domains = (p.domains as string[]) ?? []
         const project = String(p.project ?? process.cwd())
+        const projectName = String(p.projectName ?? project.split("/").pop() ?? "unknown")
         const pid = Number(p.pid ?? 0)
 
         const clientCtx = createTribeContext({
@@ -228,7 +230,14 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         const client: ClientSession = {
           socket: clients.get(connId)!.socket, // Socket set during handleConnection
-          id: connId, name, role, domains, project, pid, claudeSessionId,
+          id: connId,
+          name,
+          role,
+          domains,
+          project,
+          projectName,
+          pid,
+          claudeSessionId,
           conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
@@ -294,6 +303,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           role: c.role,
           domains: c.domains,
           pid: c.pid,
+          projectName: c.projectName,
           claudeSessionId: c.claudeSessionId,
           connectedAt: c.registeredAt,
           uptimeMs: Date.now() - c.registeredAt,
@@ -509,6 +519,7 @@ function handleConnection(socket: NetSocket): void {
     role: "member",
     domains: [],
     project: process.cwd(),
+    projectName: "unknown",
     pid: 0,
     claudeSessionId: null,
     conn: "",

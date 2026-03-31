@@ -3,7 +3,7 @@
  * Shared between daemon, proxy, and CLI.
  */
 
-import { existsSync, unlinkSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, unlinkSync, readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
@@ -16,18 +16,24 @@ const log = createLogger("tribe:socket")
 // Socket discovery
 // ---------------------------------------------------------------------------
 
-/** Resolve daemon socket path. Priority: flag > env > .beads/tribe.sock > per-user fallback */
+/** Resolve daemon socket path. Priority: flag > env > user-level > .beads/ > /tmp fallback */
 export function resolveSocketPath(socketArg?: string): string {
   if (socketArg) return socketArg
   if (process.env.TRIBE_SOCKET) return process.env.TRIBE_SOCKET
 
+  // Prefer user-level daemon (shared across projects)
+  const xdg = process.env.XDG_RUNTIME_DIR
+  const userSocket = xdg
+    ? resolve(xdg, "tribe.sock")
+    : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
+  if (existsSync(userSocket)) return userSocket
+
+  // Fall back to per-project socket (legacy)
   const beadsDir = findBeadsDir()
   if (beadsDir) return resolve(beadsDir, "tribe.sock")
 
-  // Per-user fallback
-  const xdg = process.env.XDG_RUNTIME_DIR
-  if (xdg) return resolve(xdg, "tribe.sock")
-  return `/tmp/tribe-${process.getuid?.() ?? process.pid}.sock`
+  // No existing socket — create at user-level path
+  return userSocket
 }
 
 /** Resolve PID file path (same directory as socket) */
@@ -223,6 +229,10 @@ export async function connectOrStart(socketPath: string, daemonScript?: string):
     }
   }
 
+  // Ensure socket directory exists
+  const socketDir = dirname(socketPath)
+  if (!existsSync(socketDir)) mkdirSync(socketDir, { recursive: true })
+
   // Start daemon
   const script = daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../tribe-daemon.ts")
   const child = spawn(process.execPath, [script, "--socket", socketPath], {
@@ -300,7 +310,11 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   // Return a proxy that always delegates to the current client
   return new Proxy(current, {
     get(_, prop) {
-      if (prop === "close") return () => { closed = true; current.close() }
+      if (prop === "close")
+        return () => {
+          closed = true
+          current.close()
+        }
       return (current as Record<string | symbol, unknown>)[prop]
     },
   }) as DaemonClient

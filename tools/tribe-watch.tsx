@@ -33,6 +33,7 @@ type SessionInfo = {
   role: string
   domains: string[]
   pid: number
+  projectName?: string
   uptimeMs: number
   claudeSessionId?: string | null
   source?: "daemon" | "db"
@@ -51,7 +52,7 @@ type LogEntry = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const COL = { name: 18, role: 10, pid: 8, uptime: 10 }
+const COL = { name: 18, project: 10, role: 10, pid: 8, uptime: 10 }
 
 function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -203,7 +204,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
 
   const selected = sessions.find((s) => s.id === selectedId) ?? sessions[0] ?? null
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ?? "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.conn ?? ""}`,
     value: s.id,
   }))
 
@@ -244,6 +245,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         <Box flexGrow={3} flexDirection="column">
           <Text bold color="$primary">
             {"NAME".padEnd(COL.name)}
+            {"PROJECT".padEnd(COL.project)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
             {"UPTIME".padEnd(COL.uptime)}CONN
@@ -267,6 +269,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
               <Text bold color="$primary">
                 {selected.name}
               </Text>
+              <DetailField label="Project">{selected.projectName ?? "—"}</DetailField>
               <DetailField label="Role">{selected.role}</DetailField>
               <DetailField label="PID">{String(selected.pid || "—")}</DetailField>
               <DetailField label="Uptime">{fmtDur(selected.uptimeMs)}</DetailField>

@@ -17,6 +17,7 @@ import {
   parseSessionDomains,
   resolveClaudeSessionId,
   resolveClaudeSessionName,
+  resolveProjectName,
 } from "./lib/tribe/config.ts"
 import { resolveSocketPath, createReconnectingClient, type DaemonClient } from "./lib/tribe/socket.ts"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
@@ -38,12 +39,14 @@ log.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
 
 let myName = "pending"
 let myRole = "member"
+const PROJECT_NAME = resolveProjectName()
 
 const registerParams = {
   ...(args.name ? { name: args.name } : {}),
   ...(args.role ? { role: args.role } : {}),
   domains: SESSION_DOMAINS,
   project: process.cwd(),
+  projectName: PROJECT_NAME,
   pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
@@ -178,7 +181,10 @@ function sendChannel(content: string, meta: Record<string, string | undefined>):
   mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {})
 }
 
-const shutdown = () => { daemon.close(); process.exit(0) }
+const shutdown = () => {
+  daemon.close()
+  process.exit(0)
+}
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
 
@@ -202,8 +208,10 @@ daemon.onNotification((method, params) => {
     setTimeout(() => {
       daemon.close()
       const { spawn: sp } = require("node:child_process")
-      sp(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env })
-        .on("exit", (code: number | null) => process.exit(code ?? 0))
+      sp(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
+        "exit",
+        (code: number | null) => process.exit(code ?? 0),
+      )
     }, 500)
   }
 })

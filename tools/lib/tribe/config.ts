@@ -3,8 +3,8 @@
  */
 
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { basename, dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 // ---------------------------------------------------------------------------
@@ -60,14 +60,36 @@ export function parseSessionDomains(args: TribeArgs): string[] {
 }
 
 /** Find .beads/ directory by walking up from cwd (returns null if not found) */
-export function findBeadsDir(): string | null {
-  let dir = process.cwd()
+export function findBeadsDir(from?: string): string | null {
+  let dir = from ?? process.cwd()
   while (dir !== "/") {
     const candidate = resolve(dir, ".beads")
     if (existsSync(candidate)) return candidate
     dir = dirname(dir)
   }
   return null
+}
+
+/** Resolve project name from .beads/ config or directory name.
+ *  Returns a short lowercase slug (e.g. "km", "decker") for namespacing sessions. */
+export function resolveProjectName(cwd?: string): string {
+  const dir = cwd ?? process.cwd()
+  const beadsDir = findBeadsDir(dir)
+  if (beadsDir) {
+    // Try reading project name from beads config
+    const configPath = resolve(beadsDir, "config.yaml")
+    if (existsSync(configPath)) {
+      try {
+        const content = readFileSync(configPath, "utf-8")
+        const match = content.match(/^project:\s*["']?(\w+)["']?/m)
+        if (match) return match[1].toLowerCase()
+      } catch { /* fallback */ }
+    }
+    // Use the directory containing .beads/ as the project name
+    return basename(dirname(beadsDir)).toLowerCase()
+  }
+  // No .beads/ — use cwd directory name
+  return basename(dir).toLowerCase()
 }
 
 /** DB location: --db flag > TRIBE_DB env > .beads/tribe.db > ~/.local/share/tribe/tribe.db */
