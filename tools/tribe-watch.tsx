@@ -75,86 +75,43 @@ function shortSocket(p: string): string {
   return p.split("/").pop() ?? p
 }
 
-function SessionRow({ s, bold, color }: { s: SessionInfo; bold?: boolean; color?: string }) {
+type ColWidths = { name: number; role: number; project: number; pid: number; up: number }
+
+function computeColWidths(sessions: SessionInfo[]): ColWidths {
+  const w = (header: string, values: string[]) => Math.max(header.length, ...values.map((v) => v.length)) + 2
+  return {
+    name: w("NAME", sessions.map((s) => s.name)),
+    role: w("ROLE", sessions.map((s) => s.role)),
+    project: w("PROJECT", sessions.map((s) => fmtProject(s))),
+    pid: w("PID", sessions.map((s) => String(s.pid || ""))),
+    up: w("UP", sessions.map((s) => fmtDur(s.uptimeMs))),
+  }
+}
+
+function SessionRow({ s, col }: { s: SessionInfo; col: ColWidths }) {
+  const conn = shortSocket(s.peerSocket ?? s.conn ?? "")
+  const res = s.resources?.join(",") ?? ""
   return (
     <Box>
-      <Box width={16}>
-        <Text bold={bold} color={color}>
-          {s.name}
-        </Text>
-      </Box>
-      <Box width={8}>
-        <Text bold={bold} color={color}>
-          {s.role}
-        </Text>
-      </Box>
-      <Box width={38}>
-        <Text bold={bold} color={color}>
-          {fmtProject(s)}
-        </Text>
-      </Box>
-      <Box width={7}>
-        <Text bold={bold} color={color}>
-          {String(s.pid || "")}
-        </Text>
-      </Box>
-      <Box width={6}>
-        <Text bold={bold} color={color}>
-          {fmtDur(s.uptimeMs)}
-        </Text>
-      </Box>
-      <Box width={28}>
-        <Text bold={bold} color={color}>
-          {shortSocket(s.peerSocket ?? s.conn ?? "")}
-        </Text>
-      </Box>
-      <Box flexGrow={1}>
-        <Text bold={bold} color={color}>
-          {s.resources?.join(",") ?? ""}
-        </Text>
-      </Box>
+      <Box width={col.name}><Text>{s.name}</Text></Box>
+      <Box width={col.role}><Text>{s.role}</Text></Box>
+      <Box width={col.project}><Text>{fmtProject(s)}</Text></Box>
+      <Box width={col.pid}><Text>{String(s.pid || "")}</Text></Box>
+      <Box width={col.up}><Text>{fmtDur(s.uptimeMs)}</Text></Box>
+      <Box flexGrow={1}><Text>{conn}{res ? `  ${res}` : ""}</Text></Box>
     </Box>
   )
 }
 
-function TableHeader() {
+function TableHeader({ col }: { col: ColWidths }) {
   return (
     <Box>
-      <Box width={16}>
-        <Text bold color="$primary">
-          NAME
-        </Text>
-      </Box>
-      <Box width={8}>
-        <Text bold color="$primary">
-          ROLE
-        </Text>
-      </Box>
-      <Box width={38}>
-        <Text bold color="$primary">
-          PROJECT
-        </Text>
-      </Box>
-      <Box width={7}>
-        <Text bold color="$primary">
-          PID
-        </Text>
-      </Box>
-      <Box width={6}>
-        <Text bold color="$primary">
-          UP
-        </Text>
-      </Box>
-      <Box width={28}>
-        <Text bold color="$primary">
-          CONNECTION
-        </Text>
-      </Box>
-      <Box flexGrow={1}>
-        <Text bold color="$primary">
-          RESOURCES
-        </Text>
-      </Box>
+      <Box width={col.name}><Text bold color="$primary">NAME</Text></Box>
+      <Box width={col.role}><Text bold color="$primary">ROLE</Text></Box>
+      <Box width={col.project}><Text bold color="$primary">PROJECT</Text></Box>
+      <Box width={col.pid}><Text bold color="$primary">PID</Text></Box>
+      <Box width={col.up}><Text bold color="$primary">UP</Text></Box>
+      <Box flexGrow={1}><Text bold color="$primary">CONNECTION</Text></Box>
     </Box>
   )
 }
@@ -334,12 +291,19 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {/* Sessions table */}
       <Divider />
       <Box flexDirection="column">
-        <TableHeader />
-        {sessions.length > 0 ? (
-          sessions.map((s) => <SessionRow key={s.id} s={s} />)
-        ) : (
-          <Muted>No sessions</Muted>
-        )}
+        {(() => {
+          const col = computeColWidths(sessions)
+          return (
+            <>
+              <TableHeader col={col} />
+              {sessions.length > 0 ? (
+                sessions.map((s) => <SessionRow key={s.id} s={s} col={col} />)
+              ) : (
+                <Muted>No sessions</Muted>
+              )}
+            </>
+          )
+        })()}
       </Box>
       <Divider />
 
