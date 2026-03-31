@@ -1,86 +1,66 @@
 # bearly
 
-Reusable Claude Code tools — coordination, testing, research, refactoring.
+Monorepo of reusable Claude Code tools. Each package is **independently publishable** with its own version, README, CHANGELOG, and npm scope.
 
-**All generic Claude tools should live here**, not in project-specific repos.
+The root `bearly` package is `private: true` at version `0.0.0` — it is never published. Only the child packages are published.
 
-## Tools
+## Packages
 
-| Tool           | Description                                                                       | Entry Point                 |
-| -------------- | --------------------------------------------------------------------------------- | --------------------------- |
-| `refactor`     | Batch rename, replace, API migration (run `--help` for guide)                     | `bun tools/refactor.ts`     |
-| `llm`          | Multi-LLM research, consensus, deep research, local models                        | `bun tools/llm.ts`          |
-| `recall`       | Session history search, LLM synthesis, file recovery                              | `bun tools/recall.ts`       |
-| `tribe-cli`    | Tribe CLI: status, send, log, health, sessions, retro, start, stop, reload, watch | `bun tools/tribe-cli.ts`    |
-| `tribe-daemon` | Cross-session coordination daemon (single process, Unix socket IPC)               | `bun tools/tribe-daemon.ts` |
-| `tribe-proxy`  | Thin MCP proxy connecting to tribe daemon                                         | `bun tools/tribe-proxy.ts`  |
-| `github`       | GitHub notifications (tribe plugin — push, PR, CI, issues for all user repos)     | tribe daemon plugin         |
-| `tty`          | TTY testing MCP server (Bun PTY + xterm-headless)                                 | MCP server + CLI            |
-| `worktree`     | Git worktree management with submodules                                           | `bun tools/worktree.ts`     |
+| Package | npm | Description | Entry Point |
+|---------|-----|-------------|-------------|
+| `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Cross-session coordination (daemon, proxy, watch, CLI) | `plugins/tribe/` |
+
+Future packages (not yet extracted): `@bearly/recall`, `@bearly/llm`, `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
+
+### Package Independence Rules
+
+Each package in `plugins/` must:
+- Have its own `package.json` with version, name, description
+- Have its own `README.md` describing usage independently of bearly
+- Have its own `CHANGELOG.md` tracking releases
+- Be publishable to npm independently (`npm publish` from its directory)
+- Not depend on the root bearly package or other bearly packages (unless via npm)
+- Work when installed via `npm install @bearly/<package>` without the monorepo
+
+## Tools (not yet packaged)
+
+These live in `tools/` and run from source. They will eventually become independent packages.
+
+| Tool | Description | Entry Point |
+|------|-------------|-------------|
+| `refactor` | Batch rename, replace, API migration | `bun tools/refactor.ts` |
+| `llm` | Multi-LLM research, consensus, deep research | `bun tools/llm.ts` |
+| `recall` | Session history search, LLM synthesis | `bun tools/recall.ts` |
+| `tty` | TTY testing MCP server | `bun tools/tty.ts` |
+| `worktree` | Git worktree management with submodules | `bun tools/worktree.ts` |
+| `github-channel` | GitHub notifications (deprecated — use tribe github plugin) | `bun tools/github-channel.ts` |
+
+### Tribe Tools (part of @bearly/tribe)
+
+| Tool | Description | Entry Point |
+|------|-------------|-------------|
+| `tribe-daemon` | Coordination daemon (discovery broker, Unix socket IPC) | `bun tools/tribe-daemon.ts` |
+| `tribe-proxy` | MCP proxy connecting Claude Code to daemon | `bun tools/tribe-proxy.ts` |
+| `tribe-cli` | CLI: status, send, log, health, sessions, retro, watch | `bun tools/tribe-cli.ts` |
+| `tribe-watch` | Live TUI dashboard (React/Silvery) | `bun tools/tribe-watch.tsx` |
 
 ### Plugin System
 
-Tribe supports a plugin architecture for optional capabilities that enhance coordination. Plugins gracefully degrade -- if dependencies are unavailable, they silently disable themselves.
+Tribe supports plugins for optional capabilities. Plugins gracefully degrade.
 
-**Interface** (`TribePlugin` in `tools/lib/tribe/plugins.ts`):
-
-```typescript
-interface TribePlugin {
-  name: string
-  available(): boolean // Check if plugin can activate
-  start?(ctx: PluginContext): (() => void) | void // Background polling; returns cleanup
-  instructions?(): string // Extra MCP system prompt text
-}
-```
-
-**Built-in plugins** (activate automatically based on availability):
-
-| Plugin  | Activates when       | What it does                                    |
-| ------- | -------------------- | ----------------------------------------------- |
-| `git`   | Inside a git repo    | Reports new commits to chief every 30s          |
-| `beads` | `.beads/` dir exists | Reports bead claims/closures to chief every 30s |
-
-**Standalone operation**: Tribe works without beads. When no `.beads/` directory is found, the DB defaults to `~/.local/share/tribe/tribe.db` and the beads plugin silently disables.
-
-**Daemon mode**: In daemon mode, plugins run in the daemon process (not per-session). This means a single plugin instance coordinates across all connected sessions.
-
-**Adding a custom plugin**:
-
-1. Create a factory function returning `TribePlugin`
-2. Add it to the plugins array in `tools/tribe-daemon.ts` (where `gitPlugin()` and `beadsPlugin()` are loaded)
-3. `loadPlugins()` handles availability checking, startup, and cleanup
-
-### Refactor Tool Capabilities
-
-- **migrate**: Full terminology migration (files + symbols + text)
-- **rename.batch**: TypeScript symbol rename (catches destructuring, re-exports)
-- **pattern.replace**: Text search/replace (comments, markdown, strings)
-- **pattern.migrate**: LLM-powered API migration (complex pattern transformations)
-
-Run `bun tools/refactor.ts --help` for detailed command reference and examples.
+| Plugin | Activates when | What it does |
+|--------|---------------|-------------|
+| `git` | Inside a git repo | Broadcasts new commits to all sessions |
+| `beads` | `.beads/` dir exists | Broadcasts bead claims/closures |
+| `github` | `gh auth` available | Monitors all user repos, broadcasts push/PR/CI/issue events |
 
 ## Skills
 
 See `skills/` for Claude Code skill definitions:
-
-- `batch-refactor/` - Batch refactoring workflow
-- `llm/` - Multi-LLM queries
-- `tty/` - Terminal app testing
-
-## Usage
-
-Include as git submodule in `vendor/`:
-
-```bash
-git submodule add <repo-url> vendor/bearly
-```
-
-Run tools:
-
-```bash
-bun vendor/bearly/tools/llm.ts ask "question"
-bun vendor/bearly/tools/refactor.ts rename.batch --pattern foo --replace bar
-```
+- `batch-refactor/` — Batch refactoring workflow
+- `llm/` — Multi-LLM queries
+- `tty/` — Terminal app testing
+- `tribe/` — Tribe coordination
 
 ## Development
 
@@ -89,3 +69,18 @@ cd vendor/bearly
 bun install
 bun run typecheck
 ```
+
+## Releasing
+
+Only publish child packages, never the root:
+
+```bash
+# Tribe plugin
+cd plugins/tribe
+bun run build        # Bundle tribe-proxy.ts → server.ts
+npm publish          # Publishes @bearly/tribe
+
+# Future packages follow the same pattern
+```
+
+The root `bearly` package stays at `0.0.0` permanently.
