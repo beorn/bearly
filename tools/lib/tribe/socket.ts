@@ -269,14 +269,18 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   const { socketPath, onConnect, onDisconnect, onReconnect, maxAttempts = 30 } = opts
   let current = await connectOrStart(socketPath)
   await onConnect(current)
+  let closed = false
 
   const setupReconnect = () => {
     current.socket.on("close", () => {
+      if (closed) return
       onDisconnect?.()
       void (async () => {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          if (closed) return
           const delay = Math.min(500 * 2 ** attempt, 10_000)
           await new Promise((r) => setTimeout(r, delay))
+          if (closed) return
           try {
             current = await connectOrStart(socketPath)
             await onConnect(current)
@@ -294,8 +298,10 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   setupReconnect()
 
   // Return a proxy that always delegates to the current client
+  const originalClose = current.close.bind(current)
   return new Proxy(current, {
     get(_, prop) {
+      if (prop === "close") return () => { closed = true; current.close() }
       return (current as Record<string | symbol, unknown>)[prop]
     },
   }) as DaemonClient
