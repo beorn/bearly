@@ -85,7 +85,7 @@ export function resolveProjectName(cwd?: string): string {
         try {
           const content = readFileSync(configPath, "utf-8")
           const match = content.match(/^project:\s*["']?(\w+)["']?/m)
-          if (match) return match[1].toLowerCase()
+          if (match?.[1]) return match[1].toLowerCase()
         } catch {
           /* fallback */
         }
