@@ -22,24 +22,16 @@ export const TRIBE_PROTOCOL_VERSION = 2
 // Socket discovery
 // ---------------------------------------------------------------------------
 
-/** Resolve daemon socket path. Priority: flag > env > user-level > .beads/ > /tmp fallback */
+/** Resolve daemon socket path. Priority: flag > env > user-level (default) */
 export function resolveSocketPath(socketArg?: string): string {
   if (socketArg) return socketArg
   if (process.env.TRIBE_SOCKET) return process.env.TRIBE_SOCKET
 
-  // Prefer user-level daemon (shared across projects)
+  // Always use user-level daemon socket (one daemon per user)
   const xdg = process.env.XDG_RUNTIME_DIR
-  const userSocket = xdg
+  return xdg
     ? resolve(xdg, "tribe.sock")
     : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
-  if (existsSync(userSocket)) return userSocket
-
-  // Fall back to per-project socket (legacy)
-  const beadsDir = findBeadsDir()
-  if (beadsDir) return resolve(beadsDir, "tribe.sock")
-
-  // No existing socket — create at user-level path
-  return userSocket
 }
 
 /** Resolve PID file path (same directory as socket) */

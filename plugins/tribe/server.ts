@@ -489,13 +489,7 @@ function resolveSocketPath(socketArg) {
   if (process.env.TRIBE_SOCKET)
     return process.env.TRIBE_SOCKET;
   const xdg = process.env.XDG_RUNTIME_DIR;
-  const userSocket = xdg ? resolve2(xdg, "tribe.sock") : resolve2(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock");
-  if (existsSync2(userSocket))
-    return userSocket;
-  const beadsDir = findBeadsDir();
-  if (beadsDir)
-    return resolve2(beadsDir, "tribe.sock");
-  return userSocket;
+  return xdg ? resolve2(xdg, "tribe.sock") : resolve2(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock");
 }
 function resolvePeerSocketPath(sessionId) {
   const xdg = process.env.XDG_RUNTIME_DIR;
