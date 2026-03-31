@@ -386,9 +386,9 @@ describe("tribe daemon integration", () => {
       const client = await connect()
       const result = (await client.call("register", { role: "member" })) as Record<string, unknown>
 
-      // Should get a generated name like "member-<pid>" or "member-<connId>"
+      // Should get a generated name (project name or member-<pid>)
       expect(typeof result.name).toBe("string")
-      expect((result.name as string).startsWith("member-")).toBe(true)
+      expect((result.name as string).length).toBeGreaterThan(0)
     }, 10_000)
 
     it("second client sees chief reference", async () => {

@@ -209,7 +209,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           if (prev && !prev.name.startsWith("member-") && !prev.name.startsWith("pending-")) {
             name = prev.name
           } else {
-            name = role === "chief" ? "chief" : generateMemberName(clientPid, connId)
+            const projectName = String(p.projectName ?? String(p.project ?? process.cwd()).split("/").pop() ?? "unknown")
+            name = role === "chief" ? "chief" : projectName
           }
         }
         name = deduplicateName(name)
