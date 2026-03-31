@@ -162,8 +162,13 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     }
   })
 
-  const addLog = useCallback((entry: LogEntry) => {
-    setLog((prev) => [...prev.slice(-200), entry])
+  const seenIds = React.useRef(new Set<string>())
+  const addLog = useCallback((entry: LogEntry, messageId?: string) => {
+    if (messageId) {
+      if (seenIds.current.has(messageId)) return
+      seenIds.current.add(messageId)
+    }
+    setLog((prev) => [...prev.slice(-500), entry])
   }, [])
 
   // Seed with recent messages from DB
@@ -171,14 +176,14 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     void (async () => {
       try {
         const result = (await client.call("cli_log", { limit: 100 })) as {
-          messages: Array<{ sender: string; recipient: string; type: string; content: string; ts: number }>
+          messages: Array<{ id: string; sender: string; recipient: string; type: string; content: string; ts: number }>
         }
-        const seed: LogEntry[] = (result.messages ?? []).map((m) => {
+        for (const m of result.messages ?? []) {
+          seenIds.current.add(m.id)
           const t = fmtTime(m.ts)
           const to = m.recipient === "*" ? "all" : m.recipient
-          return { ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content}`, type: "message" as const }
-        })
-        if (seed.length > 0) setLog(seed)
+          addLog({ ts: t, text: `${m.sender} → ${to} [${m.type}] ${m.content}`, type: "message" as const })
+        }
       } catch {
         /* best effort */
       }
@@ -234,9 +239,10 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
         const content = String(params?.content ?? "")
+        const msgId = params?.message_id as string | undefined
         const logType =
           type === "session" ? (content.includes("left") ? "leave" : "join") : type === "reload" ? "reload" : "message"
-        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType })
+        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType }, msgId)
       } else if (method === "session.joined") {
         addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
       } else if (method === "session.left") {
@@ -264,13 +270,13 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
       {sessions.length > 0 ? <Table data={sessions} columns={sessionColumns} /> : <Muted>No sessions</Muted>}
       <Divider />
 
-      {/* Event log — no border for easy copy */}
+      {/* Event log — newest first, no scrolling needed */}
       <Box flexDirection="column" flexGrow={1} overflow="scroll">
         <Text bold color="$primary">
           EVENTS
         </Text>
         <Text> </Text>
-        {log.length > 0 ? log.map((e, i) => <EventEntry key={i} entry={e} />) : <Muted>Waiting for events...</Muted>}
+        {log.length > 0 ? [...log].reverse().map((e, i) => <EventEntry key={i} entry={e} />) : <Muted>Waiting for events...</Muted>}
       </Box>
     </Box>
   )

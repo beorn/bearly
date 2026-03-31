@@ -143,15 +143,9 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
 }
 
 /** Single entry point for all observable activities.
- *  Persists to DB (for cli_log / watch history) AND pushes to all connected clients.
- *  Advances lastDelivered to prevent pushNewMessages from re-delivering. */
+ *  Writes to DB → pushNewMessages delivers to all clients on next tick (≤1s). */
 function logActivity(type: string, content: string): void {
-  const ts = Date.now()
   sendMessage(daemonCtx, "*", content, type)
-  for (const [connId] of clients) {
-    pushToClient(connId, "channel", { from: "daemon", type, content })
-    lastDelivered.set(connId, ts)
-  }
 }
 
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
