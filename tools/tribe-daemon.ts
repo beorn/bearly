@@ -501,11 +501,12 @@ function pushNewMessages(): void {
   for (const [connId, client] of clients) {
     const since = lastDelivered.get(connId) ?? client.registeredAt
     try {
-      const messages = db
-        .prepare(
-          "SELECT id, type, sender, recipient, content, bead_id, ts FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY ts ASC LIMIT 50",
-        )
-        .all(since, client.name, client.name) as Array<{
+      // Watch sessions see ALL messages; regular sessions see only theirs + broadcasts
+      const query = client.name.startsWith("watch-")
+        ? "SELECT id, type, sender, recipient, content, bead_id, ts FROM messages WHERE ts > ? AND sender != ? ORDER BY ts ASC LIMIT 50"
+        : "SELECT id, type, sender, recipient, content, bead_id, ts FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY ts ASC LIMIT 50"
+      const params = client.name.startsWith("watch-") ? [since, client.name] : [since, client.name, client.name]
+      const messages = db.prepare(query).all(...params) as Array<{
         id: string
         type: string
         sender: string
