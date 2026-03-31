@@ -209,7 +209,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs)}`,
+    label: `${s.name.padEnd(COL.name)}${(s.projectName ? `${s.projectName} (${s.projectId ?? "?"})` : "").padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : ""}`,
     value: s.id,
   }))
 
@@ -237,7 +237,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"PROJECT".padEnd(COL.project)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            UP
+            {"UP".padEnd(COL.uptime)}PEER
           </Text>
           {items.length > 0 ? (
             <SelectList items={items} indicator="" />
