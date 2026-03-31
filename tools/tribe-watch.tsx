@@ -229,28 +229,34 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     return () => clearInterval(id)
   }, [ac, addLog])
 
-  // Live notifications — client is a reconnecting proxy, so this works across reconnects
+  // Drain queued notifications (handler registered before React, queue fills immediately)
   useEffect(() => {
     const { signal } = ac
-    client.onNotification((method, params) => {
-      if (signal.aborted) return
-      const t = now()
-      if (method === "channel") {
-        const from = String(params?.from ?? "?")
-        const type = String(params?.type ?? "notify")
-        const content = String(params?.content ?? "")
-        const msgId = params?.message_id as string | undefined
-        const logType =
-          type === "session" ? (content.includes("left") ? "leave" : "join") : type === "reload" ? "reload" : "message"
-        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType }, msgId)
-      } else if (method === "session.joined") {
-        addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
-      } else if (method === "session.left") {
-        addLog({ ts: t, text: `- ${params?.name} left`, type: "leave" })
-      } else if (method === "reload") {
-        addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
+    const drain = () => {
+      while (eventQueue.length > 0) {
+        const { method, params } = eventQueue.shift()!
+        if (signal.aborted) continue
+        const t = now()
+        if (method === "channel") {
+          const from = String(params?.from ?? "?")
+          const type = String(params?.type ?? "notify")
+          const content = String(params?.content ?? "")
+          const msgId = params?.message_id as string | undefined
+          const logType =
+            type === "session" ? (content.includes("left") ? "leave" : "join") : type === "reload" ? "reload" : "message"
+          addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType }, msgId)
+        } else if (method === "session.joined") {
+          addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
+        } else if (method === "session.left") {
+          addLog({ ts: t, text: `- ${params?.name} left`, type: "leave" })
+        } else if (method === "reload") {
+          addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
+        }
       }
-    })
+    }
+    const id = setInterval(drain, 500)
+    drain() // drain immediately
+    return () => clearInterval(id)
   }, [ac, addLog])
 
   return (
@@ -276,7 +282,11 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           EVENTS
         </Text>
         <Text> </Text>
-        {log.length > 0 ? [...log].reverse().map((e, i) => <EventEntry key={i} entry={e} />) : <Muted>Waiting for events...</Muted>}
+        {log.length > 0 ? (
+          [...log].reverse().map((e, i) => <EventEntry key={i} entry={e} />)
+        ) : (
+          <Muted>Waiting for events...</Muted>
+        )}
       </Box>
     </Box>
   )
@@ -323,6 +333,14 @@ await using client = Object.assign(
     },
   },
 )
+
+// Register notification handler BEFORE React renders — pushNewMessages fires every 1s
+// and if no handler is attached, notifications are silently dropped
+type QueuedEvent = { method: string; params?: Record<string, unknown> }
+const eventQueue: QueuedEvent[] = []
+client.onNotification((method, params) => {
+  eventQueue.push({ method, params })
+})
 
 // No hot-reload for TUI apps — spawn+inherit corrupts terminal.
 // Restart watch manually after code changes.
