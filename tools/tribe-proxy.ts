@@ -210,6 +210,11 @@ const daemon = await createReconnectingClient({
   },
 })
 
+// Heartbeat — keeps this session alive in the daemon's DB
+timers.setInterval(() => {
+  daemon.call("heartbeat").catch(() => {})
+}, 15_000)
+
 // ---------------------------------------------------------------------------
 // MCP Server
 // ---------------------------------------------------------------------------

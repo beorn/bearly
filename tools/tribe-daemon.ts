@@ -493,9 +493,13 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
       // Stream mode for watch
       case "subscribe": {
-        // Client wants to receive all notifications in real-time
-        // They're already receiving them via the socket, so just ack
         return makeResponse(id, { subscribed: true })
+      }
+
+      // Client heartbeat — keeps session alive in DB
+      case "heartbeat": {
+        if (client?.ctx) sendHeartbeat(client.ctx)
+        return makeResponse(id, { ok: true })
       }
 
       default:

@@ -299,6 +299,8 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   await onConnect(current)
   let closed = false
   let reconnectAc: AbortController | null = null
+  // Persistent notification handlers — replayed onto each new connection
+  const notificationHandlers: Array<(method: string, params?: Record<string, unknown>) => void> = []
 
   const setupReconnect = () => {
     current.socket.on("close", () => {
@@ -321,6 +323,8 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
           try {
             current = await connectOrStart(socketPath)
             await onConnect(current)
+            // Replay notification handlers onto new connection
+            for (const h of notificationHandlers) current.onNotification(h)
             setupReconnect()
             onReconnect?.()
             return
@@ -343,6 +347,11 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
           reconnectAc?.abort()
           current.close()
           current.socket.unref()
+        }
+      if (prop === "onNotification")
+        return (handler: (method: string, params?: Record<string, unknown>) => void) => {
+          notificationHandlers.push(handler)
+          current.onNotification(handler)
         }
       return (current as Record<string | symbol, unknown>)[prop]
     },
