@@ -227,46 +227,25 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         }
 
         const client: ClientSession = {
-          socket: clients.get(connId)?.socket ?? null!,
-          id: connId,
-          name,
-          role,
-          domains,
-          project,
-          pid,
-          claudeSessionId,
+          socket: clients.get(connId)!.socket, // Socket set during handleConnection
+          id: connId, name, role, domains, project, pid, claudeSessionId,
           conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
         }
-
-        // Preserve the socket reference from the pre-register state
-        const existing = clients.get(connId)
-        if (existing) client.socket = existing.socket
-
         clients.set(connId, client)
-
-        // Cancel auto-quit timer
         cancelQuitTimer()
 
-        // Notify others
         broadcastNotification("session.joined", { name, role, domains }, connId)
         logEvent(daemonCtx, "session.joined", undefined, { name, role, via: "daemon" })
 
-        // Find chief name for response
-        let chiefName = "none"
-        for (const [, c] of clients) {
-          if (c.role === "chief" && c.id !== connId) {
-            chiefName = c.name
-            break
-          }
-        }
+        const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
         return makeResponse(id, {
           sessionId: clientCtx.sessionId,
           name,
           role,
-          chief: chiefName,
+          chief: chief?.name ?? "none",
           daemon: { pid: process.pid, uptime: Math.floor((Date.now() - startedAt) / 1000) },
         })
       }
