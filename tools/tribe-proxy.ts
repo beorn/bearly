@@ -20,6 +20,7 @@ import {
   resolveProjectName,
 } from "./lib/tribe/config.ts"
 import { resolveSocketPath, createReconnectingClient, type DaemonClient } from "./lib/tribe/socket.ts"
+import { spawn } from "node:child_process"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 
@@ -207,8 +208,7 @@ daemon.onNotification((method, params) => {
     log.info?.(`Daemon requests reload: ${params?.reason}`)
     setTimeout(() => {
       daemon.close()
-      const { spawn: sp } = require("node:child_process")
-      sp(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
+      spawn(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
         "exit",
         (code: number | null) => process.exit(code ?? 0),
       )

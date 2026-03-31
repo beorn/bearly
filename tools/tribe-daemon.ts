@@ -13,7 +13,8 @@ import { createServer, type Socket as NetSocket, type Server } from "node:net"
 import { existsSync, unlinkSync, writeFileSync, chmodSync, statSync, readdirSync, readFileSync, watch } from "node:fs"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { dirname as pathDirname, resolve as pathResolve } from "node:path"
 import {
   resolveSocketPath,
   resolvePidPath,
@@ -693,41 +694,28 @@ process.on("SIGHUP", () => {
 // Source file watcher — auto-SIGHUP on code changes
 // ---------------------------------------------------------------------------
 
+const sourceDir = pathDirname(new URL(import.meta.url).pathname)
+const libTribeDir = pathResolve(sourceDir, "lib/tribe")
+
 function computeSourceHash(): string {
-  const { createHash } = require("node:crypto")
-  const dir = require("node:path").dirname(new URL(import.meta.url).pathname)
-  const libDir = require("node:path").resolve(dir, "lib/tribe")
   const files = [
-    require("node:path").resolve(dir, "tribe-daemon.ts"),
-    require("node:path").resolve(dir, "tribe-proxy.ts"),
+    pathResolve(sourceDir, "tribe-daemon.ts"),
+    pathResolve(sourceDir, "tribe-proxy.ts"),
     ...(() => {
       try {
-        return readdirSync(libDir)
-          .filter((f: string) => f.endsWith(".ts"))
-          .sort()
-          .map((f: string) => require("node:path").resolve(libDir, f))
-      } catch {
-        return []
-      }
+        return readdirSync(libTribeDir).filter((f) => f.endsWith(".ts")).sort().map((f) => pathResolve(libTribeDir, f))
+      } catch { return [] }
     })(),
   ]
   const hash = createHash("md5")
   for (const f of files) {
-    try {
-      hash.update(readFileSync(f))
-    } catch {
-      /* missing */
-    }
+    try { hash.update(readFileSync(f)) } catch { /* missing */ }
   }
   return hash.digest("hex").slice(0, 12)
 }
 
 let sourceHash = computeSourceHash()
 let reloadDebounce: ReturnType<typeof setTimeout> | null = null
-
-// Watch source directory for changes
-const sourceDir = require("node:path").dirname(new URL(import.meta.url).pathname)
-const libTribeDir = require("node:path").resolve(sourceDir, "lib/tribe")
 
 function onSourceChange(filename: string | null): void {
   if (filename && !filename.endsWith(".ts")) return
