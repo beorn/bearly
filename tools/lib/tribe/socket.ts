@@ -9,6 +9,7 @@ import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
+import { createTimers } from "./timers.ts"
 
 const log = createLogger("tribe:socket")
 
@@ -144,6 +145,9 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
     const notificationHandlers: Array<(method: string, params?: Record<string, unknown>) => void> = []
     let nextId = 1
 
+    const ac = new AbortController()
+    const timers = createTimers(ac.signal)
+
     const parse = createLineParser((msg) => {
       if (isResponse(msg)) {
         const p = pending.get(msg.id)
@@ -175,7 +179,7 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
             const id = nextId++
             pending.set(id, { resolve: res, reject: rej })
             socket.write(makeRequest(id, method, params))
-            const timer = setTimeout(() => {
+            timers.setTimeout(() => {
               if (!pending.delete(id)) return
               rej(new Error(`Request ${method} timed out`))
               if (++timeouts >= 3) {
@@ -183,7 +187,6 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
                 socket.destroy()
               }
             }, 10_000)
-            timer.unref?.()
           }).then((v) => {
             timeouts = 0
             return v
@@ -199,6 +202,7 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
           // Reject all pending calls so nothing hangs
           for (const [, p] of pending) p.reject(new Error("Connection closed"))
           pending.clear()
+          ac.abort()
           socket.end()
         },
         socket,
@@ -251,13 +255,19 @@ export async function connectOrStart(
   child.unref()
 
   // Wait for socket to appear with exponential backoff
-  for (let attempt = 0; attempt < 10; attempt++) {
-    await new Promise((r) => setTimeout(r, Math.min(100 * 2 ** attempt, 2000)))
-    try {
-      return await connectToDaemon(socketPath)
-    } catch {
-      // Keep trying
+  const startupAc = new AbortController()
+  const startupTimers = createTimers(startupAc.signal)
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await startupTimers.delay(Math.min(100 * 2 ** attempt, 2000))
+      try {
+        return await connectToDaemon(socketPath)
+      } catch {
+        // Keep trying
+      }
     }
+  } finally {
+    startupAc.abort()
   }
 
   throw new Error(`Failed to connect to tribe daemon at ${socketPath} after starting it`)
@@ -288,16 +298,25 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   let current = await connectOrStart(socketPath)
   await onConnect(current)
   let closed = false
+  let reconnectAc: AbortController | null = null
 
   const setupReconnect = () => {
     current.socket.on("close", () => {
       if (closed) return
       onDisconnect?.()
+      // Abort any prior reconnect attempt
+      reconnectAc?.abort()
+      reconnectAc = new AbortController()
+      const timers = createTimers(reconnectAc.signal)
       void (async () => {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (closed) return
-          const delay = Math.min(500 * 2 ** attempt, 10_000)
-          await new Promise((r) => { const t = setTimeout(r, delay); (t as { unref?: () => void }).unref?.() })
+          const ms = Math.min(500 * 2 ** attempt, 10_000)
+          try {
+            await timers.delay(ms)
+          } catch {
+            return // Aborted (closed or new reconnect superseded)
+          }
           if (closed) return
           try {
             current = await connectOrStart(socketPath)
@@ -321,6 +340,7 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
       if (prop === "close")
         return () => {
           closed = true
+          reconnectAc?.abort()
           current.close()
           current.socket.unref()
         }

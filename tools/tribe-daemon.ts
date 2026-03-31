@@ -44,6 +44,10 @@ import { acquireLease } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { createLogger } from "loggily"
+import { createTimers } from "./lib/tribe/timers.ts"
+
+const ac = new AbortController()
+const timers = createTimers(ac.signal)
 
 const _log = createLogger("tribe:daemon")
 function log(msg: string): void {
@@ -209,7 +213,13 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           if (prev && !prev.name.startsWith("member-") && !prev.name.startsWith("pending-")) {
             name = prev.name
           } else {
-            const projectName = String(p.projectName ?? String(p.project ?? process.cwd()).split("/").pop() ?? "unknown")
+            const projectName = String(
+              p.projectName ??
+                String(p.project ?? process.cwd())
+                  .split("/")
+                  .pop() ??
+                "unknown",
+            )
             name = role === "chief" ? "chief" : projectName
           }
         }
@@ -560,13 +570,13 @@ const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Push new plugin-generated messages to clients every second
-const pushInterval = setInterval(pushNewMessages, 1000)
+const pushInterval = timers.setInterval(pushNewMessages, 1000)
 
 // Heartbeat for daemon's own session record
-const heartbeatInterval = setInterval(() => sendHeartbeat(daemonCtx), 10_000)
+const heartbeatInterval = timers.setInterval(() => sendHeartbeat(daemonCtx), 10_000)
 
 // Data cleanup every 6 hours
-const cleanupInterval = setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
+const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
 cleanupOldPrunedSessions(daemonCtx)
 cleanupOldData(daemonCtx)
 
@@ -689,7 +699,7 @@ function startQuitTimer(): void {
   if (quitTimer) return
 
   log(`No clients connected. Auto-quit in ${QUIT_TIMEOUT}s...`)
-  quitTimer = setTimeout(() => {
+  quitTimer = timers.setTimeout(() => {
     if (clients.size === 0) {
       log("Auto-quit: no clients connected")
       shutdown()
@@ -699,7 +709,7 @@ function startQuitTimer(): void {
 
 function cancelQuitTimer(): void {
   if (quitTimer) {
-    clearTimeout(quitTimer)
+    timers.clearTimeout(quitTimer)
     quitTimer = null
   }
 }
@@ -735,12 +745,10 @@ process.on("SIGHUP", () => {
     log(`Hot-reload spawn failed: ${err.message}`)
   })
 
-  setTimeout(() => {
+  timers.setTimeout(() => {
     log("Hot-reload: old process exiting, new process taking over")
     stopPlugins()
-    clearInterval(pushInterval)
-    clearInterval(heartbeatInterval)
-    clearInterval(cleanupInterval)
+    ac.abort()
     // Don't close server — fd is inherited by child
     process.exit(0)
   }, 1000)
@@ -784,8 +792,8 @@ let reloadDebounce: ReturnType<typeof setTimeout> | null = null
 
 function onSourceChange(filename: string | null): void {
   if (filename && !filename.endsWith(".ts")) return
-  if (reloadDebounce) clearTimeout(reloadDebounce)
-  reloadDebounce = setTimeout(() => {
+  if (reloadDebounce) timers.clearTimeout(reloadDebounce)
+  reloadDebounce = timers.setTimeout(() => {
     const newHash = computeSourceHash()
     if (newHash === sourceHash) return // No actual change
     log(`Source changed (${sourceHash} → ${newHash}), triggering hot-reload`)
@@ -810,12 +818,8 @@ log(`Watching source files for auto-reload`)
 function shutdown(): void {
   log("Shutting down...")
   stopPlugins()
-  clearInterval(pushInterval)
-  clearInterval(heartbeatInterval)
-  clearInterval(cleanupInterval)
-  cancelQuitTimer()
+  ac.abort() // Clears all managed timers (push, heartbeat, cleanup, quit, debounce)
   for (const w of watchers) w.close()
-  if (reloadDebounce) clearTimeout(reloadDebounce)
 
   // Close all client connections
   for (const [, client] of clients) {

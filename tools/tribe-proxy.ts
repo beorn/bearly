@@ -41,8 +41,12 @@ import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
+import { createTimers } from "./lib/tribe/timers.ts"
 
 const log = createLogger("tribe:proxy")
+
+const proxyAc = new AbortController()
+const timers = createTimers(proxyAc.signal)
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -269,7 +273,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   // Nudge on tools discovery (fires on session init/resume)
   if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
     nudgeSent = true
-    setTimeout(() => {
+    timers.setTimeout(() => {
       sendChannel(
         `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history — just join silently and continue.`,
         { from: "tribe-proxy", type: "system" },
@@ -370,6 +374,7 @@ function cleanupPeerSocket(): void {
 }
 
 const shutdown = () => {
+  proxyAc.abort()
   cleanupPeerSocket()
   daemon.close()
   process.exit(0)
@@ -395,7 +400,7 @@ daemon.onNotification((method, params) => {
     sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
   } else if (method === "reload") {
     log.info?.(`Daemon requests reload: ${params?.reason}`)
-    setTimeout(() => {
+    timers.setTimeout(() => {
       daemon.close()
       spawn(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
         "exit",

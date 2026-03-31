@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises"
 import { resolve, dirname } from "node:path"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
+import { createTimers } from "./timers.ts"
 
 const log = createLogger("tribe:plugins")
 
@@ -68,6 +69,9 @@ export function beadsPlugin(): TribePlugin {
       const issuesPath = resolve(beadsDir, "backup/issues.jsonl")
       if (!existsSync(issuesPath)) return
 
+      const ac = new AbortController()
+      const timers = createTimers(ac.signal)
+
       let lastMtime = 0
       const reportedStates = new Map<string, string>()
 
@@ -94,7 +98,7 @@ export function beadsPlugin(): TribePlugin {
         /* file missing */
       }
 
-      const interval = setInterval(async () => {
+      timers.setInterval(async () => {
         if (!ctx.hasChief()) return
         try {
           const stat = statSync(issuesPath)
@@ -132,7 +136,7 @@ export function beadsPlugin(): TribePlugin {
         }
       }, 30_000)
 
-      return () => clearInterval(interval)
+      return () => ac.abort()
     },
 
     instructions() {
@@ -168,7 +172,10 @@ export function gitPlugin(): TribePlugin {
         /* not a git repo */
       }
 
-      const interval = setInterval(async () => {
+      const ac = new AbortController()
+      const timers = createTimers(ac.signal)
+
+      timers.setInterval(async () => {
         if (!ctx.hasChief()) return
         try {
           const proc = Bun.spawn(["git", "log", "--oneline", "-1", "HEAD"], {
@@ -192,7 +199,11 @@ export function gitPlugin(): TribePlugin {
                 stderr: "ignore",
               })
               const diffOut = await new Response(diffProc.stdout).text()
-              if (diffOut.includes("tools/tribe-proxy.ts") || diffOut.includes("tools/tribe-daemon.ts") || diffOut.includes("tools/lib/tribe/")) {
+              if (
+                diffOut.includes("tools/tribe-proxy.ts") ||
+                diffOut.includes("tools/tribe-daemon.ts") ||
+                diffOut.includes("tools/lib/tribe/")
+              ) {
                 log.info?.(`tribe code changed in ${head}, auto-reloading`)
                 ctx.triggerReload?.(`tribe code changed in ${head}`)
               }
@@ -206,7 +217,7 @@ export function gitPlugin(): TribePlugin {
         }
       }, 30_000)
 
-      return () => clearInterval(interval)
+      return () => ac.abort()
     },
   }
 }
