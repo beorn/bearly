@@ -13,7 +13,7 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
@@ -38,19 +38,59 @@ export function getGitHubToken(): string | null {
 // Repo detection
 // ---------------------------------------------------------------------------
 
-export function detectRepoFromGit(): string | null {
+export function detectRepoFromGit(dir?: string): string | null {
   try {
-    const url = execSync("git remote get-url origin", { encoding: "utf-8", stdio: "pipe" }).trim()
-    // Handle SSH: git@github.com:owner/repo.git
-    const sshMatch = url.match(/github\.com[:/](.+?)(?:\.git)?$/)
-    if (sshMatch) return sshMatch[1]
-    // Handle HTTPS: https://github.com/owner/repo.git
-    const httpsMatch = url.match(/github\.com\/(.+?)(?:\.git)?$/)
-    if (httpsMatch) return httpsMatch[1]
+    const url = execSync("git remote get-url origin", {
+      cwd: dir ?? process.cwd(),
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim()
+    const match = url.match(/github\.com[:/](.+?)(?:\.git)?$/)
+    return match?.[1] ?? null
   } catch {
-    // Not a git repo or no remote
+    return null
   }
-  return null
+}
+
+/** Detect GitHub repos from local git remotes: cwd + vendor/* submodules */
+function detectLocalRepos(): string[] {
+  const repos = new Set<string>()
+  const main = detectRepoFromGit()
+  if (main) repos.add(main)
+  try {
+    const vendorDir = resolve(process.cwd(), "vendor")
+    if (existsSync(vendorDir)) {
+      for (const entry of readdirSync(vendorDir)) {
+        const subdir = resolve(vendorDir, entry)
+        if (statSync(subdir).isDirectory()) {
+          const repo = detectRepoFromGit(subdir)
+          if (repo) repos.add(repo)
+        }
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  return Array.from(repos)
+}
+
+/** Fetch all non-archived, non-fork repos owned by the authenticated user */
+async function fetchUserRepos(headers: Record<string, string>): Promise<string[]> {
+  const repos: string[] = []
+  let page = 1
+  while (true) {
+    const batch = await ghFetch<Array<{ full_name: string; archived: boolean; fork: boolean }>>(
+      `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner`,
+      headers,
+    )
+    if (batch.length === 0) break
+    for (const r of batch) {
+      if (!r.archived && !r.fork) repos.push(r.full_name)
+    }
+    if (batch.length < 100) break
+    page++
+  }
+  return repos
 }
 
 // ---------------------------------------------------------------------------
@@ -161,25 +201,6 @@ export async function ghFetch<T>(path: string, headers: Record<string, string>):
 
 async function fetchRepoEvents(repo: string, headers: Record<string, string>): Promise<GitHubEvent[]> {
   return ghFetch<GitHubEvent[]>(`/repos/${repo}/events?per_page=30`, headers)
-}
-
-/** Fetch all non-archived, non-fork repos for the authenticated user */
-async function fetchUserRepos(headers: Record<string, string>): Promise<string[]> {
-  const repos: string[] = []
-  let page = 1
-  while (true) {
-    const batch = await ghFetch<Array<{ full_name: string; archived: boolean; fork: boolean }>>(
-      `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner`,
-      headers,
-    )
-    if (batch.length === 0) break
-    for (const r of batch) {
-      if (!r.archived && !r.fork) repos.push(r.full_name)
-    }
-    if (batch.length < 100) break
-    page++
-  }
-  return repos
 }
 
 async function fetchWorkflowRuns(
@@ -309,15 +330,9 @@ export function githubPlugin(): TribePlugin {
     name: "github",
 
     available() {
-      // Requires: GitHub remote + gh auth (or GITHUB_TOKEN)
       const token = getGitHubToken()
       if (!token) {
         log.info?.("no GitHub token available (skipped)")
-        return false
-      }
-      const repo = detectRepoFromGit()
-      if (!repo) {
-        log.info?.("no GitHub remote detected (skipped)")
         return false
       }
       return true
@@ -326,9 +341,6 @@ export function githubPlugin(): TribePlugin {
     start(ctx) {
       const token = getGitHubToken()
       if (!token) return
-      const repo = detectRepoFromGit()
-      if (!repo) return
-      const repos = [repo]
 
       const githubHeaders = {
         Authorization: `Bearer ${token}`,
@@ -337,7 +349,7 @@ export function githubPlugin(): TribePlugin {
         "User-Agent": "bearly-github-plugin/0.1.0",
       }
 
-      const pollIntervalSec = parseInt(process.env.GITHUB_POLL_INTERVAL ?? "30", 10) || 30
+      const pollIntervalSec = parseInt(process.env.GITHUB_POLL_INTERVAL ?? "60", 10) || 60
       const eventTypes = (process.env.GITHUB_EVENTS ?? "push,workflow_run,pull_request,issues")
         .split(",")
         .filter(Boolean)
@@ -349,7 +361,25 @@ export function githubPlugin(): TribePlugin {
       // Track recently seen workflow URLs for dedup
       const seenWorkflowUrls = new Set<string>()
 
-      log.info?.(`monitoring ${repos.join(", ")} (poll every ${pollIntervalSec}s)`)
+      // Start with local repos, then discover all user repos async
+      const repos = new Set<string>(detectLocalRepos())
+      log.info?.(`local repos: ${Array.from(repos).join(", ") || "none"}`)
+
+      // Async: fetch all user repos and merge
+      void fetchUserRepos(githubHeaders).then((userRepos) => {
+        const before = repos.size
+        for (const r of userRepos) repos.add(r)
+        const added = repos.size - before
+        if (added > 0) {
+          log.info?.(`discovered ${added} additional repos (${repos.size} total)`)
+          ctx.sendMessage("*", `GitHub monitoring ${repos.size} repos (${added} new from API)`, "github:status")
+        } else {
+          log.info?.(`${repos.size} repos total (no new from API)`)
+        }
+      }).catch((err) => {
+        log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
+      })
+
       log.info?.(`event types: ${eventTypes.join(", ")}, workflow notify: ${workflowNotify}`)
       log.info?.(`cursor: ${cursorPath}`)
 
