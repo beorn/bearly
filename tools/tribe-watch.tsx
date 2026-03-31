@@ -20,7 +20,12 @@ import {
   useInput,
   type SelectOption,
 } from "@silvery/ag-react"
-import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/tribe/socket.ts"
+import {
+  resolveSocketPath,
+  createReconnectingClient,
+  TRIBE_PROTOCOL_VERSION,
+  type DaemonClient,
+} from "./lib/tribe/socket.ts"
 import { resolveProjectName, resolveProjectId } from "./lib/tribe/config.ts"
 import { parseArgs } from "node:util"
 
@@ -181,7 +186,10 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           source: "daemon",
           peerSocket: s.daemon.socketPath,
         }
-        setSessions([daemonSession, ...s.sessions.filter((x) => !x.name.startsWith("watch-"))])
+        const members = s.sessions
+          .filter((x) => !x.name.startsWith("watch-"))
+          .sort((a, b) => (a.project ?? "").localeCompare(b.project ?? "") || a.name.localeCompare(b.name))
+        setSessions([daemonSession, ...members])
         setDaemon(s.daemon)
       } catch (err) {
         if (!signal.aborted)
@@ -216,7 +224,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : s.conn ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")}`,
     value: s.id,
   }))
 
@@ -243,11 +251,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"PID".padEnd(COL.pid)}
             {"UP".padEnd(COL.uptime)}CONN
           </Text>
-          {items.length > 0 ? (
-            <SelectList items={items} indicator="" />
-          ) : (
-            <Muted>No sessions</Muted>
-          )}
+          {items.length > 0 ? <SelectList items={items} indicator="" /> : <Muted>No sessions</Muted>}
         </Box>
       </Box>
       <Divider />
