@@ -39,7 +39,7 @@ log.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
 let myName = "pending"
 let myRole = "member"
 
-const registerParams = () => ({
+const registerParams = {
   ...(args.name ? { name: args.name } : {}),
   ...(args.role ? { role: args.role } : {}),
   domains: SESSION_DOMAINS,
@@ -47,12 +47,12 @@ const registerParams = () => ({
   pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
-})
+}
 
 const daemon = await createReconnectingClient({
   socketPath: SOCKET_PATH,
   async onConnect(client) {
-    const reg = (await client.call("register", registerParams())) as {
+    const reg = (await client.call("register", registerParams)) as {
       sessionId: string
       name: string
       role: string
@@ -135,15 +135,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
     nudgeSent = true
     setTimeout(() => {
-      mcp
-        .notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history — just join silently and continue.`,
-            meta: { from: "tribe-proxy", type: "system" },
-          },
-        })
-        .catch(() => {})
+      sendChannel(
+        `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history — just join silently and continue.`,
+        { from: "tribe-proxy", type: "system" },
+      )
     }, 500)
   }
   return { tools: TOOLS_LIST }
@@ -175,64 +170,40 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 })
 
 // ---------------------------------------------------------------------------
-// Notifications — receive from daemon, forward to Claude Code
-// ---------------------------------------------------------------------------
-
-function setupDaemonNotifications(): void {
-  daemon.onNotification((method, params) => {
-    if (method === "channel") {
-      mcp
-        .notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: String(params?.content ?? ""),
-            meta: {
-              from: String(params?.from ?? "unknown"),
-              type: String(params?.type ?? "notify"),
-              bead: params?.bead_id ? String(params.bead_id) : undefined,
-              message_id: params?.message_id ? String(params.message_id) : undefined,
-            },
-          },
-        })
-        .catch(() => {})
-    } else if (method === "session.joined" || method === "session.left") {
-      const name = params?.name ?? "unknown"
-      const action = method === "session.joined" ? "joined" : "left"
-      mcp
-        .notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: `${name} ${action} the tribe`,
-            meta: { from: "daemon", type: "status" },
-          },
-        })
-        .catch(() => {})
-    } else if (method === "reload") {
-      log.info?.(`Daemon requests reload: ${params?.reason}`)
-      setTimeout(() => {
-        daemon.close()
-        const { spawn: sp } = require("node:child_process")
-        const child = sp(process.execPath, process.argv.slice(1), {
-          stdio: "inherit",
-          env: process.env,
-        })
-        child.on("exit", (code: number | null) => process.exit(code ?? 0))
-      }, 500)
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-const shutdown = () => {
-  daemon.close()
-  process.exit(0)
+/** Forward a channel notification to Claude Code */
+function sendChannel(content: string, meta: Record<string, string | undefined>): void {
+  mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {})
 }
+
+const shutdown = () => { daemon.close(); process.exit(0) }
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
 
 // Connect MCP to Claude Code
 await mcp.connect(new StdioServerTransport())
-setupDaemonNotifications()
+
+// Forward daemon notifications to Claude Code
+daemon.onNotification((method, params) => {
+  if (method === "channel") {
+    sendChannel(String(params?.content ?? ""), {
+      from: String(params?.from ?? "unknown"),
+      type: String(params?.type ?? "notify"),
+      bead: params?.bead_id ? String(params.bead_id) : undefined,
+      message_id: params?.message_id ? String(params.message_id) : undefined,
+    })
+  } else if (method === "session.joined" || method === "session.left") {
+    const action = method === "session.joined" ? "joined" : "left"
+    sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
+  } else if (method === "reload") {
+    log.info?.(`Daemon requests reload: ${params?.reason}`)
+    setTimeout(() => {
+      daemon.close()
+      const { spawn: sp } = require("node:child_process")
+      sp(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env })
+        .on("exit", (code: number | null) => process.exit(code ?? 0))
+    }, 500)
+  }
+})

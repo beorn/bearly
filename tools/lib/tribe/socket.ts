@@ -298,7 +298,6 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   setupReconnect()
 
   // Return a proxy that always delegates to the current client
-  const originalClose = current.close.bind(current)
   return new Proxy(current, {
     get(_, prop) {
       if (prop === "close") return () => { closed = true; current.close() }
@@ -307,19 +306,13 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   }) as DaemonClient
 }
 
-/** Read PID from PID file, or null */
+/** Read PID from PID file, or null if missing/dead */
 export function readDaemonPid(socketPath: string): number | null {
-  const pidPath = resolvePidPath(socketPath)
   try {
-    const pid = parseInt(readFileSync(pidPath, "utf-8").trim(), 10)
+    const pid = parseInt(readFileSync(resolvePidPath(socketPath), "utf-8").trim(), 10)
     if (isNaN(pid)) return null
-    // Check if process is alive
-    try {
-      process.kill(pid, 0)
-      return pid
-    } catch {
-      return null
-    }
+    process.kill(pid, 0) // Throws if dead
+    return pid
   } catch {
     return null
   }
