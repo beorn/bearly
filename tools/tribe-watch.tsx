@@ -72,7 +72,12 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8, conn: 30 }
+const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 5 }
+
+/** Show just the socket filename, not the full path */
+function shortSocket(p: string): string {
+  return p.split("/").pop() ?? p
+}
 
 function fmtProject(s: SessionInfo): string {
   if (!s.project) return ""
@@ -236,7 +241,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${(s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")).padEnd(COL.conn)}${s.resources?.join(",") ?? ""}`,
+    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${shortSocket(s.peerSocket ?? s.conn ?? "").padEnd(28)}${s.resources?.join(",") ?? ""}`,
     value: s.id,
   }))
 
@@ -262,7 +267,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
             {"UP".padEnd(COL.uptime)}
-            {"CONN".padEnd(COL.conn)}RESOURCES
+            {"CONNECTION".padEnd(28)}RESOURCES
           </Text>
           {items.length > 0 ? <SelectList items={items} indicator="" /> : <Muted>No sessions</Muted>}
         </Box>
