@@ -15,10 +15,8 @@ import {
   Muted,
   Small,
   Divider,
-  SelectList,
   useApp,
   useInput,
-  type SelectOption,
 } from "@silvery/ag-react"
 import {
   resolveSocketPath,
@@ -72,11 +70,93 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 5 }
-
-/** Show just the socket filename, not the full path */
+/** Show just the socket filename */
 function shortSocket(p: string): string {
   return p.split("/").pop() ?? p
+}
+
+function SessionRow({ s, bold, color }: { s: SessionInfo; bold?: boolean; color?: string }) {
+  return (
+    <Box>
+      <Box width={16}>
+        <Text bold={bold} color={color}>
+          {s.name}
+        </Text>
+      </Box>
+      <Box width={8}>
+        <Text bold={bold} color={color}>
+          {s.role}
+        </Text>
+      </Box>
+      <Box width={38}>
+        <Text bold={bold} color={color}>
+          {fmtProject(s)}
+        </Text>
+      </Box>
+      <Box width={7}>
+        <Text bold={bold} color={color}>
+          {String(s.pid || "")}
+        </Text>
+      </Box>
+      <Box width={6}>
+        <Text bold={bold} color={color}>
+          {fmtDur(s.uptimeMs)}
+        </Text>
+      </Box>
+      <Box width={28}>
+        <Text bold={bold} color={color}>
+          {shortSocket(s.peerSocket ?? s.conn ?? "")}
+        </Text>
+      </Box>
+      <Box flexGrow={1}>
+        <Text bold={bold} color={color}>
+          {s.resources?.join(",") ?? ""}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
+function TableHeader() {
+  return (
+    <Box>
+      <Box width={16}>
+        <Text bold color="$primary">
+          NAME
+        </Text>
+      </Box>
+      <Box width={8}>
+        <Text bold color="$primary">
+          ROLE
+        </Text>
+      </Box>
+      <Box width={38}>
+        <Text bold color="$primary">
+          PROJECT
+        </Text>
+      </Box>
+      <Box width={7}>
+        <Text bold color="$primary">
+          PID
+        </Text>
+      </Box>
+      <Box width={6}>
+        <Text bold color="$primary">
+          UP
+        </Text>
+      </Box>
+      <Box width={28}>
+        <Text bold color="$primary">
+          CONNECTION
+        </Text>
+      </Box>
+      <Box flexGrow={1}>
+        <Text bold color="$primary">
+          RESOURCES
+        </Text>
+      </Box>
+    </Box>
+  )
 }
 
 function fmtProject(s: SessionInfo): string {
@@ -226,9 +306,8 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
         const content = String(params?.content ?? "")
-        const logType = type === "session" ? (content.includes("left") ? "leave" : "join")
-          : type === "reload" ? "reload"
-          : "message"
+        const logType =
+          type === "session" ? (content.includes("left") ? "leave" : "join") : type === "reload" ? "reload" : "message"
         addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType })
       } else if (method === "session.joined") {
         addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
@@ -240,11 +319,6 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
     })
   }, [ac, addLog])
 
-  const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${shortSocket(s.peerSocket ?? s.conn ?? "").padEnd(28)}${s.resources?.join(",") ?? ""}`,
-    value: s.id,
-  }))
-
   return (
     <Box flexDirection="column" width="100%" height="100%">
       {/* Header */}
@@ -253,24 +327,19 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           <H1>Tribe Watch</H1>
         </Box>
         <Box alignItems="center">
-          <Small>j/k nav q quit</Small>
+          <Small>q quit</Small>
         </Box>
       </Box>
 
-      {/* Sessions + detail */}
+      {/* Sessions table */}
       <Divider />
-      <Box flexDirection="row">
-        <Box flexGrow={1} flexDirection="column">
-          <Text bold color="$primary">
-            {"NAME".padEnd(COL.name)}
-            {"PROJECT".padEnd(COL.project)}
-            {"ROLE".padEnd(COL.role)}
-            {"PID".padEnd(COL.pid)}
-            {"UP".padEnd(COL.uptime)}
-            {"CONNECTION".padEnd(28)}RESOURCES
-          </Text>
-          {items.length > 0 ? <SelectList items={items} indicator="" /> : <Muted>No sessions</Muted>}
-        </Box>
+      <Box flexDirection="column">
+        <TableHeader />
+        {sessions.length > 0 ? (
+          sessions.map((s) => <SessionRow key={s.id} s={s} />)
+        ) : (
+          <Muted>No sessions</Muted>
+        )}
       </Box>
       <Divider />
 
