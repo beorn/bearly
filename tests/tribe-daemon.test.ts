@@ -425,12 +425,11 @@ describe("tribe daemon integration", () => {
       await member.call("register", { name: "new-worker", role: "member" })
 
       // Wait for notification to arrive
-      await waitFor(() => notifications.some((n) => n.method === "session.joined"), 3000)
+      await waitFor(() => notifications.some((n) => n.method === "channel" && String(n.params?.type) === "session"), 3000)
 
-      const joinNotif = notifications.find((n) => n.method === "session.joined")
+      const joinNotif = notifications.find((n) => n.method === "channel" && String(n.params?.content ?? "").includes("joined"))
       expect(joinNotif).toBeDefined()
-      expect(joinNotif!.params?.name).toBe("new-worker")
-      expect(joinNotif!.params?.role).toBe("member")
+      expect(String(joinNotif!.params?.content)).toContain("new-worker")
     }, 10_000)
   })
 
@@ -578,7 +577,7 @@ describe("tribe daemon integration", () => {
       await member.call("register", { name: "leaver", role: "member" })
 
       // Wait for join notification first
-      await waitFor(() => notifications.some((n) => n.method === "session.joined"), 3000)
+      await waitFor(() => notifications.some((n) => n.method === "channel" && String(n.params?.content ?? "").includes("joined")), 3000)
 
       // Disconnect the member
       member.close()
@@ -587,11 +586,11 @@ describe("tribe daemon integration", () => {
       if (idx !== -1) clients.splice(idx, 1)
 
       // Wait for leave notification
-      await waitFor(() => notifications.some((n) => n.method === "session.left"), 3000)
+      await waitFor(() => notifications.some((n) => n.method === "channel" && String(n.params?.content ?? "").includes("left")), 3000)
 
-      const leftNotif = notifications.find((n) => n.method === "session.left")
+      const leftNotif = notifications.find((n) => n.method === "channel" && String(n.params?.content ?? "").includes("leaver"))
       expect(leftNotif).toBeDefined()
-      expect(leftNotif!.params?.name).toBe("leaver")
+      expect(String(leftNotif!.params?.content)).toContain("leaver")
     }, 10_000)
 
     it("cli_status reflects reduced client count after disconnect", async () => {

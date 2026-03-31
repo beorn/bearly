@@ -142,6 +142,23 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
   }
 }
 
+/** Single entry point for all observable activities.
+ *  Persists to DB (watch sees on startup) + broadcasts live (watch sees immediately).
+ *  Use this instead of separate broadcastNotification + sendMessage + logEvent calls. */
+function logActivity(
+  type: string,
+  content: string,
+  opts?: { exclude?: string; persist?: boolean; broadcast?: boolean },
+): void {
+  const { exclude, persist = true, broadcast = true } = opts ?? {}
+  if (persist) {
+    sendMessage(daemonCtx, "*", content, type)
+  }
+  if (broadcast) {
+    broadcastNotification("channel", { from: "daemon", type, content }, exclude)
+  }
+}
+
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
   const client = clients.get(connId)
   if (!client) return
@@ -275,9 +292,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         clients.set(connId, client)
         cancelQuitTimer()
 
-        broadcastNotification("session.joined", { name, role, domains }, connId)
-        logEvent(daemonCtx, "session.joined", undefined, { name, role, via: "daemon" })
-        sendMessage(daemonCtx, "*", `${name} joined (${role})`, "session")
+        logActivity("session", `${name} joined (${role})`, { exclude: connId })
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
@@ -320,7 +335,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           client.name = ctx.getName()
           client.role = ctx.getRole()
           if (oldName !== client.name || oldRole !== client.role) {
-            broadcastNotification("session.joined", { name: client.name, role: client.role, previous: oldName }, connId)
+            logActivity("session", `${oldName} → ${client.name} (${client.role})`, { exclude: connId })
           }
         }
 
@@ -563,7 +578,7 @@ const pluginCtx: PluginContext = {
   triggerReload(reason) {
     log(`Plugin requested reload: ${reason}`)
     // Broadcast to all clients that they should reload
-    broadcastNotification("reload", { reason })
+    logActivity("reload", `reload: ${reason}`)
   },
 }
 
@@ -630,9 +645,7 @@ function handleConnection(socket: NetSocket): void {
     const client = clients.get(connId)
     if (client && client.name !== `pending-${connId.slice(0, 6)}`) {
       log(`Client disconnected: ${client.name}`)
-      broadcastNotification("session.left", { name: client.name }, connId)
-      logEvent(daemonCtx, "session.left", undefined, { name: client.name, via: "daemon" })
-      sendMessage(daemonCtx, "*", `${client.name} left`, "session")
+      logActivity("session", `${client.name} left`, { exclude: connId })
 
       // Prune the session in DB
       try {

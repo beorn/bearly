@@ -157,7 +157,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   useEffect(() => {
     void (async () => {
       try {
-        const result = (await client.call("cli_log", { limit: 20 })) as {
+        const result = (await client.call("cli_log", { limit: 100 })) as {
           messages: Array<{ sender: string; recipient: string; type: string; content: string; ts: number }>
         }
         const seed: LogEntry[] = (result.messages ?? []).map((m) => {
@@ -221,11 +221,14 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
         const from = String(params?.from ?? "?")
         const type = String(params?.type ?? "notify")
         const content = String(params?.content ?? "")
-        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: "message" })
+        const logType = type === "session" ? (content.includes("left") ? "leave" : "join")
+          : type === "reload" ? "reload"
+          : "message"
+        addLog({ ts: t, text: `${from} [${type}] ${content}`, type: logType })
       } else if (method === "session.joined") {
-        addLog({ ts: t, text: `${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
+        addLog({ ts: t, text: `+ ${params?.name} joined (${params?.role ?? "member"})`, type: "join" })
       } else if (method === "session.left") {
-        addLog({ ts: t, text: `${params?.name} left`, type: "leave" })
+        addLog({ ts: t, text: `- ${params?.name} left`, type: "leave" })
       } else if (method === "reload") {
         addLog({ ts: t, text: `reload: ${params?.reason}`, type: "reload" })
       }
