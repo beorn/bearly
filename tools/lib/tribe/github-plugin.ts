@@ -351,19 +351,16 @@ export function githubPlugin(): TribePlugin {
       log.info?.(`local repo: ${local ?? "none"}`)
 
       // Async: fetch all user repos and merge
-      void fetchUserRepos(githubHeaders).then((userRepos) => {
-        const before = repos.size
-        for (const r of userRepos) repos.add(r)
-        const added = repos.size - before
-        if (added > 0) {
-          log.info?.(`discovered ${added} additional repos (${repos.size} total)`)
-          ctx.sendMessage("*", `GitHub monitoring ${repos.size} repos (${added} new from API)`, "github:status")
-        } else {
-          log.info?.(`${repos.size} repos total (no new from API)`)
-        }
-      }).catch((err) => {
-        log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
-      })
+      void fetchUserRepos(githubHeaders)
+        .then((userRepos) => {
+          for (const r of userRepos) repos.add(r)
+          const all = Array.from(repos).sort()
+          log.info?.(`monitoring ${all.length} repos: ${all.join(", ")}`)
+          ctx.sendMessage("*", `GitHub monitoring ${all.length} repos: ${all.join(", ")}`, "github:status")
+        })
+        .catch((err) => {
+          log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
+        })
 
       log.info?.(`event types: ${eventTypes.join(", ")}, workflow notify: ${workflowNotify}`)
       log.info?.(`cursor: ${cursorPath}`)
