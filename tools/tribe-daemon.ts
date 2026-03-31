@@ -42,6 +42,7 @@ import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
 import { acquireLease } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
+import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { createLogger } from "loggily"
 
 const _log = createLogger("tribe:daemon")
@@ -337,6 +338,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           uptimeMs: now - c.registeredAt,
           source: "daemon" as const,
           conn: c.conn,
+          resources: [] as string[],
         }))
 
         return makeResponse(id, {
@@ -347,6 +349,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             clients: clients.size,
             dbPath: DB_PATH,
             socketPath: SOCKET_PATH,
+            resources: activePluginNames,
           },
         })
       }
@@ -552,7 +555,8 @@ const pluginCtx: PluginContext = {
   },
 }
 
-const plugins = [gitPlugin(), beadsPlugin()]
+const plugins = [gitPlugin(), beadsPlugin(), githubPlugin()]
+const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
 // Push new plugin-generated messages to clients every second

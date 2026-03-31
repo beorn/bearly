@@ -47,9 +47,17 @@ type SessionInfo = {
   claudeSessionId?: string | null
   source?: "daemon" | "db"
   conn?: string
+  resources?: string[]
 }
 
-type DaemonInfo = { pid: number; uptime: number; clients: number; dbPath: string; socketPath: string }
+type DaemonInfo = {
+  pid: number
+  uptime: number
+  clients: number
+  dbPath: string
+  socketPath: string
+  resources?: string[]
+}
 
 type LogEntry = {
   ts: string
@@ -64,7 +72,7 @@ type LogEntry = {
 const HOME = process.env.HOME ?? ""
 const shortPath = (p: string) => (HOME && p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p)
 
-const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8 }
+const COL = { name: 18, project: 36, role: 8, pid: 8, uptime: 8, res: 16 }
 
 function fmtProject(s: SessionInfo): string {
   if (!s.project) return ""
@@ -185,6 +193,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           uptimeMs: s.daemon.uptime * 1000,
           source: "daemon",
           peerSocket: s.daemon.socketPath,
+          resources: s.daemon.resources ?? [],
         }
         const members = s.sessions
           .filter((x) => !x.name.startsWith("watch-"))
@@ -224,7 +233,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
   }, [ac, addLog])
 
   const items: SelectOption[] = sessions.map((s) => ({
-    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")}`,
+    label: `${s.name.padEnd(COL.name)}${fmtProject(s).padEnd(COL.project)}${s.role.padEnd(COL.role)}${String(s.pid || "").padEnd(COL.pid)}${fmtDur(s.uptimeMs).padEnd(COL.uptime)}${(s.resources?.join(",") ?? "").padEnd(COL.res)}${s.peerSocket ? shortPath(s.peerSocket) : (s.conn ?? "")}`,
     value: s.id,
   }))
 
@@ -249,7 +258,8 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
             {"PROJECT".padEnd(COL.project)}
             {"ROLE".padEnd(COL.role)}
             {"PID".padEnd(COL.pid)}
-            {"UP".padEnd(COL.uptime)}CONN
+            {"UP".padEnd(COL.uptime)}
+            {"RES".padEnd(COL.res)}CONN
           </Text>
           {items.length > 0 ? <SelectList items={items} indicator="" /> : <Muted>No sessions</Muted>}
         </Box>

@@ -2,6 +2,11 @@
 /**
  * GitHub Channel — GitHub notifications for Claude Code
  *
+ * @deprecated Use the tribe github plugin instead (`tools/lib/tribe/github-plugin.ts`).
+ * The plugin runs inside the tribe daemon and broadcasts events to all connected
+ * sessions via the tribe message bus. This standalone MCP server is kept for
+ * non-tribe users but will be removed in a future version.
+ *
  * An MCP channel plugin that polls the GitHub REST API for events
  * (pushes, PRs, workflow runs, issues) and delivers them as channel
  * notifications to Claude Code sessions.
