@@ -1,47 +1,17 @@
-#!/usr/bin/env bun
 /**
  * Tribe Retro — Retrospective report generator for tribe sessions
  *
  * Analyzes tribe message history and generates observability reports
  * with per-member activity, coordination health, and timeline.
  *
- * Usage:
- *   bun tribe-retro                     # Retro for current session
- *   bun tribe-retro --since 2h          # Last 2 hours
- *   bun tribe-retro --format json       # Output as JSON
+ * Used by: tribe-cli.ts `retro` subcommand, tribe MCP tool `tribe_retro`
  */
 
-import { Database } from "bun:sqlite"
-import { existsSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-import { parseArgs } from "node:util"
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-const { values: args } = parseArgs({
-  options: {
-    since: { type: "string", default: undefined },
-    format: { type: "string", default: "markdown" },
-    db: { type: "string", default: undefined },
-  },
-  strict: false,
-})
+import type { Database } from "bun:sqlite"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function findBeadsDir(): string {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const candidate = resolve(dir, ".beads")
-    if (existsSync(candidate)) return candidate
-    dir = dirname(dir)
-  }
-  return resolve(process.cwd(), ".beads")
-}
 
 const DURATION_MULTIPLIERS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }
 
@@ -368,24 +338,3 @@ export function formatMarkdown(report: RetroReport): string {
   lines.push("")
   return lines.join("\n")
 }
-
-// ---------------------------------------------------------------------------
-// CLI entry point
-// ---------------------------------------------------------------------------
-
-function main(): void {
-  const dbPath = (args.db as string) ?? resolve(findBeadsDir(), "tribe.db")
-  if (!existsSync(dbPath)) {
-    console.error(`No tribe database found at ${dbPath}`)
-    process.exit(1)
-  }
-
-  const db = new Database(dbPath, { readonly: true })
-  db.run("PRAGMA busy_timeout = 5000")
-  const sinceMs = args.since ? parseDuration(args.since as string) : undefined
-  const report = generateRetro(db, sinceMs)
-  console.log(args.format === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report))
-  db.close()
-}
-
-main()

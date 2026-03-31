@@ -5,9 +5,12 @@
  * Connects to the tribe daemon via Unix socket (no direct DB access).
  */
 import { dirname, resolve } from "node:path"
+import { existsSync } from "node:fs"
 import { spawn } from "node:child_process"
+import { Database } from "bun:sqlite"
 import { Command, int } from "@silvery/commander"
 import { resolveSocketPath, connectToDaemon, readDaemonPid } from "./lib/tribe/socket.ts"
+import { generateRetro, formatMarkdown, parseDuration } from "./lib/tribe/retro.ts"
 
 // --- Daemon connection ---
 
@@ -140,9 +143,7 @@ async function cmdSessions(showAll: boolean): Promise<void> {
   console.log(`TRIBE SESSIONS \u2014 ${sessions.length} ${showAll ? "all" : "active"}\n`)
   const nW = Math.max(4, ...sessions.map((r) => r.name.length))
   const rW = Math.max(4, ...sessions.map((r) => r.role.length))
-  console.log(
-    `  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  SOURCE`,
-  )
+  console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  SOURCE`)
   for (const r of sessions) {
     console.log(
       `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${r.source}`,
@@ -180,7 +181,9 @@ async function cmdLog(limit: number, follow: boolean): Promise<void> {
       const type = String(params?.type ?? "notify")
       const content = String(params?.content ?? "")
       const to = "all"
-      console.log(`  ${fmtTime(ts)}  ${pad(`${from} \u2192 ${to}`, 28)}  [${type}] "${content.length > 120 ? content.slice(0, 117) + "..." : content}"`)
+      console.log(
+        `  ${fmtTime(ts)}  ${pad(`${from} \u2192 ${to}`, 28)}  [${type}] "${content.length > 120 ? content.slice(0, 117) + "..." : content}"`,
+      )
     } else if (method === "session.joined" || method === "session.left") {
       const name = String(params?.name ?? "unknown")
       const action = method === "session.joined" ? "joined" : "left"
@@ -244,12 +247,50 @@ async function cmdHealth(): Promise<void> {
       }
     }
     if (result.daemon) {
-      console.log(`\n  Daemon: pid=${result.daemon.pid}, uptime=${fmtDur(result.daemon.uptime * 1000)}, clients=${result.daemon.clients}`)
+      console.log(
+        `\n  Daemon: pid=${result.daemon.pid}, uptime=${fmtDur(result.daemon.uptime * 1000)}, clients=${result.daemon.clients}`,
+      )
     }
   } catch {
     // Fallback: just print the raw result
     console.log(JSON.stringify(result, null, 2))
   }
+}
+
+// --- Retro ---
+
+/** Walk up from cwd to find .beads directory */
+function findBeadsDir(): string {
+  let dir = process.cwd()
+  while (dir !== "/") {
+    const candidate = resolve(dir, ".beads")
+    if (existsSync(candidate)) return candidate
+    dir = dirname(dir)
+  }
+  return resolve(process.cwd(), ".beads")
+}
+
+function cmdRetro(opts: { since?: string; format: string; db?: string }): void {
+  const dbPath = opts.db ?? resolve(findBeadsDir(), "tribe.db")
+  if (!existsSync(dbPath)) {
+    console.error(`No tribe database found at ${dbPath}`)
+    process.exit(1)
+  }
+
+  const db = new Database(dbPath, { readonly: true })
+  db.run("PRAGMA busy_timeout = 5000")
+  let sinceMs: number | undefined
+  if (opts.since) {
+    try {
+      sinceMs = parseDuration(opts.since)
+    } catch (err) {
+      console.error(String(err))
+      process.exit(1)
+    }
+  }
+  const report = generateRetro(db, sinceMs)
+  console.log(opts.format === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report))
+  db.close()
 }
 
 // --- Daemon management ---
@@ -316,6 +357,7 @@ const program = new Command("tribe")
   .addHelpSection("Examples:", [
     ["tribe status", "Show active sessions"],
     ["tribe log -f", "Follow live message stream"],
+    ["tribe retro --since 2h", "Retro report for last 2 hours"],
     ["tribe watch", "Full TUI dashboard"],
     ['tribe send chief "Ready for work"', "Message the chief"],
   ])
@@ -349,6 +391,14 @@ program
   .command("health")
   .description("Run health diagnostics")
   .action(() => void cmdHealth())
+
+program
+  .command("retro")
+  .description("Generate retrospective report — metrics, timeline, coordination health")
+  .option("-s, --since <duration>", "Time window (e.g. 2h, 30m, 1d)")
+  .option("-f, --format <fmt>", "Output format: markdown or json", "markdown")
+  .option("--db <path>", "Path to tribe.db (default: auto-detect)")
+  .action((opts) => cmdRetro(opts))
 
 program
   .command("start")

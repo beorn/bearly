@@ -16,7 +16,7 @@ import { sendMessage, logEvent } from "./messaging.ts"
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerSession(ctx: TribeContext): void {
+export function registerSession(ctx: TribeContext, projectId?: string): void {
   try {
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
@@ -25,6 +25,7 @@ export function registerSession(ctx: TribeContext): void {
       $domains: JSON.stringify(ctx.domains),
       $pid: process.pid,
       $cwd: process.cwd(),
+      $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
       $now: Date.now(),
@@ -41,6 +42,7 @@ export function registerSession(ctx: TribeContext): void {
       $domains: JSON.stringify(ctx.domains),
       $pid: process.pid,
       $cwd: process.cwd(),
+      $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
       $now: Date.now(),

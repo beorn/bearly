@@ -127,7 +127,7 @@ interface TribePlugin {
 }
 ```
 
-Add your plugin to the plugins array in `tools/tribe.ts` alongside the built-in ones.
+Add your plugin to the plugins array in `tools/tribe-daemon.ts` alongside the built-in ones.
 
 ## Configuration
 

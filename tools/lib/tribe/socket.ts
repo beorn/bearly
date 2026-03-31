@@ -13,6 +13,12 @@ import { findBeadsDir } from "./config.ts"
 const log = createLogger("tribe:socket")
 
 // ---------------------------------------------------------------------------
+// Protocol version
+// ---------------------------------------------------------------------------
+
+export const TRIBE_PROTOCOL_VERSION = 2
+
+// ---------------------------------------------------------------------------
 // Socket discovery
 // ---------------------------------------------------------------------------
 
@@ -39,6 +45,13 @@ export function resolveSocketPath(socketArg?: string): string {
 /** Resolve PID file path (same directory as socket) */
 export function resolvePidPath(socketPath: string): string {
   return resolve(dirname(socketPath), "tribe.pid")
+}
+
+/** Resolve peer socket path for direct proxy-to-proxy connections */
+export function resolvePeerSocketPath(sessionId: string): string {
+  const xdg = process.env.XDG_RUNTIME_DIR
+  const dir = xdg ?? resolve(process.env.HOME ?? "/tmp", ".local/share/tribe")
+  return resolve(dir, `s-${sessionId.slice(0, 12)}.sock`)
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +224,10 @@ export function connectToDaemon(socketPath: string): Promise<DaemonClient> {
 // ---------------------------------------------------------------------------
 
 /** Try connecting; if daemon not running, start it and retry */
-export async function connectOrStart(socketPath: string, opts?: { daemonScript?: string; dbPath?: string }): Promise<DaemonClient> {
+export async function connectOrStart(
+  socketPath: string,
+  opts?: { daemonScript?: string; dbPath?: string },
+): Promise<DaemonClient> {
   // Try connecting first
   try {
     return await connectToDaemon(socketPath)

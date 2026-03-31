@@ -23,10 +23,18 @@ import {
   makeError,
   makeNotification,
   isRequest,
+  TRIBE_PROTOCOL_VERSION,
   type JsonRpcMessage,
   type JsonRpcRequest,
 } from "./lib/tribe/socket.ts"
-import { parseTribeArgs, parseSessionDomains, resolveDbPath, detectRole, detectName } from "./lib/tribe/config.ts"
+import {
+  parseTribeArgs,
+  parseSessionDomains,
+  resolveDbPath,
+  detectRole,
+  detectName,
+  resolveProjectId,
+} from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall } from "./lib/tribe/handlers.ts"
@@ -102,8 +110,10 @@ type ClientSession = {
   domains: string[]
   project: string
   projectName: string
+  projectId: string
   pid: number
   claudeSessionId: string | null
+  peerSocket: string | null // Peer socket path for direct proxy-to-proxy connections
   conn: string // Connection path (socket or db)
   ctx: TribeContext
   registeredAt: number
@@ -206,7 +216,17 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const domains = (p.domains as string[]) ?? []
         const project = String(p.project ?? process.cwd())
         const projectName = String(p.projectName ?? project.split("/").pop() ?? "unknown")
+        const projectId = String(p.projectId ?? resolveProjectId(project))
+        const peerSocket = (p.peerSocket as string) ?? null
         const pid = Number(p.pid ?? 0)
+
+        // Log protocol version mismatch as warning
+        const clientProtocolVersion = p.protocolVersion ? Number(p.protocolVersion) : undefined
+        if (clientProtocolVersion !== undefined && clientProtocolVersion !== TRIBE_PROTOCOL_VERSION) {
+          log(
+            `Protocol version mismatch: client=${clientProtocolVersion}, daemon=${TRIBE_PROTOCOL_VERSION} (session=${name})`,
+          )
+        }
 
         const clientCtx = createTribeContext({
           db,
@@ -219,7 +239,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           claudeSessionName,
         })
 
-        registerSession(clientCtx)
+        registerSession(clientCtx, projectId)
         if (role === "chief") {
           acquireLease(db, clientCtx.sessionId, name)
         }
@@ -232,8 +252,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           domains,
           project,
           projectName,
+          projectId,
           pid,
           claudeSessionId,
+          peerSocket,
           conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
@@ -246,11 +268,18 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
+        // Return current coordination state for this project
+        const coordState = db
+          .prepare("SELECT key, value FROM coordination WHERE project_id = ?")
+          .all(projectId) as Array<{ key: string; value: string | null }>
+
         return makeResponse(id, {
           sessionId: clientCtx.sessionId,
           name,
           role,
           chief: chief?.name ?? "none",
+          protocolVersion: TRIBE_PROTOCOL_VERSION,
+          coordinationState: coordState,
           daemon: { pid: process.pid, uptime: Math.floor((Date.now() - startedAt) / 1000) },
         })
       }
@@ -301,7 +330,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           domains: c.domains,
           pid: c.pid,
           projectName: c.projectName,
+          projectId: c.projectId,
           claudeSessionId: c.claudeSessionId,
+          peerSocket: c.peerSocket,
           connectedAt: c.registeredAt,
           uptimeMs: now - c.registeredAt,
           source: "daemon" as const,
@@ -311,13 +342,14 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const t = now - 30_000
         const dbSessions = db
           .prepare(
-            "SELECT name, role, domains, pid, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC",
+            "SELECT name, role, domains, pid, project_id, started_at, heartbeat FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL ORDER BY role DESC, started_at ASC",
           )
           .all(t) as Array<{
           name: string
           role: string
           domains: string
           pid: number
+          project_id: string | null
           started_at: number
           heartbeat: number
         }>
@@ -331,6 +363,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             role: s.role,
             domains: JSON.parse(s.domains || "[]") as string[],
             pid: s.pid,
+            projectId: s.project_id,
             claudeSessionId: null,
             connectedAt: s.started_at,
             uptimeMs: now - s.started_at,
@@ -389,6 +422,76 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           startedAt,
           quitTimeout: QUIT_TIMEOUT,
         })
+      }
+
+      // Log event — fire-and-forget from proxies for observability
+      case "log_event": {
+        const client = clients.get(connId)
+        const ctx = client?.ctx ?? daemonCtx
+        // Write to legacy events table
+        logEvent(
+          ctx,
+          String(p.type ?? "unknown"),
+          p.bead_id as string | undefined,
+          p.meta as Record<string, unknown> | undefined,
+        )
+        // Also write to new event_log table (observability, with project_id)
+        db.prepare("INSERT INTO event_log (ts, session_id, project_id, type, meta) VALUES (?, ?, ?, ?, ?)").run(
+          Date.now(),
+          client?.ctx?.sessionId ?? null,
+          String(p.project_id ?? client?.projectId ?? ""),
+          String(p.type ?? ""),
+          p.meta ? JSON.stringify(p.meta) : null,
+        )
+        return makeResponse(id, { ok: true })
+      }
+
+      // Discovery — find peers by project, name, or resource
+      case "discover": {
+        const query = {
+          project_id: p.project_id as string | undefined,
+          name: p.name as string | undefined,
+        }
+
+        let results = Array.from(clients.values()).filter((c) => !c.name.startsWith("pending-"))
+        if (query.project_id) results = results.filter((c) => c.projectId === query.project_id)
+        if (query.name) results = results.filter((c) => c.name === query.name)
+
+        return makeResponse(id, {
+          results: results.map((c) => ({
+            name: c.name,
+            role: c.role,
+            project: c.project,
+            projectId: c.projectId,
+            peerSocket: c.peerSocket,
+            domains: c.domains,
+          })),
+        })
+      }
+
+      // Coordination state — queryable key-value per project
+      case "set_state": {
+        const client = clients.get(connId)
+        const projectId = String(p.project_id ?? client?.projectId ?? "")
+        const key = String(p.key)
+        const value = p.value !== undefined ? JSON.stringify(p.value) : null
+        db.prepare(
+          "INSERT OR REPLACE INTO coordination (project_id, key, value, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ).run(projectId, key, value, client?.name ?? "daemon", Date.now())
+        return makeResponse(id, { ok: true })
+      }
+
+      case "get_state": {
+        const client = clients.get(connId)
+        const projectId = String(p.project_id ?? client?.projectId ?? "")
+        if (p.key) {
+          const row = db
+            .prepare("SELECT * FROM coordination WHERE project_id = ? AND key = ?")
+            .get(projectId, String(p.key))
+          return makeResponse(id, { state: row ?? null })
+        }
+        const rows = db.prepare("SELECT * FROM coordination WHERE project_id = ?").all(projectId)
+        return makeResponse(id, { state: rows })
       }
 
       // Stream mode for watch
@@ -516,8 +619,10 @@ function handleConnection(socket: NetSocket): void {
     domains: [],
     project: process.cwd(),
     projectName: "unknown",
+    projectId: "",
     pid: 0,
     claudeSessionId: null,
+    peerSocket: null,
     conn: "",
     ctx: daemonCtx,
     registeredAt: Date.now(),

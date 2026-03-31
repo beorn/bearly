@@ -12,7 +12,7 @@ The tribe daemon hardcodes beads coupling, acts as both message router and coord
 
 3. **Socket bind is the lock.** Resource ownership is decided by who successfully binds the deterministic resource socket. No distributed locking protocol needed.
 
-4. **Messages are best-effort direct.** Durable coordination belongs in project state (beads, git), not in tribe. The daemon stores coordination *state*, not message history.
+4. **Messages are best-effort direct.** Durable coordination belongs in project state (beads, git), not in tribe. The daemon stores coordination _state_, not message history.
 
 ## Architecture
 
@@ -51,8 +51,8 @@ PROXY (one per Claude session, runs in project cwd)
 Display names (`"km"`, `"decker"`) are labels only. Canonical identity is a hash:
 
 ```ts
-project_id = hash(realpath(project_root))  // deterministic, unique, stable across renames
-project_name = basename(project_root)       // display only
+project_id = hash(realpath(project_root)) // deterministic, unique, stable across renames
+project_name = basename(project_root) // display only
 ```
 
 This avoids collisions (two repos both named `api`) and handles symlinks/worktrees.
@@ -69,6 +69,7 @@ $XDG_RUNTIME_DIR/tribe/r-{hash}.sock           // resource socket (see below)
 ### Peer Handshake
 
 Every direct connection starts with a handshake returning:
+
 ```json
 { "session_id": "...", "project_id": "...", "generation": 1, "protocol_version": 1 }
 ```
@@ -98,6 +99,7 @@ try {
 ```
 
 Why this works:
+
 - **Atomic**: `bind()` is atomic at the OS level. No race conditions.
 - **Self-cleaning**: when the provider process dies, the socket file becomes stale. Next proxy detects `ECONNREFUSED`, unlinks, and claims.
 - **Deterministic**: any proxy can compute the path without asking the daemon.
@@ -118,6 +120,7 @@ s-{session_id}.sock
 ```
 
 Resource-specific sockets (`r-{hash}.sock`) are only for the provider lock. Actual resource requests can go through either:
+
 - the resource socket directly (cross-project access), or
 - the provider's peer socket (same-project, already connected).
 
@@ -126,13 +129,17 @@ Resource-specific sockets (`r-{hash}.sock`) are only for the provider lock. Actu
 Three classes of communication, each with different durability:
 
 ### Ephemeral (best-effort direct)
+
 "I'm looking at X", "can you check Y?"
+
 - Direct peer connection
 - If target offline → return `{ status: "offline" }`
 - No retry, no queue. Caller decides what to do.
 
 ### Coordination state (daemon-stored, queryable)
+
 "Project is paused", "chief changed", "compacting"
+
 - Stored in daemon as **state**, not messages
 - Proxies query current state on connect/reconnect
 - No need to "catch up" on missed broadcasts
@@ -149,7 +156,9 @@ CREATE TABLE coordination (
 ```
 
 ### Durable handoff
+
 "You own this follow-up", "pick up bead X"
+
 - Not tribe's job. Use beads/task system.
 - Tribe is coordination, not task management.
 
@@ -260,9 +269,9 @@ interface ResourcePlugin {
 }
 
 interface ResourceDescriptor {
-  name: string            // "beads", "git"
-  capabilities: string[]  // ["list", "read", "write", "watch"]
-  singleton: boolean      // true = one provider per project (socket lock)
+  name: string // "beads", "git"
+  capabilities: string[] // ["list", "read", "write", "watch"]
+  singleton: boolean // true = one provider per project (socket lock)
 }
 ```
 
@@ -325,6 +334,7 @@ Project-level overrides via `.tribe/plugins.yaml` for pinning or disabling speci
 ## Migration
 
 ### Phase 0: Contracts
+
 - Canonical `project_id` (hash of realpath)
 - Opaque `session_id` / endpoint identity
 - Peer handshake with `protocol_version` + `generation`
@@ -332,6 +342,7 @@ Project-level overrides via `.tribe/plugins.yaml` for pinning or disabling speci
 - Resource ownership model (socket lock)
 
 ### Phase 1: Decouple daemon from project I/O
+
 - Remove `findBeadsDir()` from daemon
 - Daemon takes resolved `--socket` and `--db`
 - Plugins move into proxy (self-detect from cwd)
@@ -339,6 +350,7 @@ Project-level overrides via `.tribe/plugins.yaml` for pinning or disabling speci
 - CLI connects via daemon socket
 
 ### Phase 2: Direct peer connections
+
 - Proxies expose peer sockets at registration
 - Session-to-session messages go direct (discover + connect)
 - Coordination state in daemon (queryable, not just broadcasts)
@@ -346,18 +358,21 @@ Project-level overrides via `.tribe/plugins.yaml` for pinning or disabling speci
 - Keep daemon routing as fallback during transition
 
 ### Phase 3: Resource sockets
+
 - Plugins bid for resource ownership via socket lock
 - Resource directory in daemon DB
 - Cross-project resource access via discover + direct connect
 - One provider per singleton resource per project
 
 ### Phase 4: Plugin packaging
+
 - Plugin manifest with version/apiVersion
 - `~/.config/tribe/plugins/` for custom plugins
 - Project-level plugin overrides
 - Compatibility checks at load time
 
 ### Phase 5: Remove legacy routing
+
 - Only after metrics confirm direct mode is stable
 - Remove message routing from daemon
 - Remove messages table
@@ -365,14 +380,14 @@ Project-level overrides via `.tribe/plugins.yaml` for pinning or disabling speci
 
 ## What Gets Simpler
 
-| Concern          | Before                        | After                            |
-| ---------------- | ----------------------------- | -------------------------------- |
-| Daemon           | 800 lines, routes everything  | ~200 lines, discovery only       |
-| Cross-project    | Not possible                  | Discover + direct connect        |
-| Plugin context   | Daemon cwd (wrong)            | Proxy cwd (right)                |
-| Message routing  | All through daemon            | Direct peer sockets              |
-| Resource access  | All through daemon            | Direct resource sockets          |
-| Resource locking | None (duplicated providers)   | Socket bind = atomic lock        |
-| Plugin crash     | Kills daemon                  | Kills one proxy                  |
-| Scaling          | Daemon bottleneck             | Peer-to-peer                     |
-| Project identity | Directory basename (collides) | Hash of realpath (canonical)     |
+| Concern          | Before                        | After                        |
+| ---------------- | ----------------------------- | ---------------------------- |
+| Daemon           | 800 lines, routes everything  | ~200 lines, discovery only   |
+| Cross-project    | Not possible                  | Discover + direct connect    |
+| Plugin context   | Daemon cwd (wrong)            | Proxy cwd (right)            |
+| Message routing  | All through daemon            | Direct peer sockets          |
+| Resource access  | All through daemon            | Direct resource sockets      |
+| Resource locking | None (duplicated providers)   | Socket bind = atomic lock    |
+| Plugin crash     | Kills daemon                  | Kills one proxy              |
+| Scaling          | Daemon bottleneck             | Peer-to-peer                 |
+| Project identity | Directory basename (collides) | Hash of realpath (canonical) |

@@ -10,26 +10,31 @@ import { Database } from "bun:sqlite"
 
 export const LEASE_DURATION_MS = 60_000
 
-export function acquireLease(db: Database, id: string, name: string): boolean {
+export function acquireLease(db: Database, id: string, name: string): { granted: boolean; epoch: number } {
   const leaseUntil = Date.now() + LEASE_DURATION_MS
   const acquired = Date.now()
   // Try insert first (no leader yet)
   try {
     db.run(
-      `INSERT INTO leadership (role, holder_id, holder_name, term, lease_until, acquired_at)
-       VALUES ('chief', $id, $name, 1, $lease_until, $acquired)`,
+      `INSERT INTO leadership (role, holder_id, holder_name, term, epoch, lease_until, acquired_at)
+       VALUES ('chief', $id, $name, 1, 1, $lease_until, $acquired)`,
       { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired } as any,
     )
-    return true
+    return { granted: true, epoch: 1 }
   } catch {
     // Row exists — try to take over if expired or renew if same holder
     const result = db.run(
       `UPDATE leadership SET holder_id = $id, holder_name = $name, term = term + 1,
+         epoch = CASE WHEN holder_id = $id THEN epoch ELSE epoch + 1 END,
          lease_until = $lease_until, acquired_at = $acquired
        WHERE role = 'chief' AND (lease_until < $now OR holder_id = $id)`,
       { $id: id, $name: name, $lease_until: leaseUntil, $acquired: acquired, $now: Date.now() } as any,
     )
-    return result.changes > 0
+    if (result.changes > 0) {
+      const row = db.prepare("SELECT epoch FROM leadership WHERE role = 'chief'").get() as { epoch: number } | null
+      return { granted: true, epoch: row?.epoch ?? 1 }
+    }
+    return { granted: false, epoch: 0 }
   }
 }
 
@@ -44,15 +49,19 @@ export function getLeaseInfo(db: Database): {
   holder_name: string
   holder_id: string
   term: number
+  epoch: number
   lease_until: number
   acquired_at: number
 } | null {
   return db
-    .prepare("SELECT holder_name, holder_id, term, lease_until, acquired_at FROM leadership WHERE role = 'chief'")
+    .prepare(
+      "SELECT holder_name, holder_id, term, epoch, lease_until, acquired_at FROM leadership WHERE role = 'chief'",
+    )
     .get() as {
     holder_name: string
     holder_id: string
     term: number
+    epoch: number
     lease_until: number
     acquired_at: number
   } | null

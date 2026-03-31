@@ -240,7 +240,7 @@ function handleJoin(ctx: TribeContext, a: ToolArgs): ToolResult {
   // If joining as chief, try to acquire lease
   if (joinRole === "chief") {
     const leased = acquireLease(ctx.db, ctx.sessionId, joinName)
-    if (!leased) {
+    if (!leased.granted) {
       const info = getLeaseInfo(ctx.db)
       return {
         content: [
@@ -407,7 +407,7 @@ function handleReload(ctx: TribeContext, a: ToolArgs, cleanup: () => void): Tool
 }
 
 async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> {
-  const { generateRetro, formatMarkdown, parseDuration } = await import("../../tribe-retro.ts")
+  const { generateRetro, formatMarkdown, parseDuration } = await import("./retro.ts")
   const sinceStr = a.since as string | undefined
   let sinceMs: number | undefined
   if (sinceStr) {

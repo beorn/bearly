@@ -18,9 +18,27 @@ import {
   resolveClaudeSessionId,
   resolveClaudeSessionName,
   resolveProjectName,
+  resolveProjectId,
 } from "./lib/tribe/config.ts"
-import { resolveSocketPath, createReconnectingClient, type DaemonClient } from "./lib/tribe/socket.ts"
+import {
+  resolveSocketPath,
+  resolvePeerSocketPath,
+  createReconnectingClient,
+  connectToDaemon,
+  createLineParser,
+  makeResponse,
+  makeError,
+  isRequest,
+  TRIBE_PROTOCOL_VERSION,
+  type DaemonClient,
+  type JsonRpcMessage,
+  type JsonRpcRequest,
+} from "./lib/tribe/socket.ts"
+import { createServer, type Socket as NetSocket, type Server as NetServer } from "node:net"
+import { existsSync, unlinkSync, mkdirSync, chmodSync } from "node:fs"
+import { dirname } from "node:path"
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 
@@ -40,7 +58,117 @@ log.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
 
 let myName = "pending"
 let myRole = "member"
+const mySessionId = randomUUID()
 const PROJECT_NAME = resolveProjectName()
+
+// ---------------------------------------------------------------------------
+// Peer socket server — allows other proxies to connect directly
+// ---------------------------------------------------------------------------
+
+const PEER_SOCKET_PATH = resolvePeerSocketPath(mySessionId)
+let peerServer: NetServer | null = null
+
+// MCP server reference — assigned after daemon connect, before peer server receives messages
+// oxlint-disable-next-line eslint(prefer-const) -- deferred init, assigned before use
+let mcp: Server
+
+/** Forward a channel notification to Claude Code */
+function sendChannel(content: string, meta: Record<string, string | undefined>): void {
+  if (!mcp) return // Not yet initialized
+  mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {})
+}
+
+function startPeerServer(): NetServer {
+  // Ensure directory exists
+  const socketDir = dirname(PEER_SOCKET_PATH)
+  if (!existsSync(socketDir)) mkdirSync(socketDir, { recursive: true })
+
+  // Clean up stale socket
+  if (existsSync(PEER_SOCKET_PATH)) {
+    try {
+      unlinkSync(PEER_SOCKET_PATH)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const server = createServer((socket: NetSocket) => {
+    const parse = createLineParser((msg: JsonRpcMessage) => {
+      if (!isRequest(msg)) return
+
+      const req = msg as JsonRpcRequest
+      const { method, params, id } = req
+
+      try {
+        switch (method) {
+          case "tribe.send": {
+            // Received a direct message from another proxy
+            sendChannel(String(params?.content ?? ""), {
+              from: String(params?.from ?? "unknown"),
+              type: String(params?.type ?? "notify"),
+              bead: params?.bead_id ? String(params.bead_id) : undefined,
+              message_id: String(params?.message_id ?? randomUUID()),
+            })
+            socket.write(makeResponse(id, { delivered: true }))
+            break
+          }
+          default:
+            socket.write(makeError(id, -32601, `Method not found: ${method}`))
+        }
+      } catch (err) {
+        socket.write(makeError(id, -32603, err instanceof Error ? err.message : String(err)))
+      }
+    })
+
+    socket.on("data", parse)
+    socket.on("error", () => {
+      /* ignore peer connection errors */
+    })
+  })
+
+  server.listen(PEER_SOCKET_PATH, () => {
+    try {
+      chmodSync(PEER_SOCKET_PATH, 0o600)
+    } catch {
+      /* ignore */
+    }
+    log.info?.(`Peer socket listening at ${PEER_SOCKET_PATH}`)
+  })
+
+  server.on("error", (err) => {
+    log.warn?.(`Peer server error: ${err.message}`)
+  })
+
+  return server
+}
+
+peerServer = startPeerServer()
+
+// ---------------------------------------------------------------------------
+// Direct peer messaging
+// ---------------------------------------------------------------------------
+
+/** Try to send a message directly to a peer's socket. Returns true on success. */
+async function sendDirect(
+  peerSocketPath: string,
+  message: { from: string; type: string; content: string; bead_id?: string; message_id?: string },
+): Promise<boolean> {
+  try {
+    const client = await connectToDaemon(peerSocketPath)
+    try {
+      await client.call("tribe.send", message as unknown as Record<string, unknown>)
+      return true
+    } finally {
+      client.close()
+    }
+  } catch {
+    return false // Fall back to daemon routing
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon connection
+// ---------------------------------------------------------------------------
 
 const registerParams = {
   ...(args.name ? { name: args.name } : {}),
@@ -48,6 +176,9 @@ const registerParams = {
   domains: SESSION_DOMAINS,
   project: process.cwd(),
   projectName: PROJECT_NAME,
+  projectId: resolveProjectId(),
+  protocolVersion: TRIBE_PROTOCOL_VERSION,
+  peerSocket: PEER_SOCKET_PATH,
   pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
@@ -118,7 +249,7 @@ Message format rules:
 
 Don't over-communicate — only send messages when it changes what someone else should do.`
 
-const mcp = new Server(
+mcp = new Server(
   { name: "tribe", version: "0.2.0" },
   {
     capabilities: {
@@ -153,6 +284,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const a = (toolArgs ?? {}) as Record<string, unknown>
 
   try {
+    // Try direct peer messaging for tribe_send
+    if (name === "tribe_send" && a.to && typeof a.to === "string") {
+      const directResult = await trySendDirect(a)
+      if (directResult) return directResult
+    }
+
     const result = await daemon.call(name, a)
     // Update local name/role after join/rename
     if (name === "tribe_join" || name === "tribe_rename") {
@@ -173,21 +310,73 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 })
 
+/** Try to send a message directly to a peer. Returns tool result on success, null to fall back to daemon. */
+async function trySendDirect(
+  a: Record<string, unknown>,
+): Promise<{ content: Array<{ type: string; text: string }> } | null> {
+  const target = String(a.to)
+  try {
+    // Discover the recipient's peer socket via daemon
+    const discovery = (await daemon.call("discover", { name: target })) as {
+      results: Array<{ name: string; peerSocket: string | null }>
+    }
+    const peer = discovery.results.find((r) => r.name === target)
+    if (!peer?.peerSocket) return null // No peer socket — fall back to daemon
+
+    const messageId = randomUUID()
+    const sent = await sendDirect(peer.peerSocket, {
+      from: myName,
+      type: String(a.type ?? "notify"),
+      content: String(a.message ?? ""),
+      bead_id: a.bead_id ? String(a.bead_id) : undefined,
+      message_id: messageId,
+    })
+
+    if (!sent) return null // Direct send failed — fall back to daemon
+
+    // Log the event to daemon for observability (fire-and-forget)
+    void daemon
+      .call("log_event", {
+        type: "message.sent",
+        meta: { to: target, from: myName, direct: true, message_id: messageId },
+      })
+      .catch(() => {})
+
+    log.info?.(`Direct message sent to ${target}`)
+    return {
+      content: [{ type: "text", text: JSON.stringify({ sent: true, to: target, direct: true }) }],
+    }
+  } catch {
+    return null // Discovery or send failed — fall back to daemon
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-/** Forward a channel notification to Claude Code */
-function sendChannel(content: string, meta: Record<string, string | undefined>): void {
-  mcp.notification({ method: "notifications/claude/channel", params: { content, meta } }).catch(() => {})
+function cleanupPeerSocket(): void {
+  if (peerServer) {
+    peerServer.close()
+    peerServer = null
+  }
+  if (existsSync(PEER_SOCKET_PATH)) {
+    try {
+      unlinkSync(PEER_SOCKET_PATH)
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 const shutdown = () => {
+  cleanupPeerSocket()
   daemon.close()
   process.exit(0)
 }
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
+process.on("exit", cleanupPeerSocket)
 
 // Connect MCP to Claude Code
 await mcp.connect(new StdioServerTransport())

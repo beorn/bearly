@@ -20,6 +20,7 @@ export function openDatabase(path: string): Database {
 		domains    TEXT NOT NULL DEFAULT '[]',
 		pid        INTEGER NOT NULL,
 		cwd        TEXT,
+		project_id TEXT,
 		claude_session_id TEXT,
 		claude_session_name TEXT,
 		started_at INTEGER NOT NULL,
@@ -28,6 +29,11 @@ export function openDatabase(path: string): Database {
 	)`)
 
   // Migration: add columns if they don't exist (for existing DBs)
+  try {
+    db.run("ALTER TABLE sessions ADD COLUMN project_id TEXT")
+  } catch {
+    /* already exists */
+  }
   try {
     db.run("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
   } catch {
@@ -123,8 +129,34 @@ export function openDatabase(path: string): Database {
 		holder_id    TEXT NOT NULL,
 		holder_name  TEXT NOT NULL,
 		term         INTEGER NOT NULL DEFAULT 1,
+		epoch        INTEGER DEFAULT 1,
 		lease_until  INTEGER NOT NULL,
 		acquired_at  INTEGER NOT NULL
+	)`)
+
+  // Migration: add epoch column if it doesn't exist (for existing DBs)
+  try {
+    db.run("ALTER TABLE leadership ADD COLUMN epoch INTEGER DEFAULT 1")
+  } catch {
+    /* already exists */
+  }
+
+  db.run(`CREATE TABLE IF NOT EXISTS coordination (
+		project_id  TEXT NOT NULL,
+		key         TEXT NOT NULL,
+		value       TEXT,
+		updated_by  TEXT,
+		updated_at  INTEGER,
+		PRIMARY KEY (project_id, key)
+	)`)
+
+  db.run(`CREATE TABLE IF NOT EXISTS event_log (
+		id          INTEGER PRIMARY KEY,
+		ts          INTEGER NOT NULL,
+		session_id  TEXT,
+		project_id  TEXT,
+		type        TEXT,
+		meta        TEXT
 	)`)
 
   // Create indexes if they don't exist
@@ -139,6 +171,9 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_pruned ON sessions(pruned_at, heartbeat)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_event_log_project_ts ON event_log(project_id, ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(type)")
 
   return db
 }
@@ -152,11 +187,11 @@ export type TribeStatements = ReturnType<typeof createStatements>
 export function createStatements(db: Database) {
   return {
     upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $claude_session_id, $claude_session_name, $now, $now, NULL)
+		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
+		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $now, $now, NULL)
 		ON CONFLICT(id) DO UPDATE SET
 			name = $name, role = $role, domains = $domains,
-			pid = $pid, cwd = $cwd, claude_session_id = $claude_session_id,
+			pid = $pid, cwd = $cwd, project_id = $project_id, claude_session_id = $claude_session_id,
 			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
 	`),
 
@@ -208,13 +243,13 @@ export function createStatements(db: Database) {
 	`),
 
     liveSessions: db.prepare(`
-		SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
+		SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
 		FROM sessions
 		WHERE heartbeat > $threshold AND pruned_at IS NULL
 	`),
 
     allSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
+      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
     ),
 
     messageHistory: db.prepare(`
@@ -259,7 +294,7 @@ export function createStatements(db: Database) {
     getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
 
     activeSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
+      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
     ),
 
     deleteOldPrunedSessions: db.prepare("DELETE FROM sessions WHERE pruned_at IS NOT NULL AND pruned_at < $cutoff"),

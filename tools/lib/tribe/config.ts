@@ -3,7 +3,8 @@
  */
 
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -149,4 +150,16 @@ export function resolveClaudeSessionId(): string | null {
 
 export function resolveClaudeSessionName(): string | null {
   return process.env.CLAUDE_SESSION_NAME ?? null
+}
+
+/** Canonical project identity — deterministic hash of the resolved project root path.
+ *  Handles symlinks, worktrees, and avoids collisions (two repos both named "api"). */
+export function resolveProjectId(cwd?: string): string {
+  const dir = cwd ?? process.cwd()
+  try {
+    const real = realpathSync(dir)
+    return createHash("sha256").update(real).digest("hex").slice(0, 12)
+  } catch {
+    return createHash("sha256").update(dir).digest("hex").slice(0, 12)
+  }
 }
