@@ -353,6 +353,9 @@ export function githubPlugin(): TribePlugin {
       // Track recently seen workflow URLs for dedup
       const seenWorkflowUrls = new Set<string>()
 
+      // CI state tracking per repo — consecutive failures trigger escalation
+      const ciState = new Map<string, { consecutiveFailures: number; lastFailedWorkflow: string; lastPusher: string }>()
+
       // Start with local repo for fast startup, then discover all user repos via API
       const repos = new Set<string>()
       const local = detectLocalRepo()
@@ -455,6 +458,28 @@ export function githubPlugin(): TribePlugin {
               const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
 
               ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
+
+              // Track CI state per repo for escalation
+              const key = `${r}:${run.name}`
+              const state = ciState.get(key) ?? { consecutiveFailures: 0, lastFailedWorkflow: "", lastPusher: "" }
+              if (run.conclusion === "failure") {
+                state.consecutiveFailures++
+                state.lastFailedWorkflow = `${run.name} #${run.run_number}`
+                state.lastPusher = run.actor.login
+                ciState.set(key, state)
+
+                if (state.consecutiveFailures === 3) {
+                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively. Last push by ${state.lastPusher}. Fix before pushing more.`, "github:ci-alert")
+                } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
+                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`, "github:ci-alert")
+                }
+              } else if (run.conclusion === "success") {
+                if (state.consecutiveFailures >= 3) {
+                  ctx.sendMessage("*", `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`, "github:ci-recovered")
+                }
+                state.consecutiveFailures = 0
+                ciState.set(key, state)
+              }
             }
           } catch (err) {
             log.error?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
