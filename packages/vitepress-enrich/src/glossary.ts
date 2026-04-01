@@ -41,12 +41,11 @@ export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): 
   const entities = compileEntities(options.entities)
 
   md.core.ruler.push("glossary_links", (state) => {
-    const linkedTerms = new Set<string>()
 
     for (const blockToken of state.tokens) {
       // Process HTML blocks (tables, divs embedded in markdown)
       if (blockToken.type === "html_block" && blockToken.content) {
-        blockToken.content = replaceInHtml(blockToken.content, entities, linkedTerms)
+        blockToken.content = replaceInHtml(blockToken.content, entities)
         continue
       }
 
@@ -90,7 +89,7 @@ export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): 
           continue
         }
 
-        const replaced = replaceEntities(child.content, entities, linkedTerms)
+        const replaced = replaceEntities(child.content, entities)
         if (replaced === child.content) {
           newChildren.push(child)
           continue

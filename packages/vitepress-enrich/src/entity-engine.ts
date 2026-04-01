@@ -53,15 +53,13 @@ function renderEntity(original: string, entity: CompiledEntity): string {
  * Entities are processed longest-first; positions already matched are skipped.
  * If `linkedTerms` is provided, only the first occurrence of each term is linked.
  */
-export function replaceEntities(text: string, entities: CompiledEntity[], linkedTerms?: Set<string>): string {
+export function replaceEntities(text: string, entities: CompiledEntity[], _linkedTerms?: Set<string>): string {
   const matches: Array<{ start: number; end: number; entity: CompiledEntity }> = []
   const occupied = new Set<number>()
 
   for (const entity of entities) {
-    if (linkedTerms?.has(entity.term)) continue
     entity.pattern.lastIndex = 0
     let m: RegExpExecArray | null
-    let matched = false
     while ((m = entity.pattern.exec(text)) !== null) {
       const start = m.index
       const end = start + m[0].length
@@ -73,18 +71,12 @@ export function replaceEntities(text: string, entities: CompiledEntity[], linked
         }
       }
       if (overlap) continue
-      if (matched) continue
-      matched = true
       for (let p = start; p < end; p++) occupied.add(p)
       matches.push({ start, end, entity })
     }
   }
 
   if (matches.length === 0) return text
-
-  if (linkedTerms) {
-    for (const { entity } of matches) linkedTerms.add(entity.term)
-  }
 
   matches.sort((a, b) => b.start - a.start)
   let result = text
@@ -133,10 +125,7 @@ export function replaceInHtml(html: string, entities: CompiledEntity[], linkedTe
   const occupied = new Set<number>()
 
   for (const entity of entities) {
-    if (linkedTerms?.has(entity.term)) continue
-    let matched = false
     for (const region of textRegions) {
-      if (matched) break
       const segment = html.slice(region.start, region.end)
       entity.pattern.lastIndex = 0
       let m: RegExpExecArray | null
@@ -151,8 +140,6 @@ export function replaceInHtml(html: string, entities: CompiledEntity[], linkedTe
           }
         }
         if (overlap) continue
-        if (matched) continue
-        matched = true
         for (let p = absStart; p < absEnd; p++) occupied.add(p)
         matches.push({ start: absStart, end: absEnd, entity })
       }
@@ -161,9 +148,6 @@ export function replaceInHtml(html: string, entities: CompiledEntity[], linkedTe
 
   if (matches.length === 0) return html
 
-  if (linkedTerms) {
-    for (const { entity } of matches) linkedTerms.add(entity.term)
-  }
 
   matches.sort((a, b) => b.start - a.start)
   let result = html
