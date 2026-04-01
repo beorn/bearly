@@ -253,6 +253,11 @@ Coordination protocol:
 - Before editing vendor/ or shared files, send a request to chief asking for OK
 - Respond to query messages promptly
 
+Sub-agent protocol:
+- When you spawn sub-agents (Agent tool), broadcast: tribe_send(to="*", message="spawned: <name> for <task>")
+- When a sub-agent completes, broadcast: tribe_send(to="*", message="agent-done: <name> — <result>")
+- Sub-agents share your tribe connection — they can't be seen individually in tribe
+
 CI protocol:
 - When you see a CI ALERT for a repo you're working on or know about, respond with a fix hint
 - Example: tribe_send(to="*", message="hint: termless CI needs vt220.js — run npm publish from vendor/vt100/packages/vt220")
