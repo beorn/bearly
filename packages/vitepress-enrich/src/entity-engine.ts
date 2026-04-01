@@ -148,7 +148,6 @@ export function replaceInHtml(html: string, entities: CompiledEntity[], linkedTe
 
   if (matches.length === 0) return html
 
-
   matches.sort((a, b) => b.start - a.start)
   let result = html
   for (const { start, end, entity } of matches) {

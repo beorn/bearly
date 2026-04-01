@@ -41,7 +41,6 @@ export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): 
   const entities = compileEntities(options.entities)
 
   md.core.ruler.push("glossary_links", (state) => {
-
     for (const blockToken of state.tokens) {
       // Process HTML blocks (tables, divs embedded in markdown)
       if (blockToken.type === "html_block" && blockToken.content) {

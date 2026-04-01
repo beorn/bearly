@@ -58,7 +58,11 @@ export function seoTransformPageData(options: SeoOptions) {
     description?: string
     relativePath: string
     lastUpdated?: number
-    frontmatter: { head?: HeadConfig[]; faq?: Array<{ q: string; a: string }>; howto?: { name: string; steps: string[] } }
+    frontmatter: {
+      head?: HeadConfig[]
+      faq?: Array<{ q: string; a: string }>
+      howto?: { name: string; steps: string[] }
+    }
   }) {
     const title = pageData.title || siteName
     const description = pageData.description || defaultDesc || ""

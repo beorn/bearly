@@ -42,4 +42,12 @@ export { seoHead, seoTransformPageData } from "./seo.ts"
 export { compileEntities, replaceEntities, replaceInHtml } from "./entity-engine.ts"
 export { validateGlossary } from "./validate.ts"
 export { loadTerminalGlossary } from "./terminal-glossary.ts"
+export {
+  extractGlossary,
+  extractFromMarkdown,
+  loadBucket,
+  writeGlossaryBucket,
+  readGlossaryBucket,
+} from "./doc-glossary.ts"
+export type { DocGlossaryOptions, ExtractedTerm } from "./doc-glossary.ts"
 export type { GlossaryEntity, CompiledEntity, SeoOptions } from "./types.ts"

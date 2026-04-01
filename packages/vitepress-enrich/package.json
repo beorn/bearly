@@ -18,33 +18,37 @@
   "exports": {
     ".": {
       "bun": "./src/index.ts",
-      "default": "./dist/index.js"
+      "default": "./dist/src/index.js"
     },
     "./glossary": {
       "bun": "./src/glossary.ts",
-      "default": "./dist/glossary.js"
+      "default": "./dist/src/glossary.js"
     },
     "./linkify": {
       "bun": "./src/linkify.ts",
-      "default": "./dist/linkify.js"
+      "default": "./dist/src/linkify.js"
     },
     "./seo": {
       "bun": "./src/seo.ts",
-      "default": "./dist/seo.js"
+      "default": "./dist/src/seo.js"
     },
     "./validate": {
       "bun": "./src/validate.ts",
-      "default": "./dist/validate.js"
+      "default": "./dist/src/validate.js"
     },
     "./terminal-glossary": {
       "bun": "./src/terminal-glossary.ts",
-      "default": "./dist/terminal-glossary.js"
+      "default": "./dist/src/terminal-glossary.js"
+    },
+    "./doc-glossary": {
+      "bun": "./src/doc-glossary.ts",
+      "default": "./dist/src/doc-glossary.js"
     },
     "./css/tooltip.css": "./src/css/tooltip.css",
     "./css/glossary-links.css": "./src/css/glossary-links.css"
   },
   "scripts": {
-    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts src/terminal-glossary.ts --outdir dist --target node --format esm"
+    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts src/terminal-glossary.ts src/doc-glossary.ts --outdir dist --target node --format esm"
   },
   "peerDependencies": {
     "markdown-it": ">=14",

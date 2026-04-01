@@ -45,7 +45,7 @@ const seo = {
   description: "What my site does",
   ogImage: "https://my-site.dev/og-image.svg",
   author: "Author Name",
-  codeRepository: "https://github.com/me/my-site",  // optional — enables SoftwareSourceCode on /api/ pages
+  codeRepository: "https://github.com/me/my-site", // optional — enables SoftwareSourceCode on /api/ pages
 }
 
 export default defineConfig({
@@ -57,9 +57,7 @@ export default defineConfig({
     },
   },
 
-  head: [
-    ...seoHead(seo),
-  ],
+  head: [...seoHead(seo)],
 
   transformPageData: seoTransformPageData(seo),
 
@@ -87,14 +85,15 @@ That's it. Every page now gets glossary auto-linking, tooltips, and structured d
 
 ```typescript
 interface GlossaryEntity {
-  term: string        // Text to match (word-boundary, case-sensitive)
-  href?: string       // Link URL — omit for tooltip-only
-  tooltip?: string    // Hover tooltip text
-  external?: boolean  // Opens in new tab
+  term: string // Text to match (word-boundary, case-sensitive)
+  href?: string // Link URL — omit for tooltip-only
+  tooltip?: string // Hover tooltip text
+  external?: boolean // Opens in new tab
 }
 ```
 
 **Linking behavior:**
+
 - Longest match wins (`"Kitty keyboard protocol"` before `"Kitty"`)
 - First occurrence only per page (no link spam)
 - Skips code blocks, inline code, headings, and existing links
@@ -105,13 +104,13 @@ interface GlossaryEntity {
 
 `seoTransformPageData()` adds to every page:
 
-| Schema | When | What |
-|--------|------|------|
-| **BreadcrumbList** | All pages with path segments | Auto-generated from URL path |
-| **TechArticle** | All non-home pages | headline, description, dateModified, author |
-| **SoftwareSourceCode** | Pages under `apiPathPrefix` (default `/api/`) | programmingLanguage, codeRepository |
-| **FAQPage** | `frontmatter.faq` array | Question/Answer pairs |
-| **HowTo** | `frontmatter.howto` object | Numbered steps |
+| Schema                 | When                                          | What                                        |
+| ---------------------- | --------------------------------------------- | ------------------------------------------- |
+| **BreadcrumbList**     | All pages with path segments                  | Auto-generated from URL path                |
+| **TechArticle**        | All non-home pages                            | headline, description, dateModified, author |
+| **SoftwareSourceCode** | Pages under `apiPathPrefix` (default `/api/`) | programmingLanguage, codeRepository         |
+| **FAQPage**            | `frontmatter.faq` array                       | Question/Answer pairs                       |
+| **HowTo**              | `frontmatter.howto` object                    | Numbered steps                              |
 
 ### FAQPage (opt-in)
 
@@ -156,22 +155,23 @@ const enrichedHtml = linkify("Use SelectList for keyboard navigation")
 ## Validation
 
 `validateGlossary()` runs at build time and:
+
 - Reports term counts: `[glossary] 53 terms (31 linked, 22 tooltip-only, 3 external)`
 - Warns on broken internal links: `⚠ "SelectList" → /api/select-list` if the page doesn't exist
 
 ## Exports
 
-| Export | Path | Purpose |
-|--------|------|---------|
-| `glossaryPlugin` | `@bearly/vitepress-enrich` | markdown-it plugin |
-| `createLinkifier` | `@bearly/vitepress-enrich/linkify` | Build-time string linkifier |
-| `seoHead` | `@bearly/vitepress-enrich/seo` | Static `<head>` entries |
-| `seoTransformPageData` | `@bearly/vitepress-enrich/seo` | Per-page SEO hook |
-| `validateGlossary` | `@bearly/vitepress-enrich/validate` | Build-time link validation |
-| `compileEntities` | `@bearly/vitepress-enrich` | Low-level entity compiler |
-| `replaceEntities` | `@bearly/vitepress-enrich` | Low-level text replacer |
-| CSS | `@bearly/vitepress-enrich/css/tooltip.css` | Hover tooltip styles |
-| CSS | `@bearly/vitepress-enrich/css/glossary-links.css` | Link/hint styles |
+| Export                 | Path                                              | Purpose                     |
+| ---------------------- | ------------------------------------------------- | --------------------------- |
+| `glossaryPlugin`       | `@bearly/vitepress-enrich`                        | markdown-it plugin          |
+| `createLinkifier`      | `@bearly/vitepress-enrich/linkify`                | Build-time string linkifier |
+| `seoHead`              | `@bearly/vitepress-enrich/seo`                    | Static `<head>` entries     |
+| `seoTransformPageData` | `@bearly/vitepress-enrich/seo`                    | Per-page SEO hook           |
+| `validateGlossary`     | `@bearly/vitepress-enrich/validate`               | Build-time link validation  |
+| `compileEntities`      | `@bearly/vitepress-enrich`                        | Low-level entity compiler   |
+| `replaceEntities`      | `@bearly/vitepress-enrich`                        | Low-level text replacer     |
+| CSS                    | `@bearly/vitepress-enrich/css/tooltip.css`        | Hover tooltip styles        |
+| CSS                    | `@bearly/vitepress-enrich/css/glossary-links.css` | Link/hint styles            |
 
 ## Requirements
 

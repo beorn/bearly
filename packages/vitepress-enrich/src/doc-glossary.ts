@@ -131,7 +131,12 @@ function deriveHref(filePath: string, baseUrl?: string): string | undefined {
  * First paragraph becomes the tooltip.
  * ```
  */
-function extractHeadingTerms(content: string, filePath: string, defaultBucket: string, baseUrl?: string): ExtractedTerm[] {
+function extractHeadingTerms(
+  content: string,
+  filePath: string,
+  defaultBucket: string,
+  baseUrl?: string,
+): ExtractedTerm[] {
   const terms: ExtractedTerm[] = []
   const markerRe = /<!--\s*glossary:\s*(\S+)\s*-->/g
 
