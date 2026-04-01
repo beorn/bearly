@@ -574,8 +574,12 @@ const pluginCtx: PluginContext = {
   claudeSessionId: null,
   triggerReload(reason) {
     log(`Plugin requested reload: ${reason}`)
-    // Broadcast to all clients that they should reload
     logActivity("reload", `reload: ${reason}`)
+  },
+  getSessionNames() {
+    return Array.from(clients.values())
+      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
+      .map((c) => c.name)
   },
 }
 

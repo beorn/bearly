@@ -356,6 +356,9 @@ export function githubPlugin(): TribePlugin {
       // CI state tracking per repo — consecutive failures trigger escalation
       const ciState = new Map<string, { consecutiveFailures: number; lastFailedWorkflow: string; lastPusher: string }>()
 
+      // Track recent pushes: repo → { session, timestamp } for CI correlation
+      const recentPushers = new Map<string, { actor: string; timestamp: number }>()
+
       // Start with local repo for fast startup, then discover all user repos via API
       const repos = new Set<string>()
       const local = detectLocalRepo()
@@ -411,6 +414,11 @@ export function githubPlugin(): TribePlugin {
               if (!formatted) continue
 
               ctx.sendMessage("*", `${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
+
+              // Track who pushed to each repo for CI correlation
+              if (formatted.type === "push") {
+                recentPushers.set(r, { actor: event.actor.login, timestamp: Date.now() })
+              }
             }
 
             // Update cursor
@@ -469,7 +477,17 @@ export function githubPlugin(): TribePlugin {
                 ciState.set(key, state)
 
                 if (state.consecutiveFailures === 3) {
-                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively. Last push by ${state.lastPusher}. Fix before pushing more.`, "github:ci-alert")
+                  const pusher = recentPushers.get(r)
+                  const pusherInfo = pusher ? ` Last push by ${pusher.actor}.` : ""
+                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`, "github:ci-alert")
+
+                  // DM sessions that might be responsible — match by repo name in session names
+                  const repoShort = r.split("/")[1] ?? r
+                  for (const name of ctx.getSessionNames()) {
+                    if (name.includes(repoShort) || name.includes(repoShort.replace(".dev", ""))) {
+                      ctx.sendMessage(name, `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`, "github:ci-alert")
+                    }
+                  }
                 } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
                   ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`, "github:ci-alert")
                 }

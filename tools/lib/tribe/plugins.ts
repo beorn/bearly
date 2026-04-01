@@ -40,6 +40,8 @@ export interface PluginContext {
   hasRecentMessage(contentPrefix: string): boolean
   /** Atomic dedup claim — returns true if this session won the claim, false if another session already claimed it */
   claimDedup(key: string): boolean
+  /** Get connected session names */
+  getSessionNames(): string[]
   /** Current session name */
   sessionName: string
   /** Current session ID (internal tribe UUID) */
@@ -156,7 +158,6 @@ export function gitPlugin(): TribePlugin {
 
     available() {
       try {
-
         execSync("git rev-parse HEAD", { cwd: process.cwd(), encoding: "utf8" })
         return true
       } catch {

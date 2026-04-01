@@ -252,6 +252,12 @@ Coordination protocol:
 - Before editing vendor/ or shared files, send a request to chief asking for OK
 - Respond to query messages promptly
 
+CI protocol:
+- When you see a CI ALERT for a repo you're working on or know about, respond with a fix hint
+- Example: tribe_send(to="*", message="hint: termless CI needs vt220.js — run npm publish from vendor/vt100/packages/vt220")
+- If a CI alert DMs you directly, investigate and fix the failure before pushing more code
+- After fixing, broadcast: tribe_send(to="*", message="ci-fix: <repo> — <what you fixed>")
+
 Message format rules:
 - Keep messages SHORT — 1-3 lines max. No essays.
 - Use plain text only — no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
