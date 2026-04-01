@@ -1,6 +1,6 @@
 {
   "name": "@bearly/vitepress-enrich",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Glossary auto-linking, content linkification, SEO helpers, and tooltip CSS for VitePress sites",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",
@@ -9,32 +9,42 @@
     "url": "https://github.com/beorn/bearly",
     "directory": "packages/vitepress-enrich"
   },
-  "files": [
-    "src"
-  ],
+  "files": ["dist", "src"],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./glossary": "./src/glossary.ts",
-    "./linkify": "./src/linkify.ts",
-    "./seo": "./src/seo.ts",
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./glossary": {
+      "bun": "./src/glossary.ts",
+      "default": "./dist/glossary.js"
+    },
+    "./linkify": {
+      "bun": "./src/linkify.ts",
+      "default": "./dist/linkify.js"
+    },
+    "./seo": {
+      "bun": "./src/seo.ts",
+      "default": "./dist/seo.js"
+    },
+    "./validate": {
+      "bun": "./src/validate.ts",
+      "default": "./dist/validate.js"
+    },
     "./css/tooltip.css": "./src/css/tooltip.css",
-    "./css/glossary-links.css": "./src/css/glossary-links.css",
-    "./validate": "./src/validate.ts"
+    "./css/glossary-links.css": "./src/css/glossary-links.css"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts --outdir dist --target node --format esm"
   },
   "peerDependencies": {
     "markdown-it": ">=14",
     "vitepress": ">=1"
   },
   "peerDependenciesMeta": {
-    "markdown-it": {
-      "optional": true
-    },
-    "vitepress": {
-      "optional": true
-    }
+    "markdown-it": { "optional": true },
+    "vitepress": { "optional": true }
   },
-  "engines": {
-    "node": ">=23.6.0"
-  }
+  "engines": { "node": ">=18" }
 }
