@@ -17,7 +17,7 @@
   left: 0;
   transform: none;
   width: max-content;
-  max-width: min(60ch, 90vw);
+  max-width: min(50ch, calc(100vw - 2rem));
   white-space: normal;
   word-wrap: break-word;
   overflow-wrap: break-word;

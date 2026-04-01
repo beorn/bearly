@@ -478,21 +478,37 @@ export function githubPlugin(): TribePlugin {
                 if (state.consecutiveFailures === 3) {
                   const pusher = recentPushers.get(r)
                   const pusherInfo = pusher ? ` Last push by ${pusher.actor}.` : ""
-                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`, "github:ci-alert")
+                  ctx.sendMessage(
+                    "*",
+                    `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`,
+                    "github:ci-alert",
+                  )
 
                   // DM sessions that might be responsible — match by repo name in session names
                   const repoShort = r.split("/")[1] ?? r
                   for (const name of ctx.getSessionNames()) {
                     if (name.includes(repoShort) || name.includes(repoShort.replace(".dev", ""))) {
-                      ctx.sendMessage(name, `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`, "github:ci-alert")
+                      ctx.sendMessage(
+                        name,
+                        `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`,
+                        "github:ci-alert",
+                      )
                     }
                   }
                 } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
-                  ctx.sendMessage("*", `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`, "github:ci-alert")
+                  ctx.sendMessage(
+                    "*",
+                    `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`,
+                    "github:ci-alert",
+                  )
                 }
               } else if (run.conclusion === "success") {
                 if (state.consecutiveFailures >= 3) {
-                  ctx.sendMessage("*", `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`, "github:ci-recovered")
+                  ctx.sendMessage(
+                    "*",
+                    `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`,
+                    "github:ci-recovered",
+                  )
                 }
                 state.consecutiveFailures = 0
                 ciState.set(key, state)
