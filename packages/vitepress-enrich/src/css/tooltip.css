@@ -21,7 +21,7 @@
   white-space: normal;
   word-wrap: break-word;
   overflow-wrap: break-word;
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
   color: var(--vp-c-text-1);
   padding: 8px 12px;
   border-radius: 6px;
@@ -30,8 +30,8 @@
   line-height: 1.5;
   pointer-events: none;
   z-index: 10000;
-  border: 1px solid var(--vp-c-divider);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--vp-c-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
 /* Near left edge: align left */
