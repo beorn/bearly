@@ -16,15 +16,15 @@ claude --dangerously-load-development-channels server:github
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│ Claude Code  │◀────│  MCP Channel     │◀────│  GitHub API  │
-│  (session)   │     │  (polls every    │     │  (REST v3)   │
+│ Claude Code  │◀───││  MCP Channel    │◀────││  GitHub API │
+│  (session)   │    ││  (polls every   │     ││  (REST v3)  │
 └─────────────┘     │   30 seconds)    │     └──────────────┘
                     └──────────────────┘
                            │
                     ┌──────┘
                ┌──────────────────┐
                │ .beads/          │
-               │ github-cursor.json│
+               │ github-cursor.jso│
                └──────────────────┘
 ```
 
