@@ -52,7 +52,7 @@ export function loadTerminalGlossary(glossaryPath?: string): GlossaryEntity[] {
 
   for (const path of candidates) {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf-8"))
+      const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, { expansion: string; description: string; link?: string }>
       return parseGlossary(raw)
     } catch {
       continue
@@ -62,7 +62,7 @@ export function loadTerminalGlossary(glossaryPath?: string): GlossaryEntity[] {
   // Fallback: bundled snapshot (works in standalone CI / npm installs)
   try {
     const bundledPath = join(dirname(import.meta.dirname ?? ""), "terminal-glossary-data.json")
-    const raw = JSON.parse(readFileSync(bundledPath, "utf-8"))
+    const raw = JSON.parse(readFileSync(bundledPath, "utf-8")) as Record<string, { expansion: string; description: string; link?: string }>
     return parseGlossary(raw)
   } catch {
     return []
