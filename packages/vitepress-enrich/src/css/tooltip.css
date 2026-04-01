@@ -1,0 +1,52 @@
+/* Pure CSS tooltips via data-tooltip attribute.
+   No JavaScript needed — hover to show, pure CSS positioning.
+   Works with VitePress dark/light themes via CSS variables. */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover {
+  z-index: 50;
+}
+
+[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  transform: none;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.8em;
+  font-weight: 400 !important;
+  line-height: 1.5;
+  pointer-events: none;
+  z-index: 10000;
+  max-width: 60ch;
+  border: 1px solid var(--vp-c-divider);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Near left edge: align left */
+[data-tooltip]:first-child:hover::after,
+td:first-child [data-tooltip]:hover::after {
+  left: 0;
+  transform: none;
+}
+
+/* Don't show empty tooltips */
+[data-tooltip=""]:hover::after,
+[data-tooltip]:not([data-tooltip]):hover::after {
+  display: none;
+}
+
+/* Prevent containers from clipping tooltips */
+.vp-doc .vp-table {
+  overflow: visible !important;
+}

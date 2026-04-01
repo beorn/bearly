@@ -1,0 +1,35 @@
+/* Glossary link styles for auto-linked terms.
+   Links: <a href="/path" class="hover-link" data-tooltip="...">term</a>
+   Hints: <span class="glossary-hint" data-tooltip="...">term</span>
+   Tooltip rendering handled by tooltip.css. */
+
+/* Glossary/entity links — subtle dotted underline, inherits text color */
+.vp-doc a.hover-link {
+  color: inherit !important;
+  text-decoration: underline dotted 1px !important;
+  text-decoration-color: var(--vp-c-divider) !important;
+  text-underline-offset: 3px !important;
+  text-decoration-thickness: 1px !important;
+  cursor: pointer;
+  position: relative;
+  font-weight: inherit !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  transition:
+    text-decoration-color 0.15s ease,
+    color 0.15s ease;
+}
+
+/* Hover: brand color with solid underline */
+.vp-doc a.hover-link:hover {
+  color: var(--vp-c-brand-1) !important;
+  text-decoration: underline solid 1px !important;
+  text-decoration-color: var(--vp-c-brand-1) !important;
+  text-decoration-thickness: 1px !important;
+}
+
+/* Glossary-only hints: tooltip on hover, no underline, help cursor */
+.vp-doc .glossary-hint {
+  position: relative;
+  cursor: help;
+}
