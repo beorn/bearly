@@ -232,6 +232,7 @@ Coordination protocol:
 - Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
 - Use tribe_broadcast(message) to announce changes that affect everyone
 - Use tribe_health() to check for silent members or conflicts
+- When CI alerts arrive, coordinate the fix — assign the responsible session to investigate
 
 Message format rules:
 - Keep messages SHORT — 1-3 lines max. No essays.

@@ -354,7 +354,7 @@ export function githubPlugin(): TribePlugin {
       const seenWorkflowUrls = new Set<string>()
 
       // CI state tracking per repo — consecutive failures trigger escalation
-      const ciState = new Map<string, { consecutiveFailures: number; lastFailedWorkflow: string; lastPusher: string }>()
+      const ciState = new Map<string, { consecutiveFailures: number }>()
 
       // Track recent pushes: repo → { session, timestamp } for CI correlation
       const recentPushers = new Map<string, { actor: string; timestamp: number }>()
@@ -455,6 +455,7 @@ export function githubPlugin(): TribePlugin {
             for (const run of recent.slice(0, 5)) {
               if (seenWorkflowUrls.has(run.html_url)) continue
               seenWorkflowUrls.add(run.html_url)
+              if (seenWorkflowUrls.size > 1000) seenWorkflowUrls.clear()
 
               const status =
                 run.conclusion === "success"
@@ -469,11 +470,9 @@ export function githubPlugin(): TribePlugin {
 
               // Track CI state per repo for escalation
               const key = `${r}:${run.name}`
-              const state = ciState.get(key) ?? { consecutiveFailures: 0, lastFailedWorkflow: "", lastPusher: "" }
+              const state = ciState.get(key) ?? { consecutiveFailures: 0 }
               if (run.conclusion === "failure") {
                 state.consecutiveFailures++
-                state.lastFailedWorkflow = `${run.name} #${run.run_number}`
-                state.lastPusher = run.actor.login
                 ciState.set(key, state)
 
                 if (state.consecutiveFailures === 3) {

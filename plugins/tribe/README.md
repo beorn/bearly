@@ -97,11 +97,11 @@ tribe reload          # Hot-reload daemon code
 
 Plugins run in the daemon and activate automatically when their dependencies are available:
 
-| Plugin   | Activates when       | What it does                                                |
-| -------- | -------------------- | ----------------------------------------------------------- |
-| `git`    | Inside a git repo    | Broadcasts new commits to all sessions                      |
-| `beads`  | `.beads/` dir exists | Broadcasts bead claims/closures                             |
-| `github` | `gh auth` available  | Monitors repos, broadcasts push/PR/CI/issue events          |
+| Plugin   | Activates when       | What it does                                       |
+| -------- | -------------------- | -------------------------------------------------- |
+| `git`    | Inside a git repo    | Broadcasts new commits to all sessions             |
+| `beads`  | `.beads/` dir exists | Broadcasts bead claims/closures                    |
+| `github` | `gh auth` available  | Monitors repos, broadcasts push/PR/CI/issue events |
 
 ## License
 
