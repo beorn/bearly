@@ -32,15 +32,12 @@ function renderEntity(original, entity) {
   }
   return `<span class="glossary-hint"${tooltip}>${original}</span>`;
 }
-function replaceEntities(text, entities, linkedTerms) {
+function replaceEntities(text, entities, _linkedTerms) {
   const matches = [];
   const occupied = new Set;
   for (const entity of entities) {
-    if (linkedTerms?.has(entity.term))
-      continue;
     entity.pattern.lastIndex = 0;
     let m;
-    let matched = false;
     while ((m = entity.pattern.exec(text)) !== null) {
       const start = m.index;
       const end = start + m[0].length;
@@ -53,9 +50,6 @@ function replaceEntities(text, entities, linkedTerms) {
       }
       if (overlap)
         continue;
-      if (matched)
-        continue;
-      matched = true;
       for (let p = start;p < end; p++)
         occupied.add(p);
       matches.push({ start, end, entity });
@@ -63,10 +57,6 @@ function replaceEntities(text, entities, linkedTerms) {
   }
   if (matches.length === 0)
     return text;
-  if (linkedTerms) {
-    for (const { entity } of matches)
-      linkedTerms.add(entity.term);
-  }
   matches.sort((a, b) => b.start - a.start);
   let result = text;
   for (const { start, end, entity } of matches) {
@@ -108,12 +98,7 @@ function replaceInHtml(html, entities, linkedTerms) {
   const matches = [];
   const occupied = new Set;
   for (const entity of entities) {
-    if (linkedTerms?.has(entity.term))
-      continue;
-    let matched = false;
     for (const region of textRegions) {
-      if (matched)
-        break;
       const segment = html.slice(region.start, region.end);
       entity.pattern.lastIndex = 0;
       let m;
@@ -129,9 +114,6 @@ function replaceInHtml(html, entities, linkedTerms) {
         }
         if (overlap)
           continue;
-        if (matched)
-          continue;
-        matched = true;
         for (let p = absStart;p < absEnd; p++)
           occupied.add(p);
         matches.push({ start: absStart, end: absEnd, entity });
@@ -140,10 +122,6 @@ function replaceInHtml(html, entities, linkedTerms) {
   }
   if (matches.length === 0)
     return html;
-  if (linkedTerms) {
-    for (const { entity } of matches)
-      linkedTerms.add(entity.term);
-  }
   matches.sort((a, b) => b.start - a.start);
   let result = html;
   for (const { start, end, entity } of matches) {
@@ -156,10 +134,9 @@ function replaceInHtml(html, entities, linkedTerms) {
 function glossaryPlugin(md, options) {
   const entities = compileEntities(options.entities);
   md.core.ruler.push("glossary_links", (state) => {
-    const linkedTerms = new Set;
     for (const blockToken of state.tokens) {
       if (blockToken.type === "html_block" && blockToken.content) {
-        blockToken.content = replaceInHtml(blockToken.content, entities, linkedTerms);
+        blockToken.content = replaceInHtml(blockToken.content, entities);
         continue;
       }
       if (blockToken.type !== "inline" || !blockToken.children)
@@ -198,7 +175,7 @@ function glossaryPlugin(md, options) {
           newChildren.push(child);
           continue;
         }
-        const replaced = replaceEntities(child.content, entities, linkedTerms);
+        const replaced = replaceEntities(child.content, entities);
         if (replaced === child.content) {
           newChildren.push(child);
           continue;
