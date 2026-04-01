@@ -1,11 +1,10 @@
 /**
- * Shared terminal glossary — loads terms from terminfo.dev's glossary.json
+ * Shared terminal glossary — loads terms from terminfo.dev's glossary
  * and converts them to GlossaryEntity format with absolute URLs.
  *
- * This is the canonical source for terminal sequence terms (CSI, SGR, OSC,
- * CUP, ED, DECSTBM, etc.). Sites that use @bearly/vitepress-enrich can
- * compose this with their site-specific glossary instead of duplicating
- * terminal terms in every glossary.json.
+ * Terms are bundled into the npm package (terminal-glossary-data.json)
+ * so they work without the terminfo.dev submodule. In the km monorepo,
+ * the live version is preferred if available.
  *
  * Usage:
  * ```typescript
@@ -22,47 +21,50 @@ import type { GlossaryEntity } from "./types.ts"
 
 const TERMINFO_HOST = "https://terminfo.dev"
 
+function parseGlossary(
+  raw: Record<string, { expansion: string; description: string; link?: string }>,
+): GlossaryEntity[] {
+  const entities: GlossaryEntity[] = []
+  for (const [term, entry] of Object.entries(raw)) {
+    const href = entry.link ? `${TERMINFO_HOST}${entry.link}` : undefined
+    entities.push({
+      term,
+      href,
+      tooltip: `${entry.expansion} — ${entry.description}`,
+      external: true,
+    })
+  }
+  return entities
+}
+
 /**
- * Load terminal glossary terms from terminfo.dev's content/glossary.json.
- *
- * @param glossaryPath - Path to terminfo.dev's glossary.json.
- *   Defaults to looking for it as a sibling submodule (vendor/terminfo.dev/content/glossary.json)
- *   or in node_modules.
+ * Load terminal glossary terms. Tries live terminfo.dev submodule first,
+ * falls back to bundled snapshot.
  */
 export function loadTerminalGlossary(glossaryPath?: string): GlossaryEntity[] {
+  // Try explicit path or live submodule first
   const candidates = glossaryPath
     ? [glossaryPath]
     : [
         // Sibling submodule in km monorepo
         join(dirname(import.meta.dirname ?? ""), "..", "..", "..", "terminfo.dev", "content", "glossary.json"),
-        // npm installed
-        join(dirname(import.meta.dirname ?? ""), "..", "..", "terminfo.dev", "content", "glossary.json"),
       ]
 
   for (const path of candidates) {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<
-        string,
-        { expansion: string; description: string; link?: string }
-      >
-
-      const entities: GlossaryEntity[] = []
-      for (const [term, entry] of Object.entries(raw)) {
-        // Convert relative links to absolute terminfo.dev URLs
-        const href = entry.link ? `${TERMINFO_HOST}${entry.link}` : undefined
-        entities.push({
-          term,
-          href,
-          tooltip: `${entry.expansion} — ${entry.description}`,
-          external: true,
-        })
-      }
-      return entities
+      const raw = JSON.parse(readFileSync(path, "utf-8"))
+      return parseGlossary(raw)
     } catch {
       continue
     }
   }
 
-  // Fallback: return empty if glossary not found (build still works, just no terminal terms)
-  return []
+  // Fallback: bundled snapshot (works in standalone CI / npm installs)
+  try {
+    const bundledPath = join(dirname(import.meta.dirname ?? ""), "terminal-glossary-data.json")
+    const raw = JSON.parse(readFileSync(bundledPath, "utf-8"))
+    return parseGlossary(raw)
+  } catch {
+    return []
+  }
 }

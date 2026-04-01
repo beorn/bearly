@@ -1,0 +1,582 @@
+{
+  "CSI": {
+    "expansion": "Control Sequence Introducer",
+    "description": "The ESC [ prefix that starts most terminal escape sequences. Defined in ECMA-48.",
+    "link": "/ecma-48"
+  },
+  "SGR": {
+    "expansion": "Select Graphic Rendition",
+    "description": "Escape sequences for text styling: bold, italic, underline, colors, etc.",
+    "link": "/sgr"
+  },
+  "OSC": {
+    "expansion": "Operating System Command",
+    "description": "Escape sequences for application-to-terminal communication: window title, clipboard, hyperlinks.",
+    "link": "/osc"
+  },
+  "DCS": {
+    "expansion": "Device Control String",
+    "description": "Escape sequences for device-specific data (Sixel graphics, DECRQSS queries).",
+    "link": "/standards"
+  },
+  "DEC": {
+    "expansion": "Digital Equipment Corporation",
+    "description": "The company that created the VT100 terminal series. Their private mode sequences (DECSET/DECRST) are still the primary mechanism for terminal feature negotiation.",
+    "link": "/dec-private-modes"
+  },
+  "ECMA-48": {
+    "expansion": "European Computer Manufacturers Association standard 48",
+    "description": "The foundational standard for terminal control sequences, first published in 1976. Also known as ISO 6429 and (formerly) ANSI X3.64.",
+    "link": "/ecma-48"
+  },
+  "ANSI": {
+    "expansion": "American National Standards Institute",
+    "description": "Published the X3.64 terminal standard in 1979, withdrawn in 1994 in favor of ISO 6429. The name persists in 'ANSI escape codes'.",
+    "link": "/standards"
+  },
+  "DECRPM": {
+    "expansion": "DEC Private Mode Report",
+    "description": "Response sequence reporting whether a DEC private mode is set, reset, or unrecognized.",
+    "link": "/device/decrpm"
+  },
+  "DECRQSS": {
+    "expansion": "DEC Request Status String",
+    "description": "Query the terminal for current settings (SGR attributes, scroll region, etc.).",
+    "link": "/device/decrqss"
+  },
+  "DECSET": {
+    "expansion": "DEC Private Mode Set",
+    "description": "CSI ? Pm h — enable a DEC private mode (alt screen, mouse tracking, bracketed paste, etc.).",
+    "link": "/dec-private-modes"
+  },
+  "DECRST": {
+    "expansion": "DEC Private Mode Reset",
+    "description": "CSI ? Pm l — disable a DEC private mode.",
+    "link": "/dec-private-modes"
+  },
+  "DECTCEM": {
+    "expansion": "DEC Text Cursor Enable Mode",
+    "description": "DEC private mode ?25 — show/hide the text cursor.",
+    "link": "/cursor/dectcem-hide-cursor"
+  },
+  "DECAWM": {
+    "expansion": "DEC Auto Wrap Mode",
+    "description": "DEC private mode ?7 — automatically wrap text at the right margin.",
+    "link": "/modes"
+  },
+  "DECSTBM": {
+    "expansion": "DEC Set Top and Bottom Margins",
+    "description": "Define the scroll region — lines between top and bottom margins scroll independently.",
+    "link": "/scrollback"
+  },
+  "DECSC": {
+    "expansion": "DEC Save Cursor",
+    "description": "Save cursor position and attributes for later restoration with DECRC.",
+    "link": "/cursor/decsc-save-restore-cursor"
+  },
+  "DECSCUSR": {
+    "expansion": "DEC Set Cursor Style",
+    "description": "Set cursor shape: block, underline, or bar; blinking or steady.",
+    "link": "/cursor/decscusr-cursor-shape"
+  },
+  "DA1": {
+    "expansion": "Primary Device Attributes",
+    "description": "Query the terminal for its type and supported features. The terminal responds with its capability flags.",
+    "link": "/device/da1-primary-device-attributes"
+  },
+  "DSR": {
+    "expansion": "Device Status Report",
+    "description": "Query the terminal for status information, most commonly cursor position (DSR 6).",
+    "link": "/device/dsr-5-device-status-report"
+  },
+  "CUP": {
+    "expansion": "Cursor Position",
+    "description": "CSI row ; col H — move cursor to absolute position. The most fundamental cursor command.",
+    "link": "/cursor/cup-cursor-position"
+  },
+  "EL": {
+    "expansion": "Erase in Line",
+    "description": "Clear part of the current line (right of cursor, left of cursor, or entire line).",
+    "link": "/erase"
+  },
+  "ED": {
+    "expansion": "Erase in Display",
+    "description": "Clear part of the screen (below cursor, above cursor, or entire screen).",
+    "link": "/erase"
+  },
+  "ICH": {
+    "expansion": "Insert Character",
+    "description": "Insert blank characters at cursor position, shifting existing characters right.",
+    "link": "/editing"
+  },
+  "DCH": {
+    "expansion": "Delete Character",
+    "description": "Delete characters at cursor position, shifting remaining characters left.",
+    "link": "/editing"
+  },
+  "RIS": {
+    "expansion": "Reset to Initial State",
+    "description": "Full terminal reset — cursor, modes, scroll regions, character sets, colors all reset.",
+    "link": "/reset"
+  },
+  "VT100": {
+    "expansion": "Video Terminal 100",
+    "description": "DEC's 1978 terminal that defined the escape sequence grammar used by every modern terminal emulator.",
+    "link": "/vt100"
+  },
+  "VT220": {
+    "expansion": "Video Terminal 220",
+    "description": "DEC's 1983 terminal that added insert/delete operations (ICH, DCH, IL, DL) and 8-bit controls.",
+    "link": "/vt220"
+  },
+  "VT52": {
+    "expansion": "Video Terminal 52",
+    "description": "DEC's 1975 pre-ANSI terminal with proprietary escape sequences predating ECMA-48. First DEC video terminal with cursor addressing.",
+    "link": "/terminals/vt52-historical"
+  },
+  "VT510": {
+    "expansion": "Video Terminal 510",
+    "description": "One of DEC's later VT terminals (1993). Added cursor visibility (DECTCEM), reverse video (DECSCNM), and scroll commands (SU/SD).",
+    "link": "/vt510"
+  },
+  "xterm": {
+    "expansion": "X Terminal Emulator",
+    "description": "The reference X11 terminal emulator (1984), maintained by Thomas Dickey since 1996. Defined most 'standard' terminal behavior including 256-color, truecolor, mouse tracking, and bracketed paste.",
+    "link": "/terminals/xterm-historical"
+  },
+  "TEA": {
+    "expansion": "The Elm Architecture",
+    "description": "A functional UI pattern: Model → Update → View. Used by Bubbletea (Go) and Silvery's optional app framework.",
+    "link": "/framework/bubbletea"
+  },
+  "TUI": {
+    "expansion": "Text User Interface",
+    "description": "A graphical user interface rendered in a terminal using text characters and escape sequences.",
+    "link": "/features"
+  },
+  "PTY": {
+    "expansion": "Pseudo-Terminal",
+    "description": "A virtual terminal device that allows a process to interact with a terminal emulator as if it were a real serial terminal.",
+    "link": "/features"
+  },
+  "XTGETTCAP": {
+    "expansion": "Xterm Get Terminal Capability",
+    "description": "Query the terminal for a specific terminfo capability value via DCS.",
+    "link": "/device/xtgettcap"
+  },
+  "terminal emulator": {
+    "expansion": "Terminal Emulator",
+    "description": "A program that simulates a hardware terminal. Ghostty, iTerm2, and Windows Terminal are terminal emulators — they display text and interpret escape sequences.",
+    "link": "/features"
+  },
+  "shell": {
+    "expansion": "Shell",
+    "description": "The command interpreter (bash, zsh, fish) that runs inside a terminal emulator. The shell handles commands; the terminal handles display.",
+    "link": "/features"
+  },
+  "escape sequence": {
+    "expansion": "Escape Sequence",
+    "description": "A special byte pattern starting with ESC (0x1B) that tells the terminal to do something other than display text — like change colors, move the cursor, or switch modes.",
+    "link": "/features"
+  },
+  "scrollback": {
+    "expansion": "Scrollback Buffer",
+    "description": "The history of text that has scrolled off the top of the terminal screen. You scroll up to see it. Size varies by terminal (typically 1,000–100,000 lines).",
+    "link": "/scrollback"
+  },
+  "alternate screen": {
+    "expansion": "Alternate Screen Buffer",
+    "description": "A separate screen that full-screen apps (vim, less, htop) switch to. When the app exits, your previous terminal content reappears. An xterm invention, not part of any formal standard.",
+    "link": "/modes/decset-1049-alt-screen-enter"
+  },
+  "bracketed paste": {
+    "expansion": "Bracketed Paste Mode",
+    "description": "A safety feature: the terminal wraps pasted text in special markers so the shell knows it's pasted, not typed. Prevents accidental command execution from pasting text containing newlines.",
+    "link": "/modes"
+  },
+  "truecolor": {
+    "expansion": "24-bit RGB Color",
+    "description": "Specify any of 16.7 million colors using red/green/blue values (0-255 each). Before truecolor, terminals were limited to 256 indexed colors.",
+    "link": "/sgr/38-2-truecolor-fg"
+  },
+  "mouse tracking": {
+    "expansion": "Mouse Tracking",
+    "description": "Terminal reports mouse clicks, movement, and scroll wheel events to the application.",
+    "link": "/modes"
+  },
+  "synchronized output": {
+    "expansion": "Synchronized Output (Mode 2026)",
+    "description": "Buffer all output between start/end markers and paint as one frame. Eliminates flicker.",
+    "link": "/modes"
+  },
+  "text reflow": {
+    "expansion": "Text Reflow",
+    "description": "When you resize the terminal window, wrapped lines re-wrap to fit the new width instead of staying broken. Not all terminals support this.",
+    "link": "/extensions"
+  },
+  "wide character": {
+    "expansion": "Wide Character (Fullwidth)",
+    "description": "A character that occupies two terminal columns instead of one. CJK ideographs (Chinese, Japanese, Korean) and many emoji are wide characters.",
+    "link": "/unicode"
+  },
+  "CJK": {
+    "expansion": "Chinese, Japanese, Korean",
+    "description": "The three East Asian writing systems whose characters are 'fullwidth' — they occupy two terminal columns each. Correct width calculation is essential for TUI layout.",
+    "link": "/unicode"
+  },
+  "grapheme cluster": {
+    "expansion": "Grapheme Cluster",
+    "description": "What humans perceive as a single character — which may be multiple Unicode codepoints. The family emoji is 7 codepoints but one grapheme cluster occupying 2 terminal columns.",
+    "link": "/unicode"
+  },
+  "headless": {
+    "expansion": "Headless Terminal",
+    "description": "A terminal emulator library running without a visible window — used for automated testing. It parses escape sequences but doesn't render pixels.",
+    "link": "/about"
+  },
+  "reverse index": {
+    "expansion": "Reverse Index (RI)",
+    "description": "Move the cursor up one line. If already at the top of the scroll region, scroll the content down instead. The opposite of a newline.",
+    "link": "/scrollback"
+  },
+  "auto-wrap": {
+    "expansion": "Auto-Wrap Mode (DECAWM)",
+    "description": "When text reaches the right edge of the terminal, automatically continue on the next line. Almost always enabled — disabling it causes text to overwrite the last column.",
+    "link": "/modes"
+  },
+  "semantic prompts": {
+    "expansion": "Semantic Prompt Markers (OSC 133)",
+    "description": "Invisible markers that tell the terminal where each shell prompt, command, and output starts and ends. Enables click-to-navigate between commands and red/green indicators for success/failure.",
+    "link": "/extensions"
+  },
+  "RGB": {
+    "expansion": "Red, Green, Blue",
+    "description": "Color model using three values (0-255 each) to specify any of 16.7 million colors. Used by truecolor escape sequences.",
+    "link": "/sgr"
+  },
+  "terminfo": {
+    "expansion": "Terminal Information Database",
+    "description": "A compiled database mapping terminal names to their capabilities (colors, cursor control, key sequences). Used by ncurses and most Unix TUI libraries. Limited to capabilities known at compile time — cannot describe modern features like Kitty keyboard or OSC 8.",
+    "link": "/about"
+  },
+  "termcap": {
+    "expansion": "Terminal Capability Database",
+    "description": "The predecessor to terminfo, created by Bill Joy in 1978 for vi. Text-based format with 2-character capability codes. Largely replaced by terminfo but still referenced in documentation.",
+    "link": "/standards"
+  },
+  "ncurses": {
+    "expansion": "New Curses",
+    "description": "Free reimplementation of the Unix curses TUI library, maintained by Thomas Dickey since 1996. The most widely used TUI library on Unix systems. Uses terminfo for terminal capability lookup.",
+    "link": "/standards"
+  },
+  "wcwidth": {
+    "expansion": "Wide Character Width",
+    "description": "A C function that returns the display width (1 or 2 columns) of a Unicode character. Based on Unicode's East Asian Width property (UAX #11). Predates emoji and doesn't handle grapheme clusters, variation selectors, or ZWJ sequences.",
+    "link": "/unicode"
+  },
+  "ZWJ": {
+    "expansion": "Zero-Width Joiner",
+    "description": "A Unicode character (U+200D) that joins adjacent characters into a single grapheme cluster. Used in emoji sequences: 👨‍👩‍👧 is three emoji joined by two ZWJs. Terminals must handle these for correct cursor positioning.",
+    "link": "/unicode"
+  },
+  "VS16": {
+    "expansion": "Variation Selector 16",
+    "description": "A Unicode character (U+FE0F) that forces emoji presentation of the preceding character. Without VS16, some characters display as text (1 column); with VS16, they display as emoji (2 columns). Terminal width calculation must account for this.",
+    "link": "/unicode"
+  },
+  "C1": {
+    "expansion": "C1 Control Codes",
+    "description": "Single-byte control characters in the 0x80–0x9F range defined by ECMA-48. Include CSI (0x9B), OSC (0x9D), DCS (0x90). Rarely used in practice because they conflict with UTF-8 encoding — the 7-bit ESC-prefixed forms are universal instead.",
+    "link": "/ecma-48"
+  },
+  "BEL": {
+    "expansion": "Bell Character",
+    "description": "ASCII character 0x07. Originally rang a physical bell. In modern terminals, may flash the title bar, play a sound, or trigger a notification. Also used as the string terminator in some OSC sequences (alternative to ST).",
+    "link": "/features"
+  },
+  "ST": {
+    "expansion": "String Terminator",
+    "description": "The ESC \\ sequence that ends OSC, DCS, and other string-type escape sequences. BEL (0x07) is accepted as an alternative terminator by most terminals.",
+    "link": "/features"
+  },
+  "modifyOtherKeys": {
+    "expansion": "Xterm Modify Other Keys",
+    "description": "An xterm mode that reports modifier keys for non-special characters. Predates the Kitty keyboard protocol. Enabled via CSI > 4 ; 2 m. Less comprehensive than Kitty's protocol but more widely supported in older terminals.",
+    "link": "/xterm-extensions"
+  },
+  "CSI u": {
+    "expansion": "CSI u Keyboard Protocol",
+    "description": "A keyboard reporting format proposed by Leonerd (Paul Evans) in the fixterms specification. Uses CSI ... u sequences for unambiguous key reporting. Influenced the Kitty keyboard protocol, which extended and formalized the approach.",
+    "link": "/extensions"
+  },
+  "Sixel": {
+    "expansion": "Six-Pixel Graphics",
+    "description": "A raster image format from DEC (1983) that encodes images as printable ASCII characters, each representing a 1×6 pixel column. Revived in modern terminals for inline image display. Uses DCS sequences.",
+    "link": "/sixel"
+  },
+  "OSC 52": {
+    "expansion": "Operating System Command 52",
+    "description": "Escape sequence for reading/writing the system clipboard. Allows terminal applications to access the clipboard over SSH without X11 forwarding. Some terminals disable read access for security.",
+    "link": "/extensions/osc-52-clipboard"
+  },
+  "OSC 8": {
+    "expansion": "Operating System Command 8",
+    "description": "Escape sequence for clickable hyperlinks in terminal output. Text between OSC 8 start and end markers becomes a link. Supported by most modern terminals.",
+    "link": "/extensions/osc-8-hyperlinks"
+  },
+  "CUU": {
+    "expansion": "Cursor Up",
+    "description": "Move cursor up N rows.",
+    "link": "/cursor"
+  },
+  "CUD": {
+    "expansion": "Cursor Down",
+    "description": "Move cursor down N rows.",
+    "link": "/cursor"
+  },
+  "CUF": {
+    "expansion": "Cursor Forward",
+    "description": "Move cursor right N columns.",
+    "link": "/cursor"
+  },
+  "CUB": {
+    "expansion": "Cursor Back",
+    "description": "Move cursor left N columns.",
+    "link": "/cursor"
+  },
+  "CHA": {
+    "expansion": "Cursor Horizontal Absolute",
+    "description": "Move cursor to column N on the current row.",
+    "link": "/cursor"
+  },
+  "CNL": {
+    "expansion": "Cursor Next Line",
+    "description": "Move cursor to the beginning of the line N rows down.",
+    "link": "/cursor"
+  },
+  "IL": {
+    "expansion": "Insert Lines",
+    "description": "Insert N blank lines at cursor position, pushing existing lines down.",
+    "link": "/editing"
+  },
+  "DL": {
+    "expansion": "Delete Lines",
+    "description": "Delete N lines at cursor position, pulling lines up from below.",
+    "link": "/editing"
+  },
+  "SU": {
+    "expansion": "Scroll Up",
+    "description": "Scroll the display up N lines. New blank lines appear at the bottom.",
+    "link": "/scrollback"
+  },
+  "SD": {
+    "expansion": "Scroll Down",
+    "description": "Scroll the display down N lines. New blank lines appear at the top.",
+    "link": "/scrollback"
+  },
+  "ECH": {
+    "expansion": "Erase Character",
+    "description": "Erase N characters at cursor position without moving the cursor.",
+    "link": "/erase"
+  },
+  "Kitty keyboard protocol": {
+    "expansion": "Kitty Keyboard Protocol",
+    "description": "Unambiguous key reporting with modifiers and release events. Solves Ctrl+I/Tab ambiguity. Adopted by Ghostty, WezTerm, foot.",
+    "link": "/kitty-extensions"
+  },
+  "Kitty graphics protocol": {
+    "expansion": "Kitty Graphics Protocol",
+    "description": "Inline image display via chunked base64 transfer. More capable than Sixel but less widely supported.",
+    "link": "/kitty-extensions"
+  },
+  "bracketed paste mode": {
+    "expansion": "Bracketed Paste Mode",
+    "description": "Terminal wraps pasted text in markers so the shell knows it is pasted, not typed. Prevents accidental command execution.",
+    "link": "/modes"
+  },
+  "alternate screen buffer": {
+    "expansion": "Alternate Screen Buffer",
+    "description": "A separate screen for full-screen apps. When the app exits, previous content reappears.",
+    "link": "/modes/decset-1049-alt-screen-enter"
+  },
+  "focus reporting": {
+    "expansion": "Focus Reporting",
+    "description": "Terminal notifies the app when the window gains or loses focus. Enables apps to pause/resume rendering.",
+    "link": "/modes"
+  },
+  "scroll region": {
+    "expansion": "Scroll Region (DECSTBM)",
+    "description": "Define a range of lines that scroll independently. Used by TUIs for status bars, headers.",
+    "link": "/scrollback"
+  },
+  "TTY": {
+    "expansion": "Teletypewriter",
+    "description": "Originally a physical printing terminal. Now refers to the kernel subsystem that manages terminal I/O — the TTY driver, line discipline, and pseudo-terminal (PTY) devices.",
+    "link": "/fundamentals/tty-architecture"
+  },
+  "raw mode": {
+    "expansion": "Raw Terminal Mode",
+    "description": "A TTY line discipline setting where every byte is delivered to the application immediately — no echo, no line editing, no signal generation. What TUI apps use. Opposite of canonical mode.",
+    "link": "/fundamentals/stty"
+  },
+  "canonical mode": {
+    "expansion": "Canonical (Cooked) Terminal Mode",
+    "description": "The default TTY line discipline mode where input is line-buffered (delivered on Enter), with echo and basic line editing (backspace, Ctrl+U). Also called cooked mode.",
+    "link": "/fundamentals/stty"
+  },
+  "line discipline": {
+    "expansion": "TTY Line Discipline",
+    "description": "A kernel-level module that sits between the PTY and the application. Handles echo, line editing, signal generation (Ctrl+C → SIGINT), and newline translation. Controlled via stty.",
+    "link": "/fundamentals/stty"
+  },
+  "process group": {
+    "expansion": "Process Group",
+    "description": "A set of processes that receive signals together. The foreground process group gets keyboard signals (SIGINT, SIGTSTP). Background groups are stopped if they try to read from the terminal.",
+    "link": "/fundamentals/tty-architecture"
+  },
+  "job control": {
+    "expansion": "Job Control",
+    "description": "Shell feature for managing foreground/background processes. Ctrl+Z suspends (SIGTSTP), fg resumes in foreground, bg resumes in background. Relies on the kernel's process group and TTY subsystem.",
+    "link": "/fundamentals/tty-architecture"
+  },
+  "C0": {
+    "expansion": "C0 Control Characters",
+    "description": "The 33 non-printable ASCII characters in the 0x00–0x1F range plus DEL (0x7F). Includes ESC, BS, TAB, LF, CR, and BEL. Predates escape sequences — these are single-byte terminal commands.",
+    "link": "/fundamentals/control-characters"
+  },
+  "OSC 133": {
+    "expansion": "Semantic Prompt Markers",
+    "description": "Invisible markers for shell prompt, command, and output boundaries. Enables click-to-navigate between commands.",
+    "link": "/extensions/osc-133-semantic-prompts"
+  },
+  "OSC 633": {
+    "expansion": "VS Code Shell Integration",
+    "description": "VS Code extension of OSC 133 with additional markers for command detection and shell state.",
+    "link": "/extensions/osc-633-vscode"
+  },
+  "OSC 7": {
+    "expansion": "Current Working Directory",
+    "description": "Report the shell current directory to the terminal. Used for tab titles and new-tab-in-same-directory.",
+    "link": "/extensions/osc-7-current-directory"
+  },
+  "OSC 0": {
+    "expansion": "Window Icon and Title",
+    "description": "Set the terminal window title and icon name.",
+    "link": "/extensions/osc-0-icon-title"
+  },
+  "OSC 2": {
+    "expansion": "Window Title",
+    "description": "Set the terminal window title.",
+    "link": "/extensions/osc-2-window-title"
+  },
+  "OSC 4": {
+    "expansion": "Color Palette",
+    "description": "Query or set entries in the terminal 256-color palette.",
+    "link": "/extensions"
+  },
+  "OSC 10": {
+    "expansion": "Foreground Color Query",
+    "description": "Query the terminal default foreground color. Response is an X11 color string.",
+    "link": "/extensions/osc-10-fg-color-query"
+  },
+  "OSC 11": {
+    "expansion": "Background Color Query",
+    "description": "Query the terminal default background color. Used for light/dark mode detection.",
+    "link": "/extensions/osc-11-bg-color-query"
+  },
+  "OSC 1337": {
+    "expansion": "iTerm2 Protocol",
+    "description": "iTerm2 proprietary extensions including inline images, shell integration, and capability reporting.",
+    "link": "/extensions/osc1337-capabilities"
+  },
+  "SGR 38": {
+    "expansion": "Set Foreground Color",
+    "description": "Extended foreground color: SGR 38;5;N for 256-color, SGR 38;2;R;G;B for truecolor.",
+    "link": "/sgr/38-2-truecolor-fg"
+  },
+  "SGR 48": {
+    "expansion": "Set Background Color",
+    "description": "Extended background color: SGR 48;5;N for 256-color, SGR 48;2;R;G;B for truecolor.",
+    "link": "/sgr/48-5-256-color-bg"
+  },
+  "Mode 2004": {
+    "expansion": "Bracketed Paste Mode",
+    "description": "Terminal wraps pasted text in markers so the shell knows it is pasted, not typed.",
+    "link": "/modes/decset-2004-bracketed-paste"
+  },
+  "Mode 2026": {
+    "expansion": "Synchronized Output",
+    "description": "Buffer all output between start/end markers and paint as one frame. Eliminates flicker.",
+    "link": "/modes/decset-2026-synchronized-output"
+  },
+  "Mode 1049": {
+    "expansion": "Alternate Screen with Cursor Save",
+    "description": "Switch to alternate screen buffer and save/restore cursor position.",
+    "link": "/modes/decset-1049-alt-screen-enter"
+  },
+  "Core TUI baseline": {
+    "expansion": "Core TUI Baseline",
+    "description": "Every terminal should support these",
+    "link": "/baseline/core"
+  },
+  "Modern TUI baseline": {
+    "expansion": "Modern TUI Baseline",
+    "description": "Expected by modern TUI frameworks",
+    "link": "/baseline/modern"
+  },
+  "Rich TUI baseline": {
+    "expansion": "Rich TUI Baseline",
+    "description": "Advanced features for cutting-edge TUIs",
+    "link": "/baseline/rich"
+  },
+  "Unicode baseline": {
+    "expansion": "Unicode Baseline",
+    "description": "Unicode correctness — wide chars, combining, emoji",
+    "link": "/baseline/unicode"
+  },
+  "Kitty": {
+    "expansion": "Kitty Terminal Emulator",
+    "description": "GPU-accelerated terminal by Kovid Goyal. Pioneer of the Kitty keyboard and graphics protocols.",
+    "link": "/terminals/kitty"
+  },
+  "Ghostty": {
+    "expansion": "Ghostty Terminal Emulator",
+    "description": "GPU-accelerated terminal by Mitchell Hashimoto, written in Zig with excellent standards compliance.",
+    "link": "/terminals/ghostty"
+  },
+  "WezTerm": {
+    "expansion": "WezTerm Terminal Emulator",
+    "description": "Rust terminal emulator and multiplexer by Wez Furlong with Lua configuration and SSH domain support.",
+    "link": "/terminals/wezterm"
+  },
+  "Alacritty": {
+    "expansion": "Alacritty Terminal Emulator",
+    "description": "GPU-accelerated minimal terminal written in Rust. Pioneered GPU rendering for terminals in 2017.",
+    "link": "/terminals/alacritty"
+  },
+  "xterm.js": {
+    "expansion": "xterm.js Terminal Emulator",
+    "description": "The most widely deployed terminal emulator — powers VS Code, Cursor, and countless web terminals.",
+    "link": "/terminals/xterm-js"
+  },
+  "vterm.js": {
+    "expansion": "vterm.js Terminal Emulator",
+    "description": "Full-featured TypeScript terminal emulator targeting 100% of the terminfo.dev feature matrix.",
+    "link": "/terminals/vterm-js"
+  },
+  "vt100.js": {
+    "expansion": "vt100.js Terminal Emulator",
+    "description": "Lightweight pure TypeScript VT100/VT220 terminal emulator with zero dependencies.",
+    "link": "/terminals/vt100-js"
+  },
+  "tmux": {
+    "expansion": "Terminal Multiplexer",
+    "description": "The most widely used terminal multiplexer — session persistence, window management, and pane splitting.",
+    "link": "/terminals/tmux"
+  },
+  "GNU Screen": {
+    "expansion": "GNU Screen Terminal Multiplexer",
+    "description": "The original terminal multiplexer (1987). Session persistence and detach/reattach for remote work.",
+    "link": "/terminals/gnu-screen"
+  }
+}

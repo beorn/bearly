@@ -1,6 +1,6 @@
 {
   "name": "@bearly/vitepress-enrich",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Glossary auto-linking, content linkification, SEO helpers, and tooltip CSS for VitePress sites",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",
@@ -9,7 +9,7 @@
     "url": "https://github.com/beorn/bearly",
     "directory": "packages/vitepress-enrich"
   },
-  "files": ["dist", "src"],
+  "files": ["dist", "src", "src/terminal-glossary-data.json"],
   "type": "module",
   "exports": {
     ".": {
