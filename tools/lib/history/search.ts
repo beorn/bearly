@@ -18,6 +18,9 @@ import { synthesizeResults } from "./synthesize.ts"
 import { log, ONE_HOUR_MS, ONE_DAY_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 import type { RecallOptions, RecallResult, RecallSearchResult } from "./recall-shared.ts"
 
+import { existsSync, readFileSync } from "node:fs"
+import { resolve, basename } from "node:path"
+
 // Re-export shared items so existing internal imports continue to work
 export { setRecallLogging, log, ONE_HOUR_MS, ONE_DAY_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 export type { RecallOptions, RecallResult, RecallSearchResult } from "./recall-shared.ts"
@@ -157,6 +160,89 @@ export function boostedRank(rank: number, timestamp: number): number {
   const recencyFactor = 1 / (1 + daysAgo / 7)
   // rank is negative (bm25), so multiplying by recencyFactor (0..1) makes recent items more negative = better
   return rank * recencyFactor
+}
+
+// ============================================================================
+// Live session search — grep current session's JSONL (not yet indexed)
+// ============================================================================
+
+export function searchLiveSession(query: string, limit: number): RecallSearchResult[] {
+  const sessionId = process.env.CLAUDE_SESSION_ID
+  if (!sessionId) return []
+
+  // Find the live JSONL — Claude Code stores sessions at ~/.claude/projects/{slug}/{id}.jsonl
+  // The slug is the CWD with / replaced by - (e.g., /Users/beorn/Code → -Users-beorn-Code)
+  const home = process.env.HOME ?? ""
+  const cwd = process.cwd()
+  const projectSlug = cwd.replaceAll("/", "-")
+  const projectDir = resolve(home, ".claude/projects", projectSlug)
+  const jsonlPath = resolve(projectDir, `${sessionId}.jsonl`)
+  if (!existsSync(jsonlPath)) return []
+
+  try {
+    const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2)
+    if (terms.length === 0) return []
+
+    // Use grep for fast pre-filtering — much faster than reading 40MB into memory
+    const grepPattern = terms[0]!
+    const proc = Bun.spawnSync(["grep", "-i", "-n", grepPattern, jsonlPath], {
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+    if (!proc.stdout) return []
+
+    const grepOutput = proc.stdout.toString()
+    const matchingLines = grepOutput.split("\n").filter(Boolean)
+    const results: RecallSearchResult[] = []
+
+    // Process from end (most recent matches first)
+    for (let i = matchingLines.length - 1; i >= 0 && results.length < limit; i--) {
+      const line = matchingLines[i]!
+      const colonIdx = line.indexOf(":")
+      if (colonIdx < 0) continue
+      const jsonStr = line.slice(colonIdx + 1)
+
+      try {
+        const msg = JSON.parse(jsonStr)
+        if (msg.type !== "human" && msg.type !== "assistant") continue
+
+        const text =
+          typeof msg.message?.content === "string"
+            ? msg.message.content
+            : Array.isArray(msg.message?.content)
+              ? msg.message.content
+                  .filter((c: { type: string }) => c.type === "text")
+                  .map((c: { text: string }) => c.text)
+                  .join(" ")
+              : ""
+        if (!text) continue
+
+        const lower = text.toLowerCase()
+        const matchCount = terms.filter((t) => lower.includes(t)).length
+        if (matchCount < Math.ceil(terms.length / 2)) continue
+
+        // Extract snippet around first match
+        const firstIdx = Math.min(...terms.map((t) => lower.indexOf(t)).filter((idx) => idx >= 0))
+        const start = Math.max(0, firstIdx - 100)
+        const snippet = text.slice(start, start + 500)
+
+        results.push({
+          type: "message",
+          sessionId,
+          sessionTitle: "(current session)",
+          timestamp: msg.timestamp ?? Date.now(),
+          snippet: `[CURRENT SESSION] ${snippet}`,
+          rank: -100 - matchCount,
+        })
+      } catch {
+        /* skip malformed */
+      }
+    }
+
+    return results
+  } catch {
+    return []
+  }
 }
 
 // ============================================================================
@@ -343,8 +429,21 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
       log(`corroboration: ${sessionDepths.size} sessions, max depth=${maxDepth} (${corroborationMs}ms)`)
     }
 
+    // Search current (live) session — not yet indexed
+    const liveStart = Date.now()
+    const liveResults = searchLiveSession(query, limit)
+    const liveMs = Date.now() - liveStart
+    if (liveResults.length > 0) {
+      log(`live session: ${liveResults.length} matches (${liveMs}ms)`)
+    }
+
     // Merge results into a unified list
     const merged: RecallSearchResult[] = []
+
+    // Live session results get top priority (rank = -100, very negative = best)
+    for (const r of liveResults) {
+      merged.push(r)
+    }
 
     for (const r of messageResults.results) {
       // Apply corroboration boost: divide BM25 rank by log2(depth+1)

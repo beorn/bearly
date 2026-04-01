@@ -14,6 +14,7 @@ import {
   type MessageSearchOptions,
 } from "../lib/history/db"
 import { recall, type RecallOptions, type RecallResult } from "../lib/history/recall"
+import { searchLiveSession } from "../lib/history/search"
 import { findSessionFiles, extractTextContent } from "../lib/history/indexer"
 import type { ContentType, ContentRecord, MessageRecord, JsonlRecord } from "../lib/history/types"
 import {
@@ -416,7 +417,11 @@ async function rawSearch(query: string | undefined, options: RawSearchOptions): 
     return
   }
 
-  if (messageResults.results.length === 0 && contentResults.results.length === 0) {
+  // Search live session (current, not yet indexed)
+  const liveResults = query && searchMessages ? searchLiveSession(query, Math.min(5, limit)) : []
+  const totalWithLive = total + liveResults.length
+
+  if (totalWithLive === 0) {
     const queryPart = query ? ` for "${query}"` : ""
     console.log(`No matches found${queryPart} (searched in ${duration}ms)`)
     closeDb()
@@ -424,7 +429,23 @@ async function rawSearch(query: string | undefined, options: RawSearchOptions): 
   }
 
   const queryPart = query ? ` for "${query}"` : ""
-  console.log(`Found ${total} matches${queryPart} in ${duration}ms:\n`)
+  console.log(`Found ${totalWithLive} matches${queryPart} in ${duration}ms:\n`)
+
+  // Display live session results first
+  if (liveResults.length > 0) {
+    console.log(`\u2501`.repeat(60))
+    console.log(`\u{1F534} CURRENT SESSION  |  ${liveResults.length} matches`)
+    console.log(`\u2501`.repeat(60))
+    for (const r of liveResults.slice(0, 3)) {
+      const snippet = r.snippet.replace("[CURRENT SESSION] ", "")
+      console.log(`\n\u{1F4AC} ${snippet.slice(0, 400)}${snippet.length > 400 ? "..." : ""}`)
+      console.log("\u2500".repeat(60))
+    }
+    if (liveResults.length > 3) {
+      console.log(`  ... and ${liveResults.length - 3} more matches in current session`)
+    }
+    console.log()
+  }
 
   // Display message results grouped by session
   if (messageResults.results.length > 0) {
