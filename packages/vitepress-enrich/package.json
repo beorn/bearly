@@ -1,6 +1,6 @@
 {
   "name": "@bearly/vitepress-enrich",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Glossary auto-linking, content linkification, SEO helpers, and tooltip CSS for VitePress sites",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",
@@ -32,11 +32,15 @@
       "bun": "./src/validate.ts",
       "default": "./dist/validate.js"
     },
+    "./terminal-glossary": {
+      "bun": "./src/terminal-glossary.ts",
+      "default": "./dist/terminal-glossary.js"
+    },
     "./css/tooltip.css": "./src/css/tooltip.css",
     "./css/glossary-links.css": "./src/css/glossary-links.css"
   },
   "scripts": {
-    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts --outdir dist --target node --format esm"
+    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts src/terminal-glossary.ts --outdir dist --target node --format esm"
   },
   "peerDependencies": {
     "markdown-it": ">=14",
