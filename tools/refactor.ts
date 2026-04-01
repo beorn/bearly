@@ -237,7 +237,7 @@ COMMANDS
     --backend <name>                      ast-grep (structural) or ripgrep (text)
     --output <file>                       Editset file (default: editset.json)
 
-  editset.apply <file> [--dry-run]        Apply editset (checksums protect against drift)
+  editset.apply <file> [--dry-run] [--verify]  Apply editset (checksums protect against drift, --verify runs tsc before/after)
   editset.verify <file>                   Check if editset can be applied
   editset.patch <file>                    Apply LLM patch from stdin
   file.apply <file> [--dry-run]           Apply file rename editset
@@ -419,9 +419,20 @@ async function main() {
     case "editset.apply": {
       const inputFile = args[1]
       const dryRun = hasFlag("--dry-run")
+      const verify = hasFlag("--verify")
 
       if (!inputFile) {
-        error("Usage: editset.apply <file> [--dry-run]")
+        error("Usage: editset.apply <file> [--dry-run] [--verify]")
+      }
+
+      // Capture tsc baseline before apply (if --verify)
+      let tscBefore = 0
+      if (verify && !dryRun) {
+        const baseline = Bun.spawnSync(["npx", "tsc", "--noEmit"], { stdout: "pipe", stderr: "pipe" })
+        tscBefore = (baseline.stderr.toString() + baseline.stdout.toString())
+          .split("\n")
+          .filter((l) => l.includes("error TS")).length
+        console.error(`[verify] tsc errors before: ${tscBefore}`)
       }
 
       const editset = loadEditset(inputFile)
@@ -429,6 +440,23 @@ async function main() {
 
       if (dryRun) {
         console.error("[DRY RUN - no changes applied]")
+      }
+
+      // Verify tsc after apply (if --verify)
+      if (verify && !dryRun) {
+        const after = Bun.spawnSync(["npx", "tsc", "--noEmit"], { stdout: "pipe", stderr: "pipe" })
+        const tscAfter = (after.stderr.toString() + after.stdout.toString())
+          .split("\n")
+          .filter((l) => l.includes("error TS")).length
+        const delta = tscAfter - tscBefore
+        console.error(`[verify] tsc errors after: ${tscAfter} (${delta >= 0 ? "+" : ""}${delta})`)
+        if (delta > 0) {
+          console.error(`[verify] WARNING: tsc errors INCREASED by ${delta} — review changes carefully`)
+        } else if (delta < 0) {
+          console.error(`[verify] tsc errors decreased by ${Math.abs(delta)}`)
+        } else {
+          console.error(`[verify] tsc errors unchanged`)
+        }
       }
 
       output(result)
