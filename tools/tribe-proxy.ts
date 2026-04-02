@@ -287,9 +287,13 @@ mcp = new Server(
 // ---------------------------------------------------------------------------
 
 let nudgeSent = false
+/** Check if session name is auto-generated (not explicitly set by user/agent) */
+function isAutoName(name: string): boolean {
+  return name.startsWith("member-") || name.startsWith("pending-") || /^[a-z]+-\d+-[a-z0-9]{3}$/.test(name)
+}
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   // Nudge on tools discovery (fires on session init/resume)
-  if (!nudgeSent && (myName.startsWith("member-") || myName.startsWith("pending-"))) {
+  if (!nudgeSent && isAutoName(myName)) {
     nudgeSent = true
     timers.setTimeout(() => {
       sendChannel(
@@ -432,14 +436,21 @@ import { watch as fsWatch } from "node:fs"
       if (!slug || slug === lastSlug || slug === myName) return
       lastSlug = slug
       autoRenamed = true
-      daemon.call("tribe_rename", { new_name: slug }).then((result) => {
-        const r = result as { content: Array<{ type: string; text: string }> }
-        try {
-          const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
-          if (data.name) myName = data.name
-          log.info?.(`auto-renamed from /rename slug: ${myName}`)
-        } catch { /* ignore */ }
-      }).catch(() => { /* rename failed — name taken or similar */ })
+      daemon
+        .call("tribe_rename", { new_name: slug })
+        .then((result) => {
+          const r = result as { content: Array<{ type: string; text: string }> }
+          try {
+            const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
+            if (data.name) myName = data.name
+            log.info?.(`auto-renamed from /rename slug: ${myName}`)
+          } catch {
+            /* ignore */
+          }
+        })
+        .catch(() => {
+          /* rename failed — name taken or similar */
+        })
     }
     // Check periodically (file watch is unreliable for appended JSONL files)
     timers.setInterval(checkSlug, 5_000)
@@ -464,13 +475,20 @@ function tryAutoRenameOnClaim(content: string): void {
   const scope = beadMatch[1]
   if (scope === myName) return
   autoRenamed = true
-  daemon.call("tribe_rename", { new_name: scope }).then((result) => {
-    const r = result as { content: Array<{ type: string; text: string }> }
-    try {
-      const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
-      if (data.name) myName = data.name
-    } catch { /* ignore */ }
-  }).catch(() => { /* rename failed, e.g. name taken — that's fine */ })
+  daemon
+    .call("tribe_rename", { new_name: scope })
+    .then((result) => {
+      const r = result as { content: Array<{ type: string; text: string }> }
+      try {
+        const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
+        if (data.name) myName = data.name
+      } catch {
+        /* ignore */
+      }
+    })
+    .catch(() => {
+      /* rename failed, e.g. name taken — that's fine */
+    })
 }
 
 // Forward daemon notifications to Claude Code
