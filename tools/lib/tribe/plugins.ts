@@ -111,23 +111,48 @@ export function beadsPlugin(): TribePlugin {
           const content = await readFile(issuesPath, "utf8")
           for (const line of content.split("\n").filter(Boolean)) {
             try {
-              const entry = JSON.parse(line) as { id?: string; title?: string; status?: string; claimed_by?: string }
+              const entry = JSON.parse(line) as {
+                id?: string
+                title?: string
+                status?: string
+                claimed_by?: string
+                priority?: string
+                notes?: string
+              }
               if (!entry.id) continue
 
-              const matchesName = !!ctx.sessionName && !!entry.claimed_by?.includes(ctx.sessionName)
-              const matchesSession = !!ctx.claudeSessionId && !!entry.claimed_by?.includes(ctx.claudeSessionId)
-              const isMyClaim = matchesName || matchesSession
-              if (isMyClaim && reportedStates.get(entry.id) !== "claimed") {
-                reportedStates.set(entry.id, "claimed")
-                if (ctx.claimDedup(`claimed:${entry.id}`)) {
-                  ctx.sendMessage("*", `Claimed: ${entry.id} — ${entry.title}`, "status", entry.id)
+              const prevState = reportedStates.get(entry.id)
+              const currentState = entry.claimed_by ? `claimed:${entry.claimed_by}` : entry.status ?? "open"
+
+              // Skip if nothing changed
+              if (prevState === currentState) continue
+              reportedStates.set(entry.id, currentState)
+
+              // Skip initial snapshot (first run captures existing state)
+              if (!prevState && currentState === (entry.status ?? "open")) continue
+
+              // Broadcast all bead changes
+              if (!prevState) {
+                // New bead
+                if (ctx.claimDedup(`new:${entry.id}`)) {
+                  ctx.sendMessage("*", `New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id)
                 }
-              }
-              // Only report closures for beads this session claimed (not all closures)
-              if (isMyClaim && entry.status === "closed" && reportedStates.get(entry.id) !== "closed") {
-                reportedStates.set(entry.id, "closed")
+              } else if (currentState.startsWith("claimed:")) {
+                if (ctx.claimDedup(`claimed:${entry.id}`)) {
+                  ctx.sendMessage("*", `Claimed: ${entry.id} — ${entry.title}`, "bead:claimed", entry.id)
+                }
+              } else if (entry.status === "closed") {
                 if (ctx.claimDedup(`closed:${entry.id}`)) {
-                  ctx.sendMessage("*", `Closed: ${entry.id} — ${entry.title}`, "status", entry.id)
+                  ctx.sendMessage("*", `Closed: ${entry.id} — ${entry.title}`, "bead:closed", entry.id)
+                }
+              } else if (entry.status === "in_progress") {
+                if (ctx.claimDedup(`progress:${entry.id}`)) {
+                  ctx.sendMessage("*", `In progress: ${entry.id} — ${entry.title}`, "bead:progress", entry.id)
+                }
+              } else {
+                // Status change (open, deferred, etc.)
+                if (ctx.claimDedup(`status:${entry.id}:${entry.status}`)) {
+                  ctx.sendMessage("*", `Bead ${entry.id} → ${entry.status}`, "bead:status", entry.id)
                 }
               }
             } catch {
