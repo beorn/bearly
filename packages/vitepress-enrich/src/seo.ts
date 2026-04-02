@@ -115,10 +115,7 @@ export function seoTransformPageData(options: SeoOptions) {
     // otherwise generate a unique description from title + path context.
     // Only fall back to the generic site description for the homepage.
     const description =
-      pageData.description ||
-      generateDescription(title, pageData.relativePath, siteName) ||
-      defaultDesc ||
-      ""
+      pageData.description || generateDescription(title, pageData.relativePath, siteName) || defaultDesc || ""
     const cleanPath = pageData.relativePath.replace(/\.md$/, ".html").replace(/index\.html$/, "")
     const canonicalUrl = `${hostname}/${cleanPath}`
 
