@@ -9,7 +9,7 @@
  *   GITHUB_TOKEN / `gh auth token`  — authentication
  *   GITHUB_POLL_INTERVAL            — seconds between polls (default: 30)
  *   GITHUB_EVENTS                   — comma-separated event types (default: push,workflow_run,pull_request,issues)
- *   GITHUB_WORKFLOW_NOTIFY          — "all" | "failure" | "success" (default: "all")
+ *   GITHUB_WORKFLOW_NOTIFY          — "all" | "failure" | "success" (default: "failure")
  */
 
 import { execSync } from "node:child_process"
@@ -345,12 +345,13 @@ export function githubPlugin(): TribePlugin {
       const eventTypes = (process.env.GITHUB_EVENTS ?? "push,workflow_run,pull_request,issues")
         .split(",")
         .filter(Boolean)
-      const workflowNotify = (process.env.GITHUB_WORKFLOW_NOTIFY ?? "all") as "all" | "failure" | "success"
+      const workflowNotify = (process.env.GITHUB_WORKFLOW_NOTIFY ?? "failure") as "all" | "failure" | "success"
 
       const cursorPath = resolveCursorPath()
       const cursorState = loadCursor(cursorPath)
 
-      // Track recently seen workflow URLs for dedup
+      // Dedup sets — prevent duplicate delivery across reloads
+      const seenEventIds = new Set<string>()
       const seenWorkflowUrls = new Set<string>()
 
       // CI state tracking per repo — consecutive failures trigger escalation
@@ -410,8 +411,15 @@ export function githubPlugin(): TribePlugin {
             // Cap at 3 events per repo per poll to avoid flooding on cursor miss
             const capped = newEvents.slice(0, 3)
             for (const event of capped.reverse()) {
+              if (seenEventIds.has(event.id)) continue
+              seenEventIds.add(event.id)
+              if (seenEventIds.size > 500) seenEventIds.clear()
+
               const formatted = formatEvent(event, eventTypes)
               if (!formatted) continue
+
+              // Skip push events for the local repo — git plugin already broadcasts commits
+              if (formatted.type === "push" && r === local) continue
 
               ctx.sendMessage("*", `${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
 
@@ -443,32 +451,30 @@ export function githubPlugin(): TribePlugin {
           try {
             const runs = await fetchWorkflowRuns(r, githubHeaders, "completed")
 
-            const matching = runs.filter((run) => {
-              if (workflowNotify === "all") return run.conclusion !== null
-              return run.conclusion === workflowNotify
-            })
-
-            // Only notify about recent runs (last 5 minutes)
+            // Process all completed runs for CI state tracking, but only broadcast per workflowNotify
             const cutoff = Date.now() - 5 * 60 * 1000
-            const recent = matching.filter((run) => new Date(run.updated_at).getTime() > cutoff)
+            const recent = runs.filter((run) => run.conclusion !== null && new Date(run.updated_at).getTime() > cutoff)
 
             for (const run of recent.slice(0, 5)) {
               if (seenWorkflowUrls.has(run.html_url)) continue
               seenWorkflowUrls.add(run.html_url)
               if (seenWorkflowUrls.size > 1000) seenWorkflowUrls.clear()
 
-              const status =
-                run.conclusion === "success"
-                  ? "PASSED"
-                  : run.conclusion === "failure"
-                    ? "FAILED"
-                    : String(run.conclusion).toUpperCase()
-              const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
-              const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
+              // Broadcast based on workflowNotify filter
+              const shouldNotify = workflowNotify === "all" || run.conclusion === workflowNotify
+              if (shouldNotify) {
+                const status =
+                  run.conclusion === "success"
+                    ? "PASSED"
+                    : run.conclusion === "failure"
+                      ? "FAILED"
+                      : String(run.conclusion).toUpperCase()
+                const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
+                const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
+                ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
+              }
 
-              ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
-
-              // Track CI state per repo for escalation
+              // Track CI state per repo for escalation (always, regardless of notify filter)
               const key = `${r}:${run.name}`
               const state = ciState.get(key) ?? { consecutiveFailures: 0 }
               if (run.conclusion === "failure") {

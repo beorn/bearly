@@ -780,6 +780,10 @@ process.on("SIGHUP", () => {
   log("SIGHUP received — re-exec for hot-reload")
   // Don't broadcast reload — sessions reconnect automatically and don't need to know
 
+  // Stop plugins BEFORE spawning — ensures cursor/state is flushed to disk
+  // so the new process reads up-to-date state (prevents duplicate event delivery)
+  stopPlugins()
+
   // Pass the socket fd to the new process
   const socketFd = (server as any)._handle?.fd
   if (socketFd == null) {
@@ -806,7 +810,6 @@ process.on("SIGHUP", () => {
 
   timers.setTimeout(() => {
     log("Hot-reload: old process exiting, new process taking over")
-    stopPlugins()
     ac.abort()
     // Don't close server — fd is inherited by child
     process.exit(0)
