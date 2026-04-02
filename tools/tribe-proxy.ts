@@ -420,6 +420,32 @@ process.on("exit", cleanupPeerSocket)
 // Connect MCP to Claude Code
 await mcp.connect(new StdioServerTransport())
 
+// Watch transcript file for /rename slug changes and auto-sync to tribe
+import { resolveTranscriptPath, readTranscriptSlug } from "./lib/tribe/session.ts"
+import { watch as fsWatch } from "node:fs"
+{
+  const transcriptPath = resolveTranscriptPath(CLAUDE_SESSION_ID)
+  if (transcriptPath) {
+    let lastSlug: string | null = null
+    const checkSlug = () => {
+      const slug = readTranscriptSlug(transcriptPath)
+      if (!slug || slug === lastSlug || slug === myName) return
+      lastSlug = slug
+      autoRenamed = true
+      daemon.call("tribe_rename", { new_name: slug }).then((result) => {
+        const r = result as { content: Array<{ type: string; text: string }> }
+        try {
+          const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
+          if (data.name) myName = data.name
+          log.info?.(`auto-renamed from /rename slug: ${myName}`)
+        } catch { /* ignore */ }
+      }).catch(() => { /* rename failed — name taken or similar */ })
+    }
+    // Check periodically (file watch is unreliable for appended JSONL files)
+    timers.setInterval(checkSlug, 5_000)
+  }
+}
+
 // Auto-rename: when this session claims a bead, rename to the bead scope
 // e.g., claiming "km-storage.foo" renames session to "km-storage"
 let autoRenamed = false
