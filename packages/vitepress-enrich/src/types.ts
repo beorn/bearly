@@ -34,8 +34,8 @@ export interface SeoOptions {
   description?: string
   /** OG image URL (absolute). */
   ogImage?: string
-  /** Author name or object. */
-  author?: string | { name: string; url?: string }
+  /** Author name or object with optional URL and sameAs links. */
+  author?: string | { name: string; url?: string; sameAs?: string[] }
   /** Additional JSON-LD properties merged into the WebSite schema. */
   jsonLd?: Record<string, unknown>
   /** Repository URL for SoftwareSourceCode schema on API pages. */

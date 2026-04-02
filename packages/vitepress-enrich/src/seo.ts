@@ -17,11 +17,15 @@ export function seoHead(options: SeoOptions): HeadConfig[] {
   const head: HeadConfig[] = [
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: options.siteName }],
-    ["meta", { name: "twitter:card", content: "summary" }],
+    ["meta", { name: "twitter:card", content: "summary_large_image" }],
   ]
 
   if (options.ogImage) {
-    head.push(["meta", { property: "og:image", content: options.ogImage }])
+    head.push(
+      ["meta", { property: "og:image", content: options.ogImage }],
+      ["meta", { property: "og:image:width", content: "1200" }],
+      ["meta", { property: "og:image:height", content: "630" }],
+    )
   }
 
   // JSON-LD WebSite schema
@@ -39,6 +43,47 @@ export function seoHead(options: SeoOptions): HeadConfig[] {
 }
 
 /**
+ * Generate a page-specific description from title and URL path context
+ * when no explicit description is provided via frontmatter.
+ */
+function generateDescription(title: string, relativePath: string, siteName: string): string {
+  const cleanPath = relativePath.replace(/\.md$/, "").replace(/(^|\/)index$/, "")
+  const segments = cleanPath.split("/").filter(Boolean)
+
+  // Home page — use the site tagline
+  if (segments.length === 0) return ""
+
+  const section = segments[0]
+  const pageTitle = title || segments[segments.length - 1].replace(/-/g, " ")
+
+  // Section-aware description generation
+  switch (section) {
+    case "api":
+      return `API reference for ${pageTitle} in ${siteName} — props, usage examples, and TypeScript types.`
+    case "components":
+      return `${pageTitle} component in ${siteName} — usage, props, examples, and best practices for terminal UIs.`
+    case "guide":
+      return `${pageTitle} — an in-depth guide for building terminal apps with ${siteName}.`
+    case "guides":
+      return `${pageTitle} — practical guide for ${siteName} terminal UI development.`
+    case "reference":
+      return `${pageTitle} — ${siteName} reference documentation with detailed API information.`
+    case "examples":
+      return `${pageTitle} — interactive ${siteName} example with code and live terminal demo.`
+    case "getting-started":
+      return `${pageTitle} — get up and running with ${siteName} in minutes.`
+    case "design":
+      return `${pageTitle} — ${siteName} design patterns and architectural decisions.`
+    case "matchers":
+      return `${pageTitle} matcher — ${siteName} assertion reference with usage examples and TypeScript signatures.`
+    case "advanced":
+      return `${pageTitle} — advanced ${siteName} topic with in-depth technical details.`
+    default:
+      return `${pageTitle} — ${siteName} documentation.`
+  }
+}
+
+/**
  * Create a transformPageData hook that enriches every page with:
  * - OpenGraph meta tags (og:title, og:description, og:url)
  * - Canonical link tag
@@ -51,6 +96,7 @@ export function seoHead(options: SeoOptions): HeadConfig[] {
 export function seoTransformPageData(options: SeoOptions) {
   const { hostname, siteName, description: defaultDesc } = options
   const authorName = typeof options.author === "string" ? options.author : options.author?.name
+  const authorUrl = typeof options.author === "object" ? options.author?.url : undefined
   const apiPathPrefix = options.apiPathPrefix ?? "/api/"
 
   return function transformPageData(pageData: {
@@ -65,7 +111,14 @@ export function seoTransformPageData(options: SeoOptions) {
     }
   }) {
     const title = pageData.title || siteName
-    const description = pageData.description || defaultDesc || ""
+    // Use page-specific description from frontmatter if available,
+    // otherwise generate a unique description from title + path context.
+    // Only fall back to the generic site description for the homepage.
+    const description =
+      pageData.description ||
+      generateDescription(title, pageData.relativePath, siteName) ||
+      defaultDesc ||
+      ""
     const cleanPath = pageData.relativePath.replace(/\.md$/, ".html").replace(/index\.html$/, "")
     const canonicalUrl = `${hostname}/${cleanPath}`
 
@@ -118,10 +171,22 @@ export function seoTransformPageData(options: SeoOptions) {
         url: canonicalUrl,
       }
       if (pageData.lastUpdated) {
-        article.dateModified = new Date(pageData.lastUpdated).toISOString()
+        const isoDate = new Date(pageData.lastUpdated).toISOString()
+        article.dateModified = isoDate
+        article.datePublished = isoDate
+      }
+      if (options.ogImage) {
+        article.image = options.ogImage
       }
       if (authorName) {
-        article.author = { "@type": "Person", name: authorName }
+        const author: Record<string, unknown> = { "@type": "Person", name: authorName }
+        if (authorUrl) {
+          author.url = authorUrl
+        }
+        if (typeof options.author === "object" && options.author?.sameAs) {
+          author.sameAs = options.author.sameAs
+        }
+        article.author = author
       }
       pageData.frontmatter.head.push(["script", { type: "application/ld+json" }, JSON.stringify(article)])
     }
