@@ -122,7 +122,7 @@ export function beadsPlugin(): TribePlugin {
               if (!entry.id) continue
 
               const prevState = reportedStates.get(entry.id)
-              const currentState = entry.claimed_by ? `claimed:${entry.claimed_by}` : entry.status ?? "open"
+              const currentState = entry.claimed_by ? `claimed:${entry.claimed_by}` : (entry.status ?? "open")
 
               // Skip if nothing changed
               if (prevState === currentState) continue
@@ -135,7 +135,12 @@ export function beadsPlugin(): TribePlugin {
               if (!prevState) {
                 // New bead
                 if (ctx.claimDedup(`new:${entry.id}`)) {
-                  ctx.sendMessage("*", `New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id)
+                  ctx.sendMessage(
+                    "*",
+                    `New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`,
+                    "bead:new",
+                    entry.id,
+                  )
                 }
               } else if (currentState.startsWith("claimed:")) {
                 if (ctx.claimDedup(`claimed:${entry.id}`)) {

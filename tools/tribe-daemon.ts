@@ -282,7 +282,21 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         cancelQuitTimer()
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
-        logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}`)
+        // Suppress join broadcasts during first 10s after daemon start (reconnection burst after hot-reload)
+        if (Date.now() - startedAt > 10_000) {
+          // Detect sub-agents: if another session shares the same claudeSessionId, this is a sub-agent
+          let parentName: string | null = null
+          if (claudeSessionId) {
+            for (const [cid, c] of clients) {
+              if (cid !== connId && c.claudeSessionId === claudeSessionId) {
+                parentName = c.name
+                break
+              }
+            }
+          }
+          const suffix = parentName ? ` (sub-agent of ${parentName})` : ""
+          logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}${suffix}`)
+        }
 
         const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
 
@@ -319,14 +333,11 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
 
         // Sync client registry after name/role changes
+        // (Don't logActivity here — the handler already broadcasts for rename,
+        // and for join the session announces itself. Avoids duplicate messages.)
         if ((method === "tribe_join" || method === "tribe_rename") && client) {
-          const oldName = client.name
-          const oldRole = client.role
           client.name = ctx.getName()
           client.role = ctx.getRole()
-          if (oldName !== client.name || oldRole !== client.role) {
-            logActivity("session", `${oldName} → ${client.name} (${client.role})`)
-          }
         }
 
         // After handling, push any new messages to recipients
@@ -340,23 +351,35 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       case "cli_status": {
         const now = Date.now()
 
-        const sessions = Array.from(clients.values()).map((c) => ({
-          id: c.id,
-          name: c.name,
-          role: c.role,
-          domains: c.domains,
-          pid: c.pid,
-          project: c.project,
-          projectName: c.projectName,
-          projectId: c.projectId,
-          claudeSessionId: c.claudeSessionId,
-          peerSocket: c.peerSocket,
-          connectedAt: c.registeredAt,
-          uptimeMs: now - c.registeredAt,
-          source: "daemon" as const,
-          conn: c.conn,
-          resources: [] as string[],
-        }))
+        // Build parent map: first session per claudeSessionId is the parent
+        const parentMap = new Map<string, string>()
+        for (const [, c] of clients) {
+          if (c.claudeSessionId && !parentMap.has(c.claudeSessionId)) {
+            parentMap.set(c.claudeSessionId, c.name)
+          }
+        }
+
+        const sessions = Array.from(clients.values()).map((c) => {
+          const parent = c.claudeSessionId ? parentMap.get(c.claudeSessionId) : undefined
+          return {
+            id: c.id,
+            name: c.name,
+            role: c.role,
+            domains: c.domains,
+            pid: c.pid,
+            project: c.project,
+            projectName: c.projectName,
+            projectId: c.projectId,
+            claudeSessionId: c.claudeSessionId,
+            peerSocket: c.peerSocket,
+            connectedAt: c.registeredAt,
+            uptimeMs: now - c.registeredAt,
+            source: "daemon" as const,
+            conn: c.conn,
+            resources: [] as string[],
+            parent: parent && parent !== c.name ? parent : undefined,
+          }
+        })
 
         return makeResponse(id, {
           sessions,
@@ -755,7 +778,7 @@ function cancelQuitTimer(): void {
 
 process.on("SIGHUP", () => {
   log("SIGHUP received — re-exec for hot-reload")
-  logActivity("reload", "daemon hot-reloading")
+  // Don't broadcast reload — sessions reconnect automatically and don't need to know
 
   // Pass the socket fd to the new process
   const socketFd = (server as any)._handle?.fd

@@ -48,6 +48,7 @@ type SessionInfo = {
   source?: "daemon" | "db"
   conn?: string
   resources?: string[]
+  parent?: string
 }
 
 type DaemonInfo = {
@@ -78,7 +79,7 @@ function shortSocket(p: string): string {
 }
 
 const sessionColumns: Column<SessionInfo>[] = [
-  { header: "NAME", key: "name" },
+  { header: "NAME", render: (s) => s.parent ? `  ${s.name} ← ${s.parent}` : s.name },
   { header: "ROLE", key: "role" },
   { header: "PROJECT", render: (s) => fmtProject(s) },
   { header: "PID", render: (s) => String(s.pid || "") },

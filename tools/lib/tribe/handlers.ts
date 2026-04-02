@@ -131,6 +131,16 @@ function handleSessions(ctx: TribeContext, a: ToolArgs): ToolResult {
 
   // Re-query after pruning
   const liveRows = a.all ? ctx.stmts.allSessions.all() : ctx.stmts.liveSessions.all({ $threshold: threshold })
+
+  // Build parent map: first session per claudeSessionId is the parent, rest are sub-agents
+  const parentMap = new Map<string, string>()
+  for (const r of liveRows as Array<{ claude_session_id: string | null; name: string; pruned_at: number | null }>) {
+    if (r.pruned_at || !r.claude_session_id) continue
+    if (!parentMap.has(r.claude_session_id)) {
+      parentMap.set(r.claude_session_id, r.name)
+    }
+  }
+
   const sessions = (
     liveRows as Array<{
       id: string
@@ -145,19 +155,23 @@ function handleSessions(ctx: TribeContext, a: ToolArgs): ToolResult {
       heartbeat: number
       pruned_at: number | null
     }>
-  ).map((r) => ({
-    name: r.name,
-    role: r.role,
-    domains: JSON.parse(r.domains),
-    pid: r.pid,
-    cwd: r.cwd,
-    claude_session_id: r.claude_session_id,
-    claude_session_name: r.claude_session_name,
-    alive: r.heartbeat > threshold && !r.pruned_at,
-    pruned: !!r.pruned_at,
-    uptime_min: Math.round((Date.now() - r.started_at) / 60_000),
-    last_heartbeat_sec: Math.round((Date.now() - r.heartbeat) / 1000),
-  }))
+  ).map((r) => {
+    const parent = r.claude_session_id ? parentMap.get(r.claude_session_id) : undefined
+    return {
+      name: r.name,
+      role: r.role,
+      domains: JSON.parse(r.domains),
+      pid: r.pid,
+      cwd: r.cwd,
+      claude_session_id: r.claude_session_id,
+      claude_session_name: r.claude_session_name,
+      alive: r.heartbeat > threshold && !r.pruned_at,
+      pruned: !!r.pruned_at,
+      uptime_min: Math.round((Date.now() - r.started_at) / 60_000),
+      last_heartbeat_sec: Math.round((Date.now() - r.heartbeat) / 1000),
+      parent: parent && parent !== r.name ? parent : undefined,
+    }
+  })
   const result: Record<string, unknown> = { sessions }
   if (dead.length > 0) result.pruned = dead
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }

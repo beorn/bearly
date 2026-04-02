@@ -180,7 +180,10 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
   if (!existsSync(jsonlPath)) return []
 
   try {
-    const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2)
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((t) => t.length > 2)
     if (terms.length === 0) return []
 
     // Use grep for fast pre-filtering — much faster than reading 40MB into memory
