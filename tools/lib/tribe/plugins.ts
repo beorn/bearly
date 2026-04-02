@@ -144,7 +144,8 @@ export function beadsPlugin(): TribePlugin {
                 }
               } else if (currentState.startsWith("claimed:")) {
                 if (ctx.claimDedup(`claimed:${entry.id}`)) {
-                  ctx.sendMessage("*", `Claimed: ${entry.id} — ${entry.title}`, "bead:claimed", entry.id)
+                  const actor = entry.claimed_by ?? ""
+                  ctx.sendMessage("*", `Claimed: ${entry.id} — ${entry.title} [by:${actor}]`, "bead:claimed", entry.id)
                 }
               } else if (entry.status === "closed") {
                 if (ctx.claimDedup(`closed:${entry.id}`)) {

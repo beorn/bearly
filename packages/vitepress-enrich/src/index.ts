@@ -42,6 +42,8 @@ export { seoHead, seoTransformPageData } from "./seo.ts"
 export { compileEntities, replaceEntities, replaceInHtml } from "./entity-engine.ts"
 export { validateGlossary } from "./validate.ts"
 export { loadTerminalGlossary } from "./terminal-glossary.ts"
+export { loadEcosystemGlossary } from "./ecosystem-glossary.ts"
+export type { EcosystemGlossaryOptions } from "./ecosystem-glossary.ts"
 export {
   extractGlossary,
   extractFromMarkdown,

@@ -323,6 +323,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch {
         /* parse error, ignore */
       }
+      // Explicit rename by the agent — don't auto-rename later
+      autoRenamed = true
     }
     return result as { content: Array<{ type: string; text: string }> }
   } catch (err) {
@@ -418,12 +420,43 @@ process.on("exit", cleanupPeerSocket)
 // Connect MCP to Claude Code
 await mcp.connect(new StdioServerTransport())
 
+// Auto-rename: when this session claims a bead, rename to the bead scope
+// e.g., claiming "km-storage.foo" renames session to "km-storage"
+let autoRenamed = false
+function tryAutoRenameOnClaim(content: string): void {
+  if (autoRenamed) return
+  // Only auto-rename if session still has auto-generated name (km-N-XXX pattern)
+  if (!/^km-\d+-[a-z0-9]{3}$/.test(myName)) return
+  // Match "[by:claude:XXXXXXXX]" in claim message and check if it's this session
+  const byMatch = content.match(/\[by:claude:([a-f0-9]+)\]/)
+  if (!byMatch) return
+  const claimSessionPrefix = byMatch[1]
+  if (!CLAUDE_SESSION_ID || !CLAUDE_SESSION_ID.startsWith(claimSessionPrefix)) return
+  // Extract bead scope from "Claimed: km-<scope>.<suffix> — ..."
+  const beadMatch = content.match(/^Claimed: (km-[a-z][\w-]*?)\./)
+  if (!beadMatch) return
+  const scope = beadMatch[1]
+  if (scope === myName) return
+  autoRenamed = true
+  daemon.call("tribe_rename", { new_name: scope }).then((result) => {
+    const r = result as { content: Array<{ type: string; text: string }> }
+    try {
+      const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>
+      if (data.name) myName = data.name
+    } catch { /* ignore */ }
+  }).catch(() => { /* rename failed, e.g. name taken — that's fine */ })
+}
+
 // Forward daemon notifications to Claude Code
 daemon.onNotification((method, params) => {
   if (method === "channel") {
-    sendChannel(String(params?.content ?? ""), {
+    const content = String(params?.content ?? "")
+    const type = String(params?.type ?? "notify")
+    // Auto-rename on bead claim by this session
+    if (type === "bead:claimed") tryAutoRenameOnClaim(content)
+    sendChannel(content, {
       from: String(params?.from ?? "unknown"),
-      type: String(params?.type ?? "notify"),
+      type,
       bead: params?.bead_id ? String(params.bead_id) : undefined,
       message_id: params?.message_id ? String(params.message_id) : undefined,
     })

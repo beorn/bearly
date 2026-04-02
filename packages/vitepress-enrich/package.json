@@ -1,9 +1,9 @@
 {
   "name": "@bearly/vitepress-enrich",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Glossary auto-linking, content linkification, SEO helpers, and tooltip CSS for VitePress sites",
   "license": "MIT",
-  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "author": "Bj\u00f8rn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly",
@@ -44,11 +44,15 @@
       "bun": "./src/doc-glossary.ts",
       "default": "./dist/src/doc-glossary.js"
     },
+    "./ecosystem-glossary": {
+      "bun": "./src/ecosystem-glossary.ts",
+      "default": "./dist/src/ecosystem-glossary.js"
+    },
     "./css/tooltip.css": "./src/css/tooltip.css",
     "./css/glossary-links.css": "./src/css/glossary-links.css"
   },
   "scripts": {
-    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts src/terminal-glossary.ts src/doc-glossary.ts --outdir dist --target node --format esm"
+    "build": "bun build src/index.ts src/glossary.ts src/linkify.ts src/seo.ts src/validate.ts src/entity-engine.ts src/types.ts src/terminal-glossary.ts src/doc-glossary.ts src/ecosystem-glossary.ts --outdir dist --target node --format esm"
   },
   "peerDependencies": {
     "markdown-it": ">=14",
