@@ -282,8 +282,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         cancelQuitTimer()
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
-        // Suppress join broadcasts during first 10s after daemon start (reconnection burst after hot-reload)
-        if (Date.now() - startedAt > 10_000) {
+        // Suppress join broadcasts during initial window after daemon start (reconnection burst after hot-reload)
+        if (Date.now() - startedAt > SUPPRESS_WINDOW_MS) {
           // Detect sub-agents: if another session shares the same claudeSessionId, this is a sub-agent
           let parentName: string | null = null
           if (claudeSessionId) {
@@ -625,6 +625,9 @@ cleanupOldData(daemonCtx)
 // Socket server
 // ---------------------------------------------------------------------------
 
+// Suppress join/leave broadcasts during initial reconnection burst after hot-reload.
+// TRIBE_NO_SUPPRESS=1 disables this (used in tests).
+const SUPPRESS_WINDOW_MS = process.env.TRIBE_NO_SUPPRESS ? 0 : 10_000
 const startedAt = Date.now()
 
 function handleConnection(socket: NetSocket): void {
