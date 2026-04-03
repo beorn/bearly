@@ -58,6 +58,8 @@ async function spawnDaemon(socketPath: string, extraArgs: string[] = []): Promis
       ...process.env,
       // Prevent daemon from picking up project's .beads/ — tests are self-contained
       TRIBE_DB: `/tmp/tribe-test-${randomUUID().slice(0, 8)}.db`,
+      // Disable join/leave broadcast suppression window so tests see notifications immediately
+      TRIBE_NO_SUPPRESS: "1",
     },
   })
 
@@ -110,7 +112,7 @@ describe("socket utilities", () => {
     })
 
     it("makeRequest works without params", () => {
-      const parsed = JSON.parse(makeRequest(42, "no_params"))
+      const parsed = JSON.parse(makeRequest(42, "no_params")) as JsonRpcRequest
       expect(parsed.params).toBeUndefined()
       expect(parsed.id).toBe(42)
     })
@@ -130,10 +132,10 @@ describe("socket utilities", () => {
     })
 
     it("makeNotification has no id", () => {
-      const parsed = JSON.parse(makeNotification("event.fired", { detail: 1 }))
+      const parsed = JSON.parse(makeNotification("event.fired", { detail: 1 })) as JsonRpcMessage
       expect(parsed.jsonrpc).toBe("2.0")
-      expect(parsed.method).toBe("event.fired")
-      expect(parsed.id).toBeUndefined()
+      expect((parsed as JsonRpcRequest).method).toBe("event.fired")
+      expect((parsed as JsonRpcResponse).id).toBeUndefined()
     })
   })
 

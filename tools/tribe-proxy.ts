@@ -467,7 +467,7 @@ function tryAutoRenameOnClaim(content: string): void {
   // Match "[by:claude:XXXXXXXX]" in claim message and check if it's this session
   const byMatch = content.match(/\[by:claude:([a-f0-9]+)\]/)
   if (!byMatch) return
-  const claimSessionPrefix = byMatch[1]
+  const claimSessionPrefix = byMatch[1]!
   if (!CLAUDE_SESSION_ID || !CLAUDE_SESSION_ID.startsWith(claimSessionPrefix)) return
   // Extract bead scope from "Claimed: km-<scope>.<suffix> — ..."
   const beadMatch = content.match(/^Claimed: (km-[a-z][\w-]*?)\./)

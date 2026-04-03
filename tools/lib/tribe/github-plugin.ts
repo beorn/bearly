@@ -97,7 +97,7 @@ function resolveCursorPath(): string {
 export function loadCursor(cursorPath: string): CursorState {
   try {
     if (existsSync(cursorPath)) {
-      return JSON.parse(readFileSync(cursorPath, "utf-8"))
+      return JSON.parse(readFileSync(cursorPath, "utf-8")) as CursorState
     }
   } catch {
     // Corrupt file — start fresh
@@ -263,7 +263,7 @@ export function formatEvent(
       const comment = payload.comment as { html_url: string; body: string } | undefined
       const prNumC = (payload.pull_request as { number: number })?.number
       if (!comment) return null
-      const body = comment.body.split("\n")[0].slice(0, 80)
+      const body = (comment.body.split("\n")[0] ?? "").slice(0, 80)
       return {
         line: `[pr-comment] ${repo}: ${actor} commented on PR #${prNumC}: ${body}`,
         type: "pr",
@@ -288,7 +288,7 @@ export function formatEvent(
       const issueC = payload.issue as { number: number; title: string } | undefined
       const commentC = payload.comment as { html_url: string; body: string } | undefined
       if (!issueC || !commentC) return null
-      const bodyC = commentC.body.split("\n")[0].slice(0, 80)
+      const bodyC = (commentC.body.split("\n")[0] ?? "").slice(0, 80)
       return {
         line: `[issue-comment] ${repo}: ${actor} on #${issueC.number}: ${bodyC}`,
         type: "issue",
@@ -393,7 +393,7 @@ export function githubPlugin(): TribePlugin {
             if (!lastSeenId) {
               if (events.length > 0) {
                 cursorState.repos[r] = {
-                  lastEventId: events[0].id,
+                  lastEventId: events[0]!.id,
                   lastPollAt: new Date().toISOString(),
                 }
                 saveCursor(cursorPath, cursorState)
@@ -432,7 +432,7 @@ export function githubPlugin(): TribePlugin {
             // Update cursor
             if (events.length > 0) {
               cursorState.repos[r] = {
-                lastEventId: events[0].id,
+                lastEventId: events[0]!.id,
                 lastPollAt: new Date().toISOString(),
               }
               saveCursor(cursorPath, cursorState)

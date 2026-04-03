@@ -53,8 +53,8 @@ function generateDescription(title: string, relativePath: string, siteName: stri
   // Home page — use the site tagline
   if (segments.length === 0) return ""
 
-  const section = segments[0]
-  const pageTitle = title || segments[segments.length - 1].replace(/-/g, " ")
+  const section = segments[0]!
+  const pageTitle = title || segments[segments.length - 1]!.replace(/-/g, " ")
 
   // Section-aware description generation
   switch (section) {
@@ -139,7 +139,7 @@ export function seoTransformPageData(options: SeoOptions) {
       ]
       for (let i = 0; i < segments.length; i++) {
         const path = segments.slice(0, i + 1).join("/")
-        const name = segments[i].replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+        const name = segments[i]!.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
         breadcrumbItems.push({
           "@type": "ListItem",
           position: i + 2,

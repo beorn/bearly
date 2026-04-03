@@ -84,10 +84,10 @@ function detectRepoFromGit(): string | null {
     const url = execSync("git remote get-url origin", { encoding: "utf-8" }).trim()
     // Handle SSH: git@github.com:owner/repo.git
     const sshMatch = url.match(/github\.com[:/](.+?)(?:\.git)?$/)
-    if (sshMatch) return sshMatch[1]
+    if (sshMatch) return sshMatch[1] ?? null
     // Handle HTTPS: https://github.com/owner/repo.git
     const httpsMatch = url.match(/github\.com\/(.+?)(?:\.git)?$/)
-    if (httpsMatch) return httpsMatch[1]
+    if (httpsMatch) return httpsMatch[1] ?? null
   } catch {
     // Not a git repo or no remote
   }
@@ -155,7 +155,7 @@ interface CursorState {
 function loadCursor(): CursorState {
   try {
     if (existsSync(CURSOR_PATH)) {
-      return JSON.parse(readFileSync(CURSOR_PATH, "utf-8"))
+      return JSON.parse(readFileSync(CURSOR_PATH, "utf-8")) as CursorState
     }
   } catch {
     // Corrupt file — start fresh
@@ -327,7 +327,7 @@ function formatEvent(event: GitHubEvent): { line: string; type: string; url: str
       const comment = payload.comment as { html_url: string; body: string } | undefined
       const prNumC = (payload.pull_request as { number: number })?.number
       if (!comment) return null
-      const body = comment.body.split("\n")[0].slice(0, 80)
+      const body = (comment.body.split("\n")[0] ?? "").slice(0, 80)
       return {
         line: `[pr-comment] ${actor} commented on PR #${prNumC}: ${body}`,
         type: "pr",
@@ -352,7 +352,7 @@ function formatEvent(event: GitHubEvent): { line: string; type: string; url: str
       const issueC = payload.issue as { number: number; title: string } | undefined
       const commentC = payload.comment as { html_url: string; body: string } | undefined
       if (!issueC || !commentC) return null
-      const bodyC = commentC.body.split("\n")[0].slice(0, 80)
+      const bodyC = (commentC.body.split("\n")[0] ?? "").slice(0, 80)
       return {
         line: `[issue-comment] ${actor} on #${issueC.number}: ${bodyC}`,
         type: "issue",
@@ -584,7 +584,7 @@ async function pollGitHubEvents(): Promise<void> {
       if (!lastSeenId) {
         if (events.length > 0) {
           cursorState.repos[repo] = {
-            lastEventId: events[0].id,
+            lastEventId: events[0]!.id,
             lastPollAt: new Date().toISOString(),
           }
           saveCursor(cursorState)
@@ -621,7 +621,7 @@ async function pollGitHubEvents(): Promise<void> {
       // Update cursor
       if (events.length > 0) {
         cursorState.repos[repo] = {
-          lastEventId: events[0].id,
+          lastEventId: events[0]!.id,
           lastPollAt: new Date().toISOString(),
         }
         saveCursor(cursorState)

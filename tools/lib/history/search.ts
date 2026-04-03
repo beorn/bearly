@@ -206,16 +206,16 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
       const jsonStr = line.slice(colonIdx + 1)
 
       try {
-        const msg = JSON.parse(jsonStr)
+        const msg = JSON.parse(jsonStr) as { type?: string; timestamp?: number; message?: { content?: unknown } }
         if (msg.type !== "human" && msg.type !== "assistant") continue
 
         const text =
           typeof msg.message?.content === "string"
             ? msg.message.content
             : Array.isArray(msg.message?.content)
-              ? msg.message.content
-                  .filter((c: { type: string }) => c.type === "text")
-                  .map((c: { text: string }) => c.text)
+              ? (msg.message.content as Array<{ type: string; text: string }>)
+                  .filter((c) => c.type === "text")
+                  .map((c) => c.text)
                   .join(" ")
               : ""
         if (!text) continue
@@ -458,7 +458,7 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
         type: "message",
         sessionId: r.session_id,
         sessionTitle: sessionTitles.get(r.session_id) ?? null,
-        timestamp: r.timestamp,
+        timestamp: Number(r.timestamp),
         snippet: r.snippet || (r.content?.slice(0, 500) ?? ""),
         rank: r.rank / corroborationBoost,
       })
@@ -469,7 +469,7 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
         type: r.content_type as RecallSearchResult["type"],
         sessionId: r.source_id,
         sessionTitle: r.title ?? sessionTitles.get(r.source_id) ?? null,
-        timestamp: r.timestamp,
+        timestamp: Number(r.timestamp),
         snippet: r.snippet || r.content.slice(0, 500),
         rank: r.rank,
       })

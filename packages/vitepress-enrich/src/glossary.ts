@@ -7,7 +7,9 @@
  * Skips: code spans, code blocks, fences, existing links, headings.
  * First-occurrence-only per page. Longest-match-first.
  */
+// @ts-expect-error — markdown-it has no declaration file
 import type MarkdownIt from "markdown-it"
+// @ts-expect-error — markdown-it has no declaration file
 import type Token from "markdown-it/lib/token.mjs"
 import type { GlossaryEntity, CompiledEntity } from "./types.ts"
 import { compileEntities, replaceEntities, replaceInHtml } from "./entity-engine.ts"
@@ -40,7 +42,7 @@ export interface GlossaryPluginOptions {
 export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): void {
   const entities = compileEntities(options.entities)
 
-  md.core.ruler.push("glossary_links", (state) => {
+  md.core.ruler.push("glossary_links", (state: { tokens: Token[]; Token: new (type: string, tag: string, nesting: number) => Token }) => {
     for (const blockToken of state.tokens) {
       // Process HTML blocks (tables, divs embedded in markdown)
       if (blockToken.type === "html_block" && blockToken.content) {

@@ -113,7 +113,7 @@ export function createLineParser(onMessage: (msg: JsonRpcMessage) => void): (chu
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        onMessage(JSON.parse(trimmed))
+        onMessage(JSON.parse(trimmed) as JsonRpcMessage)
       } catch {
         log.warn?.(`Invalid JSON: ${trimmed.slice(0, 100)}`)
       }
