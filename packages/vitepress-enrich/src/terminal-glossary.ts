@@ -63,14 +63,23 @@ export function loadTerminalGlossary(glossaryPath?: string): GlossaryEntity[] {
   }
 
   // Fallback: bundled snapshot (works in standalone CI / npm installs)
-  try {
-    const bundledPath = join(dirname(import.meta.dirname ?? ""), "terminal-glossary-data.json")
-    const raw = JSON.parse(readFileSync(bundledPath, "utf-8")) as Record<
-      string,
-      { expansion: string; description: string; link?: string }
-    >
-    return parseGlossary(raw)
-  } catch {
-    return []
+  // import.meta.dirname is src/ (bun) or dist/src/ (node) — data file lives in src/
+  const dir = import.meta.dirname ?? ""
+  const bundledCandidates = [
+    join(dir, "terminal-glossary-data.json"), // same dir (bun: src/)
+    join(dir, "..", "src", "terminal-glossary-data.json"), // from dist/src/ → ../src/
+    join(dir, "..", "..", "src", "terminal-glossary-data.json"), // deeper nesting
+  ]
+  for (const bundledPath of bundledCandidates) {
+    try {
+      const raw = JSON.parse(readFileSync(bundledPath, "utf-8")) as Record<
+        string,
+        { expansion: string; description: string; link?: string }
+      >
+      return parseGlossary(raw)
+    } catch {
+      continue
+    }
   }
+  return []
 }
