@@ -101,21 +101,23 @@ program
 
 // ── sessions ────────────────────────────────────────────────────────────
 program
-  .command("sessions [id]")
+  .command("sessions")
+  .argument("[id]", "Session ID to show details for")
   .description("List sessions or show session details")
   .option("-p, --project <glob>", "Project filter")
-  .action(async (id: string | undefined, opts: { project?: string }) => {
-    await cmdSessions(id, opts)
+  .action(async (opts: { id?: string; project?: string }) => {
+    await cmdSessions(opts.id, opts)
   })
 
 // ── files ───────────────────────────────────────────────────────────────
 program
-  .command("files [pattern]")
+  .command("files")
+  .argument("[pattern]", "File pattern to search for")
   .description("List/search file writes or restore content")
   .option("--restore <file>", "Restore file content")
   .option("--date <date>", "Filter by date (e.g., 2026-02)")
-  .action(async (pattern: string | undefined, opts: { restore?: string; date?: string }) => {
-    await cmdFiles(pattern, opts)
+  .action(async (opts: { pattern?: string; restore?: string; date?: string }) => {
+    await cmdFiles(opts.pattern, opts)
   })
 
 // ── hook (internal) ─────────────────────────────────────────────────────
@@ -137,27 +139,30 @@ program
 
 // ── summarize ─────────────────────────────────────────────────────────
 program
-  .command("summarize [date]")
+  .command("summarize")
+  .argument("[date]", "Date to summarize (default: all unprocessed days)")
   .description("Daily summary across all sessions (default: all unprocessed days)")
   .option("-p, --project <glob>", "Project filter")
-  .action(async (date: string | undefined, opts: { project?: string }) => {
-    await cmdSummarize(date, { verbose: true, project: opts.project })
+  .action(async (opts: { date?: string; project?: string }) => {
+    await cmdSummarize(opts.date, { verbose: true, project: opts.project })
   })
 
 // ── show ────────────────────────────────────────────────────────────
 program
-  .command("show [date]")
+  .command("show")
+  .argument("[date]", "Date or 'week' (default: list recent)")
   .description("Show existing summaries (default: list recent; YYYY-MM-DD: that day; 'week': latest weekly)")
-  .action(async (dateArg: string | undefined) => {
-    await cmdShow(dateArg)
+  .action(async (opts: { date?: string }) => {
+    await cmdShow(opts.date)
   })
 
 // ── weekly ──────────────────────────────────────────────────────────
 program
-  .command("weekly [date]")
+  .command("weekly")
+  .argument("[date]", "Any day in the target week (default: last week)")
   .description("Weekly summary from daily summaries (date = any day in the target week, default: last week)")
-  .action(async (date: string | undefined) => {
-    await cmdWeekly(date)
+  .action(async (opts: { date?: string }) => {
+    await cmdWeekly(opts.date)
   })
 
 // ============================================================================
