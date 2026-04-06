@@ -43,6 +43,7 @@ import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbea
 import { acquireLease } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
+import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 
@@ -405,8 +406,17 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             setUserRenamed: () => {},
           },
         )
+        // Include machine health metrics from health-monitor plugin
+        const { getHealthSnapshot } = await import("./lib/tribe/health-monitor-plugin.ts")
+        let machine: unknown = null
+        try {
+          machine = await getHealthSnapshot()
+        } catch {
+          /* health snapshot unavailable */
+        }
         return makeResponse(id, {
           ...health,
+          machine,
           daemon: {
             pid: process.pid,
             uptime: Math.floor((Date.now() - startedAt) / 1000),
@@ -606,7 +616,7 @@ const pluginCtx: PluginContext = {
   },
 }
 
-const plugins = [gitPlugin(), beadsPlugin(), githubPlugin()]
+const plugins = [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin()]
 const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
