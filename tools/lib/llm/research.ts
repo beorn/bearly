@@ -256,9 +256,23 @@ export async function research(topic: string, options: ResearchCallOptions = {})
     }
   }
 
-  // For deep research models, pass topic and context separately
-  // For other models, build the prompt ourselves
-  if (isOpenAIDeepResearch(model) || isGeminiDeepResearch(model)) {
+  // OpenAI models: always use Responses API with web_search_preview for deep research.
+  // GPT-5.4 is the preferred deep model but isn't flagged isDeepResearch (that flag marks
+  // dedicated slow models like O3 Deep Research). The Responses API handles fast models
+  // fine — if the response completes immediately, background+poll returns instantly.
+  if (model.provider === "openai") {
+    const response = await queryOpenAIDeepResearch({
+      topic,
+      model,
+      stream: options.stream,
+      onToken: options.onToken,
+      context,
+    })
+    return response
+  }
+
+  // Gemini deep research models use Interactions API
+  if (isGeminiDeepResearch(model)) {
     const result = await queryModel({
       question: topic,
       model,
