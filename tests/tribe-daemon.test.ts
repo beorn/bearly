@@ -361,6 +361,45 @@ describe("tribe daemon integration", () => {
       }
     }, 10_000)
 
+    it("stays alive while a client remains connected past quit-timeout", async () => {
+      // Liveness invariant: an active daemon never auto-quits.
+      const sock = tmpSocketPath()
+      daemon = await spawnDaemon(sock, ["--quit-timeout", "1"])
+
+      const client = await connectToDaemon(sock)
+      clients.push(client)
+      await client.call("register", { name: "longterm", role: "member" })
+
+      // Wait 3× the quit-timeout — daemon must still be alive.
+      await new Promise((r) => setTimeout(r, 3000))
+
+      expect(daemon.killed).toBe(false)
+      expect(daemon.exitCode).toBeNull()
+    }, 10_000)
+
+    it("survives connect/disconnect cycles, dies after final disconnect", async () => {
+      // Liveness invariant: each new connection cancels the countdown.
+      const sock = tmpSocketPath()
+      daemon = await spawnDaemon(sock, ["--quit-timeout", "2"])
+
+      for (let i = 0; i < 3; i++) {
+        const c = await connectToDaemon(sock)
+        await c.call("register", { name: `cycle-${i}`, role: "member" })
+        c.close()
+        // Half the quit-timeout — countdown is running but hasn't fired
+        await new Promise((r) => setTimeout(r, 1000))
+        expect(daemon.exitCode).toBeNull()
+      }
+
+      // No more clients — daemon dies after the next quit-timeout window
+      const exited = await new Promise<boolean>((resolve) => {
+        if (!daemon) return resolve(true)
+        daemon.on("exit", () => resolve(true))
+        setTimeout(() => resolve(false), 5000)
+      })
+      expect(exited).toBe(true)
+    }, 15_000)
+
     it("returns method-not-found for unknown methods", async () => {
       daemon = await spawnDaemon(socketPath)
 

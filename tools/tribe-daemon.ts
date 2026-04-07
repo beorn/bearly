@@ -280,7 +280,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           registeredAt: Date.now(),
         }
         clients.set(connId, client)
-        cancelQuitTimer()
+        markActive()
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
         // Suppress join broadcasts during initial window after daemon start (reconnection burst after hot-reload)
@@ -620,8 +620,11 @@ const plugins = [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin
 const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
-// Push new plugin-generated messages to clients every second
-const pushInterval = timers.setInterval(pushNewMessages, 1000)
+// 1-second tick: push plugin-generated messages + check idle liveness
+const pushInterval = timers.setInterval(() => {
+  pushNewMessages()
+  checkLiveness()
+}, 1000)
 
 // Heartbeat for daemon's own session record
 const heartbeatInterval = timers.setInterval(() => sendHeartbeat(daemonCtx), 10_000)
@@ -663,7 +666,7 @@ function handleConnection(socket: NetSocket): void {
   }
   clients.set(connId, placeholder)
   socketToClient.set(socket, connId)
-  cancelQuitTimer()
+  markActive()
 
   const parse = createLineParser(async (msg: JsonRpcMessage) => {
     if (isRequest(msg)) {
@@ -699,8 +702,8 @@ function handleConnection(socket: NetSocket): void {
     socketToClient.delete(socket)
     lastDelivered.delete(connId)
 
-    // Start auto-quit timer if no clients left
-    if (clients.size === 0) startQuitTimer()
+    // Start idle countdown if no clients left
+    if (clients.size === 0) markIdle()
   })
 
   socket.on("error", (err) => {
@@ -760,28 +763,40 @@ if (INHERIT_FD !== null) {
 writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 })
 
 // ---------------------------------------------------------------------------
-// Auto-quit timer
+// Auto-quit liveness — declarative deadline + periodic check
 // ---------------------------------------------------------------------------
+//
+// Liveness is a pure function of current state, not an event-driven timer:
+//   - markActive()   — clear the deadline (someone is using us)
+//   - markIdle()     — set the deadline (we may be done; checkLiveness decides)
+//   - checkLiveness() — runs from the existing 1s tick poller
+//
+// This eliminates the bug class where a code path forgets to start/cancel
+// a setTimeout. Adding a new "extends life" trigger is one line: markActive().
 
-let quitTimer: ReturnType<typeof setTimeout> | null = null
+let idleDeadline: number | null = null
 
-function startQuitTimer(): void {
-  if (QUIT_TIMEOUT < 0) return // -1 = never auto-quit
-  if (quitTimer) return
-
-  log(`No clients connected. Auto-quit in ${QUIT_TIMEOUT}s...`)
-  quitTimer = timers.setTimeout(() => {
-    if (clients.size === 0) {
-      log("Auto-quit: no clients connected")
-      shutdown()
-    }
-  }, QUIT_TIMEOUT * 1000)
+function markActive(): void {
+  idleDeadline = null
 }
 
-function cancelQuitTimer(): void {
-  if (quitTimer) {
-    timers.clearTimeout(quitTimer)
-    quitTimer = null
+function markIdle(): void {
+  if (QUIT_TIMEOUT < 0) return // -1 = never auto-quit
+  if (idleDeadline !== null) return // already counting down
+  idleDeadline = Date.now() + QUIT_TIMEOUT * 1000
+  log(`No clients connected. Auto-quit in ${QUIT_TIMEOUT}s...`)
+}
+
+function checkLiveness(): void {
+  if (idleDeadline === null) return
+  // Defensive: if a client snuck in, abort the countdown
+  if (clients.size > 0) {
+    idleDeadline = null
+    return
+  }
+  if (Date.now() >= idleDeadline) {
+    log("Auto-quit: idle deadline reached")
+    shutdown()
   }
 }
 
@@ -930,7 +945,7 @@ process.on("SIGTERM", shutdown)
 
 log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)
 
-// If no client ever connects, still auto-quit after QUIT_TIMEOUT.
-// Without this, a daemon spawned by a test that crashes before connecting
-// would live forever — startQuitTimer was previously only called on disconnect.
-if (clients.size === 0) startQuitTimer()
+// Begin idle countdown immediately. If a client connects before the deadline,
+// markActive() in handleConnection clears it. This handles the case where a
+// daemon is spawned but no client ever connects (e.g. spawning test crashes).
+if (clients.size === 0) markIdle()
