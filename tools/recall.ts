@@ -76,8 +76,8 @@ program
   .option("-t, --tool <name>", "Tool filter: Write, Bash, etc. (implies --raw)")
   .option("--session <id>", "Specific session (implies --raw)")
   .option("-i, --include <types>", "Content types: p,m,s,t,f,b,e,d,c (implies --raw)")
-  .action(async (query: string, opts: SearchOptions) => {
-    await cmdSearch(query, opts)
+  .actionMerged(async (opts: SearchOptions & { query: string }) => {
+    await cmdSearch(opts.query, opts)
   })
 
 // ── index ───────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ program
   .argument("[id]", "Session ID to show details for")
   .description("List sessions or show session details")
   .option("-p, --project <glob>", "Project filter")
-  .action(async (opts: { id?: string; project?: string }) => {
+  .actionMerged(async (opts: { id?: string; project?: string }) => {
     await cmdSessions(opts.id, opts)
   })
 
@@ -116,7 +116,7 @@ program
   .description("List/search file writes or restore content")
   .option("--restore <file>", "Restore file content")
   .option("--date <date>", "Filter by date (e.g., 2026-02)")
-  .action(async (opts: { pattern?: string; restore?: string; date?: string }) => {
+  .actionMerged(async (opts: { pattern?: string; restore?: string; date?: string }) => {
     await cmdFiles(opts.pattern, opts)
   })
 
@@ -143,7 +143,7 @@ program
   .argument("[date]", "Date to summarize (default: all unprocessed days)")
   .description("Daily summary across all sessions (default: all unprocessed days)")
   .option("-p, --project <glob>", "Project filter")
-  .action(async (opts: { date?: string; project?: string }) => {
+  .actionMerged(async (opts: { date?: string; project?: string }) => {
     await cmdSummarize(opts.date, { verbose: true, project: opts.project })
   })
 
@@ -152,7 +152,7 @@ program
   .command("show")
   .argument("[date]", "Date or 'week' (default: list recent)")
   .description("Show existing summaries (default: list recent; YYYY-MM-DD: that day; 'week': latest weekly)")
-  .action(async (opts: { date?: string }) => {
+  .actionMerged(async (opts: { date?: string }) => {
     await cmdShow(opts.date)
   })
 
@@ -161,7 +161,7 @@ program
   .command("weekly")
   .argument("[date]", "Any day in the target week (default: last week)")
   .description("Weekly summary from daily summaries (date = any day in the target week, default: last week)")
-  .action(async (opts: { date?: string }) => {
+  .actionMerged(async (opts: { date?: string }) => {
     await cmdWeekly(opts.date)
   })
 
