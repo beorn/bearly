@@ -929,3 +929,8 @@ process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
 
 log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)
+
+// If no client ever connects, still auto-quit after QUIT_TIMEOUT.
+// Without this, a daemon spawned by a test that crashes before connecting
+// would live forever — startQuitTimer was previously only called on disconnect.
+if (clients.size === 0) startQuitTimer()

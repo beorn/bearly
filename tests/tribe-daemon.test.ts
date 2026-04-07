@@ -337,6 +337,30 @@ describe("tribe daemon integration", () => {
       }
     }, 10_000)
 
+    it("auto-quits when no client ever connects (quit-timeout=1)", async () => {
+      // Regression: a daemon spawned by a test that crashes before connecting
+      // would live forever because startQuitTimer was only called on disconnect.
+      const shortTimeoutSocket = tmpSocketPath()
+      daemon = await spawnDaemon(shortTimeoutSocket, ["--quit-timeout", "1"])
+
+      // Deliberately do not connect — daemon should still auto-quit.
+      const exited = await new Promise<boolean>((resolve) => {
+        if (!daemon) return resolve(true)
+        daemon.on("exit", () => resolve(true))
+        setTimeout(() => resolve(false), 5000)
+      })
+
+      expect(exited).toBe(true)
+
+      if (existsSync(shortTimeoutSocket)) {
+        try {
+          unlinkSync(shortTimeoutSocket)
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 10_000)
+
     it("returns method-not-found for unknown methods", async () => {
       daemon = await spawnDaemon(socketPath)
 
