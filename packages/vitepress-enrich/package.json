@@ -1,6 +1,6 @@
 {
   "name": "@bearly/vitepress-enrich",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Glossary auto-linking, content linkification, SEO helpers, and tooltip CSS for VitePress sites",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",

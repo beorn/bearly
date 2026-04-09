@@ -18,6 +18,9 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import type { GlossaryEntity } from "./types.ts"
+// Direct import as fallback — works in all bundler contexts (Rollup, Vite, Bun, Node)
+// where import.meta.dirname may be undefined (e.g., vitepress SSR build via Rollup)
+import bundledData from "./terminal-glossary-data.json"
 
 const TERMINFO_HOST = "https://terminfo.dev"
 
@@ -39,47 +42,47 @@ function parseGlossary(
 
 /**
  * Load terminal glossary terms. Tries live terminfo.dev submodule first,
- * falls back to bundled snapshot.
+ * falls back to bundled snapshot via direct import.
  */
 export function loadTerminalGlossary(glossaryPath?: string): GlossaryEntity[] {
-  // Try explicit path or live submodule first
-  const candidates = glossaryPath
-    ? [glossaryPath]
-    : [
-        // Sibling submodule in km monorepo
-        join(dirname(import.meta.dirname ?? ""), "..", "..", "..", "terminfo.dev", "content", "glossary.json"),
-      ]
-
-  for (const path of candidates) {
+  // Try explicit path first
+  if (glossaryPath) {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<
+      const raw = JSON.parse(readFileSync(glossaryPath, "utf-8")) as Record<
         string,
         { expansion: string; description: string; link?: string }
       >
       return parseGlossary(raw)
     } catch {
-      continue
+      // fall through to other candidates
     }
   }
 
-  // Fallback: bundled snapshot (works in standalone CI / npm installs)
-  // import.meta.dirname is src/ (bun) or dist/src/ (node) — data file lives in src/
-  const dir = import.meta.dirname ?? ""
-  const bundledCandidates = [
-    join(dir, "terminal-glossary-data.json"), // same dir (bun: src/)
-    join(dir, "..", "src", "terminal-glossary-data.json"), // from dist/src/ → ../src/
-    join(dir, "..", "..", "src", "terminal-glossary-data.json"), // deeper nesting
-  ]
-  for (const bundledPath of bundledCandidates) {
+  // Try live terminfo.dev submodule (km monorepo only)
+  if (import.meta.dirname) {
+    const submodulePath = join(
+      dirname(import.meta.dirname),
+      "..",
+      "..",
+      "..",
+      "terminfo.dev",
+      "content",
+      "glossary.json",
+    )
     try {
-      const raw = JSON.parse(readFileSync(bundledPath, "utf-8")) as Record<
+      const raw = JSON.parse(readFileSync(submodulePath, "utf-8")) as Record<
         string,
         { expansion: string; description: string; link?: string }
       >
       return parseGlossary(raw)
     } catch {
-      continue
+      // fall through to bundled
     }
   }
-  return []
+
+  // Bundled snapshot via direct import — always works regardless of
+  // import.meta.dirname, Rollup, Vite SSR, or any other bundler context
+  return parseGlossary(
+    bundledData as unknown as Record<string, { expansion: string; description: string; link?: string }>,
+  )
 }
