@@ -17,7 +17,7 @@
  *   HEALTH_DISK_IO_WARNING — combined read+write MB/s for warning (default: 500)
  */
 
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { cpus, totalmem, freemem, loadavg } from "node:os"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
@@ -281,9 +281,7 @@ export function parseWorktreeList(output: string): number {
 // ---------------------------------------------------------------------------
 
 /** Parse `gh api rate_limit` JSON output. */
-export function parseGhRateLimit(
-  jsonOutput: string,
-): { remaining: number; limit: number; resetAt: number } | null {
+export function parseGhRateLimit(jsonOutput: string): { remaining: number; limit: number; resetAt: number } | null {
   try {
     const data = JSON.parse(jsonOutput) as Record<string, unknown>
     const resources = data?.resources as Record<string, unknown> | undefined
@@ -362,6 +360,15 @@ export function parseIostatOutput(output: string): { readWriteMBps: number } | n
 // Git lock detection
 // ---------------------------------------------------------------------------
 
+export interface GitLockInfo {
+  /** Absolute path to the lock file */
+  path: string
+  /** Short label: "main" for .git/index.lock, submodule name for modules lock */
+  label: string
+  /** PID and command of the process holding the lock (null if stale/unknown) */
+  holder: { pid: number; command: string } | null
+}
+
 /** Parse lsof output to extract PID and command of file holder */
 export function parseLsofOutput(output: string): { pid: number; command: string } | null {
   const lines = output.trim().split("\n")
@@ -375,6 +382,39 @@ export function parseLsofOutput(output: string): { pid: number; command: string 
     if (!isNaN(pid)) return { pid, command }
   }
   return null
+}
+
+/**
+ * Find all git lock files: main repo + submodules.
+ * Checks .git/index.lock and .git/modules/{name}/index.lock.
+ */
+export function findGitLockPaths(gitDir: string): Array<{ path: string; label: string }> {
+  const locks: Array<{ path: string; label: string }> = []
+
+  // Main repo lock
+  const mainLock = `${gitDir}/index.lock`
+  if (existsSync(mainLock)) {
+    locks.push({ path: mainLock, label: "main" })
+  }
+
+  // Submodule locks: .git/modules/*/index.lock
+  const modulesDir = `${gitDir}/modules`
+  if (existsSync(modulesDir)) {
+    try {
+      const entries = readdirSync(modulesDir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const subLock = `${modulesDir}/${entry.name}/index.lock`
+        if (existsSync(subLock)) {
+          locks.push({ path: subLock, label: entry.name })
+        }
+      }
+    } catch {
+      // Can't read modules dir — skip
+    }
+  }
+
+  return locks
 }
 
 /**
@@ -395,6 +435,32 @@ export async function detectGitLock(gitDir: string): Promise<{ pid: number; comm
   }
 }
 
+/**
+ * Detect all git locks (main repo + submodules) and identify holders via lsof.
+ * Returns an array of lock info objects with path, label, and holder details.
+ */
+export async function detectGitLocks(gitDir: string): Promise<GitLockInfo[]> {
+  const lockPaths = findGitLockPaths(gitDir)
+  if (lockPaths.length === 0) return []
+
+  const results: GitLockInfo[] = []
+  for (const { path, label } of lockPaths) {
+    let holder: { pid: number; command: string } | null = null
+    try {
+      const proc = Bun.spawn(["lsof", path], { stdout: "pipe", stderr: "ignore" })
+      const output = await new Response(proc.stdout).text()
+      holder = parseLsofOutput(output)
+    } catch {
+      // lsof failed — lock exists but we can't determine holder
+    }
+    results.push({ path, label, holder })
+  }
+  return results
+}
+
+/** Threshold in ms for escalating a lock to a stale warning */
+export const LOCK_STALE_THRESHOLD_MS = 30_000
+
 // ---------------------------------------------------------------------------
 // Alert evaluation
 // ---------------------------------------------------------------------------
@@ -412,6 +478,10 @@ export interface AlertState {
   firedAlerts: Set<string>
   /** Track if we've already alerted about a git lock (dedup) */
   gitLockDetected: boolean
+  /** Track when each lock was first seen — key is lock path, value is timestamp */
+  lockFirstSeen: Map<string, number>
+  /** Track which locks have had their stale warning sent */
+  lockStaleWarned: Set<string>
 }
 
 export function createAlertState(): AlertState {
@@ -425,7 +495,36 @@ export function createAlertState(): AlertState {
     ioAboveWarning: 0,
     firedAlerts: new Set(),
     gitLockDetected: false,
+    lockFirstSeen: new Map(),
+    lockStaleWarned: new Set(),
   }
+}
+
+/**
+ * Format a git lock message for tribe broadcast.
+ * Returns short plain-text messages suitable for tribe protocol.
+ */
+export function formatLockMessage(
+  lock: GitLockInfo,
+  sessionName: string | null,
+  durationSec: number,
+): string {
+  const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
+  const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
+  return `git lock: ${lockTarget} held by ${holder} for ${durationSec}s`
+}
+
+/**
+ * Format a stale lock warning message (>30s).
+ */
+export function formatStaleLockMessage(
+  lock: GitLockInfo,
+  sessionName: string | null,
+  durationSec: number,
+): string {
+  const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
+  const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
+  return `git lock WARNING: ${lockTarget} held >${Math.floor(durationSec)}s by ${holder} -- may be stale`
 }
 
 /**
@@ -773,33 +872,63 @@ export function healthMonitorPlugin(): TribePlugin {
             }
           }
 
-          // --- Git lock detection ---
+          // --- Git lock detection (main repo + submodules) ---
           const gitDir = `${process.cwd()}/.git`
-          const lockHolder = await detectGitLock(gitDir)
-          if (lockHolder) {
-            if (!alertState.gitLockDetected) {
+          const locks = await detectGitLocks(gitDir)
+          const now = Date.now()
+          const activeLockPaths = new Set<string>()
+
+          for (const lock of locks) {
+            activeLockPaths.add(lock.path)
+
+            // Track when we first saw this lock
+            if (!alertState.lockFirstSeen.has(lock.path)) {
+              alertState.lockFirstSeen.set(lock.path, now)
+            }
+            const firstSeen = alertState.lockFirstSeen.get(lock.path)!
+            const durationMs = now - firstSeen
+            const durationSec = Math.round(durationMs / 1000)
+
+            // Attribute to a session if possible
+            const sessionName = lock.holder
+              ? attributeToSession(lock.holder.pid, pidToParent, sessions)
+              : null
+
+            // First detection: broadcast lock info
+            const lockKey = `git-lock:${lock.path}`
+            if (!alertState.firedAlerts.has(lockKey)) {
               alertState.gitLockDetected = true
-              alertState.firedAlerts.add("git-lock")
-              const sessionName = attributeToSession(lockHolder.pid, pidToParent, sessions)
-              const holder = sessionName ?? `PID ${lockHolder.pid}`
-              const lockMsg = `Git lock held by ${holder} (${lockHolder.command}) for ${gitDir}/index.lock`
+              alertState.firedAlerts.add(lockKey)
+              const lockMsg = formatLockMessage(lock, sessionName, durationSec)
               log.info?.(`alert: ${lockMsg}`)
 
               // DM responsible session
               if (sessionName) {
                 ctx.sendMessage(sessionName, lockMsg, "health:git-lock:warning")
               }
-              // Send to chief
-              if (ctx.hasChief()) {
-                ctx.sendMessage("chief", lockMsg, "health:git-lock:warning")
-              }
+              // Broadcast to tribe
+              ctx.sendMessage("*", lockMsg, "health:git-lock:warning")
             }
-          } else {
-            // Lock released — clear dedup state
-            if (alertState.gitLockDetected) {
-              alertState.gitLockDetected = false
-              alertState.firedAlerts.delete("git-lock")
+
+            // Stale lock escalation: >30s
+            if (durationMs > LOCK_STALE_THRESHOLD_MS && !alertState.lockStaleWarned.has(lock.path)) {
+              alertState.lockStaleWarned.add(lock.path)
+              const staleMsg = formatStaleLockMessage(lock, sessionName, durationMs / 1000)
+              log.info?.(`alert: ${staleMsg}`)
+              ctx.sendMessage("*", staleMsg, "health:git-lock:warning")
             }
+          }
+
+          // Clean up tracking for released locks
+          for (const [path] of alertState.lockFirstSeen) {
+            if (!activeLockPaths.has(path)) {
+              alertState.lockFirstSeen.delete(path)
+              alertState.lockStaleWarned.delete(path)
+              alertState.firedAlerts.delete(`git-lock:${path}`)
+            }
+          }
+          if (locks.length === 0 && alertState.gitLockDetected) {
+            alertState.gitLockDetected = false
           }
 
           // --- Disk I/O saturation (every 3rd sample — ~30s) ---

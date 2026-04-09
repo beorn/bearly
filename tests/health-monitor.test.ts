@@ -24,8 +24,13 @@ import {
   defaultThresholds,
   buildPidToParent,
   attributeToSession,
+  findGitLockPaths,
+  formatLockMessage,
+  formatStaleLockMessage,
+  LOCK_STALE_THRESHOLD_MS,
   type HealthMetrics,
   type HealthThresholds,
+  type GitLockInfo,
 } from "../tools/lib/tribe/health-monitor-plugin.ts"
 
 // ---------------------------------------------------------------------------
@@ -384,9 +389,17 @@ describe("alert format", () => {
     expect(alert).toHaveProperty("message")
     expect(alert).toHaveProperty("metrics")
     expect(alert).toHaveProperty("topOffenders")
-    expect(["cpu", "memory", "process-count", "git-lock", "disk", "disk-io", "worktree", "fd-count", "gh-rate-limit"]).toContain(
-      alert.type,
-    )
+    expect([
+      "cpu",
+      "memory",
+      "process-count",
+      "git-lock",
+      "disk",
+      "disk-io",
+      "worktree",
+      "fd-count",
+      "gh-rate-limit",
+    ]).toContain(alert.type)
     expect(["warning", "critical"]).toContain(alert.severity)
     expect(typeof alert.message).toBe("string")
     expect(Array.isArray(alert.topOffenders)).toBe(true)
@@ -978,5 +991,132 @@ describe("parseIostatOutput", () => {
     // Last data line, last numeric column = 0.31
     expect(result).not.toBeNull()
     expect(result!.readWriteMBps).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Git lock detection — findGitLockPaths
+// ---------------------------------------------------------------------------
+
+describe("findGitLockPaths", () => {
+  test("returns empty array when no locks exist", () => {
+    // Use a non-existent directory — no locks possible
+    const locks = findGitLockPaths("/tmp/nonexistent-git-dir-health-test")
+    expect(locks).toEqual([])
+  })
+
+  test("LOCK_STALE_THRESHOLD_MS is 30 seconds", () => {
+    expect(LOCK_STALE_THRESHOLD_MS).toBe(30_000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Git lock messaging — formatLockMessage / formatStaleLockMessage
+// ---------------------------------------------------------------------------
+
+describe("formatLockMessage", () => {
+  test("formats message with session name for main repo lock", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: { pid: 12345, command: "git" },
+    }
+    const msg = formatLockMessage(lock, "km-3", 5)
+    expect(msg).toBe("git lock: .git/index.lock held by km-3 for 5s")
+  })
+
+  test("formats message with PID when no session attribution", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: { pid: 12345, command: "git" },
+    }
+    const msg = formatLockMessage(lock, null, 12)
+    expect(msg).toBe("git lock: .git/index.lock held by PID 12345 for 12s")
+  })
+
+  test("formats message with 'unknown' when no holder info", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: null,
+    }
+    const msg = formatLockMessage(lock, null, 3)
+    expect(msg).toBe("git lock: .git/index.lock held by unknown for 3s")
+  })
+
+  test("formats submodule lock path correctly", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/modules/silvery/index.lock",
+      label: "silvery",
+      holder: { pid: 999, command: "git" },
+    }
+    const msg = formatLockMessage(lock, "km-2", 8)
+    expect(msg).toBe("git lock: .git/modules/silvery/index.lock held by km-2 for 8s")
+  })
+})
+
+describe("formatStaleLockMessage", () => {
+  test("formats stale warning with session name", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: { pid: 12345, command: "git" },
+    }
+    const msg = formatStaleLockMessage(lock, "km-3", 45.7)
+    expect(msg).toBe("git lock WARNING: .git/index.lock held >45s by km-3 -- may be stale")
+  })
+
+  test("formats stale warning with PID fallback", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: { pid: 12345, command: "git" },
+    }
+    const msg = formatStaleLockMessage(lock, null, 60)
+    expect(msg).toBe("git lock WARNING: .git/index.lock held >60s by PID 12345 -- may be stale")
+  })
+
+  test("formats stale warning for submodule lock", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/modules/flexily/index.lock",
+      label: "flexily",
+      holder: null,
+    }
+    const msg = formatStaleLockMessage(lock, null, 120)
+    expect(msg).toBe("git lock WARNING: .git/modules/flexily/index.lock held >120s by unknown -- may be stale")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AlertState — lock tracking fields
+// ---------------------------------------------------------------------------
+
+describe("AlertState lock tracking", () => {
+  test("createAlertState initializes lock tracking fields", () => {
+    const state = createAlertState()
+    expect(state.lockFirstSeen).toBeInstanceOf(Map)
+    expect(state.lockFirstSeen.size).toBe(0)
+    expect(state.lockStaleWarned).toBeInstanceOf(Set)
+    expect(state.lockStaleWarned.size).toBe(0)
+    expect(state.gitLockDetected).toBe(false)
+  })
+
+  test("lockFirstSeen tracks when locks were first observed", () => {
+    const state = createAlertState()
+    const now = Date.now()
+    state.lockFirstSeen.set("/repo/.git/index.lock", now)
+    state.lockFirstSeen.set("/repo/.git/modules/silvery/index.lock", now + 5000)
+
+    expect(state.lockFirstSeen.size).toBe(2)
+    expect(state.lockFirstSeen.get("/repo/.git/index.lock")).toBe(now)
+  })
+
+  test("lockStaleWarned prevents duplicate stale warnings", () => {
+    const state = createAlertState()
+    state.lockStaleWarned.add("/repo/.git/index.lock")
+
+    expect(state.lockStaleWarned.has("/repo/.git/index.lock")).toBe(true)
+    expect(state.lockStaleWarned.has("/repo/.git/modules/silvery/index.lock")).toBe(false)
   })
 })
