@@ -9,8 +9,12 @@
  *   HEALTH_MEM_WARNING    — memory % for warning (default: 85)
  *   HEALTH_MEM_CRITICAL   — memory % for critical (default: 95)
  *   HEALTH_PROC_WARNING   — bun/node process count for warning (default: 50)
+ *   HEALTH_DISK_WARNING   — disk usage % for warning (default: 85)
+ *   HEALTH_DISK_CRITICAL   — disk usage % for critical (default: 95)
+ *   HEALTH_WORKTREE_WARNING — open worktree count for warning (default: 5)
  */
 
+import { existsSync } from "node:fs"
 import { cpus, totalmem, freemem, loadavg } from "node:os"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
@@ -36,12 +40,19 @@ export interface HealthMetrics {
     pressurePercent: number
     swapUsedMB: number
   }
+  disk?: {
+    totalGB: number
+    usedGB: number
+    availableGB: number
+    usagePercent: number
+  }
   bunProcesses: number
+  worktrees: number
   timestamp: number
 }
 
 export interface HealthAlert {
-  type: "cpu" | "memory" | "process-count"
+  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "worktree"
   severity: "warning" | "critical"
   message: string
   metrics: Partial<HealthMetrics>
@@ -58,6 +69,9 @@ export interface HealthThresholds {
   memWarningPercent: number
   memCriticalPercent: number
   processCountWarning: number
+  diskWarningPercent: number
+  diskCriticalPercent: number
+  worktreeWarning: number
   /** How many consecutive samples above threshold before alerting */
   sustainedSamples: number
 }
@@ -69,6 +83,9 @@ export function defaultThresholds(): HealthThresholds {
     memWarningPercent: parseInt(process.env.HEALTH_MEM_WARNING ?? "85", 10),
     memCriticalPercent: parseInt(process.env.HEALTH_MEM_CRITICAL ?? "95", 10),
     processCountWarning: parseInt(process.env.HEALTH_PROC_WARNING ?? "50", 10),
+    diskWarningPercent: parseInt(process.env.HEALTH_DISK_WARNING ?? "85", 10),
+    diskCriticalPercent: parseInt(process.env.HEALTH_DISK_CRITICAL ?? "95", 10),
+    worktreeWarning: parseInt(process.env.HEALTH_WORKTREE_WARNING ?? "5", 10),
     // At 10s interval, 3 samples = 30s sustained
     sustainedSamples: 3,
   }
@@ -79,7 +96,7 @@ export function defaultThresholds(): HealthThresholds {
 // ---------------------------------------------------------------------------
 
 /** Collect OS-level metrics (no child process needed). */
-export function collectOsMetrics(): Omit<HealthMetrics, "bunProcesses" | "cpu"> & {
+export function collectOsMetrics(): Omit<HealthMetrics, "bunProcesses" | "worktrees" | "disk" | "cpu"> & {
   cpu: Omit<HealthMetrics["cpu"], "topProcesses">
 } {
   const [load1, load5] = loadavg()
@@ -208,6 +225,69 @@ export function topCpuConsumers(
     }))
 }
 
+/** Parse `df -g .` output to extract disk usage (macOS format). */
+export function parseDfOutput(
+  output: string,
+): { totalGB: number; usedGB: number; availableGB: number; usagePercent: number } | null {
+  const lines = output.trim().split("\n")
+  // Skip header; parse first data line
+  // Columns: Filesystem 1G-blocks Used Available Capacity Mounted_on
+  if (lines.length < 2) return null
+  const parts = lines[1]!.trim().split(/\s+/)
+  if (parts.length < 5) return null
+  const totalGB = parseInt(parts[1]!, 10)
+  const usedGB = parseInt(parts[2]!, 10)
+  const availableGB = parseInt(parts[3]!, 10)
+  const capacityMatch = parts[4]!.match(/(\d+)%/)
+  const usagePercent = capacityMatch ? parseInt(capacityMatch[1]!, 10) : 0
+  if (isNaN(totalGB) || isNaN(usedGB) || isNaN(availableGB)) return null
+  return { totalGB, usedGB, availableGB, usagePercent }
+}
+
+/** Parse `git worktree list` output to count worktrees. */
+export function parseWorktreeList(output: string): number {
+  const trimmed = output.trim()
+  if (trimmed === "") return 0
+  return trimmed.split("\n").length
+}
+
+// ---------------------------------------------------------------------------
+// Git lock detection
+// ---------------------------------------------------------------------------
+
+/** Parse lsof output to extract PID and command of file holder */
+export function parseLsofOutput(output: string): { pid: number; command: string } | null {
+  const lines = output.trim().split("\n")
+  // Skip header line; parse first data line
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i]!.trim().split(/\s+/)
+    // lsof columns: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+    if (parts.length < 2) continue
+    const command = parts[0]!
+    const pid = parseInt(parts[1]!, 10)
+    if (!isNaN(pid)) return { pid, command }
+  }
+  return null
+}
+
+/**
+ * Check if .git/index.lock exists and identify who holds it.
+ * Returns null if no lock, or { pid, command } of the lock holder.
+ */
+export async function detectGitLock(gitDir: string): Promise<{ pid: number; command: string } | null> {
+  const lockPath = `${gitDir}/index.lock`
+  if (!existsSync(lockPath)) return null
+
+  try {
+    const proc = Bun.spawn(["lsof", lockPath], { stdout: "pipe", stderr: "ignore" })
+    const output = await new Response(proc.stdout).text()
+    return parseLsofOutput(output)
+  } catch {
+    // lsof failed — lock exists but we can't determine holder (stale lock)
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Alert evaluation
 // ---------------------------------------------------------------------------
@@ -217,8 +297,12 @@ export interface AlertState {
   cpuAboveWarning: number
   memAboveCritical: number
   memAboveWarning: number
+  diskAboveCritical: number
+  diskAboveWarning: number
   /** Track which alerts have been fired to avoid repeating */
   firedAlerts: Set<string>
+  /** Track if we've already alerted about a git lock (dedup) */
+  gitLockDetected: boolean
 }
 
 export function createAlertState(): AlertState {
@@ -227,7 +311,10 @@ export function createAlertState(): AlertState {
     cpuAboveWarning: 0,
     memAboveCritical: 0,
     memAboveWarning: 0,
+    diskAboveCritical: 0,
+    diskAboveWarning: 0,
     firedAlerts: new Set(),
+    gitLockDetected: false,
   }
 }
 
@@ -339,6 +426,54 @@ export function evaluateAlerts(metrics: HealthMetrics, thresholds: HealthThresho
     state.firedAlerts.delete("process-count:warning")
   }
 
+  // --- Disk ---
+  if (metrics.disk) {
+    const diskUsage = metrics.disk.usagePercent
+    if (diskUsage > thresholds.diskCriticalPercent) {
+      if (!state.firedAlerts.has("disk:critical")) {
+        state.firedAlerts.add("disk:critical")
+        state.firedAlerts.delete("disk:warning") // Supersedes warning
+        alerts.push({
+          type: "disk",
+          severity: "critical",
+          message: `Disk critical: ${diskUsage}% used (${metrics.disk.usedGB}GB / ${metrics.disk.totalGB}GB, ${metrics.disk.availableGB}GB available)`,
+          metrics: { disk: metrics.disk },
+          topOffenders: [],
+        })
+      }
+    } else if (diskUsage > thresholds.diskWarningPercent) {
+      if (!state.firedAlerts.has("disk:warning") && !state.firedAlerts.has("disk:critical")) {
+        state.firedAlerts.add("disk:warning")
+        alerts.push({
+          type: "disk",
+          severity: "warning",
+          message: `Disk warning: ${diskUsage}% used (${metrics.disk.usedGB}GB / ${metrics.disk.totalGB}GB, ${metrics.disk.availableGB}GB available)`,
+          metrics: { disk: metrics.disk },
+          topOffenders: [],
+        })
+      }
+    } else {
+      state.firedAlerts.delete("disk:critical")
+      state.firedAlerts.delete("disk:warning")
+    }
+  }
+
+  // --- Worktrees ---
+  if (metrics.worktrees > thresholds.worktreeWarning) {
+    if (!state.firedAlerts.has("worktree:warning")) {
+      state.firedAlerts.add("worktree:warning")
+      alerts.push({
+        type: "worktree",
+        severity: "warning",
+        message: `Worktree count warning: ${metrics.worktrees} open worktrees (threshold: ${thresholds.worktreeWarning}). Run 'bun worktree clean' to remove stale ones.`,
+        metrics: {},
+        topOffenders: [],
+      })
+    }
+  } else {
+    state.firedAlerts.delete("worktree:warning")
+  }
+
   return alerts
 }
 
@@ -353,19 +488,27 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
   let bunProcesses = 0
   let swapUsedMB = 0
   let pidToParent = new Map<number, number>()
+  let disk: HealthMetrics["disk"]
+  let worktrees = 0
 
   try {
-    // Run ps aux and ps -eo pid,ppid in parallel
+    // Run ps aux, ps -eo pid,ppid, df -g ., and git worktree list in parallel
     const psAuxProc = Bun.spawn(["ps", "aux"], { stdout: "pipe", stderr: "ignore" })
     const psPpidProc = Bun.spawn(["ps", "-eo", "pid,ppid"], { stdout: "pipe", stderr: "ignore" })
-    const [psAuxOutput, psPpidOutput] = await Promise.all([
+    const dfProc = Bun.spawn(["df", "-g", "."], { stdout: "pipe", stderr: "ignore" })
+    const wtProc = Bun.spawn(["git", "worktree", "list"], { stdout: "pipe", stderr: "ignore" })
+    const [psAuxOutput, psPpidOutput, dfOutput, wtOutput] = await Promise.all([
       new Response(psAuxProc.stdout).text(),
       new Response(psPpidProc.stdout).text(),
+      new Response(dfProc.stdout).text().catch(() => ""),
+      new Response(wtProc.stdout).text().catch(() => ""),
     ])
     const allProcesses = parseProcessList(psAuxOutput)
     topProcesses = topCpuConsumers(allProcesses)
     bunProcesses = countBunNodeProcesses(allProcesses)
     pidToParent = buildPidToParent(psPpidOutput)
+    disk = parseDfOutput(dfOutput) ?? undefined
+    worktrees = parseWorktreeList(wtOutput)
   } catch (err) {
     log.warn?.(`ps failed: ${err instanceof Error ? err.message : err}`)
   }
@@ -391,7 +534,9 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
         ...osMetrics.memory,
         swapUsedMB,
       },
+      disk,
       bunProcesses,
+      worktrees,
       timestamp: osMetrics.timestamp,
     },
     pidToParent,
@@ -455,8 +600,8 @@ export function healthMonitorPlugin(): TribePlugin {
             for (const [name, load] of sessionLoad) {
               parts.push(`${name}: ${load.procs.join(", ")}`)
             }
-            const attribution = parts.join(" | ")
-            const msg = `${alert.message}. ${attribution}`
+            const attribution = parts.length > 0 ? `. ${parts.join(" | ")}` : ""
+            const msg = `${alert.message}${attribution}`
             log.info?.(`alert: ${msg}`)
 
             // Route: DM each responsible session
@@ -471,11 +616,43 @@ export function healthMonitorPlugin(): TribePlugin {
             // Critical: also broadcast to everyone
             if (alert.severity === "critical") {
               ctx.sendMessage("*", msg, `health:${alert.type}:${alert.severity}`)
+            } else if (attributedSessions.size === 0 && ctx.hasChief()) {
+              // Warning with no attributed sessions (e.g. disk, worktree): send to chief
+              ctx.sendMessage("chief", msg, `health:${alert.type}:${alert.severity}`)
             } else {
               // Warning: send to chief if unattributed processes exist
               if (sessionLoad.has("unattributed") && ctx.hasChief()) {
                 ctx.sendMessage("chief", msg, `health:${alert.type}:${alert.severity}`)
               }
+            }
+          }
+
+          // --- Git lock detection ---
+          const gitDir = `${process.cwd()}/.git`
+          const lockHolder = await detectGitLock(gitDir)
+          if (lockHolder) {
+            if (!alertState.gitLockDetected) {
+              alertState.gitLockDetected = true
+              alertState.firedAlerts.add("git-lock")
+              const sessionName = attributeToSession(lockHolder.pid, pidToParent, sessions)
+              const holder = sessionName ?? `PID ${lockHolder.pid}`
+              const lockMsg = `Git lock held by ${holder} (${lockHolder.command}) for ${gitDir}/index.lock`
+              log.info?.(`alert: ${lockMsg}`)
+
+              // DM responsible session
+              if (sessionName) {
+                ctx.sendMessage(sessionName, lockMsg, "health:git-lock:warning")
+              }
+              // Send to chief
+              if (ctx.hasChief()) {
+                ctx.sendMessage("chief", lockMsg, "health:git-lock:warning")
+              }
+            }
+          } else {
+            // Lock released — clear dedup state
+            if (alertState.gitLockDetected) {
+              alertState.gitLockDetected = false
+              alertState.firedAlerts.delete("git-lock")
             }
           }
         } catch (err) {
@@ -493,7 +670,7 @@ export function healthMonitorPlugin(): TribePlugin {
     },
 
     instructions() {
-      return "- Health monitoring active: CPU, memory, and process count alerts are broadcast automatically"
+      return "- Health monitoring active: CPU, memory, process count, disk space, worktree count, and git lock alerts are broadcast automatically"
     },
   }
 }
