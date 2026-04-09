@@ -15,6 +15,10 @@ import {
   topCpuConsumers,
   parseDfOutput,
   parseWorktreeList,
+  parseUlimitOutput,
+  parseFdInfo,
+  parseGhRateLimit,
+  parseIostatOutput,
   evaluateAlerts,
   createAlertState,
   defaultThresholds,
@@ -50,6 +54,7 @@ function makeMetrics(overrides: Partial<HealthMetrics> = {}): HealthMetrics {
       ...overrides.memory,
     },
     disk: overrides.disk,
+    fdCount: overrides.fdCount,
     bunProcesses: overrides.bunProcesses ?? 5,
     worktrees: overrides.worktrees ?? 1,
     timestamp: overrides.timestamp ?? Date.now(),
@@ -66,6 +71,9 @@ function makeThresholds(overrides: Partial<HealthThresholds> = {}): HealthThresh
     diskWarningPercent: 85,
     diskCriticalPercent: 95,
     worktreeWarning: 5,
+    fdWarningPercent: 70,
+    diskIoWarningMBps: 500,
+    ghRateLimitWarning: 20,
     sustainedSamples: 3,
     ...overrides,
   }
@@ -376,7 +384,9 @@ describe("alert format", () => {
     expect(alert).toHaveProperty("message")
     expect(alert).toHaveProperty("metrics")
     expect(alert).toHaveProperty("topOffenders")
-    expect(["cpu", "memory", "process-count", "git-lock", "disk", "worktree"]).toContain(alert.type)
+    expect(["cpu", "memory", "process-count", "git-lock", "disk", "disk-io", "worktree", "fd-count", "gh-rate-limit"]).toContain(
+      alert.type,
+    )
     expect(["warning", "critical"]).toContain(alert.severity)
     expect(typeof alert.message).toBe("string")
     expect(Array.isArray(alert.topOffenders)).toBe(true)
@@ -704,5 +714,269 @@ describe("evaluateAlerts — Worktree count", () => {
     const alerts = evaluateAlerts(highMetrics, thresholds, state)
     expect(alerts).toHaveLength(1)
     expect(alerts[0]!.type).toBe("worktree")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseUlimitOutput
+// ---------------------------------------------------------------------------
+
+describe("parseUlimitOutput", () => {
+  test("parses numeric ulimit output", () => {
+    expect(parseUlimitOutput("10240\n")).toBe(10240)
+  })
+
+  test("parses output with whitespace", () => {
+    expect(parseUlimitOutput("  256  \n")).toBe(256)
+  })
+
+  test("returns 0 for non-numeric output", () => {
+    expect(parseUlimitOutput("unlimited")).toBe(0)
+    expect(parseUlimitOutput("")).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseFdInfo
+// ---------------------------------------------------------------------------
+
+describe("parseFdInfo", () => {
+  test("computes usage percent correctly", () => {
+    const info = parseFdInfo(7000, 10000)
+    expect(info).toEqual({ total: 7000, limit: 10000, usagePercent: 70 })
+  })
+
+  test("rounds usage percent", () => {
+    const info = parseFdInfo(3333, 10000)
+    expect(info.usagePercent).toBe(33)
+  })
+
+  test("handles zero ulimit gracefully (avoids division by zero)", () => {
+    const info = parseFdInfo(100, 0)
+    expect(info.limit).toBe(1)
+    expect(info.total).toBe(100)
+  })
+
+  test("handles zero fds", () => {
+    const info = parseFdInfo(0, 10000)
+    expect(info).toEqual({ total: 0, limit: 10000, usagePercent: 0 })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// evaluateAlerts — File descriptor count
+// ---------------------------------------------------------------------------
+
+describe("evaluateAlerts — File descriptor count", () => {
+  test("fires fd-count warning when above threshold", () => {
+    const thresholds = makeThresholds({ fdWarningPercent: 70 })
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      fdCount: { total: 8000, perSession: [], limit: 10000 },
+    })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    const fdAlerts = alerts.filter((a) => a.type === "fd-count")
+    expect(fdAlerts).toHaveLength(1)
+    expect(fdAlerts[0]!.severity).toBe("warning")
+    expect(fdAlerts[0]!.message).toContain("8000")
+    expect(fdAlerts[0]!.message).toContain("80%")
+    expect(fdAlerts[0]!.message).toContain("10000")
+  })
+
+  test("does not fire when below threshold", () => {
+    const thresholds = makeThresholds({ fdWarningPercent: 70 })
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      fdCount: { total: 3000, perSession: [], limit: 10000 },
+    })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    const fdAlerts = alerts.filter((a) => a.type === "fd-count")
+    expect(fdAlerts).toEqual([])
+  })
+
+  test("does not fire when fdCount is undefined", () => {
+    const thresholds = makeThresholds({ fdWarningPercent: 70 })
+    const state = createAlertState()
+    const metrics = makeMetrics()
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    const fdAlerts = alerts.filter((a) => a.type === "fd-count")
+    expect(fdAlerts).toEqual([])
+  })
+
+  test("does not repeat fd-count alerts once fired", () => {
+    const thresholds = makeThresholds({ fdWarningPercent: 70 })
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      fdCount: { total: 8000, perSession: [], limit: 10000 },
+    })
+
+    const first = evaluateAlerts(metrics, thresholds, state)
+    expect(first.filter((a) => a.type === "fd-count")).toHaveLength(1)
+
+    const second = evaluateAlerts(metrics, thresholds, state)
+    expect(second.filter((a) => a.type === "fd-count")).toEqual([])
+  })
+
+  test("resets when fd count drops below threshold", () => {
+    const thresholds = makeThresholds({ fdWarningPercent: 70 })
+    const state = createAlertState()
+    const highMetrics = makeMetrics({
+      fdCount: { total: 8000, perSession: [], limit: 10000 },
+    })
+    const lowMetrics = makeMetrics({
+      fdCount: { total: 3000, perSession: [], limit: 10000 },
+    })
+
+    evaluateAlerts(highMetrics, thresholds, state)
+    evaluateAlerts(lowMetrics, thresholds, state)
+
+    const alerts = evaluateAlerts(highMetrics, thresholds, state)
+    const fdAlerts = alerts.filter((a) => a.type === "fd-count")
+    expect(fdAlerts).toHaveLength(1)
+    expect(fdAlerts[0]!.type).toBe("fd-count")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseGhRateLimit
+// ---------------------------------------------------------------------------
+
+describe("parseGhRateLimit", () => {
+  test("parses valid gh api rate_limit JSON output", () => {
+    const json = JSON.stringify({
+      resources: {
+        core: {
+          limit: 5000,
+          remaining: 4999,
+          reset: 1372700873,
+          used: 1,
+        },
+      },
+      rate: {
+        limit: 5000,
+        remaining: 4999,
+        reset: 1372700873,
+        used: 1,
+      },
+    })
+    const result = parseGhRateLimit(json)
+    expect(result).toEqual({
+      remaining: 4999,
+      limit: 5000,
+      resetAt: 1372700873,
+    })
+  })
+
+  test("returns null for malformed JSON", () => {
+    expect(parseGhRateLimit("not json")).toBeNull()
+    expect(parseGhRateLimit("")).toBeNull()
+    expect(parseGhRateLimit("{")).toBeNull()
+  })
+
+  test("returns null when resources.core is missing", () => {
+    expect(parseGhRateLimit(JSON.stringify({}))).toBeNull()
+    expect(parseGhRateLimit(JSON.stringify({ resources: {} }))).toBeNull()
+    expect(parseGhRateLimit(JSON.stringify({ resources: { core: {} } }))).toBeNull()
+  })
+
+  test("returns null when core fields have wrong types", () => {
+    const json = JSON.stringify({
+      resources: {
+        core: {
+          limit: "five thousand",
+          remaining: 4999,
+          reset: 1372700873,
+        },
+      },
+    })
+    expect(parseGhRateLimit(json)).toBeNull()
+  })
+
+  test("handles zero remaining (fully exhausted)", () => {
+    const json = JSON.stringify({
+      resources: {
+        core: {
+          limit: 5000,
+          remaining: 0,
+          reset: 1700000000,
+          used: 5000,
+        },
+      },
+    })
+    const result = parseGhRateLimit(json)
+    expect(result).toEqual({
+      remaining: 0,
+      limit: 5000,
+      resetAt: 1700000000,
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseIostatOutput
+// ---------------------------------------------------------------------------
+
+describe("parseIostatOutput", () => {
+  test("parses valid macOS iostat -d -c 2 -w 1 output", () => {
+    const output = `              disk0
+    KB/t  tps  MB/s
+   52.57   95  4.88
+   64.00  150  9.38`
+    const result = parseIostatOutput(output)
+    expect(result).toEqual({ readWriteMBps: 9.38 })
+  })
+
+  test("returns the LAST data line (current sample, not historical)", () => {
+    const output = `              disk0
+    KB/t  tps  MB/s
+  128.00   50  6.25
+   32.00  200  6.25
+   16.00  500  7.81`
+    // With -c 3 there would be 3 data lines; we want the last one
+    const result = parseIostatOutput(output)
+    expect(result).toEqual({ readWriteMBps: 7.81 })
+  })
+
+  test("returns null for empty output", () => {
+    expect(parseIostatOutput("")).toBeNull()
+  })
+
+  test("returns null for header-only output", () => {
+    const output = `              disk0
+    KB/t  tps  MB/s`
+    expect(parseIostatOutput(output)).toBeNull()
+  })
+
+  test("handles zero throughput", () => {
+    const output = `              disk0
+    KB/t  tps  MB/s
+    0.00    0  0.00
+    0.00    0  0.00`
+    const result = parseIostatOutput(output)
+    expect(result).toEqual({ readWriteMBps: 0 })
+  })
+
+  test("handles high throughput values", () => {
+    const output = `              disk0
+    KB/t  tps  MB/s
+   52.57   95  4.88
+  256.00 3000  750.00`
+    const result = parseIostatOutput(output)
+    expect(result).toEqual({ readWriteMBps: 750 })
+  })
+
+  test("handles multiple disks (takes last data line)", () => {
+    // macOS with multiple disks shows more columns but same format
+    const output = `              disk0               disk1
+    KB/t  tps  MB/s     KB/t  tps  MB/s
+   52.57   95  4.88    32.00   10  0.31
+   64.00  150  9.38    16.00   20  0.31`
+    const result = parseIostatOutput(output)
+    // Last data line, last numeric column = 0.31
+    expect(result).not.toBeNull()
+    expect(result!.readWriteMBps).toBeDefined()
   })
 })

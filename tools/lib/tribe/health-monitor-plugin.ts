@@ -12,6 +12,9 @@
  *   HEALTH_DISK_WARNING   — disk usage % for warning (default: 85)
  *   HEALTH_DISK_CRITICAL   — disk usage % for critical (default: 95)
  *   HEALTH_WORKTREE_WARNING — open worktree count for warning (default: 5)
+ *   HEALTH_GH_RATELIMIT_WARNING — GitHub API remaining % for warning (default: 20)
+ *   HEALTH_FD_WARNING      — fd usage % for warning (default: 70)
+ *   HEALTH_DISK_IO_WARNING — combined read+write MB/s for warning (default: 500)
  */
 
 import { existsSync } from "node:fs"
@@ -46,13 +49,27 @@ export interface HealthMetrics {
     availableGB: number
     usagePercent: number
   }
+  diskIo?: {
+    readWriteMBps: number
+  }
+  fdCount?: {
+    total: number
+    perSession: Array<{ name: string; count: number }>
+    limit: number
+  }
+  ghRateLimit?: {
+    remaining: number
+    limit: number
+    resetAt: number // Unix timestamp
+    usagePercent: number
+  }
   bunProcesses: number
   worktrees: number
   timestamp: number
 }
 
 export interface HealthAlert {
-  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "worktree"
+  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "disk-io" | "worktree" | "fd-count" | "gh-rate-limit"
   severity: "warning" | "critical"
   message: string
   metrics: Partial<HealthMetrics>
@@ -72,6 +89,11 @@ export interface HealthThresholds {
   diskWarningPercent: number
   diskCriticalPercent: number
   worktreeWarning: number
+  fdWarningPercent: number
+  /** Alert when combined read+write exceeds this MB/s sustained */
+  diskIoWarningMBps: number
+  /** Alert when GitHub API remaining % drops below this (default: 20) */
+  ghRateLimitWarning: number
   /** How many consecutive samples above threshold before alerting */
   sustainedSamples: number
 }
@@ -86,6 +108,9 @@ export function defaultThresholds(): HealthThresholds {
     diskWarningPercent: parseInt(process.env.HEALTH_DISK_WARNING ?? "85", 10),
     diskCriticalPercent: parseInt(process.env.HEALTH_DISK_CRITICAL ?? "95", 10),
     worktreeWarning: parseInt(process.env.HEALTH_WORKTREE_WARNING ?? "5", 10),
+    fdWarningPercent: parseInt(process.env.HEALTH_FD_WARNING ?? "70", 10),
+    diskIoWarningMBps: parseInt(process.env.HEALTH_DISK_IO_WARNING ?? "500", 10),
+    ghRateLimitWarning: parseInt(process.env.HEALTH_GH_RATELIMIT_WARNING ?? "20", 10),
     // At 10s interval, 3 samples = 30s sustained
     sustainedSamples: 3,
   }
@@ -252,6 +277,88 @@ export function parseWorktreeList(output: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub API rate limit
+// ---------------------------------------------------------------------------
+
+/** Parse `gh api rate_limit` JSON output. */
+export function parseGhRateLimit(
+  jsonOutput: string,
+): { remaining: number; limit: number; resetAt: number } | null {
+  try {
+    const data = JSON.parse(jsonOutput) as Record<string, unknown>
+    const resources = data?.resources as Record<string, unknown> | undefined
+    const core = resources?.core as Record<string, unknown> | undefined
+    if (
+      core &&
+      typeof core.remaining === "number" &&
+      typeof core.limit === "number" &&
+      typeof core.reset === "number"
+    ) {
+      return { remaining: core.remaining, limit: core.limit, resetAt: core.reset }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File descriptor monitoring
+// ---------------------------------------------------------------------------
+
+/** Parse the system file descriptor limit from `ulimit -n` output. */
+export function parseUlimitOutput(output: string): number {
+  const n = parseInt(output.trim(), 10)
+  return isNaN(n) ? 0 : n
+}
+
+/** Compute fd usage info from a total count and ulimit. */
+export function parseFdInfo(
+  lsofCount: number,
+  ulimitN: number,
+): { total: number; limit: number; usagePercent: number } {
+  const limit = ulimitN > 0 ? ulimitN : 1 // Avoid division by zero
+  return {
+    total: lsofCount,
+    limit,
+    usagePercent: Math.round((lsofCount / limit) * 100),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Disk I/O monitoring
+// ---------------------------------------------------------------------------
+
+/** Parse macOS `iostat -d -c 2 -w 1` output to extract current disk throughput */
+export function parseIostatOutput(output: string): { readWriteMBps: number } | null {
+  const lines = output.trim().split("\n")
+  // iostat -d -c 2 -w 1 output:
+  //               disk0
+  //     KB/t  tps  MB/s
+  //    52.57   95  4.88    <- historical average (ignore)
+  //    64.00  150  9.38    <- current sample (use this)
+  //
+  // We want the LAST data line (second sample = current rate).
+  // Data lines have numeric values; skip headers.
+  let lastMBps: number | null = null
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === "") continue
+    // Match lines that look like data: numbers separated by whitespace
+    const parts = trimmed.split(/\s+/)
+    if (parts.length < 3) continue
+    const mbps = parseFloat(parts[parts.length - 1]!)
+    if (isNaN(mbps)) continue
+    // Verify it's a data line by checking the first column is also numeric
+    const first = parseFloat(parts[0]!)
+    if (isNaN(first)) continue
+    lastMBps = mbps
+  }
+  if (lastMBps === null) return null
+  return { readWriteMBps: lastMBps }
+}
+
+// ---------------------------------------------------------------------------
 // Git lock detection
 // ---------------------------------------------------------------------------
 
@@ -299,6 +406,8 @@ export interface AlertState {
   memAboveWarning: number
   diskAboveCritical: number
   diskAboveWarning: number
+  /** Consecutive high disk I/O readings */
+  ioAboveWarning: number
   /** Track which alerts have been fired to avoid repeating */
   firedAlerts: Set<string>
   /** Track if we've already alerted about a git lock (dedup) */
@@ -313,6 +422,7 @@ export function createAlertState(): AlertState {
     memAboveWarning: 0,
     diskAboveCritical: 0,
     diskAboveWarning: 0,
+    ioAboveWarning: 0,
     firedAlerts: new Set(),
     gitLockDetected: false,
   }
@@ -474,6 +584,25 @@ export function evaluateAlerts(metrics: HealthMetrics, thresholds: HealthThresho
     state.firedAlerts.delete("worktree:warning")
   }
 
+  // --- File descriptors ---
+  if (metrics.fdCount) {
+    const usagePercent = (metrics.fdCount.total / metrics.fdCount.limit) * 100
+    if (usagePercent > thresholds.fdWarningPercent) {
+      if (!state.firedAlerts.has("fd-count:warning")) {
+        state.firedAlerts.add("fd-count:warning")
+        alerts.push({
+          type: "fd-count",
+          severity: "warning",
+          message: `FD count warning: ${metrics.fdCount.total} open fds (${Math.round(usagePercent)}% of ${metrics.fdCount.limit} limit)`,
+          metrics: {},
+          topOffenders: [],
+        })
+      }
+    } else {
+      state.firedAlerts.delete("fd-count:warning")
+    }
+  }
+
   return alerts
 }
 
@@ -490,18 +619,23 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
   let pidToParent = new Map<number, number>()
   let disk: HealthMetrics["disk"]
   let worktrees = 0
+  let fdCount: HealthMetrics["fdCount"]
 
   try {
-    // Run ps aux, ps -eo pid,ppid, df -g ., and git worktree list in parallel
+    // Run ps aux, ps -eo pid,ppid, df -g ., git worktree list, lsof count, and ulimit in parallel
     const psAuxProc = Bun.spawn(["ps", "aux"], { stdout: "pipe", stderr: "ignore" })
     const psPpidProc = Bun.spawn(["ps", "-eo", "pid,ppid"], { stdout: "pipe", stderr: "ignore" })
     const dfProc = Bun.spawn(["df", "-g", "."], { stdout: "pipe", stderr: "ignore" })
     const wtProc = Bun.spawn(["git", "worktree", "list"], { stdout: "pipe", stderr: "ignore" })
-    const [psAuxOutput, psPpidOutput, dfOutput, wtOutput] = await Promise.all([
+    const fdCountProc = Bun.spawn(["sh", "-c", "lsof -n 2>/dev/null | wc -l"], { stdout: "pipe", stderr: "ignore" })
+    const ulimitProc = Bun.spawn(["sh", "-c", "ulimit -n"], { stdout: "pipe", stderr: "ignore" })
+    const [psAuxOutput, psPpidOutput, dfOutput, wtOutput, fdCountOutput, ulimitOutput] = await Promise.all([
       new Response(psAuxProc.stdout).text(),
       new Response(psPpidProc.stdout).text(),
       new Response(dfProc.stdout).text().catch(() => ""),
       new Response(wtProc.stdout).text().catch(() => ""),
+      new Response(fdCountProc.stdout).text().catch(() => "0"),
+      new Response(ulimitProc.stdout).text().catch(() => "0"),
     ])
     const allProcesses = parseProcessList(psAuxOutput)
     topProcesses = topCpuConsumers(allProcesses)
@@ -509,6 +643,14 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
     pidToParent = buildPidToParent(psPpidOutput)
     disk = parseDfOutput(dfOutput) ?? undefined
     worktrees = parseWorktreeList(wtOutput)
+
+    // File descriptor count
+    const lsofCount = parseInt(fdCountOutput.trim(), 10) || 0
+    const ulimitN = parseUlimitOutput(ulimitOutput)
+    if (ulimitN > 0) {
+      const fdInfo = parseFdInfo(lsofCount, ulimitN)
+      fdCount = { total: fdInfo.total, perSession: [], limit: fdInfo.limit }
+    }
   } catch (err) {
     log.warn?.(`ps failed: ${err instanceof Error ? err.message : err}`)
   }
@@ -535,6 +677,7 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
         swapUsedMB,
       },
       disk,
+      fdCount,
       bunProcesses,
       worktrees,
       timestamp: osMetrics.timestamp,
@@ -572,6 +715,9 @@ export function healthMonitorPlugin(): TribePlugin {
 
       const ac = new AbortController()
       const timers = createTimers(ac.signal)
+
+      let ghRateSampleCount = 0
+      let ioSampleCount = 0
 
       log.info?.(
         `starting: poll=${pollIntervalSec}s, cpu warn=${thresholds.cpuWarningMultiplier}x crit=${thresholds.cpuCriticalMultiplier}x, mem warn=${thresholds.memWarningPercent}% crit=${thresholds.memCriticalPercent}%`,
@@ -655,6 +801,58 @@ export function healthMonitorPlugin(): TribePlugin {
               alertState.firedAlerts.delete("git-lock")
             }
           }
+
+          // --- Disk I/O saturation (every 3rd sample — ~30s) ---
+          ioSampleCount++
+          if (ioSampleCount % 3 === 0) {
+            try {
+              const ioProc = Bun.spawn(["iostat", "-d", "-c", "2", "-w", "1"], { stdout: "pipe", stderr: "ignore" })
+              const ioOutput = await new Response(ioProc.stdout).text()
+              const io = parseIostatOutput(ioOutput)
+              if (io && io.readWriteMBps > thresholds.diskIoWarningMBps) {
+                alertState.ioAboveWarning++
+                if (alertState.ioAboveWarning >= 2 && !alertState.firedAlerts.has("disk-io:warning")) {
+                  alertState.firedAlerts.add("disk-io:warning")
+                  const msg = `Disk I/O warning: ${io.readWriteMBps.toFixed(0)} MB/s sustained (threshold: ${thresholds.diskIoWarningMBps} MB/s). Multiple agents may be running tests simultaneously.`
+                  log.info?.(`alert: ${msg}`)
+                  ctx.sendMessage("*", msg, "health:disk-io:warning")
+                }
+              } else {
+                alertState.ioAboveWarning = 0
+                alertState.firedAlerts.delete("disk-io:warning")
+              }
+            } catch {
+              // iostat not available — skip silently
+            }
+          }
+
+          // --- GitHub API rate limit (every 5th sample — ~50s) ---
+          ghRateSampleCount++
+          if (ghRateSampleCount % 5 === 0) {
+            try {
+              const ghProc = Bun.spawn(["gh", "api", "rate_limit"], { stdout: "pipe", stderr: "ignore" })
+              const ghOutput = await new Response(ghProc.stdout).text()
+              const rateLimit = parseGhRateLimit(ghOutput)
+              if (rateLimit) {
+                const usagePercent = ((rateLimit.limit - rateLimit.remaining) / rateLimit.limit) * 100
+                const remainingPercent = 100 - usagePercent
+                if (
+                  remainingPercent < thresholds.ghRateLimitWarning &&
+                  !alertState.firedAlerts.has("gh-rate-limit:warning")
+                ) {
+                  alertState.firedAlerts.add("gh-rate-limit:warning")
+                  const resetIn = Math.max(0, Math.round((rateLimit.resetAt * 1000 - Date.now()) / 60000))
+                  const msg = `GitHub API rate limit warning: ${rateLimit.remaining}/${rateLimit.limit} remaining (${Math.round(remainingPercent)}%). Resets in ${resetIn}min.`
+                  log.info?.(`alert: ${msg}`)
+                  ctx.sendMessage("*", msg, "health:gh-rate-limit:warning")
+                } else if (remainingPercent >= thresholds.ghRateLimitWarning) {
+                  alertState.firedAlerts.delete("gh-rate-limit:warning")
+                }
+              }
+            } catch {
+              // gh not available — skip silently
+            }
+          }
         } catch (err) {
           log.error?.(`sample failed: ${err instanceof Error ? err.message : err}`)
         }
@@ -670,7 +868,7 @@ export function healthMonitorPlugin(): TribePlugin {
     },
 
     instructions() {
-      return "- Health monitoring active: CPU, memory, process count, disk space, worktree count, and git lock alerts are broadcast automatically"
+      return "- Health monitoring active: CPU, memory, process count, disk space, disk I/O, worktree count, file descriptor count, GitHub API rate limit, and git lock alerts are broadcast automatically"
     },
   }
 }
