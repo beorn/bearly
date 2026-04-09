@@ -13,7 +13,7 @@ import {
   Box,
   Text,
   Console,
-  useContentRect,
+  useBoxRect,
   patchConsole,
   type Instance,
   type Term,
@@ -87,7 +87,7 @@ function useStore(store: TestStore) {
 export interface ReportProps {
   store: TestStore
   options: Options
-  /** Override width for testing (bypasses useContentRect) */
+  /** Override width for testing (bypasses useBoxRect) */
   width?: number
   /** Patched console for capturing output */
   console?: PatchedConsole
@@ -245,11 +245,11 @@ export function DotsLegend({ options }: { options: Options }) {
 export interface DotsSectionProps {
   state: TestStoreState
   options: Options
-  /** Override width for testing (bypasses useContentRect) */
+  /** Override width for testing (bypasses useBoxRect) */
   width?: number
 }
 
-/** Wrapper that uses useContentRect when width is not provided */
+/** Wrapper that uses useBoxRect when width is not provided */
 export function DotsSection({ width, ...props }: DotsSectionProps) {
   if (width !== undefined) {
     return <DotsSectionInner {...props} width={width} />
@@ -258,8 +258,8 @@ export function DotsSection({ width, ...props }: DotsSectionProps) {
 }
 
 function DotsSectionWithLayout(props: Omit<DotsSectionProps, "width">) {
-  const contentRect = useContentRect()
-  return <DotsSectionInner {...props} width={contentRect.width ?? 80} />
+  const rect = useBoxRect()
+  return <DotsSectionInner {...props} width={rect.width ?? 80} />
 }
 
 /** Per-package breakout analysis */

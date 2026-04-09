@@ -504,11 +504,7 @@ export function createAlertState(): AlertState {
  * Format a git lock message for tribe broadcast.
  * Returns short plain-text messages suitable for tribe protocol.
  */
-export function formatLockMessage(
-  lock: GitLockInfo,
-  sessionName: string | null,
-  durationSec: number,
-): string {
+export function formatLockMessage(lock: GitLockInfo, sessionName: string | null, durationSec: number): string {
   const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
   const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
   return `git lock: ${lockTarget} held by ${holder} for ${durationSec}s`
@@ -517,11 +513,7 @@ export function formatLockMessage(
 /**
  * Format a stale lock warning message (>30s).
  */
-export function formatStaleLockMessage(
-  lock: GitLockInfo,
-  sessionName: string | null,
-  durationSec: number,
-): string {
+export function formatStaleLockMessage(lock: GitLockInfo, sessionName: string | null, durationSec: number): string {
   const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
   const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
   return `git lock WARNING: ${lockTarget} held >${Math.floor(durationSec)}s by ${holder} -- may be stale`
@@ -890,9 +882,7 @@ export function healthMonitorPlugin(): TribePlugin {
             const durationSec = Math.round(durationMs / 1000)
 
             // Attribute to a session if possible
-            const sessionName = lock.holder
-              ? attributeToSession(lock.holder.pid, pidToParent, sessions)
-              : null
+            const sessionName = lock.holder ? attributeToSession(lock.holder.pid, pidToParent, sessions) : null
 
             // First detection: broadcast lock info
             const lockKey = `git-lock:${lock.path}`

@@ -59,6 +59,7 @@ import { getBestAvailableModel } from "./lib/llm/types"
 import { filterEditset, saveEditset, loadEditset } from "./lib/core/editset"
 import { applyEditset, verifyEditset } from "./lib/core/apply"
 import { applyPatch, parsePatch } from "./lib/core/patch"
+import { parseRegexLiteral, buildRegex } from "./lib/core/regex"
 import {
   findFilesToRename,
   checkFileConflicts,
@@ -319,10 +320,12 @@ async function main() {
     case "symbols.find": {
       const pattern = getArg("--pattern")
       if (!pattern) {
-        error("Usage: symbols.find --pattern <regex>")
+        error(
+          "Usage: symbols.find --pattern /regex/flags\n\nExamples:\n  /^useLayout$/   — exact symbol name\n  /^use.*Rect$/i  — any use*Rect (case-insensitive)",
+        )
       }
 
-      const regex = new RegExp(pattern, "i")
+      const regex = buildRegex(parseRegexLiteral(pattern, "--pattern"))
       const symbols = findSymbols(lazyProject(), regex)
       output(symbols)
       break
@@ -356,11 +359,23 @@ async function main() {
 
       if (!pattern || !replacement) {
         error(
-          "Usage: rename.batch --pattern <regex> --replace <string> [--output file] [--check-conflicts] [--skip names]",
+          `Usage: rename.batch --pattern /regex/flags --replace <string> [--output file] [--check-conflicts] [--skip names]
+
+Examples:
+  # Code identifier rename (case-sensitive, literal replacement):
+  rename.batch --pattern '/^useContentRect$/' --replace 'useBoxRect'
+
+  # Terminology migration (case-insensitive, case-preserving):
+  rename.batch --pattern '/widget/i' --replace 'gadget'
+  # Renames widget→gadget, Widget→Gadget, WIDGET→GADGET
+
+The /i flag controls both match-case AND replacement-case:
+  no /i → exact match, literal replacement (use for code)
+  /i   → any case, case-preserving (use for prose)`,
         )
       }
 
-      const regex = new RegExp(pattern, "i")
+      const regex = buildRegex(parseRegexLiteral(pattern, "--pattern"))
 
       // Check for conflicts mode
       if (checkConflictsFlag) {
@@ -550,22 +565,45 @@ async function main() {
 
       if (!pattern || !replacement) {
         error(
-          "Usage: pattern.replace --pattern <pattern> --replace <replacement> [--glob <glob>] [--backend ast-grep|ripgrep] [--output file]",
+          `Usage: pattern.replace --pattern /regex/flags --replace <replacement> [--glob <glob>] [--backend ast-grep|ripgrep] [--output file]
+
+Examples:
+  # Exact match, literal replacement (code migrations):
+  pattern.replace --pattern '/screenRect/' --replace 'scrollRect'
+  pattern.replace --pattern '/\\buseContentRect\\b/' --replace 'useBoxRect'
+
+  # Case-insensitive match, case-preserving replacement (prose migrations):
+  pattern.replace --pattern '/widget/i' --replace 'gadget'
+  # → widget/Widget/WIDGET become gadget/Gadget/GADGET
+
+  # With file filter:
+  pattern.replace --pattern '/foo/' --replace 'bar' --glob '**/*.md'
+
+The /i flag controls both match-case AND replacement-case:
+  no /i → exact match, literal replacement (use for code identifiers)
+  /i   → any case, case-preserving replacement (use for prose terminology)
+
+Note: the 'g' flag is always set internally (multi-match per file).`,
         )
       }
+
+      // Parse the regex literal. The `/i` flag drives case handling for both the
+      // search and the replacement — no hidden tool logic.
+      const parsed = parseRegexLiteral(pattern, "--pattern")
 
       // Choose backend
       let editset
       if (backendName === "ast-grep") {
-        editset = astGrepReplace(pattern, replacement, glob)
+        // ast-grep uses its own pattern language; pass the raw source through.
+        editset = astGrepReplace(parsed.source, replacement, glob)
       } else if (backendName === "ripgrep") {
-        editset = rgReplace(pattern, replacement, glob)
+        editset = rgReplace(parsed.source, replacement, glob, parsed.caseInsensitive)
       } else {
-        // Auto-detect: prefer ast-grep for structural patterns
-        if (pattern.includes("$")) {
-          editset = astGrepReplace(pattern, replacement, glob)
+        // Auto-detect: prefer ast-grep for structural patterns (contain `$`)
+        if (parsed.source.includes("$")) {
+          editset = astGrepReplace(parsed.source, replacement, glob)
         } else {
-          editset = rgReplace(pattern, replacement, glob)
+          editset = rgReplace(parsed.source, replacement, glob, parsed.caseInsensitive)
         }
       }
 
@@ -574,7 +612,7 @@ async function main() {
         editsetPath: outputFile,
         refCount: editset.refs.length,
         fileCount: new Set(editset.refs.map((r) => r.file)).size,
-        backend: backendName || (pattern.includes("$") ? "ast-grep" : "ripgrep"),
+        backend: backendName || (parsed.source.includes("$") ? "ast-grep" : "ripgrep"),
       })
       break
     }
@@ -887,8 +925,33 @@ async function main() {
       const outputDir = getArg("--output") || ".editsets"
 
       if (!from || !to) {
-        error("Usage: migrate --from <pattern> --to <replacement> [--glob <glob>] [--dry-run] [--output <dir>]")
+        error(
+          `Usage: migrate --from /regex/flags --to <replacement> [--glob <glob>] [--dry-run] [--output <dir>]
+
+Examples:
+  # Code rename (case-sensitive, literal — for identifier renames):
+  migrate --from '/contentRect/' --to 'boxRect' --dry-run
+
+  # Prose terminology migration (case-insensitive, case-preserving):
+  migrate --from '/widget/i' --to 'gadget' --dry-run
+  # Renames widget→gadget, Widget→Gadget, WIDGET→GADGET across files + symbols + text
+
+  # Scope to markdown only:
+  migrate --from '/oldTerm/' --to 'newTerm' --glob '**/*.md'
+
+Phases:
+  1. File renames        — files whose name contains the pattern
+  2. Symbol renames      — TypeScript identifiers (via ts-morph)
+  3. Text replacements   — strings, comments, markdown (via ripgrep)
+
+The /i flag propagates through all phases. Without /i, all phases are exact.
+With /i, all phases apply case-preservation.`,
+        )
       }
+
+      // Parse the regex literal. The `/i` flag is propagated through all three
+      // migration phases (file renames, symbol renames, text patterns).
+      const parsedFrom = parseRegexLiteral(from, "--from")
 
       // Ensure output directory exists
       const fs = await import("fs")
@@ -906,12 +969,13 @@ async function main() {
       }[] = []
 
       console.error(`\n=== Migration: ${from} → ${to} ===\n`)
+      console.error(`Case handling: ${parsedFrom.caseInsensitive ? "case-insensitive (/i) — replacement will case-match source" : "case-sensitive — literal replacement"}\n`)
 
       // Phase 1: File renames
       console.error("Phase 1: Finding files to rename...")
-      const fileOps = await findFilesToRename(from, to, glob)
+      const fileOps = await findFilesToRename(parsedFrom.source, to, glob)
       if (fileOps.length > 0) {
-        const fileEditset = await createFileRenameProposal(from, to, glob)
+        const fileEditset = await createFileRenameProposal(parsedFrom.source, to, glob)
         const fileEditsetPath = path.join(outputDir, "01-file-renames.json")
         saveFileEditset(fileEditset, fileEditsetPath)
         results.push({
@@ -929,7 +993,7 @@ async function main() {
 
       // Phase 2: Symbol renames (TypeScript identifiers)
       console.error("\nPhase 2: Finding TypeScript symbols to rename...")
-      const symbolRegex = new RegExp(from, "i")
+      const symbolRegex = buildRegex(parsedFrom)
       const symbols = findSymbols(lazyProject(), symbolRegex)
       if (symbols.length > 0) {
         const symbolEditset = createBatchRenameProposal(lazyProject(), symbolRegex, to)
@@ -951,8 +1015,7 @@ async function main() {
 
       // Phase 3: Text/comment replacements (strings, comments, docs)
       console.error("\nPhase 3: Finding text patterns (strings/comments)...")
-      // Use ripgrep for text patterns - match the term as a word boundary where possible
-      const textEditset = rgReplace(from, to, glob)
+      const textEditset = rgReplace(parsedFrom.source, to, glob, parsedFrom.caseInsensitive)
       if (textEditset.refs.length > 0) {
         const textEditsetPath = path.join(outputDir, "03-text-patterns.json")
         saveEditset(textEditset, textEditsetPath)

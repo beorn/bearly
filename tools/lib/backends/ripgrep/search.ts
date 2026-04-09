@@ -8,9 +8,12 @@ import { computeChecksum, computeRefId } from "../../core/apply"
  *
  * @param pattern - Regex pattern to search for
  * @param glob - Optional file glob filter (e.g., "*.md")
+ * @param caseInsensitive - If true, pass `-i` to ripgrep for case-insensitive matching
  */
-export function findPatterns(pattern: string, glob?: string): Reference[] {
-  const args = ["--json", "--line-number", "--column", "-i", pattern] // -i for case-insensitive
+export function findPatterns(pattern: string, glob?: string, caseInsensitive = false): Reference[] {
+  const args = ["--json", "--line-number", "--column"]
+  if (caseInsensitive) args.push("-i")
+  args.push(pattern)
   if (glob) {
     args.push("--glob", glob)
   }
@@ -19,7 +22,7 @@ export function findPatterns(pattern: string, glob?: string): Reference[] {
   const result = runRg(args)
   if (!result) return []
 
-  return parseMatches(result, pattern)
+  return parseMatches(result, pattern, caseInsensitive)
 }
 
 /**
@@ -28,14 +31,22 @@ export function findPatterns(pattern: string, glob?: string): Reference[] {
  * @param pattern - Regex pattern to match
  * @param replacement - Replacement string (supports $1, $2, etc. for capture groups)
  * @param glob - Optional file glob filter
+ * @param caseInsensitive - If true, match any case and apply case-preservation to the replacement
+ *                          (widget→gadget, Widget→Gadget, WIDGET→GADGET). If false (default),
+ *                          match exactly and replace literally.
  */
-export function createPatternReplaceProposal(pattern: string, replacement: string, glob?: string): Editset {
-  const refs = findPatterns(pattern, glob)
+export function createPatternReplaceProposal(
+  pattern: string,
+  replacement: string,
+  glob?: string,
+  caseInsensitive = false,
+): Editset {
+  const refs = findPatterns(pattern, glob, caseInsensitive)
 
   const id = `text-replace-${Date.now()}`
 
   // Generate edits with proper replacements
-  const edits = generateEdits(refs, pattern, replacement)
+  const edits = generateEdits(refs, pattern, replacement, caseInsensitive)
 
   return {
     id,
@@ -107,7 +118,7 @@ function runRg(args: string[]): RgMatch[] | null {
   }
 }
 
-function parseMatches(matches: RgMatch[], pattern: string): Reference[] {
+function parseMatches(matches: RgMatch[], pattern: string, _caseInsensitive: boolean): Reference[] {
   const refs: Reference[] = []
   const fileContents = new Map<string, string>()
 
@@ -150,29 +161,20 @@ function parseMatches(matches: RgMatch[], pattern: string): Reference[] {
 }
 
 /**
- * Case-preserving replacement for terminology migrations.
- *
- * Heuristic: if the user supplies a replacement with mixed case (e.g., `scrollRect`),
- * trust it — use literally. Only apply case-folding when the replacement has a single
- * case (e.g., `gadget` / `GADGET`), in which case we match the match's casing.
+ * Case-matching replacement, used ONLY when the user asked for case-insensitive matching
+ * (the `/i` flag on the pattern). Matches the case pattern of the original text in the
+ * replacement — the standard behavior for prose terminology migrations.
  *
  * Examples:
- *   preserveCase("screenRect", "scrollRect") → "scrollRect"  (literal, mixed case respected)
- *   preserveCase("ScreenRect", "scrollRect") → "scrollRect"  (literal, mixed case respected)
- *   preserveCase("widget", "gadget")         → "gadget"      (lowercase → lowercase)
- *   preserveCase("Widget", "gadget")         → "Gadget"      (PascalCase → PascalCase)
- *   preserveCase("WIDGET", "gadget")         → "GADGET"      (UPPER → UPPER)
+ *   caseMatch("widget", "gadget") → "gadget"  (lowercase → lowercase)
+ *   caseMatch("Widget", "gadget") → "Gadget"  (PascalCase → PascalCase)
+ *   caseMatch("WIDGET", "gadget") → "GADGET"  (UPPER → UPPER)
+ *
+ * When the pattern is case-SENSITIVE (no `/i`), this function is not called and the
+ * replacement is applied literally — which is the correct behavior for code identifier
+ * renames where mixed case like `scrollRect` must be preserved exactly as written.
  */
-function preserveCase(match: string, replacement: string): string {
-  // If replacement already has mixed case, trust the user — they've provided the exact casing.
-  // This is essential for camelCase/PascalCase identifiers like `useBoxRect`, `scrollRect`,
-  // `GridCell`, etc., where folding would break the identifier.
-  const replHasLower = /[a-z]/.test(replacement)
-  const replHasUpper = /[A-Z]/.test(replacement)
-  if (replHasLower && replHasUpper) {
-    return replacement
-  }
-  // Replacement is single-case — apply case-matching based on the match pattern.
+function caseMatch(match: string, replacement: string): string {
   // SCREAMING_CASE: entire match is uppercase
   if (match === match.toUpperCase() && match.length > 1) {
     return replacement.toUpperCase()
@@ -185,10 +187,12 @@ function preserveCase(match: string, replacement: string): string {
   return replacement.toLowerCase()
 }
 
-function generateEdits(refs: Reference[], pattern: string, replacement: string): Edit[] {
+function generateEdits(refs: Reference[], pattern: string, replacement: string, caseInsensitive: boolean): Edit[] {
   const edits: Edit[] = []
   const fileContents = new Map<string, string>()
-  const regex = new RegExp(pattern, "gi") // Case-insensitive matching
+  // The `g` flag is always set (we're processing file content, replacing all matches);
+  // the `i` flag is only added if the caller asked for case-insensitive matching.
+  const regex = new RegExp(pattern, caseInsensitive ? "gi" : "g")
 
   for (const ref of refs) {
     if (!ref.selected) continue
@@ -227,8 +231,11 @@ function generateEdits(refs: Reference[], pattern: string, replacement: string):
 
     // Get the actual matched text to compute proper replacement
     const matchedText = content.slice(charOffset, charOffset + matchLength)
-    // Use case-preserving replacement
-    const actualReplacement = matchedText.replace(regex, (m) => preserveCase(m, replacement))
+    // Case-insensitive matches apply case-preservation (widget→Widget→WIDGET);
+    // case-sensitive matches use the replacement literally.
+    const actualReplacement = caseInsensitive
+      ? matchedText.replace(regex, (m) => caseMatch(m, replacement))
+      : matchedText.replace(regex, replacement)
 
     edits.push({
       file: ref.file,
