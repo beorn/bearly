@@ -237,10 +237,32 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
 }
 
 /**
- * Case-preserving replacement for terminology migrations
+ * Case-preserving replacement for terminology migrations.
+ *
+ * Heuristic: if the user supplies a replacement with mixed case (e.g., `scrollRect`),
+ * trust it — use literally. Only apply case-folding when the replacement has a single
+ * case (e.g., `gadget` / `GADGET`), in which case we match the match's casing.
+ *
+ * Examples:
+ *   computeNewName("screenRect", /screenRect/, "scrollRect") → "scrollRect"
+ *   computeNewName("useScreenRect", /screenRect/, "scrollRect") → "useScrollRect"
+ *   computeNewName("widget", /widget/, "gadget") → "gadget"
+ *   computeNewName("Widget", /widget/i, "gadget") → "Gadget"
+ *   computeNewName("WIDGET", /widget/i, "gadget") → "GADGET"
  */
 export function computeNewName(oldName: string, pattern: RegExp, replacement: string): string {
+  // If replacement already has mixed case, trust the user — they've provided the exact casing.
+  // This is essential for camelCase/PascalCase identifiers like `useBoxRect`, `scrollRect`,
+  // where folding would break the identifier.
+  const replHasLower = /[a-z]/.test(replacement)
+  const replHasUpper = /[A-Z]/.test(replacement)
+  const replIsMixedCase = replHasLower && replHasUpper
+
   return oldName.replace(pattern, (match) => {
+    if (replIsMixedCase) {
+      return replacement
+    }
+    // Replacement is single-case — apply case-matching based on the match pattern.
     // SCREAMING_CASE: entire match is uppercase
     if (match === match.toUpperCase() && match.length > 1) {
       return replacement.toUpperCase()

@@ -150,15 +150,34 @@ function parseMatches(matches: RgMatch[], pattern: string): Reference[] {
 }
 
 /**
- * Case-preserving replacement for terminology migrations
- * Matches the case pattern of the original text in the replacement
+ * Case-preserving replacement for terminology migrations.
+ *
+ * Heuristic: if the user supplies a replacement with mixed case (e.g., `scrollRect`),
+ * trust it — use literally. Only apply case-folding when the replacement has a single
+ * case (e.g., `gadget` / `GADGET`), in which case we match the match's casing.
+ *
+ * Examples:
+ *   preserveCase("screenRect", "scrollRect") → "scrollRect"  (literal, mixed case respected)
+ *   preserveCase("ScreenRect", "scrollRect") → "scrollRect"  (literal, mixed case respected)
+ *   preserveCase("widget", "gadget")         → "gadget"      (lowercase → lowercase)
+ *   preserveCase("Widget", "gadget")         → "Gadget"      (PascalCase → PascalCase)
+ *   preserveCase("WIDGET", "gadget")         → "GADGET"      (UPPER → UPPER)
  */
 function preserveCase(match: string, replacement: string): string {
+  // If replacement already has mixed case, trust the user — they've provided the exact casing.
+  // This is essential for camelCase/PascalCase identifiers like `useBoxRect`, `scrollRect`,
+  // `GridCell`, etc., where folding would break the identifier.
+  const replHasLower = /[a-z]/.test(replacement)
+  const replHasUpper = /[A-Z]/.test(replacement)
+  if (replHasLower && replHasUpper) {
+    return replacement
+  }
+  // Replacement is single-case — apply case-matching based on the match pattern.
   // SCREAMING_CASE: entire match is uppercase
   if (match === match.toUpperCase() && match.length > 1) {
     return replacement.toUpperCase()
   }
-  // PascalCase: first char is uppercase
+  // PascalCase/TitleCase: first char is uppercase
   if (match[0] === match[0]!.toUpperCase()) {
     return replacement[0]!.toUpperCase() + replacement.slice(1)
   }
