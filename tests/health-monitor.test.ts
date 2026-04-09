@@ -16,6 +16,8 @@ import {
   evaluateAlerts,
   createAlertState,
   defaultThresholds,
+  buildPidToParent,
+  attributeToSession,
   type HealthMetrics,
   type HealthThresholds,
 } from "../tools/lib/tribe/health-monitor-plugin.ts"
@@ -371,5 +373,130 @@ describe("alert format", () => {
     expect(["warning", "critical"]).toContain(alert.severity)
     expect(typeof alert.message).toBe("string")
     expect(Array.isArray(alert.topOffenders)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Process attribution — buildPidToParent
+// ---------------------------------------------------------------------------
+
+describe("process attribution", () => {
+  describe("buildPidToParent", () => {
+    test("parses standard ps -eo pid,ppid output correctly", () => {
+      const psOutput = [
+        "  PID  PPID",
+        "    1     0",
+        "  100    50",
+        "  101   100",
+        "  200    50",
+      ].join("\n")
+
+      const map = buildPidToParent(psOutput)
+      expect(map.get(1)).toBe(0)
+      expect(map.get(100)).toBe(50)
+      expect(map.get(101)).toBe(100)
+      expect(map.get(200)).toBe(50)
+      expect(map.size).toBe(4)
+    })
+
+    test("handles empty output (just header)", () => {
+      const psOutput = "  PID  PPID\n"
+      const map = buildPidToParent(psOutput)
+      expect(map.size).toBe(0)
+    })
+
+    test("skips malformed lines", () => {
+      const psOutput = [
+        "  PID  PPID",
+        "    1     0",
+        "  not a number",
+        "",
+        "  200    50",
+      ].join("\n")
+
+      const map = buildPidToParent(psOutput)
+      expect(map.size).toBe(2)
+      expect(map.get(1)).toBe(0)
+      expect(map.get(200)).toBe(50)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // attributeToSession
+  // -------------------------------------------------------------------------
+
+  /*
+   * Test process tree:
+   *
+   * launchd (PID 1, PPID 0)
+   * ├── bash (PID 50, PPID 1)
+   * │   ├── Claude Code A (PID 100, PPID 50)
+   * │   │   ├── tribe-proxy (PID 101, PPID 100) ← session "km"
+   * │   │   ├── bun vitest (PID 102, PPID 100)
+   * │   │   └── subshell (PID 103, PPID 100)
+   * │   │       └── node (PID 104, PPID 103)
+   * │   └── Claude Code B (PID 200, PPID 50)
+   * │       ├── tribe-proxy (PID 201, PPID 200) ← session "km-2"
+   * │       └── bun build (PID 202, PPID 200)
+   * └── mds_stores (PID 300, PPID 1)
+   */
+
+  const pidToParent = new Map([
+    [1, 0],
+    [50, 1],
+    [100, 50],
+    [101, 100],
+    [102, 100],
+    [103, 100],
+    [104, 103],
+    [200, 50],
+    [201, 200],
+    [202, 200],
+    [300, 1],
+  ])
+
+  // Sessions map: session name → tribe-proxy PID
+  const sessions = new Map([
+    ["km", 101],
+    ["km-2", 201],
+  ])
+
+  describe("attributeToSession", () => {
+    test("direct child — process whose parent is a session's Claude Code parent", () => {
+      // PID 102 (bun vitest) → parent 100 → 100 is parent of session "km"'s proxy (101)
+      expect(attributeToSession(102, pidToParent, sessions)).toBe("km")
+    })
+
+    test("grandchild — subprocess of a subprocess of Claude Code", () => {
+      // PID 104 → parent 103 → parent 100 → 100 is parent of session "km"'s proxy (101)
+      expect(attributeToSession(104, pidToParent, sessions)).toBe("km")
+    })
+
+    test("session PID itself — the tribe-proxy PID returns its own session", () => {
+      expect(attributeToSession(101, pidToParent, sessions)).toBe("km")
+      expect(attributeToSession(201, pidToParent, sessions)).toBe("km-2")
+    })
+
+    test("unattributable — process with no ancestry matching any session", () => {
+      // PID 300 → parent 1 → parent 0 → no match
+      expect(attributeToSession(300, pidToParent, sessions)).toBeNull()
+    })
+
+    test("multiple sessions — process attributed to the correct one", () => {
+      // PID 202 (bun build) → parent 200 → 200 is parent of "km-2"'s proxy (201)
+      expect(attributeToSession(202, pidToParent, sessions)).toBe("km-2")
+      // PID 102 → parent 100 → 100 is parent of "km"'s proxy (101)
+      expect(attributeToSession(102, pidToParent, sessions)).toBe("km")
+    })
+
+    test("cycle protection — PPID chain with a cycle does not infinite loop", () => {
+      // Create a cycle: 500 → 501 → 502 → 500
+      const cyclicMap = new Map([
+        [500, 501],
+        [501, 502],
+        [502, 500],
+      ])
+      expect(attributeToSession(500, cyclicMap, sessions)).toBeNull()
+    })
   })
 })
