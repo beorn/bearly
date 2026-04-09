@@ -42,6 +42,8 @@ export interface PluginContext {
   claimDedup(key: string): boolean
   /** Get connected session names */
   getSessionNames(): string[]
+  /** Get active sessions with their PIDs */
+  getActiveSessions(): Array<{ name: string; pid: number; role: string }>
   /** Current session name */
   sessionName: string
   /** Current session ID (internal tribe UUID) */

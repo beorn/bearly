@@ -614,6 +614,11 @@ const pluginCtx: PluginContext = {
       .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
       .map((c) => c.name)
   },
+  getActiveSessions() {
+    return Array.from(clients.values())
+      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
+      .map((c) => ({ name: c.name, pid: c.pid, role: c.role }))
+  },
 }
 
 const plugins = [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin()]

@@ -115,9 +115,7 @@ export function parseSwapUsage(output: string): number {
 }
 
 /** Parse `ps aux` output to extract top processes. */
-export function parseProcessList(
-  psOutput: string,
-): Array<{ pid: number; cpu: number; mem: number; command: string }> {
+export function parseProcessList(psOutput: string): Array<{ pid: number; cpu: number; mem: number; command: string }> {
   const lines = psOutput.trim().split("\n")
   // Skip header
   const results: Array<{ pid: number; cpu: number; mem: number; command: string }> = []
@@ -136,10 +134,61 @@ export function parseProcessList(
   return results
 }
 
+/** Build a PID → parent PID map from `ps -eo pid,ppid` output */
+export function buildPidToParent(psOutput: string): Map<number, number> {
+  const map = new Map<number, number>()
+  for (const line of psOutput.trim().split("\n").slice(1)) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length >= 2) {
+      const pid = parseInt(parts[0]!, 10)
+      const ppid = parseInt(parts[1]!, 10)
+      if (!isNaN(pid) && !isNaN(ppid)) map.set(pid, ppid)
+    }
+  }
+  return map
+}
+
+/**
+ * Attribute a process to a tribe session by walking the PPID chain.
+ * Session PIDs are tribe-proxy PIDs — their parent is the Claude Code process.
+ * High-CPU processes are siblings (other children of the same Claude Code parent).
+ */
+export function attributeToSession(
+  pid: number,
+  pidToParent: Map<number, number>,
+  sessions: Array<{ name: string; pid: number }>,
+): string | null {
+  // Build session parent PID map: Claude Code PID → session name
+  const sessionParentToName = new Map<number, string>()
+  for (const s of sessions) {
+    const parentPid = pidToParent.get(s.pid)
+    if (parentPid !== undefined) {
+      sessionParentToName.set(parentPid, s.name)
+    }
+    // Also match the session PID itself
+    sessionParentToName.set(s.pid, s.name)
+  }
+
+  // Walk up the PPID chain from the target process
+  let current = pid
+  const visited = new Set<number>()
+  while (current > 1 && !visited.has(current)) {
+    visited.add(current)
+    const parent = pidToParent.get(current)
+    if (parent === undefined) break
+
+    // Check if the parent is a known Claude Code process
+    const sessionName = sessionParentToName.get(parent)
+    if (sessionName) return sessionName
+
+    current = parent
+  }
+
+  return null
+}
+
 /** Count bun/node processes from a parsed process list. */
-export function countBunNodeProcesses(
-  processes: Array<{ command: string }>,
-): number {
+export function countBunNodeProcesses(processes: Array<{ command: string }>): number {
   return processes.filter((p) => /\b(bun|node)\b/.test(p.command)).length
 }
 
@@ -186,11 +235,7 @@ export function createAlertState(): AlertState {
  * Evaluate metrics against thresholds and return any new alerts.
  * Mutates `state` to track sustained conditions.
  */
-export function evaluateAlerts(
-  metrics: HealthMetrics,
-  thresholds: HealthThresholds,
-  state: AlertState,
-): HealthAlert[] {
+export function evaluateAlerts(metrics: HealthMetrics, thresholds: HealthThresholds, state: AlertState): HealthAlert[] {
   const alerts: HealthAlert[] = []
   const cores = metrics.cpu.coreCount
   const load = metrics.cpu.loadAvg1m
@@ -301,19 +346,26 @@ export function evaluateAlerts(
 // Full metrics collection (async — spawns ps)
 // ---------------------------------------------------------------------------
 
-async function collectFullMetrics(): Promise<HealthMetrics> {
+async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToParent: Map<number, number> }> {
   const osMetrics = collectOsMetrics()
 
   let topProcesses: Array<{ pid: number; cpu: number; mem: number; command: string }> = []
   let bunProcesses = 0
   let swapUsedMB = 0
+  let pidToParent = new Map<number, number>()
 
   try {
-    const psProc = Bun.spawn(["ps", "aux"], { stdout: "pipe", stderr: "ignore" })
-    const psOutput = await new Response(psProc.stdout).text()
-    const allProcesses = parseProcessList(psOutput)
+    // Run ps aux and ps -eo pid,ppid in parallel
+    const psAuxProc = Bun.spawn(["ps", "aux"], { stdout: "pipe", stderr: "ignore" })
+    const psPpidProc = Bun.spawn(["ps", "-eo", "pid,ppid"], { stdout: "pipe", stderr: "ignore" })
+    const [psAuxOutput, psPpidOutput] = await Promise.all([
+      new Response(psAuxProc.stdout).text(),
+      new Response(psPpidProc.stdout).text(),
+    ])
+    const allProcesses = parseProcessList(psAuxOutput)
     topProcesses = topCpuConsumers(allProcesses)
     bunProcesses = countBunNodeProcesses(allProcesses)
+    pidToParent = buildPidToParent(psPpidOutput)
   } catch (err) {
     log.warn?.(`ps failed: ${err instanceof Error ? err.message : err}`)
   }
@@ -330,16 +382,19 @@ async function collectFullMetrics(): Promise<HealthMetrics> {
   }
 
   return {
-    cpu: {
-      ...osMetrics.cpu,
-      topProcesses,
+    metrics: {
+      cpu: {
+        ...osMetrics.cpu,
+        topProcesses,
+      },
+      memory: {
+        ...osMetrics.memory,
+        swapUsedMB,
+      },
+      bunProcesses,
+      timestamp: osMetrics.timestamp,
     },
-    memory: {
-      ...osMetrics.memory,
-      swapUsedMB,
-    },
-    bunProcesses,
-    timestamp: osMetrics.timestamp,
+    pidToParent,
   }
 }
 
@@ -348,7 +403,8 @@ async function collectFullMetrics(): Promise<HealthMetrics> {
 // ---------------------------------------------------------------------------
 
 export async function getHealthSnapshot(): Promise<HealthMetrics> {
-  return collectFullMetrics()
+  const { metrics } = await collectFullMetrics()
+  return metrics
 }
 
 // ---------------------------------------------------------------------------
@@ -378,16 +434,49 @@ export function healthMonitorPlugin(): TribePlugin {
 
       async function sample(): Promise<void> {
         try {
-          const metrics = await collectFullMetrics()
+          const { metrics, pidToParent } = await collectFullMetrics()
           const alerts = evaluateAlerts(metrics, thresholds, alertState)
+          const sessions = ctx.getActiveSessions()
 
           for (const alert of alerts) {
-            const offenders = alert.topOffenders
-              .map((p) => `${p.pid}:${p.cpu}% ${p.command.slice(0, 40)}`)
-              .join(", ")
-            const msg = `${alert.message}. Top: ${offenders}`
+            // Group offenders by session
+            const sessionLoad = new Map<string, { total: number; procs: string[] }>()
+            for (const p of alert.topOffenders) {
+              const session = attributeToSession(p.pid, pidToParent, sessions)
+              const key = session ?? "unattributed"
+              const entry = sessionLoad.get(key) ?? { total: 0, procs: [] }
+              entry.total += p.cpu
+              entry.procs.push(`${p.cpu}% ${p.command.slice(0, 30)}`)
+              sessionLoad.set(key, entry)
+            }
+
+            // Format: "km-3: 45% bun vitest | unattributed: 8% mds_stores"
+            const parts: string[] = []
+            for (const [name, load] of sessionLoad) {
+              parts.push(`${name}: ${load.procs.join(", ")}`)
+            }
+            const attribution = parts.join(" | ")
+            const msg = `${alert.message}. ${attribution}`
             log.info?.(`alert: ${msg}`)
-            ctx.sendMessage("*", msg, `health:${alert.type}:${alert.severity}`)
+
+            // Route: DM each responsible session
+            const attributedSessions = new Set<string>()
+            for (const [name] of sessionLoad) {
+              if (name !== "unattributed") {
+                attributedSessions.add(name)
+                ctx.sendMessage(name, msg, `health:${alert.type}:${alert.severity}`)
+              }
+            }
+
+            // Critical: also broadcast to everyone
+            if (alert.severity === "critical") {
+              ctx.sendMessage("*", msg, `health:${alert.type}:${alert.severity}`)
+            } else {
+              // Warning: send to chief if unattributed processes exist
+              if (sessionLoad.has("unattributed") && ctx.hasChief()) {
+                ctx.sendMessage("chief", msg, `health:${alert.type}:${alert.severity}`)
+              }
+            }
           }
         } catch (err) {
           log.error?.(`sample failed: ${err instanceof Error ? err.message : err}`)

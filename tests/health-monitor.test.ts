@@ -455,11 +455,11 @@ describe("process attribution", () => {
     [300, 1],
   ])
 
-  // Sessions map: session name → tribe-proxy PID
-  const sessions = new Map([
-    ["km", 101],
-    ["km-2", 201],
-  ])
+  // Sessions: session name + tribe-proxy PID
+  const sessions = [
+    { name: "km", pid: 101 },
+    { name: "km-2", pid: 201 },
+  ]
 
   describe("attributeToSession", () => {
     test("direct child — process whose parent is a session's Claude Code parent", () => {
