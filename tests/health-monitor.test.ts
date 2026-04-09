@@ -13,6 +13,8 @@ import {
   parseProcessList,
   countBunNodeProcesses,
   topCpuConsumers,
+  parseDfOutput,
+  parseWorktreeList,
   evaluateAlerts,
   createAlertState,
   defaultThresholds,
@@ -48,6 +50,7 @@ function makeMetrics(overrides: Partial<HealthMetrics> = {}): HealthMetrics {
       ...overrides.memory,
     },
     bunProcesses: overrides.bunProcesses ?? 5,
+    worktrees: overrides.worktrees ?? 1,
     timestamp: overrides.timestamp ?? Date.now(),
   }
 }
@@ -59,6 +62,9 @@ function makeThresholds(overrides: Partial<HealthThresholds> = {}): HealthThresh
     memWarningPercent: 85,
     memCriticalPercent: 95,
     processCountWarning: 50,
+    diskWarningPercent: 85,
+    diskCriticalPercent: 95,
+    worktreeWarning: 5,
     sustainedSamples: 3,
     ...overrides,
   }
@@ -369,7 +375,7 @@ describe("alert format", () => {
     expect(alert).toHaveProperty("message")
     expect(alert).toHaveProperty("metrics")
     expect(alert).toHaveProperty("topOffenders")
-    expect(["cpu", "memory", "process-count"]).toContain(alert.type)
+    expect(["cpu", "memory", "process-count", "git-lock", "disk", "worktree"]).toContain(alert.type)
     expect(["warning", "critical"]).toContain(alert.severity)
     expect(typeof alert.message).toBe("string")
     expect(Array.isArray(alert.topOffenders)).toBe(true)
@@ -383,13 +389,7 @@ describe("alert format", () => {
 describe("process attribution", () => {
   describe("buildPidToParent", () => {
     test("parses standard ps -eo pid,ppid output correctly", () => {
-      const psOutput = [
-        "  PID  PPID",
-        "    1     0",
-        "  100    50",
-        "  101   100",
-        "  200    50",
-      ].join("\n")
+      const psOutput = ["  PID  PPID", "    1     0", "  100    50", "  101   100", "  200    50"].join("\n")
 
       const map = buildPidToParent(psOutput)
       expect(map.get(1)).toBe(0)
@@ -406,13 +406,7 @@ describe("process attribution", () => {
     })
 
     test("skips malformed lines", () => {
-      const psOutput = [
-        "  PID  PPID",
-        "    1     0",
-        "  not a number",
-        "",
-        "  200    50",
-      ].join("\n")
+      const psOutput = ["  PID  PPID", "    1     0", "  not a number", "", "  200    50"].join("\n")
 
       const map = buildPidToParent(psOutput)
       expect(map.size).toBe(2)
@@ -498,5 +492,216 @@ describe("process attribution", () => {
       ])
       expect(attributeToSession(500, cyclicMap, sessions)).toBeNull()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseDfOutput
+// ---------------------------------------------------------------------------
+
+describe("parseDfOutput", () => {
+  test("parses macOS df -g output", () => {
+    const output = `Filesystem   1G-blocks  Used Available Capacity  Mounted on
+/dev/disk3s1    1863   976       791    56%    /System/Volumes/Data`
+    const result = parseDfOutput(output)
+    expect(result).toEqual({
+      totalGB: 1863,
+      usedGB: 976,
+      availableGB: 791,
+      usagePercent: 56,
+    })
+  })
+
+  test("returns null for empty input", () => {
+    expect(parseDfOutput("")).toBeNull()
+  })
+
+  test("returns null for header-only input", () => {
+    expect(parseDfOutput("Filesystem   1G-blocks  Used Available Capacity  Mounted on\n")).toBeNull()
+  })
+
+  test("returns null for malformed data line", () => {
+    expect(parseDfOutput("Filesystem   1G-blocks  Used Available Capacity\nfoo")).toBeNull()
+  })
+
+  test("handles high usage percentage", () => {
+    const output = `Filesystem   1G-blocks  Used Available Capacity  Mounted on
+/dev/disk3s1    1863  1770        93    96%    /System/Volumes/Data`
+    const result = parseDfOutput(output)
+    expect(result).toEqual({
+      totalGB: 1863,
+      usedGB: 1770,
+      availableGB: 93,
+      usagePercent: 96,
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseWorktreeList
+// ---------------------------------------------------------------------------
+
+describe("parseWorktreeList", () => {
+  test("counts worktrees from git worktree list output", () => {
+    const output = `/Users/beorn/Code/pim/km                  d3dc1c2 [main]
+/Users/beorn/Code/pim/km/.claude/worktrees/fix-123  abc1234 [fix-123]`
+    expect(parseWorktreeList(output)).toBe(2)
+  })
+
+  test("returns 1 for single worktree (main only)", () => {
+    const output = `/Users/beorn/Code/pim/km  d3dc1c2 [main]`
+    expect(parseWorktreeList(output)).toBe(1)
+  })
+
+  test("returns 0 for empty output", () => {
+    expect(parseWorktreeList("")).toBe(0)
+  })
+
+  test("counts multiple worktrees", () => {
+    const output = `/Users/beorn/Code/pim/km                  d3dc1c2 [main]
+/Users/beorn/Code/pim/km/.claude/worktrees/fix-1  aaa1111 [fix-1]
+/Users/beorn/Code/pim/km/.claude/worktrees/fix-2  bbb2222 [fix-2]
+/Users/beorn/Code/pim/km/.claude/worktrees/fix-3  ccc3333 [fix-3]`
+    expect(parseWorktreeList(output)).toBe(4)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// evaluateAlerts — Disk
+// ---------------------------------------------------------------------------
+
+describe("evaluateAlerts — Disk", () => {
+  test("fires disk warning when above 85%", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 1620, availableGB: 243, usagePercent: 87 },
+    })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.type).toBe("disk")
+    expect(alerts[0]!.severity).toBe("warning")
+    expect(alerts[0]!.message).toContain("87%")
+  })
+
+  test("fires disk critical when above 95%", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 1800, availableGB: 63, usagePercent: 97 },
+    })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.type).toBe("disk")
+    expect(alerts[0]!.severity).toBe("critical")
+    expect(alerts[0]!.message).toContain("97%")
+  })
+
+  test("does not fire when disk usage below threshold", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 976, availableGB: 887, usagePercent: 52 },
+    })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toEqual([])
+  })
+
+  test("does not fire when disk is undefined", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const metrics = makeMetrics()
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toEqual([])
+  })
+
+  test("does not repeat disk alerts once fired", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const metrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 1620, availableGB: 243, usagePercent: 90 },
+    })
+
+    const first = evaluateAlerts(metrics, thresholds, state)
+    expect(first).toHaveLength(1)
+
+    const second = evaluateAlerts(metrics, thresholds, state)
+    expect(second).toEqual([])
+  })
+
+  test("resets disk alerts when usage drops", () => {
+    const thresholds = makeThresholds()
+    const state = createAlertState()
+    const highMetrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 1620, availableGB: 243, usagePercent: 90 },
+    })
+    const lowMetrics = makeMetrics({
+      disk: { totalGB: 1863, usedGB: 976, availableGB: 887, usagePercent: 52 },
+    })
+
+    evaluateAlerts(highMetrics, thresholds, state)
+    evaluateAlerts(lowMetrics, thresholds, state)
+
+    const alerts = evaluateAlerts(highMetrics, thresholds, state)
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.type).toBe("disk")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// evaluateAlerts — Worktree count
+// ---------------------------------------------------------------------------
+
+describe("evaluateAlerts — Worktree count", () => {
+  test("fires worktree warning when above threshold", () => {
+    const thresholds = makeThresholds({ worktreeWarning: 5 })
+    const state = createAlertState()
+    const metrics = makeMetrics({ worktrees: 8 })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.type).toBe("worktree")
+    expect(alerts[0]!.severity).toBe("warning")
+    expect(alerts[0]!.message).toContain("8")
+    expect(alerts[0]!.message).toContain("bun worktree clean")
+  })
+
+  test("does not fire when below threshold", () => {
+    const thresholds = makeThresholds({ worktreeWarning: 5 })
+    const state = createAlertState()
+    const metrics = makeMetrics({ worktrees: 3 })
+
+    const alerts = evaluateAlerts(metrics, thresholds, state)
+    expect(alerts).toEqual([])
+  })
+
+  test("does not repeat worktree alerts once fired", () => {
+    const thresholds = makeThresholds({ worktreeWarning: 5 })
+    const state = createAlertState()
+    const metrics = makeMetrics({ worktrees: 8 })
+
+    const first = evaluateAlerts(metrics, thresholds, state)
+    expect(first).toHaveLength(1)
+
+    const second = evaluateAlerts(metrics, thresholds, state)
+    expect(second).toEqual([])
+  })
+
+  test("resets when worktree count drops", () => {
+    const thresholds = makeThresholds({ worktreeWarning: 5 })
+    const state = createAlertState()
+    const highMetrics = makeMetrics({ worktrees: 8 })
+    const lowMetrics = makeMetrics({ worktrees: 2 })
+
+    evaluateAlerts(highMetrics, thresholds, state)
+    evaluateAlerts(lowMetrics, thresholds, state)
+
+    const alerts = evaluateAlerts(highMetrics, thresholds, state)
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]!.type).toBe("worktree")
   })
 })
