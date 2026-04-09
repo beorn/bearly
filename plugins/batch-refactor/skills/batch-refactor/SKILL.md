@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Edit, Grep, Glob, AskUserQuestion
 
 # Batch Operations Skill
 
-**Quick start:** Run `bun tools/refactor.ts --help` for command reference and examples.
+**Quick start:** Run `bun vendor/bearly/tools/refactor.ts --help` for command reference and examples.
 
 Use this skill when the user wants to make changes across multiple files:
 
@@ -64,21 +64,54 @@ async ({ createWidget }: Deps) => {}  # parameter destructuring
 **Batch refactor approach (CORRECT)**:
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern createWidget --replace createGadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^createWidget$/' --replace createGadget --output edits.json
 bun tools/refactor.ts editset.apply edits.json
 # Finds ALL 127 references including destructuring, types, re-exports
 ```
 
+### Regex Patterns — Case Handling Is Explicit
+
+**CRITICAL: all `--pattern` and `--from` arguments must be regex literals in the form `/pattern/flags`.**
+
+This is a forcing function: plain strings hide a decision about case-sensitivity, and the wrong
+default silently corrupts camelCase identifiers. The regex form makes you choose:
+
+| Use case | Flag | Behavior |
+|---|---|---|
+| **Code identifier rename** | no `/i` | exact match, **literal** replacement — preserves the exact casing you typed |
+| **Prose terminology migration** | `/i` | case-insensitive match, **case-preserving** replacement (widget→Gadget, WIDGET→GADGET) |
+
+```bash
+# Code rename — case-sensitive, literal. Use for identifiers like screenRect, useBoxRect.
+bun tools/refactor.ts pattern.replace --pattern '/screenRect/' --replace 'scrollRect'
+bun tools/refactor.ts rename.batch --pattern '/^useContentRect$/' --replace 'useBoxRect'
+bun tools/refactor.ts migrate --from '/contentRect/' --to 'boxRect' --dry-run
+
+# Prose migration — case-insensitive, case-preserving. Use for English words.
+bun tools/refactor.ts pattern.replace --pattern '/widget/i' --replace 'gadget'
+# widget → gadget, Widget → Gadget, WIDGET → GADGET
+
+# Word boundaries are explicit (\b), never implicit.
+bun tools/refactor.ts pattern.replace --pattern '/\buseLayout\b/' --replace 'useBoxRect'
+```
+
+**Why regex-first:** every `--pattern` invocation becomes a moment where you look at the flags
+and consciously pick. Without this, you write `--pattern screenRect` and the tool silently
+downcases your replacement to `scrollrect`. The extra characters (`/` and optional `/i`) are a
+small cost for eliminating a whole class of bugs.
+
+The `g` flag is implicit (always multi-match within a file).
+
 ### Quick Reference: When to Use Each Command
 
-| You want to...                       | Command                             | Example                                              |
-| ------------------------------------ | ----------------------------------- | ---------------------------------------------------- |
-| Rename TypeScript function/variable  | `rename.batch`                      | `--pattern createWidget --replace createGadget`      |
-| Rename TypeScript type/interface     | `rename.batch`                      | `--pattern WidgetConfig --replace GadgetConfig`      |
-| Rename files                         | `file.rename`                       | `--pattern widget --replace repo --glob "**/*.ts"`   |
-| Update text in markdown              | `pattern.replace --backend ripgrep` | `--pattern widget --replace repo --glob "**/*.md"`   |
-| Full terminology migration           | `migrate`                           | `--from widget --to repo`                            |
-| **API migration (complex patterns)** | `pattern.migrate`                   | `--patterns "oldApi()" --prompt "migrate to newApi"` |
+| You want to...                       | Command                             | Example                                                |
+| ------------------------------------ | ----------------------------------- | ------------------------------------------------------ |
+| Rename TypeScript function/variable  | `rename.batch`                      | `--pattern '/^createWidget$/' --replace createGadget`  |
+| Rename TypeScript type/interface     | `rename.batch`                      | `--pattern '/^WidgetConfig$/' --replace GadgetConfig`  |
+| Rename files                         | `file.rename`                       | `--pattern widget --replace repo --glob "**/*.ts"`     |
+| Update text in markdown              | `pattern.replace --backend ripgrep` | `--pattern '/widget/i' --replace repo --glob "**/*.md"`|
+| Full terminology migration           | `migrate`                           | `--from '/widget/i' --to repo`                         |
+| **API migration (complex patterns)** | `pattern.migrate`                   | `--patterns "oldApi()" --prompt "migrate to newApi"`   |
 
 ---
 
@@ -97,7 +130,7 @@ For large terminology migrations (e.g., "rename widget to repo"), follow this ph
 bun tools/refactor.ts file.rename --pattern widget --replace repo --glob "**/*.ts" --check-conflicts
 
 # 2. Check symbol conflicts
-bun tools/refactor.ts rename.batch --pattern widget --replace repo --check-conflicts
+bun tools/refactor.ts rename.batch --pattern '/widget/i' --replace repo --check-conflicts
 
 # 3. Check for existing targets manually
 ls **/repo*.ts 2>/dev/null || echo "No existing repo files"
@@ -137,7 +170,7 @@ After files are renamed, rename symbols:
 
 ```bash
 # Create symbol rename proposal
-bun tools/refactor.ts rename.batch --pattern widget --replace repo \
+bun tools/refactor.ts rename.batch --pattern '/widget/i' --replace repo \
   --output symbol-editset.json
 
 # Preview
@@ -153,13 +186,13 @@ Rename remaining mentions in comments, strings, markdown:
 
 ```bash
 # TypeScript comments and strings
-bun tools/refactor.ts pattern.replace --pattern widget --replace repo \
+bun tools/refactor.ts pattern.replace --pattern '/widget/i' --replace repo \
   --glob "**/*.{ts,tsx}" \
   --backend ripgrep \
   --output text-editset.json
 
 # Markdown documentation
-bun tools/refactor.ts pattern.replace --pattern widget --replace repo \
+bun tools/refactor.ts pattern.replace --pattern '/widget/i' --replace repo \
   --glob "**/*.md" \
   --backend ripgrep \
   --output docs-editset.json
@@ -178,8 +211,8 @@ For changes in git submodules:
 cd vendor/<submodule>
 
 # Run the same workflow (conflicts, files, symbols, text)
-bun tools/refactor.ts rename.batch \
-  --pattern widget --replace repo --check-conflicts
+bun ../tools/plugins/batch/tools/refactor.ts rename.batch \
+  --pattern '/widget/i' --replace repo --check-conflicts
 
 # After applying
 git add -A
@@ -702,7 +735,7 @@ interface TestEnv { widgetDir: string }  // property definition
    bun tools/refactor.ts file.rename --pattern widget --replace repo --check-conflicts
 
    # Symbol conflicts
-   bun tools/refactor.ts rename.batch --pattern widget --replace repo --check-conflicts
+   bun tools/refactor.ts rename.batch --pattern '/widget/i' --replace repo --check-conflicts
    ```
 
 3. **Document conflict resolutions** (ask user if unclear)
@@ -757,7 +790,7 @@ Each reference in an editset includes:
 # Run from the batch plugin directory
 
 # 1. Generate editset with enriched context
-bun tools/refactor.ts rename.batch --pattern widget --replace repo -o editset.json
+bun tools/refactor.ts rename.batch --pattern '/widget/i' --replace repo -o editset.json
 
 # 2. LLM reviews the editset and patches specific references
 #    - Set replace to null to skip a reference
@@ -827,16 +860,16 @@ The `migrate` command orchestrates a full terminology migration in phases:
 # Run from the batch plugin directory
 
 # Preview what would be migrated
-bun tools/refactor.ts migrate --from widget --to repo --dry-run
+bun tools/refactor.ts migrate --from '/widget/i' --to repo --dry-run
 
 # Run migration (creates editsets in .editsets/ directory)
-bun tools/refactor.ts migrate --from widget --to repo
+bun tools/refactor.ts migrate --from '/widget/i' --to repo
 
 # Custom output directory
-bun tools/refactor.ts migrate --from widget --to repo --output ./my-editsets
+bun tools/refactor.ts migrate --from '/widget/i' --to repo --output ./my-editsets
 
 # Custom file glob
-bun tools/refactor.ts migrate --from widget --to repo --glob "**/*.{ts,tsx,md}"
+bun tools/refactor.ts migrate --from '/widget/i' --to repo --glob "**/*.{ts,tsx,md}"
 ```
 
 ### What Migrate Does
@@ -1137,7 +1170,7 @@ return { widgetPath } // property AND value both renamed
 **Command:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern widgetPath --replace repoPath --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^widgetPath$/' --replace repoPath --output edits.json
 bun tools/refactor.ts editset.apply edits.json
 # All 47 occurrences updated atomically
 ```
@@ -1163,7 +1196,7 @@ export { Widget as DefaultWidget } from "./Widget"
 **ts-morph finds ALL of these:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^Widget$/' --replace Gadget --output edits.json
 # Found: 89 references across 23 files including all re-exports
 ```
 
@@ -1189,8 +1222,8 @@ function process<T extends UserService>(svc: T) {}
 **ts-morph finds all patterns:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --check-conflicts
-bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^UserService$/' --replace AccountService --check-conflicts
+bun tools/refactor.ts rename.batch --pattern '/^UserService$/' --replace AccountService --output edits.json
 ```
 
 ---
@@ -1211,7 +1244,7 @@ function initApp(config) {}
 
 ```bash
 bun tools/refactor.ts pattern.replace \
-  --pattern parseConfig \
+  --pattern '/^parseConfig$/' \
   --replace loadConfig \
   --glob "**/*.{ts,js}" \
   --backend ripgrep \
@@ -1272,7 +1305,7 @@ export const mockCreateWidget = () => {} // Compound identifier
 **ts-morph renames ALL including mocks:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern createWidget --replace createGadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^createWidget$/' --replace createGadget --output edits.json
 # Found in: src/widget.ts, 12 test files, 3 fixture files
 ```
 
@@ -1294,7 +1327,7 @@ const REPO_OPTIONS = {} // SCREAMING compound
 **Automatic case preservation:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern widget --replace repo --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/widget/i' --replace repo --output edits.json
 ```
 
 **Result:**
@@ -1325,7 +1358,7 @@ packages/
 **Single command handles all:**
 
 ```bash
-bun tools/refactor.ts migrate --from widget --to repo --glob "packages/**/*.{ts,tsx}"
+bun tools/refactor.ts migrate --from '/widget/i' --to repo --glob "packages/**/*.{ts,tsx}"
 
 # Creates editsets in .editsets/:
 # - 01-file-renames.json (4 files)
@@ -1341,7 +1374,7 @@ bun tools/refactor.ts migrate --from widget --to repo --glob "packages/**/*.{ts,
 
 ```bash
 # Create editset
-bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^Widget$/' --replace Gadget --output edits.json
 
 # ... time passes, teammate edits src/widget.ts ...
 
@@ -1360,14 +1393,14 @@ The editset NEVER corrupts files — if the file changed, it skips that file.
 
 ```
 Is this a terminology migration (file names + code + docs)?
-├── YES → `migrate --from X --to Y`
+├── YES → `migrate --from /X/ --to Y`
 └── NO
     ├── Is this an API migration (complex pattern changes)?
     │   └── YES → `pattern.migrate --patterns X --prompt "..."` (LLM-powered)
     ├── Renaming files?
     │   └── YES → `file.rename --pattern X --replace Y`
     ├── Renaming TypeScript identifiers?
-    │   └── YES → `rename.batch --pattern X --replace Y`
+    │   └── YES → `rename.batch --pattern /X/ --replace Y`
     ├── Updating Go/Rust/Python structural patterns?
     │   └── YES → `pattern.replace --backend ast-grep`
     └── Updating text/markdown/comments?
@@ -1433,11 +1466,11 @@ Storing editsets outside the repo avoids cluttering your working directory and n
 
 ```bash
 # Instead of:
-bun tools/refactor.ts migrate --from widget --to repo -o .editsets
+bun tools/refactor.ts migrate --from '/widget/i' --to repo -o .editsets
 rg -l widget -g "*.ts" | grep -v .editsets | wc -l  # Annoying
 
 # Do this:
-bun tools/refactor.ts migrate --from widget --to repo -o /tmp/editsets
+bun tools/refactor.ts migrate --from '/widget/i' --to repo -o /tmp/editsets
 rg -l widget -g "*.ts" | wc -l  # Clean
 ```
 
@@ -1516,7 +1549,7 @@ rg --files -g "**/*.ts" | head -10
 rg --files -g "apps/**/*.tsx" | head -10
 
 # Then use same glob in batch command
-bun tools/refactor.ts pattern.replace --pattern widget --glob "apps/**/*.tsx" -o /tmp/edits.json
+bun tools/refactor.ts pattern.replace --pattern '/widget/i' --replace 'gadget' --glob "apps/**/*.tsx" -o /tmp/edits.json
 ```
 
 ### 6. Check remaining mentions efficiently
@@ -1547,5 +1580,5 @@ rg -l "pattern" -g "*.ts"
 # Good: --glob "**/*.ts" --glob "**/*.tsx"  (separate globs)
 
 # 3. Run with verbose output
-DEBUG=* bun tools/refactor.ts pattern.replace --pattern widget --glob "**/*.ts"
+DEBUG=* bun tools/refactor.ts pattern.replace --pattern '/widget/i' --replace 'gadget' --glob "**/*.ts"
 ```

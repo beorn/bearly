@@ -36,14 +36,18 @@ Or invoke directly:
 # Full help
 bun tools/refactor.ts --help
 
-# Batch rename TypeScript symbols
-bun tools/refactor.ts rename.batch --pattern foo --replace bar
+# Batch rename TypeScript symbols (exact match, literal replacement)
+bun tools/refactor.ts rename.batch --pattern '/^foo$/' --replace bar
 
-# Full terminology migration (files + symbols + text)
-bun tools/refactor.ts migrate --from widget --to gadget
+# Full terminology migration (case-insensitive, case-preserving)
+bun tools/refactor.ts migrate --from '/widget/i' --to gadget
 
 # Structural pattern replace
 bun tools/refactor.ts pattern.replace --pattern "oldFn($$$)" --replace "newFn($$$)"
+
+# Note: --pattern and --from require regex literals /pattern/flags.
+# The /i flag means "match any case, preserve case in the replacement".
+# No /i means "match exactly, replace literally" (use this for code identifiers).
 ```
 
 ## Why not sed/awk/manual edits?

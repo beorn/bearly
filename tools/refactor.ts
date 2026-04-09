@@ -139,14 +139,29 @@ WHEN TO USE EACH COMMAND
   pattern.migrate   Complex API migration (LLM figures out transformations)
                     Use when old→new patterns have different structures
 
+PATTERN SYNTAX: regex literals are required
+
+  \`--pattern\` and \`--from\` take regex literals in the form /pattern/flags.
+  Plain strings are rejected. This forces an explicit decision about case.
+
+    /screenRect/     → case-sensitive match, LITERAL replacement
+                       (use for code identifier renames — preserves mixed case)
+
+    /widget/i        → case-insensitive match, CASE-PRESERVING replacement
+                       (use for prose: widget→gadget, Widget→Gadget, WIDGET→GADGET)
+
+    /\\buseLayout\\b/ → word-boundary match (explicit, no hidden behavior)
+
+  The \`g\` flag is always set internally. Only \`i\` is user-meaningful.
+
 TERMINOLOGY MIGRATION: Rename "widget" → "gadget" everywhere
 
   Step 1: Check for conflicts (will "gadget" clash with existing names?)
-    $ bun refactor rename.batch --pattern widget --replace gadget --check-conflicts
+    $ bun refactor rename.batch --pattern '/widget/i' --replace gadget --check-conflicts
     $ bun refactor file.rename --pattern widget --replace gadget --check-conflicts
 
   Step 2: Create editsets (proposes changes, doesn't apply yet)
-    $ bun refactor migrate --from widget --to gadget --dry-run --output /tmp/edits
+    $ bun refactor migrate --from '/widget/i' --to gadget --dry-run --output /tmp/edits
     Creates: /tmp/edits/01-file-renames.json
              /tmp/edits/02-symbol-renames.json
              /tmp/edits/03-text-patterns.json
@@ -163,13 +178,19 @@ TERMINOLOGY MIGRATION: Rename "widget" → "gadget" everywhere
   Step 5: Verify
     $ bun tsc --noEmit && bun test
 
+CODE IDENTIFIER RENAME: Rename a function/type across the codebase
+
+    $ bun refactor rename.batch --pattern '/^useContentRect$/' --replace useBoxRect
+    $ bun refactor pattern.replace --pattern '/\\bscreenRect\\b/' --replace scrollRect
+    # No /i → exact match, literal replacement (mixed case preserved)
+
 QUICK COMMANDS
 
-  migrate --from X --to Y [--dry-run]     Full migration (files + symbols + text)
-  rename.batch --pattern X --replace Y    TypeScript symbols only (functions, vars, types)
-  file.rename --pattern X --replace Y     File names + import paths
-  pattern.replace --pattern X --replace Y Text search/replace (comments, strings, markdown)
-  pattern.migrate --patterns X --prompt Y LLM-powered API migration (complex patterns)
+  migrate --from /X/flags --to Y [--dry-run]      Full migration (files + symbols + text)
+  rename.batch --pattern /X/flags --replace Y     TypeScript symbols only
+  file.rename --pattern X --replace Y             File names + import paths (plain strings)
+  pattern.replace --pattern /X/flags --replace Y  Text search/replace (comments, strings, md)
+  pattern.migrate --patterns X --prompt Y         LLM-powered API migration (complex patterns)
 
 API MIGRATION EXAMPLE: Migrate test framework API
 

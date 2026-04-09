@@ -212,7 +212,7 @@ cd vendor/<submodule>
 
 # Run the same workflow (conflicts, files, symbols, text)
 bun ../tools/plugins/batch/tools/refactor.ts rename.batch \
-  --pattern widget --replace repo --check-conflicts
+  --pattern '/widget/i' --replace repo --check-conflicts
 
 # After applying
 git add -A
@@ -1196,7 +1196,7 @@ export { Widget as DefaultWidget } from "./Widget"
 **ts-morph finds ALL of these:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^Widget$/' --replace Gadget --output edits.json
 # Found: 89 references across 23 files including all re-exports
 ```
 
@@ -1222,8 +1222,8 @@ function process<T extends UserService>(svc: T) {}
 **ts-morph finds all patterns:**
 
 ```bash
-bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --check-conflicts
-bun tools/refactor.ts rename.batch --pattern UserService --replace AccountService --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^UserService$/' --replace AccountService --check-conflicts
+bun tools/refactor.ts rename.batch --pattern '/^UserService$/' --replace AccountService --output edits.json
 ```
 
 ---
@@ -1244,7 +1244,7 @@ function initApp(config) {}
 
 ```bash
 bun tools/refactor.ts pattern.replace \
-  --pattern parseConfig \
+  --pattern '/^parseConfig$/' \
   --replace loadConfig \
   --glob "**/*.{ts,js}" \
   --backend ripgrep \
@@ -1374,7 +1374,7 @@ bun tools/refactor.ts migrate --from '/widget/i' --to repo --glob "packages/**/*
 
 ```bash
 # Create editset
-bun tools/refactor.ts rename.batch --pattern Widget --replace Gadget --output edits.json
+bun tools/refactor.ts rename.batch --pattern '/^Widget$/' --replace Gadget --output edits.json
 
 # ... time passes, teammate edits src/widget.ts ...
 
@@ -1393,14 +1393,14 @@ The editset NEVER corrupts files — if the file changed, it skips that file.
 
 ```
 Is this a terminology migration (file names + code + docs)?
-├── YES → `migrate --from X --to Y`
+├── YES → `migrate --from /X/ --to Y`
 └── NO
     ├── Is this an API migration (complex pattern changes)?
     │   └── YES → `pattern.migrate --patterns X --prompt "..."` (LLM-powered)
     ├── Renaming files?
     │   └── YES → `file.rename --pattern X --replace Y`
     ├── Renaming TypeScript identifiers?
-    │   └── YES → `rename.batch --pattern X --replace Y`
+    │   └── YES → `rename.batch --pattern /X/ --replace Y`
     ├── Updating Go/Rust/Python structural patterns?
     │   └── YES → `pattern.replace --backend ast-grep`
     └── Updating text/markdown/comments?
