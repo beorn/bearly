@@ -76,8 +76,9 @@ program
   .option("-t, --tool <name>", "Tool filter: Write, Bash, etc. (implies --raw)")
   .option("--session <id>", "Specific session (implies --raw)")
   .option("-i, --include <types>", "Content types: p,m,s,t,f,b,e,d,c (implies --raw)")
-  .actionMerged(async (opts: SearchOptions & { query: string }) => {
-    await cmdSearch(opts.query, opts)
+  .actionMerged(async (opts) => {
+    const searchOpts = opts as unknown as SearchOptions & { query: string }
+    await cmdSearch(searchOpts.query, searchOpts)
   })
 
 // ── index ───────────────────────────────────────────────────────────────

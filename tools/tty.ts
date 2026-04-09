@@ -47,10 +47,12 @@ program
   .option("--rows <n>", "Terminal rows", "40")
   .option("--timeout <ms>", "Wait timeout in ms", "5000")
   .action(async (opts) => {
-    const cols = Number.parseInt(opts.cols, 10)
-    const rows = Number.parseInt(opts.rows, 10)
-    const timeout = Number.parseInt(opts.timeout, 10)
-    const command = opts.command.split(/\s+/)
+    // Commander's typed opts mark these as possibly undefined, but --command is
+    // requiredOption and the rest have defaults, so they're always present at runtime.
+    const cols = Number.parseInt(opts.cols ?? "120", 10)
+    const rows = Number.parseInt(opts.rows ?? "40", 10)
+    const timeout = Number.parseInt(opts.timeout ?? "5000", 10)
+    const command = (opts as unknown as { command: string }).command.split(/\s+/)
 
     const term = createTerminal({
       backend: createXtermBackend({ cols, rows }),

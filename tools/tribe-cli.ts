@@ -385,7 +385,7 @@ program
   .description("Show recent messages")
   .option("-n, --limit <n>", "Number of messages", int, 20)
   .option("-f, --follow", "Follow live — stream new messages")
-  .action((opts) => void cmdLog(opts.limit, !!opts.follow))
+  .action((opts) => void cmdLog(opts.limit ?? 20, !!opts.follow))
 
 program
   .command("health")
@@ -398,7 +398,7 @@ program
   .option("-s, --since <duration>", "Time window (e.g. 2h, 30m, 1d)")
   .option("-f, --format <fmt>", "Output format: markdown or json", "markdown")
   .option("--db <path>", "Path to tribe.db (default: auto-detect)")
-  .action((opts) => cmdRetro(opts))
+  .action((opts) => cmdRetro({ since: opts.since, format: opts.format ?? "markdown", db: opts.db }))
 
 program
   .command("start")
