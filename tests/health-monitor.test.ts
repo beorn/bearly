@@ -49,6 +49,7 @@ function makeMetrics(overrides: Partial<HealthMetrics> = {}): HealthMetrics {
       swapUsedMB: 0,
       ...overrides.memory,
     },
+    disk: overrides.disk,
     bunProcesses: overrides.bunProcesses ?? 5,
     worktrees: overrides.worktrees ?? 1,
     timestamp: overrides.timestamp ?? Date.now(),
