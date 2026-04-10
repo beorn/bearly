@@ -49,13 +49,13 @@ These live in `tools/` and run from source. They will eventually become independ
 
 Tribe supports plugins for optional capabilities. Plugins gracefully degrade.
 
-| Plugin       | Activates when                  | What it does                                                     |
-| ------------ | ------------------------------- | ---------------------------------------------------------------- |
-| `git`        | Inside a git repo               | Broadcasts new commits to all sessions                           |
-| `beads`      | `.beads/` dir exists            | Broadcasts bead claims/closures                                  |
-| `github`     | `gh auth` available             | Monitors all user repos, broadcasts push/PR/CI/issue events      |
-| `health`     | Always                          | CPU, memory, disk, fd, git-lock, GitHub rate limit, I/O monitors |
-| `accountly`  | `~/.config/accountly/` exists   | Auto-rotates Claude Max accounts at quota thresholds             |
+| Plugin      | Activates when                | What it does                                                     |
+| ----------- | ----------------------------- | ---------------------------------------------------------------- |
+| `git`       | Inside a git repo             | Broadcasts new commits to all sessions                           |
+| `beads`     | `.beads/` dir exists          | Broadcasts bead claims/closures                                  |
+| `github`    | `gh auth` available           | Monitors all user repos, broadcasts push/PR/CI/issue events      |
+| `health`    | Always                        | CPU, memory, disk, fd, git-lock, GitHub rate limit, I/O monitors |
+| `accountly` | `~/.config/accountly/` exists | Auto-rotates Claude Max accounts at quota thresholds             |
 
 ## Skills
 
