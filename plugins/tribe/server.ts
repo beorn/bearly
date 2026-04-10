@@ -1249,7 +1249,7 @@ Coordination protocol:
 
 CI protocol:
 - When you see a CI ALERT for a repo you're working on or know about, respond with a fix hint
-- Example: tribe_send(to="*", message="hint: termless CI needs vt220.js \u2014 run npm publish from vendor/vt100/packages/vt220")
+- Example: tribe_send(to="*", message="hint: termless CI needs vt220.js \u2014 run npm publish from vendor/vterm/packages/vt220")
 - If a CI alert DMs you directly, investigate and fix the failure before pushing more code
 - After fixing, broadcast: tribe_send(to="*", message="ci-fix: <repo> \u2014 <what you fixed>")
 
