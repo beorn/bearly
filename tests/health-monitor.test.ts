@@ -28,6 +28,7 @@ import {
   formatLockMessage,
   formatStaleLockMessage,
   LOCK_STALE_THRESHOLD_MS,
+  parseEtime,
   type HealthMetrics,
   type HealthThresholds,
   type GitLockInfo,
@@ -80,6 +81,10 @@ function makeThresholds(overrides: Partial<HealthThresholds> = {}): HealthThresh
     diskIoWarningMBps: 500,
     ghRateLimitWarning: 20,
     sustainedSamples: 3,
+    reaperEnabled: true,
+    reaperCpuThreshold: 80,
+    reaperAgeMinutes: 30,
+    reaperGraceSamples: 6,
     ...overrides,
   }
 }
@@ -1118,5 +1123,41 @@ describe("AlertState lock tracking", () => {
 
     expect(state.lockStaleWarned.has("/repo/.git/index.lock")).toBe(true)
     expect(state.lockStaleWarned.has("/repo/.git/modules/silvery/index.lock")).toBe(false)
+  })
+
+  test("createAlertState initializes reaperSuspects", () => {
+    const state = createAlertState()
+    expect(state.reaperSuspects).toBeInstanceOf(Map)
+    expect(state.reaperSuspects.size).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseEtime
+// ---------------------------------------------------------------------------
+
+describe("parseEtime", () => {
+  test("parses MM:SS format", () => {
+    expect(parseEtime("05:30")).toBe(5)
+    expect(parseEtime("45:12")).toBe(45)
+  })
+
+  test("parses HH:MM:SS format", () => {
+    expect(parseEtime("01:30:00")).toBe(90)
+    expect(parseEtime("02:15:30")).toBe(135)
+  })
+
+  test("parses D-HH:MM:SS format", () => {
+    expect(parseEtime("1-00:00:00")).toBe(1440)
+    expect(parseEtime("2-12:30:00")).toBe(3630)
+  })
+
+  test("returns 0 for empty string", () => {
+    expect(parseEtime("")).toBe(0)
+    expect(parseEtime("  ")).toBe(0)
+  })
+
+  test("trims whitespace", () => {
+    expect(parseEtime("  05:30  ")).toBe(5)
   })
 })

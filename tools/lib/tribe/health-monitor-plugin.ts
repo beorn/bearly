@@ -15,6 +15,10 @@
  *   HEALTH_GH_RATELIMIT_WARNING — GitHub API remaining % for warning (default: 20)
  *   HEALTH_FD_WARNING      — fd usage % for warning (default: 70)
  *   HEALTH_DISK_IO_WARNING — combined read+write MB/s for warning (default: 500)
+ *   HEALTH_REAPER_ENABLED     — enable process reaper (default: "1")
+ *   HEALTH_REAPER_CPU_THRESHOLD — CPU % threshold for suspect (default: 80)
+ *   HEALTH_REAPER_AGE_MINUTES  — minimum process age in minutes (default: 30)
+ *   HEALTH_REAPER_GRACE_SAMPLES — samples to wait after asking before kill (default: 6)
  */
 
 import { existsSync, readdirSync } from "node:fs"
@@ -69,11 +73,20 @@ export interface HealthMetrics {
 }
 
 export interface HealthAlert {
-  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "disk-io" | "worktree" | "fd-count" | "gh-rate-limit"
+  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "disk-io" | "worktree" | "fd-count" | "gh-rate-limit" | "reaper"
   severity: "warning" | "critical"
   message: string
   metrics: Partial<HealthMetrics>
   topOffenders: Array<{ pid: number; cpu: number; mem: number; command: string }>
+}
+
+export interface ReaperSuspect {
+  firstSeen: number
+  samples: number
+  asked: boolean
+  command: string
+  cpu: number
+  etime: string
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +109,14 @@ export interface HealthThresholds {
   ghRateLimitWarning: number
   /** How many consecutive samples above threshold before alerting */
   sustainedSamples: number
+  /** Reaper: enabled (default: true) */
+  reaperEnabled: boolean
+  /** Reaper: CPU % threshold for suspect detection (default: 80) */
+  reaperCpuThreshold: number
+  /** Reaper: minimum process age in minutes before suspect (default: 30) */
+  reaperAgeMinutes: number
+  /** Reaper: samples to wait after asking before killing (default: 6, i.e. 60s at 10s interval) */
+  reaperGraceSamples: number
 }
 
 export function defaultThresholds(): HealthThresholds {
@@ -113,6 +134,10 @@ export function defaultThresholds(): HealthThresholds {
     ghRateLimitWarning: parseInt(process.env.HEALTH_GH_RATELIMIT_WARNING ?? "20", 10),
     // At 10s interval, 3 samples = 30s sustained
     sustainedSamples: 3,
+    reaperEnabled: process.env.HEALTH_REAPER_ENABLED !== "0",
+    reaperCpuThreshold: parseInt(process.env.HEALTH_REAPER_CPU_THRESHOLD ?? "80", 10),
+    reaperAgeMinutes: parseInt(process.env.HEALTH_REAPER_AGE_MINUTES ?? "30", 10),
+    reaperGraceSamples: parseInt(process.env.HEALTH_REAPER_GRACE_SAMPLES ?? "6", 10),
   }
 }
 
@@ -482,6 +507,8 @@ export interface AlertState {
   lockFirstSeen: Map<string, number>
   /** Track which locks have had their stale warning sent */
   lockStaleWarned: Set<string>
+  /** Reaper: tracked suspect PIDs with detection state */
+  reaperSuspects: Map<number, ReaperSuspect>
 }
 
 export function createAlertState(): AlertState {
@@ -497,6 +524,7 @@ export function createAlertState(): AlertState {
     gitLockDetected: false,
     lockFirstSeen: new Map(),
     lockStaleWarned: new Set(),
+    reaperSuspects: new Map(),
   }
 }
 
@@ -698,6 +726,182 @@ export function evaluateAlerts(metrics: HealthMetrics, thresholds: HealthThresho
 }
 
 // ---------------------------------------------------------------------------
+// Process reaper — auto-kill stuck bun/node processes
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `ps` etime field to minutes.
+ * Formats: "MM:SS", "HH:MM:SS", "D-HH:MM:SS", or just seconds.
+ */
+export function parseEtime(etime: string): number {
+  const trimmed = etime.trim()
+  if (!trimmed) return 0
+
+  // Format: D-HH:MM:SS
+  const dayMatch = trimmed.match(/^(\d+)-(\d+):(\d+):(\d+)$/)
+  if (dayMatch) {
+    const days = parseInt(dayMatch[1]!, 10)
+    const hours = parseInt(dayMatch[2]!, 10)
+    const mins = parseInt(dayMatch[3]!, 10)
+    return days * 24 * 60 + hours * 60 + mins
+  }
+
+  // Format: HH:MM:SS
+  const hmsMatch = trimmed.match(/^(\d+):(\d+):(\d+)$/)
+  if (hmsMatch) {
+    const hours = parseInt(hmsMatch[1]!, 10)
+    const mins = parseInt(hmsMatch[2]!, 10)
+    return hours * 60 + mins
+  }
+
+  // Format: MM:SS
+  const msMatch = trimmed.match(/^(\d+):(\d+)$/)
+  if (msMatch) {
+    return parseInt(msMatch[1]!, 10)
+  }
+
+  return 0
+}
+
+/**
+ * Check for stuck bun/node processes and manage the reaper lifecycle:
+ * 1. Detect suspects (>cpuThreshold% CPU, >ageMinutes old, bun/node)
+ * 2. Track for 3 consecutive samples before asking
+ * 3. Ask sessions to claim ownership (broadcast query)
+ * 4. Kill unclaimed after graceSamples more samples
+ */
+export async function checkReaper(
+  topProcesses: Array<{ pid: number; cpu: number; command: string }>,
+  pidToParent: Map<number, number>,
+  sessions: Array<{ name: string; pid: number; role: string }>,
+  thresholds: HealthThresholds,
+  state: AlertState,
+  ctx: PluginContext,
+): Promise<void> {
+  if (!thresholds.reaperEnabled) return
+
+  const now = Date.now()
+  const seenPids = new Set<number>()
+
+  // Find high-CPU bun/node processes
+  const highCpuProcs = topProcesses.filter(
+    (p) => p.cpu > thresholds.reaperCpuThreshold && /\b(bun|node)\b/.test(p.command),
+  )
+
+  for (const proc of highCpuProcs) {
+    seenPids.add(proc.pid)
+
+    // Skip processes owned by active sessions
+    const owner = attributeToSession(proc.pid, pidToParent, sessions)
+    if (owner) continue
+
+    // Check process age via ps -p <pid> -o etime=
+    let etime = ""
+    let ageMinutes = 0
+    try {
+      const etimeProc = Bun.spawn(["ps", "-p", String(proc.pid), "-o", "etime="], {
+        stdout: "pipe",
+        stderr: "ignore",
+      })
+      etime = (await new Response(etimeProc.stdout).text()).trim()
+      ageMinutes = parseEtime(etime)
+    } catch {
+      continue // Can't determine age — skip
+    }
+
+    if (ageMinutes < thresholds.reaperAgeMinutes) continue
+
+    // Track or update suspect
+    const existing = state.reaperSuspects.get(proc.pid)
+    if (existing) {
+      existing.samples++
+      existing.cpu = proc.cpu
+      existing.etime = etime
+    } else {
+      state.reaperSuspects.set(proc.pid, {
+        firstSeen: now,
+        samples: 1,
+        asked: false,
+        command: proc.command.slice(0, 80),
+        cpu: proc.cpu,
+        etime,
+      })
+    }
+  }
+
+  // Prune suspects no longer in the high-CPU list
+  for (const [pid] of state.reaperSuspects) {
+    if (!seenPids.has(pid)) {
+      state.reaperSuspects.delete(pid)
+    }
+  }
+
+  // Process suspects through the lifecycle
+  for (const [pid, suspect] of state.reaperSuspects) {
+    // After 3 samples: ask sessions to claim
+    if (suspect.samples >= 3 && !suspect.asked) {
+      suspect.asked = true
+      const msg = `health:reaper: PID ${pid} (${suspect.command}) at ${suspect.cpu}% CPU for ${suspect.etime}. Is this yours? Reply within 60s or it will be killed.`
+      log.info?.(`reaper: asking about PID ${pid}`)
+      ctx.sendMessage("*", msg, "health:reaper:query")
+    }
+
+    // After 3 + graceSamples: check for claims, then kill
+    if (suspect.asked && suspect.samples >= 3 + thresholds.reaperGraceSamples) {
+      // Check if anyone claimed this PID
+      const claimed = ctx.hasRecentMessage(`reaper:claim PID ${pid}`)
+      if (claimed) {
+        log.info?.(`reaper: PID ${pid} claimed by a session, removing from suspects`)
+        state.reaperSuspects.delete(pid)
+        continue
+      }
+
+      // Verify process still exists and is still high-CPU before killing
+      let stillAlive = false
+      try {
+        const checkProc = Bun.spawn(["ps", "-p", String(pid), "-o", "pid="], {
+          stdout: "pipe",
+          stderr: "ignore",
+        })
+        const checkOutput = (await new Response(checkProc.stdout).text()).trim()
+        stillAlive = checkOutput.length > 0
+      } catch {
+        stillAlive = false
+      }
+
+      if (!stillAlive) {
+        state.reaperSuspects.delete(pid)
+        continue
+      }
+
+      // Kill: SIGTERM first
+      log.info?.(`reaper: killing PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s`)
+      try {
+        process.kill(pid, "SIGTERM")
+      } catch {
+        // Process may have already exited
+        state.reaperSuspects.delete(pid)
+        continue
+      }
+
+      // Wait 2s, then SIGKILL if still alive
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      try {
+        process.kill(pid, 0) // Check if still alive
+        process.kill(pid, "SIGKILL")
+        log.info?.(`reaper: SIGKILL sent to PID ${pid}`)
+      } catch {
+        // Already dead from SIGTERM — good
+      }
+
+      const killMsg = `health:reaper: killed PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s, ${suspect.cpu}% CPU for ${suspect.etime}`
+      ctx.sendMessage("*", killMsg, "health:reaper:killed")
+      state.reaperSuspects.delete(pid)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Full metrics collection (async — spawns ps)
 // ---------------------------------------------------------------------------
 
@@ -864,6 +1068,9 @@ export function healthMonitorPlugin(): TribePlugin {
             }
           }
 
+          // --- Process reaper ---
+          await checkReaper(metrics.cpu.topProcesses, pidToParent, sessions, thresholds, alertState, ctx)
+
           // --- Git lock detection (main repo + submodules) ---
           const gitDir = `${process.cwd()}/.git`
           const locks = await detectGitLocks(gitDir)
@@ -987,7 +1194,7 @@ export function healthMonitorPlugin(): TribePlugin {
     },
 
     instructions() {
-      return "- Health monitoring active: CPU, memory, process count, disk space, disk I/O, worktree count, file descriptor count, GitHub API rate limit, and git lock alerts are broadcast automatically"
+      return "- Health monitoring active: CPU, memory, process count, disk space, disk I/O, worktree count, file descriptor count, GitHub API rate limit, git lock alerts, and process reaper are broadcast automatically. To claim a process the reaper is targeting, reply with 'reaper:claim PID <pid>'."
     },
   }
 }
