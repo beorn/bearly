@@ -45,7 +45,7 @@ import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/t
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
 import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
-import { createLogger } from "loggily"
+import { createLogger, addWriter } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 
 const ac = new AbortController()
@@ -55,6 +55,19 @@ const _log = createLogger("tribe:daemon")
 function log(msg: string): void {
   _log.info?.(msg)
 }
+
+// Broadcast warn/error log messages to tribe — makes daemon issues visible
+// to all sessions without needing DEBUG env. Installed after pluginCtx is ready.
+let broadcastLog: ((msg: string, type: string) => void) | undefined
+addWriter((formatted, level) => {
+  if ((level === "warn" || level === "error") && broadcastLog) {
+    // Strip ANSI codes and trim for clean tribe messages
+    const clean = formatted.replace(/\x1b\[[0-9;]*m/g, "").trim()
+    if (clean.length > 0) {
+      broadcastLog(clean, level === "error" ? "health:daemon:error" : "health:daemon:warn")
+    }
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Parse args
@@ -629,6 +642,12 @@ const pluginCtx: PluginContext = {
       .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
       .map((c) => ({ name: c.name, pid: c.pid, role: c.role }))
   },
+}
+
+// Wire up log broadcasting now that pluginCtx is ready
+broadcastLog = (msg, type) => {
+  sendMessage(daemonCtx, "*", msg, type)
+  pushNewMessages()
 }
 
 const plugins = process.env.TRIBE_NO_PLUGINS

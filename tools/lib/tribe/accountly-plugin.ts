@@ -141,6 +141,7 @@ export function accountlyPlugin(): TribePlugin {
       const SWITCH_COOLDOWN = 300_000 // 5 min
       let backoffUntil = 0 // 429 backoff timestamp
       let consecutive429s = 0
+      let firstCheck = true
 
       const check = async () => {
         let nextInterval = 300_000 // default: 5 min
@@ -154,7 +155,13 @@ export function accountlyPlugin(): TribePlugin {
 
         try {
           const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
-          if (!existsSync(cliPath)) return nextInterval
+          if (!existsSync(cliPath)) {
+            if (firstCheck) {
+              ctx.sendMessage("*", "accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
+              firstCheck = false
+            }
+            return nextInterval
+          }
 
           // Check quotas via accountly CLI
           const proc = Bun.spawn(["bun", cliPath, "status", "--json"], {
@@ -181,6 +188,19 @@ export function accountlyPlugin(): TribePlugin {
             return nextInterval
           }
 
+          // First check: broadcast status so users know it's working
+          if (firstCheck) {
+            firstCheck = false
+            const oauthAccounts = status.quotas.filter((q) => q.provider === "claude-oauth")
+            const healthy = oauthAccounts.filter((q) => !q.error).length
+            const maxUtil = getActiveMaxUtilization(status)
+            ctx.sendMessage(
+              "*",
+              `accountly: monitoring ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
+              "health:account:status",
+            )
+          }
+
           // Detect 429 rate-limiting on the usage API
           const all429 = status.quotas
             .filter((q) => q.provider === "claude-oauth")
@@ -191,6 +211,9 @@ export function accountlyPlugin(): TribePlugin {
             const backoffMs = Math.min(120_000 * Math.pow(2, consecutive429s - 1), 600_000)
             backoffUntil = Date.now() + backoffMs
             log.warn?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
+            if (consecutive429s === 1) {
+              ctx.sendMessage("*", `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`, "health:account:error")
+            }
             return backoffMs
           }
           consecutive429s = 0
