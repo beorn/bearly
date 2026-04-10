@@ -76,10 +76,10 @@ bun tools/refactor.ts editset.apply edits.json
 This is a forcing function: plain strings hide a decision about case-sensitivity, and the wrong
 default silently corrupts camelCase identifiers. The regex form makes you choose:
 
-| Use case | Flag | Behavior |
-|---|---|---|
-| **Code identifier rename** | no `/i` | exact match, **literal** replacement — preserves the exact casing you typed |
-| **Prose terminology migration** | `/i` | case-insensitive match, **case-preserving** replacement (widget→Gadget, WIDGET→GADGET) |
+| Use case                        | Flag    | Behavior                                                                               |
+| ------------------------------- | ------- | -------------------------------------------------------------------------------------- |
+| **Code identifier rename**      | no `/i` | exact match, **literal** replacement — preserves the exact casing you typed            |
+| **Prose terminology migration** | `/i`    | case-insensitive match, **case-preserving** replacement (widget→Gadget, WIDGET→GADGET) |
 
 ```bash
 # Code rename — case-sensitive, literal. Use for identifiers like screenRect, useBoxRect.
@@ -104,14 +104,14 @@ The `g` flag is implicit (always multi-match within a file).
 
 ### Quick Reference: When to Use Each Command
 
-| You want to...                       | Command                             | Example                                                |
-| ------------------------------------ | ----------------------------------- | ------------------------------------------------------ |
-| Rename TypeScript function/variable  | `rename.batch`                      | `--pattern '/^createWidget$/' --replace createGadget`  |
-| Rename TypeScript type/interface     | `rename.batch`                      | `--pattern '/^WidgetConfig$/' --replace GadgetConfig`  |
-| Rename files                         | `file.rename`                       | `--pattern widget --replace repo --glob "**/*.ts"`     |
-| Update text in markdown              | `pattern.replace --backend ripgrep` | `--pattern '/widget/i' --replace repo --glob "**/*.md"`|
-| Full terminology migration           | `migrate`                           | `--from '/widget/i' --to repo`                         |
-| **API migration (complex patterns)** | `pattern.migrate`                   | `--patterns "oldApi()" --prompt "migrate to newApi"`   |
+| You want to...                       | Command                             | Example                                                 |
+| ------------------------------------ | ----------------------------------- | ------------------------------------------------------- |
+| Rename TypeScript function/variable  | `rename.batch`                      | `--pattern '/^createWidget$/' --replace createGadget`   |
+| Rename TypeScript type/interface     | `rename.batch`                      | `--pattern '/^WidgetConfig$/' --replace GadgetConfig`   |
+| Rename files                         | `file.rename`                       | `--pattern widget --replace repo --glob "**/*.ts"`      |
+| Update text in markdown              | `pattern.replace --backend ripgrep` | `--pattern '/widget/i' --replace repo --glob "**/*.md"` |
+| Full terminology migration           | `migrate`                           | `--from '/widget/i' --to repo`                          |
+| **API migration (complex patterns)** | `pattern.migrate`                   | `--patterns "oldApi()" --prompt "migrate to newApi"`    |
 
 ---
 

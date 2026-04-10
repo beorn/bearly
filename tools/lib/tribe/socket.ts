@@ -4,7 +4,7 @@
  */
 
 import { existsSync, mkdirSync, unlinkSync, readFileSync } from "node:fs"
-import { resolve, dirname } from "node:path"
+import { resolve, dirname, basename } from "node:path"
 import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
 import { createLogger } from "loggily"
@@ -33,9 +33,10 @@ export function resolveSocketPath(socketArg?: string): string {
   return xdg ? resolve(xdg, "tribe.sock") : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
 }
 
-/** Resolve PID file path (same directory as socket) */
+/** Resolve PID file path (derived from socket path — each socket gets its own PID file) */
 export function resolvePidPath(socketPath: string): string {
-  return resolve(dirname(socketPath), "tribe.pid")
+  const base = basename(socketPath).replace(/\.sock$/, "")
+  return resolve(dirname(socketPath), `${base}.pid`)
 }
 
 /** Resolve peer socket path for direct proxy-to-proxy connections */

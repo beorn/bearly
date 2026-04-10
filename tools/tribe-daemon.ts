@@ -144,9 +144,18 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
 }
 
 /** Single entry point for all observable activities.
- *  Writes to DB → pushNewMessages delivers to all clients on next tick (≤1s). */
+ *  Writes to DB and pushes directly to all connected clients for immediate delivery. */
 function logActivity(type: string, content: string): void {
+  const ts = Date.now()
   sendMessage(daemonCtx, "*", content, type)
+  // Push directly to connected clients — don't rely on the 1s poll interval.
+  // Advance lastDelivered so the next poll doesn't re-deliver the same message.
+  for (const [connId, client] of clients) {
+    if (client.name === daemonCtx.getName()) continue // skip sender
+    pushToClient(connId, "channel", { from: "daemon", type, content })
+    const prev = lastDelivered.get(connId) ?? 0
+    if (ts > prev) lastDelivered.set(connId, ts)
+  }
 }
 
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
@@ -621,7 +630,7 @@ const pluginCtx: PluginContext = {
   },
 }
 
-const plugins = [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin()]
+const plugins = process.env.TRIBE_NO_PLUGINS ? [] : [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin()]
 const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 

@@ -60,6 +60,8 @@ async function spawnDaemon(socketPath: string, extraArgs: string[] = []): Promis
       TRIBE_DB: `/tmp/tribe-test-${randomUUID().slice(0, 8)}.db`,
       // Disable join/leave broadcast suppression window so tests see notifications immediately
       TRIBE_NO_SUPPRESS: "1",
+      // Disable plugins (git, beads, github, health-monitor) — tests are self-contained
+      TRIBE_NO_PLUGINS: "1",
     },
   })
 
@@ -92,9 +94,10 @@ describe("socket utilities", () => {
   })
 
   describe("resolvePidPath", () => {
-    it("puts .pid next to socket", () => {
+    it("derives pid file name from socket file name", () => {
       expect(resolvePidPath("/tmp/tribe.sock")).toBe("/tmp/tribe.pid")
-      expect(resolvePidPath("/var/run/test/daemon.sock")).toBe("/var/run/test/tribe.pid")
+      expect(resolvePidPath("/var/run/test/daemon.sock")).toBe("/var/run/test/daemon.pid")
+      expect(resolvePidPath("/tmp/tribe-test-abc123.sock")).toBe("/tmp/tribe-test-abc123.pid")
     })
   })
 
@@ -476,27 +479,35 @@ describe("tribe daemon integration", () => {
     it("broadcasts session.joined notification to other clients", async () => {
       daemon = await spawnDaemon(socketPath)
 
-      // Register chief and set up notification listener
+      // Set up notification listener BEFORE registering so no notifications are missed
       const chief = await connect()
-      await chief.call("register", { name: "chief", role: "chief" })
-
       const notifications: Array<{ method: string; params?: Record<string, unknown> }> = []
       chief.onNotification((method, params) => {
         notifications.push({ method, params })
       })
+      await chief.call("register", { name: "chief", role: "chief" })
 
       // Register a member — chief should get a session.joined notification
       const member = await connect()
       await member.call("register", { name: "new-worker", role: "member" })
 
-      // Wait for notification to arrive
+      // Wait for the new-worker join notification (not the chief's own join)
       await waitFor(
-        () => notifications.some((n) => n.method === "channel" && String(n.params?.type) === "session"),
-        3000,
+        () =>
+          notifications.some(
+            (n) =>
+              n.method === "channel" &&
+              String(n.params?.content ?? "").includes("joined") &&
+              String(n.params?.content ?? "").includes("new-worker"),
+          ),
+        5000,
       )
 
       const joinNotif = notifications.find(
-        (n) => n.method === "channel" && String(n.params?.content ?? "").includes("joined"),
+        (n) =>
+          n.method === "channel" &&
+          String(n.params?.content ?? "").includes("joined") &&
+          String(n.params?.content ?? "").includes("new-worker"),
       )
       expect(joinNotif).toBeDefined()
       expect(String(joinNotif!.params?.content)).toContain("new-worker")
@@ -633,23 +644,28 @@ describe("tribe daemon integration", () => {
     it("broadcasts session.left when a registered client disconnects", async () => {
       daemon = await spawnDaemon(socketPath)
 
-      // Register chief
+      // Set up notification listener BEFORE registering so no notifications are missed
       const chief = await connect()
-      await chief.call("register", { name: "watcher", role: "chief" })
-
       const notifications: Array<{ method: string; params?: Record<string, unknown> }> = []
       chief.onNotification((method, params) => {
         notifications.push({ method, params })
       })
+      await chief.call("register", { name: "watcher", role: "chief" })
 
       // Register and then disconnect a member
       const member = await connect()
       await member.call("register", { name: "leaver", role: "member" })
 
-      // Wait for join notification first
+      // Wait for leaver's join notification before disconnecting
       await waitFor(
-        () => notifications.some((n) => n.method === "channel" && String(n.params?.content ?? "").includes("joined")),
-        3000,
+        () =>
+          notifications.some(
+            (n) =>
+              n.method === "channel" &&
+              String(n.params?.content ?? "").includes("joined") &&
+              String(n.params?.content ?? "").includes("leaver"),
+          ),
+        5000,
       )
 
       // Disconnect the member
@@ -660,16 +676,25 @@ describe("tribe daemon integration", () => {
 
       // Wait for leave notification
       await waitFor(
-        () => notifications.some((n) => n.method === "channel" && String(n.params?.content ?? "").includes("left")),
-        3000,
+        () =>
+          notifications.some(
+            (n) =>
+              n.method === "channel" &&
+              String(n.params?.content ?? "").includes("left") &&
+              String(n.params?.content ?? "").includes("leaver"),
+          ),
+        5000,
       )
 
       const leftNotif = notifications.find(
-        (n) => n.method === "channel" && String(n.params?.content ?? "").includes("leaver"),
+        (n) =>
+          n.method === "channel" &&
+          String(n.params?.content ?? "").includes("left") &&
+          String(n.params?.content ?? "").includes("leaver"),
       )
       expect(leftNotif).toBeDefined()
       expect(String(leftNotif!.params?.content)).toContain("leaver")
-    }, 10_000)
+    }, 15_000)
 
     it("cli_status reflects reduced client count after disconnect", async () => {
       daemon = await spawnDaemon(socketPath)

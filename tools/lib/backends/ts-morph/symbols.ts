@@ -107,6 +107,12 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
   const matches: SymbolMatch[] = []
   const seen = new Set<string>()
 
+  // The incoming pattern may have the `g` flag (required upstream for
+  // .replace() case-preserving semantics). `.test()` on a global regex is
+  // stateful — it advances lastIndex and skips matches on subsequent calls,
+  // so we build a local non-global copy for match testing only.
+  const testPattern = new RegExp(pattern.source, pattern.flags.replace("g", ""))
+
   for (const sourceFile of project.getSourceFiles()) {
     const filePath = sourceFile.getFilePath().replace(process.cwd() + "/", "")
     if (filePath.includes("node_modules")) continue
@@ -114,13 +120,13 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
     // Interfaces
     for (const intf of sourceFile.getInterfaces()) {
       const name = intf.getName()
-      if (pattern.test(name)) {
+      if (testPattern.test(name)) {
         addMatch(intf.getNameNode(), "interface")
       }
       // Properties within interfaces
       for (const prop of intf.getProperties()) {
         const propName = prop.getName()
-        if (pattern.test(propName)) {
+        if (testPattern.test(propName)) {
           addMatch(prop.getNameNode(), "property")
         }
       }
@@ -128,7 +134,7 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
 
     // Type aliases
     for (const typeAlias of sourceFile.getTypeAliases()) {
-      if (pattern.test(typeAlias.getName())) {
+      if (testPattern.test(typeAlias.getName())) {
         addMatch(typeAlias.getNameNode(), "type")
       }
     }
@@ -136,7 +142,7 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
     // Functions
     for (const func of sourceFile.getFunctions()) {
       const name = func.getName()
-      if (name && pattern.test(name)) {
+      if (name && testPattern.test(name)) {
         addMatch(func.getNameNode()!, "function")
       }
     }
@@ -148,7 +154,7 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
         const nameNode = node.getNameNode()
         if (Node.isIdentifier(nameNode)) {
           const name = nameNode.getText()
-          if (pattern.test(name)) {
+          if (testPattern.test(name)) {
             addMatch(nameNode, "variable")
           }
         } else if (Node.isObjectBindingPattern(nameNode) || Node.isArrayBindingPattern(nameNode)) {
@@ -160,7 +166,7 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
         const nameNode = node.getNameNode()
         if (Node.isIdentifier(nameNode)) {
           const name = nameNode.getText()
-          if (pattern.test(name)) {
+          if (testPattern.test(name)) {
             addMatch(nameNode, "parameter")
           }
         } else if (Node.isObjectBindingPattern(nameNode) || Node.isArrayBindingPattern(nameNode)) {
@@ -176,7 +182,7 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
           const bindingName = bindingNode.getNameNode()
           if (Node.isIdentifier(bindingName)) {
             const name = bindingName.getText()
-            if (pattern.test(name)) {
+            if (testPattern.test(name)) {
               addMatch(bindingName, "variable")
             }
           }
@@ -187,20 +193,20 @@ export function findSymbols(project: Project, pattern: RegExp): SymbolMatch[] {
     // Classes and class members
     for (const cls of sourceFile.getClasses()) {
       const name = cls.getName()
-      if (name && pattern.test(name)) {
+      if (name && testPattern.test(name)) {
         addMatch(cls.getNameNode()!, "class")
       }
       // Class methods
       for (const method of cls.getMethods()) {
         const methodName = method.getName()
-        if (pattern.test(methodName)) {
+        if (testPattern.test(methodName)) {
           addMatch(method.getNameNode(), "method")
         }
       }
       // Class properties
       for (const prop of cls.getProperties()) {
         const propName = prop.getName()
-        if (pattern.test(propName)) {
+        if (testPattern.test(propName)) {
           addMatch(prop.getNameNode(), "property")
         }
       }

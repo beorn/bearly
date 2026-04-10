@@ -990,7 +990,9 @@ With /i, all phases apply case-preservation.`,
       }[] = []
 
       console.error(`\n=== Migration: ${from} → ${to} ===\n`)
-      console.error(`Case handling: ${parsedFrom.caseInsensitive ? "case-insensitive (/i) — replacement will case-match source" : "case-sensitive — literal replacement"}\n`)
+      console.error(
+        `Case handling: ${parsedFrom.caseInsensitive ? "case-insensitive (/i) — replacement will case-match source" : "case-sensitive — literal replacement"}\n`,
+      )
 
       // Phase 1: File renames
       console.error("Phase 1: Finding files to rename...")

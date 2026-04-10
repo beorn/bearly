@@ -44,7 +44,7 @@ describe("E2E: Edge Cases", () => {
     }>
 
     beforeAll(() => {
-      const output = runRefactor(`symbols.find --pattern widget --tsconfig ${FIXTURES_ROOT}/tsconfig.json`)
+      const output = runRefactor(`symbols.find --pattern /widget/i --tsconfig ${FIXTURES_ROOT}/tsconfig.json`)
       symbols = JSON.parse(output) as typeof symbols
     })
 
@@ -127,7 +127,7 @@ describe("E2E: Edge Cases", () => {
 
     beforeAll(() => {
       const output = runRefactor(
-        `rename.batch --pattern '/widget/i' --replace gadget --check-conflicts --tsconfig ${FIXTURES_ROOT}/tsconfig.json`,
+        `rename.batch --pattern /widget/i --replace gadget --check-conflicts --tsconfig ${FIXTURES_ROOT}/tsconfig.json`,
       )
       conflictReport = JSON.parse(output) as typeof conflictReport
     })
@@ -170,7 +170,7 @@ describe("E2E: Edge Cases", () => {
 
       // Create editset, skipping conflicts
       runRefactor(
-        `rename.batch --pattern '/widget/i' --replace gadget --skip widgetStorage,widgetDatabase,widgetLocal --output ${editsetPath} --tsconfig ${tempDir}/tsconfig.json`,
+        `rename.batch --pattern /widget/i --replace gadget --skip widgetStorage,widgetDatabase,widgetLocal --output ${editsetPath} --tsconfig ${tempDir}/tsconfig.json`,
       )
 
       const editset = JSON.parse(readFileSync(editsetPath, "utf-8")) as {

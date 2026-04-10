@@ -184,7 +184,7 @@ describe("ripgrep backend", () => {
       const cwd = process.cwd()
       try {
         process.chdir(tempDir)
-        const editset = createPatternReplaceProposal("vault", "repo", "*.md")
+        const editset = createPatternReplaceProposal("vault", "repo", "*.md", true)
 
         // Should find 2 occurrences
         expect(editset.refs.length).toBe(2)
@@ -193,7 +193,7 @@ describe("ripgrep backend", () => {
         // Verify edits have correct replacements
         const replacements = editset.edits.map((e) => e.replacement)
         expect(replacements).toContain("repo") // from "vault → repo"
-        expect(replacements).toContain("Repo") // from "Preferred vault"
+        expect(replacements).toContain("Repo") // from "Preferred Vault"
       } finally {
         process.chdir(cwd)
       }
@@ -210,7 +210,7 @@ describe("ripgrep backend", () => {
       const cwd = process.cwd()
       try {
         process.chdir(tempDir)
-        const editset = createPatternReplaceProposal("vault", "repo", "*.md")
+        const editset = createPatternReplaceProposal("vault", "repo", "*.md", true)
 
         // Read the file content
         const content = readFileSync(join(tempDir, "utf8.md"), "utf-8")
@@ -261,7 +261,7 @@ const VAULT_ROOT = "SCREAMING_COMPOUND"
       const cwd = process.cwd()
       try {
         process.chdir(tempDir)
-        const refs = findPatterns("vault", "*.ts")
+        const refs = findPatterns("vault", "*.ts", true)
 
         // Should find all 6 occurrences
         expect(refs.length).toBe(6)
@@ -281,7 +281,7 @@ const VAULT_ROOT = "SCREAMING_COMPOUND"
       const cwd = process.cwd()
       try {
         process.chdir(tempDir)
-        const editset = createPatternReplaceProposal("vault", "repo", "*.ts")
+        const editset = createPatternReplaceProposal("vault", "repo", "*.ts", true)
 
         // Build a map of what each edit replaces
         const replacements = editset.edits.map((e) => e.replacement)
