@@ -229,6 +229,8 @@ export interface ResearchCallOptions {
   modelOverride?: string
   /** Optional context to prepend to the research prompt */
   context?: string
+  /** Fire-and-forget: persist response ID and exit without polling (default: true for deep) */
+  fireAndForget?: boolean
 }
 
 /**
@@ -267,6 +269,7 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       stream: options.stream,
       onToken: options.onToken,
       context,
+      fireAndForget: options.fireAndForget,
     })
     return response
   }

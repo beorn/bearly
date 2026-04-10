@@ -346,6 +346,7 @@ async function main() {
       skipConfirm,
       dryRun: hasFlag("--dry-run"),
     })
+    // Deep research is always fire-and-forget. Recover with: bun llm recover
     return
   }
 

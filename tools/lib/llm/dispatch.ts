@@ -574,8 +574,15 @@ export async function runDeep(options: {
     stream: true,
     onToken: streamToken,
     modelOverride: deepModel.modelId,
+    fireAndForget: true,
   })
 
+  // Fire-and-forget: response ID is persisted, recover later with `bun llm recover`
+  if (!response.content || response.content.trim().length === 0) {
+    return
+  }
+
+  // Fast model that completed immediately (no polling needed)
   if (response.error) {
     log.error?.(`Deep research failed: ${response.error}`)
     if (!response.content || response.content.trim().length === 0) process.exit(1)

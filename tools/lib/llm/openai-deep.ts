@@ -46,6 +46,8 @@ export interface DeepResearchOptions {
   noPersist?: boolean
   /** Optional context to prepend to the research prompt */
   context?: string
+  /** Fire-and-forget: persist response ID and exit immediately without polling (default: true) */
+  fireAndForget?: boolean
 }
 
 /**
@@ -126,7 +128,19 @@ async function handleStreamingResponse(
     log.info?.(`Response ID: ${responseId} (recoverable with 'bun llm recover')`)
   }
 
-  // Step 3: If already completed (fast models), extract immediately
+  // Step 3: If fire-and-forget mode, stop here — ID is persisted, recover later
+  if (options.fireAndForget) {
+    console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
+    console.error(`   bun llm recover ${responseId}\n`)
+    return {
+      fullText: "",
+      responseId,
+      promptTokens: 0,
+      completionTokens: 0,
+    }
+  }
+
+  // Step 4: If already completed (fast models), extract immediately
   if (initialResponse.status === "completed") {
     const result = extractResponseText(initialResponse)
     if (onToken && result.text) onToken(result.text)
@@ -139,7 +153,7 @@ async function handleStreamingResponse(
     }
   }
 
-  // Step 4: Poll until complete — no streaming, just check periodically
+  // Step 5: Poll until complete — no streaming, just check periodically
   log.info?.("Research in progress...")
   const pollResult = await pollForCompletion(responseId, {
     intervalMs: 5_000,
