@@ -288,28 +288,28 @@ describe("findUnavailable", () => {
 // ---------------------------------------------------------------------------
 
 describe("computePollInterval", () => {
-  it("polls every 5 min when utilization is low", () => {
-    expect(computePollInterval(0)).toBe(300_000)
-    expect(computePollInterval(30)).toBe(300_000)
-    expect(computePollInterval(49)).toBe(300_000)
+  it("polls every 10 min when utilization is low", () => {
+    expect(computePollInterval(0)).toBe(600_000)
+    expect(computePollInterval(30)).toBe(600_000)
+    expect(computePollInterval(49)).toBe(600_000)
   })
 
-  it("polls every 2 min when utilization is moderate", () => {
-    expect(computePollInterval(50)).toBe(120_000)
-    expect(computePollInterval(70)).toBe(120_000)
-    expect(computePollInterval(79)).toBe(120_000)
+  it("polls every 5 min when utilization is moderate", () => {
+    expect(computePollInterval(50)).toBe(300_000)
+    expect(computePollInterval(60)).toBe(300_000)
+    expect(computePollInterval(69)).toBe(300_000)
   })
 
-  it("polls every 1 min when utilization is high", () => {
-    expect(computePollInterval(80)).toBe(60_000)
-    expect(computePollInterval(85)).toBe(60_000)
-    expect(computePollInterval(89)).toBe(60_000)
+  it("polls every 3 min when utilization is high", () => {
+    expect(computePollInterval(70)).toBe(180_000)
+    expect(computePollInterval(80)).toBe(180_000)
+    expect(computePollInterval(89)).toBe(180_000)
   })
 
-  it("polls every 30s when utilization is near threshold", () => {
-    expect(computePollInterval(90)).toBe(30_000)
-    expect(computePollInterval(95)).toBe(30_000)
-    expect(computePollInterval(100)).toBe(30_000)
+  it("polls every 1 min when utilization is near threshold", () => {
+    expect(computePollInterval(90)).toBe(60_000)
+    expect(computePollInterval(95)).toBe(60_000)
+    expect(computePollInterval(100)).toBe(60_000)
   })
 })
 

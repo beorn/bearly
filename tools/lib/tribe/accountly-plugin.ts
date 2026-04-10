@@ -100,12 +100,13 @@ export function findUnavailable(status: AccountlyStatus): Array<{ name: string; 
 /**
  * Adaptive poll interval based on how close the active account is to its threshold.
  * Polls less when far away, more when approaching the limit.
+ * Minimum 60s to avoid rate-limiting the usage API (3 accounts = 3 calls per poll).
  */
 export function computePollInterval(maxUtilization: number): number {
-  if (maxUtilization >= 90) return 30_000 // 30s — close to threshold
-  if (maxUtilization >= 80) return 60_000 // 1 min
-  if (maxUtilization >= 50) return 120_000 // 2 min
-  return 300_000 // 5 min — plenty of headroom
+  if (maxUtilization >= 90) return 60_000 // 1 min — close to threshold
+  if (maxUtilization >= 70) return 180_000 // 3 min
+  if (maxUtilization >= 50) return 300_000 // 5 min
+  return 600_000 // 10 min — plenty of headroom
 }
 
 /** Get the max utilization across all windows for the active account */
@@ -138,9 +139,18 @@ export function accountlyPlugin(): TribePlugin {
       const warnedUnavailable = new Set<string>()
       let lastSwitchTime = 0
       const SWITCH_COOLDOWN = 300_000 // 5 min
+      let backoffUntil = 0 // 429 backoff timestamp
+      let consecutive429s = 0
 
       const check = async () => {
         let nextInterval = 300_000 // default: 5 min
+
+        // Respect 429 backoff
+        if (Date.now() < backoffUntil) {
+          const remaining = Math.ceil((backoffUntil - Date.now()) / 1000)
+          log.info?.(`429 backoff: ${remaining}s remaining`)
+          return Math.min(backoffUntil - Date.now() + 5_000, 600_000)
+        }
 
         try {
           const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
@@ -171,12 +181,26 @@ export function accountlyPlugin(): TribePlugin {
             return nextInterval
           }
 
+          // Detect 429 rate-limiting on the usage API
+          const all429 = status.quotas
+            .filter((q) => q.provider === "claude-oauth")
+            .every((q) => q.error?.includes("429"))
+          if (all429 && status.quotas.some((q) => q.provider === "claude-oauth")) {
+            consecutive429s++
+            // Exponential backoff: 2min, 4min, 8min, max 10min
+            const backoffMs = Math.min(120_000 * Math.pow(2, consecutive429s - 1), 600_000)
+            backoffUntil = Date.now() + backoffMs
+            log.warn?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
+            return backoffMs
+          }
+          consecutive429s = 0
+
           // Adaptive interval based on current utilization
           const maxUtil = getActiveMaxUtilization(status)
           nextInterval = computePollInterval(maxUtil)
 
-          // Warn about unavailable accounts
-          const unavailable = findUnavailable(status)
+          // Warn about unavailable accounts (skip 429 errors — those are transient)
+          const unavailable = findUnavailable(status).filter((u) => !u.error.includes("429"))
           for (const { name, error } of unavailable) {
             if (!warnedUnavailable.has(name)) {
               warnedUnavailable.add(name)
@@ -243,7 +267,7 @@ export function accountlyPlugin(): TribePlugin {
           schedule()
         }, schedule.interval)
       }
-      schedule.interval = 60_000 // initial check after 1 min
+      schedule.interval = 120_000 // initial check after 2 min (gentler startup)
       schedule()
 
       return () => ac.abort()
