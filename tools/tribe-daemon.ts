@@ -44,6 +44,7 @@ import { acquireLease } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
+import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 
@@ -630,7 +631,9 @@ const pluginCtx: PluginContext = {
   },
 }
 
-const plugins = process.env.TRIBE_NO_PLUGINS ? [] : [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin()]
+const plugins = process.env.TRIBE_NO_PLUGINS
+  ? []
+  : [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin(), accountlyPlugin()]
 const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 

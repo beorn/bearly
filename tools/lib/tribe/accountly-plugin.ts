@@ -1,0 +1,257 @@
+/**
+ * Tribe plugin: Accountly — monitors Claude Max subscription quotas and
+ * auto-switches accounts when utilization exceeds thresholds.
+ *
+ * Warns when accounts need re-login (unavailable).
+ *
+ * Adaptive polling: checks less frequently when utilization is low,
+ * more frequently as it approaches the threshold.
+ *
+ * Config via env vars:
+ *   ACCOUNTLY_THRESHOLD_5HOUR   — 5-hour window % trigger (default: 95)
+ *   ACCOUNTLY_THRESHOLD_7DAY    — 7-day window % trigger (default: 98)
+ *   ACCOUNTLY_THRESHOLD_MONTHLY — monthly window % trigger (default: 95)
+ */
+
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
+import { resolve } from "node:path"
+import { createLogger } from "loggily"
+import { createTimers } from "./timers.ts"
+import type { TribePlugin, PluginContext } from "./plugins.ts"
+
+const log = createLogger("tribe:accountly")
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface AccountlyThresholds {
+  fiveHour: number
+  sevenDay: number
+  monthly: number
+}
+
+export interface AccountlyQuota {
+  accountName: string
+  provider: string
+  available: boolean
+  windows: Array<{ name: string; utilization: number; resetsAt?: string }>
+  error?: string
+}
+
+export interface AccountlyStatus {
+  active: string | undefined
+  quotas: AccountlyQuota[]
+}
+
+// ---------------------------------------------------------------------------
+// Pure functions (exported for testing)
+// ---------------------------------------------------------------------------
+
+export function getThresholds(): AccountlyThresholds {
+  return {
+    fiveHour: Number(process.env.ACCOUNTLY_THRESHOLD_5HOUR) || 95,
+    sevenDay: Number(process.env.ACCOUNTLY_THRESHOLD_7DAY) || 98,
+    monthly: Number(process.env.ACCOUNTLY_THRESHOLD_MONTHLY) || 95,
+  }
+}
+
+/** Map a window name to its configured threshold */
+export function getWindowThreshold(windowName: string, thresholds: AccountlyThresholds): number | undefined {
+  const name = windowName.toLowerCase()
+  if (name.includes("5-hour") || name.includes("5hour")) return thresholds.fiveHour
+  if (name.includes("7-day") || name.includes("7day") || name.includes("weekly")) return thresholds.sevenDay
+  if (name.includes("month")) return thresholds.monthly
+  return undefined
+}
+
+/** Check if active account exceeds any window threshold */
+export function shouldSwitch(
+  status: AccountlyStatus,
+  thresholds: AccountlyThresholds,
+): { switch: boolean; reason?: string } {
+  if (!status.active) return { switch: false }
+
+  const activeQuota = status.quotas.find((q) => q.accountName === status.active)
+  if (!activeQuota) return { switch: false }
+  if (activeQuota.error) return { switch: false }
+
+  for (const window of activeQuota.windows) {
+    const threshold = getWindowThreshold(window.name, thresholds)
+    if (threshold !== undefined && window.utilization >= threshold) {
+      return {
+        switch: true,
+        reason: `${status.active}: ${window.name} at ${Math.round(window.utilization)}% (threshold: ${threshold}%)`,
+      }
+    }
+  }
+
+  return { switch: false }
+}
+
+/** Find accounts that are unavailable (need re-login or have errors) */
+export function findUnavailable(status: AccountlyStatus): Array<{ name: string; error: string }> {
+  return status.quotas
+    .filter((q) => q.error || !q.available)
+    .map((q) => ({ name: q.accountName, error: q.error ?? "unavailable — may need re-login" }))
+}
+
+/**
+ * Adaptive poll interval based on how close the active account is to its threshold.
+ * Polls less when far away, more when approaching the limit.
+ */
+export function computePollInterval(maxUtilization: number): number {
+  if (maxUtilization >= 90) return 30_000 // 30s — close to threshold
+  if (maxUtilization >= 80) return 60_000 // 1 min
+  if (maxUtilization >= 50) return 120_000 // 2 min
+  return 300_000 // 5 min — plenty of headroom
+}
+
+/** Get the max utilization across all windows for the active account */
+export function getActiveMaxUtilization(status: AccountlyStatus): number {
+  if (!status.active) return 0
+  const activeQuota = status.quotas.find((q) => q.accountName === status.active)
+  if (!activeQuota || activeQuota.error) return 0
+  if (activeQuota.windows.length === 0) return 0
+  return Math.max(...activeQuota.windows.map((w) => w.utilization))
+}
+
+// ---------------------------------------------------------------------------
+// Plugin
+// ---------------------------------------------------------------------------
+
+export function accountlyPlugin(): TribePlugin {
+  const configPath = resolve(homedir(), ".config/accountly/accounts.json")
+
+  return {
+    name: "accountly",
+
+    available() {
+      return existsSync(configPath)
+    },
+
+    start(ctx) {
+      const ac = new AbortController()
+      const timers = createTimers(ac.signal)
+      const thresholds = getThresholds()
+      const warnedUnavailable = new Set<string>()
+      let lastSwitchTime = 0
+      const SWITCH_COOLDOWN = 300_000 // 5 min
+
+      const check = async () => {
+        let nextInterval = 300_000 // default: 5 min
+
+        try {
+          const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
+          if (!existsSync(cliPath)) return nextInterval
+
+          // Check quotas via accountly CLI
+          const proc = Bun.spawn(["bun", cliPath, "status", "--json"], {
+            cwd: process.cwd(),
+            stdout: "pipe",
+            stderr: "pipe",
+          })
+          const [stdout, stderr] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+          ])
+          await proc.exited
+
+          if (proc.exitCode !== 0) {
+            log.warn?.(`accountly status failed (exit ${proc.exitCode}): ${stderr.trim().slice(0, 200)}`)
+            return nextInterval
+          }
+
+          let status: AccountlyStatus
+          try {
+            status = JSON.parse(stdout) as AccountlyStatus
+          } catch {
+            log.warn?.(`accountly status: invalid JSON output`)
+            return nextInterval
+          }
+
+          // Adaptive interval based on current utilization
+          const maxUtil = getActiveMaxUtilization(status)
+          nextInterval = computePollInterval(maxUtil)
+
+          // Warn about unavailable accounts
+          const unavailable = findUnavailable(status)
+          for (const { name, error } of unavailable) {
+            if (!warnedUnavailable.has(name)) {
+              warnedUnavailable.add(name)
+              if (ctx.claimDedup(`accountly:unavailable:${name}`)) {
+                ctx.sendMessage(
+                  "chief",
+                  `Account "${name}" needs attention: ${error}. Run: /login then bun accountly import`,
+                  "health:account:unavailable",
+                )
+              }
+            }
+          }
+          // Clear warnings for recovered accounts
+          for (const warned of warnedUnavailable) {
+            if (!unavailable.some((u) => u.name === warned)) {
+              warnedUnavailable.delete(warned)
+            }
+          }
+
+          // Check if auto-switch needed
+          const decision = shouldSwitch(status, thresholds)
+          if (!decision.switch) return nextInterval
+
+          // Cooldown check
+          if (Date.now() - lastSwitchTime < SWITCH_COOLDOWN) {
+            log.info?.(`switch needed but cooldown active: ${decision.reason}`)
+            return nextInterval
+          }
+
+          log.info?.(`auto-switching: ${decision.reason}`)
+          const autoProc = Bun.spawn(["bun", cliPath, "auto"], {
+            cwd: process.cwd(),
+            stdout: "pipe",
+            stderr: "pipe",
+          })
+          const [autoOut, autoErr] = await Promise.all([
+            new Response(autoProc.stdout).text(),
+            new Response(autoProc.stderr).text(),
+          ])
+          await autoProc.exited
+
+          if (autoProc.exitCode === 0) {
+            lastSwitchTime = Date.now()
+            ctx.sendMessage("*", `Auto-switched account — ${decision.reason}`, "health:account:switched")
+          } else {
+            ctx.sendMessage(
+              "chief",
+              `Switch needed (${decision.reason}) but failed: ${(autoErr || autoOut).trim().slice(0, 200)}`,
+              "health:account:error",
+            )
+          }
+        } catch (err) {
+          log.warn?.(`accountly plugin error: ${err}`)
+        }
+
+        return nextInterval
+      }
+
+      // Recursive setTimeout for adaptive polling
+      const schedule = () => {
+        timers.setTimeout(async () => {
+          const interval = await check()
+          schedule.interval = interval
+          schedule()
+        }, schedule.interval)
+      }
+      schedule.interval = 60_000 // initial check after 1 min
+      schedule()
+
+      return () => ac.abort()
+    },
+
+    instructions() {
+      const t = getThresholds()
+      return `- Account auto-rotation active: switches when 5h>${t.fiveHour}% or 7d>${t.sevenDay}% or month>${t.monthly}%`
+    },
+  }
+}
