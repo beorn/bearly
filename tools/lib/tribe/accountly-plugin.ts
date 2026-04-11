@@ -193,7 +193,7 @@ export function accountlyPlugin(): TribePlugin {
           const maxUtil = getActiveMaxUtilization(status)
           const utilBand = Math.floor(maxUtil / 10) * 10 // group by 10% bands
           const statusKey = `${status.active}:${healthy}/${oauthAccounts.length}:${utilBand}`
-          if (statusKey !== lastStatusKey) {
+          if (statusKey !== lastStatusKey && ctx.claimDedup(`accountly:status:${statusKey}`)) {
             lastStatusKey = statusKey
             ctx.sendMessage(
               "*",
