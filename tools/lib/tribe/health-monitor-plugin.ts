@@ -73,7 +73,17 @@ export interface HealthMetrics {
 }
 
 export interface HealthAlert {
-  type: "cpu" | "memory" | "process-count" | "git-lock" | "disk" | "disk-io" | "worktree" | "fd-count" | "gh-rate-limit" | "reaper"
+  type:
+    | "cpu"
+    | "memory"
+    | "process-count"
+    | "git-lock"
+    | "disk"
+    | "disk-io"
+    | "worktree"
+    | "fd-count"
+    | "gh-rate-limit"
+    | "reaper"
   severity: "warning" | "critical"
   message: string
   metrics: Partial<HealthMetrics>
@@ -483,6 +493,9 @@ export async function detectGitLocks(gitDir: string): Promise<GitLockInfo[]> {
   return results
 }
 
+/** Threshold in ms before alerting about a git lock (suppresses transient locks) */
+export const LOCK_ALERT_THRESHOLD_MS = 2_000
+
 /** Threshold in ms for escalating a lock to a stale warning */
 export const LOCK_STALE_THRESHOLD_MS = 30_000
 
@@ -875,7 +888,9 @@ export async function checkReaper(
       }
 
       // Kill: SIGTERM first
-      log.info?.(`reaper: killing PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s`)
+      log.info?.(
+        `reaper: killing PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s`,
+      )
       try {
         process.kill(pid, "SIGTERM")
       } catch {
@@ -1091,9 +1106,9 @@ export function healthMonitorPlugin(): TribePlugin {
             // Attribute to a session if possible
             const sessionName = lock.holder ? attributeToSession(lock.holder.pid, pidToParent, sessions) : null
 
-            // First detection: broadcast lock info
+            // First detection: broadcast lock info (suppress transient locks <2s)
             const lockKey = `git-lock:${lock.path}`
-            if (!alertState.firedAlerts.has(lockKey)) {
+            if (!alertState.firedAlerts.has(lockKey) && durationMs >= LOCK_ALERT_THRESHOLD_MS) {
               alertState.gitLockDetected = true
               alertState.firedAlerts.add(lockKey)
               const lockMsg = formatLockMessage(lock, sessionName, durationSec)
