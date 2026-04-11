@@ -383,6 +383,7 @@ export function githubPlugin(): TribePlugin {
       // --- Event polling ---
 
       async function pollEvents(): Promise<void> {
+        const errors: string[] = []
         for (const r of repos) {
           try {
             const events = await fetchRepoEvents(r, githubHeaders)
@@ -438,14 +439,20 @@ export function githubPlugin(): TribePlugin {
               saveCursor(cursorPath, cursorState)
             }
           } catch (err) {
-            log.error?.(`error polling ${r}: ${err instanceof Error ? err.message : err}`)
+            errors.push(r)
+            log.debug?.(`error polling ${r}: ${err instanceof Error ? err.message : err}`)
           }
+        }
+        // Batch report: one summary instead of N individual errors
+        if (errors.length > 0) {
+          log.warn?.(`github events: ${errors.length}/${repos.length} repos failed (network issue)`)
         }
       }
 
       // --- Workflow run polling ---
 
       async function pollWorkflows(): Promise<void> {
+        const errors: string[] = []
         for (const r of repos) {
           if (!eventTypes.includes("workflow_run")) continue
           try {
@@ -521,8 +528,12 @@ export function githubPlugin(): TribePlugin {
               }
             }
           } catch (err) {
-            log.error?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
+            errors.push(r)
+            log.debug?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
           }
+        }
+        if (errors.length > 0) {
+          log.warn?.(`github workflows: ${errors.length}/${repos.length} repos failed (network issue)`)
         }
       }
 
