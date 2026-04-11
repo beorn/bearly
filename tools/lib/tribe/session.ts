@@ -33,7 +33,7 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
   } catch {
     // Name collision — add random suffix and retry
     const fallbackName = `${ctx.getName()}-${Math.random().toString(36).slice(2, 5)}`
-    log.warn?.(`name "${ctx.getName()}" taken, using "${fallbackName}"`)
+    log.debug?.(`name "${ctx.getName()}" taken, using "${fallbackName}"`)
     ctx.setName(fallbackName)
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
