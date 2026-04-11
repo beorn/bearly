@@ -330,7 +330,7 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
             onReconnect?.()
             return
           } catch {
-            log.warn?.(`Reconnect attempt ${attempt + 1} failed`)
+            log.debug?.(`Reconnect attempt ${attempt + 1} failed`)
           }
         }
         log.error?.(`Failed to reconnect after ${maxAttempts} attempts`)

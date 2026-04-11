@@ -962,7 +962,7 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
       fdCount = { total: fdInfo.total, perSession: [], limit: fdInfo.limit }
     }
   } catch (err) {
-    log.warn?.(`ps failed: ${err instanceof Error ? err.message : err}`)
+    log.debug?.(`ps failed: ${err instanceof Error ? err.message : err}`)
   }
 
   // macOS swap detection

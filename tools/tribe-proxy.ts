@@ -203,7 +203,7 @@ const daemon = await createReconnectingClient({
     void client.call("subscribe").catch(() => {})
   },
   onDisconnect() {
-    log.warn?.(`Daemon connection lost`)
+    log.debug?.(`Daemon connection lost`)
   },
   onReconnect() {
     log.info?.(`Reconnected to daemon`)

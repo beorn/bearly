@@ -211,7 +211,7 @@ export function accountlyPlugin(): TribePlugin {
             // Exponential backoff: 2min, 4min, 8min, max 10min
             const backoffMs = Math.min(120_000 * Math.pow(2, consecutive429s - 1), 600_000)
             backoffUntil = Date.now() + backoffMs
-            log.warn?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
+            log.debug?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
             if (consecutive429s === 1) {
               ctx.sendMessage(
                 "*",
