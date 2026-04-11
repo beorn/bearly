@@ -141,7 +141,7 @@ export function accountlyPlugin(): TribePlugin {
       const SWITCH_COOLDOWN = 300_000 // 5 min
       let backoffUntil = 0 // 429 backoff timestamp
       let consecutive429s = 0
-      let firstCheck = true
+      let lastStatusKey = "" // track state changes to avoid repeat broadcasts
 
       const check = async () => {
         let nextInterval = 300_000 // default: 5 min
@@ -156,9 +156,8 @@ export function accountlyPlugin(): TribePlugin {
         try {
           const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
           if (!existsSync(cliPath)) {
-            if (firstCheck) {
+            if (ctx.claimDedup("accountly:cli-missing")) {
               ctx.sendMessage("*", "accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
-              firstCheck = false
             }
             return nextInterval
           }
@@ -188,15 +187,17 @@ export function accountlyPlugin(): TribePlugin {
             return nextInterval
           }
 
-          // First check: broadcast status so users know it's working
-          if (firstCheck) {
-            firstCheck = false
-            const oauthAccounts = status.quotas.filter((q) => q.provider === "claude-oauth")
-            const healthy = oauthAccounts.filter((q) => !q.error).length
-            const maxUtil = getActiveMaxUtilization(status)
+          // Broadcast status only on state change (active account, healthy count, or utilization band)
+          const oauthAccounts = status.quotas.filter((q) => q.provider === "claude-oauth")
+          const healthy = oauthAccounts.filter((q) => !q.error).length
+          const maxUtil = getActiveMaxUtilization(status)
+          const utilBand = Math.floor(maxUtil / 10) * 10 // group by 10% bands
+          const statusKey = `${status.active}:${healthy}/${oauthAccounts.length}:${utilBand}`
+          if (statusKey !== lastStatusKey) {
+            lastStatusKey = statusKey
             ctx.sendMessage(
               "*",
-              `accountly: monitoring ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
+              `accountly: ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
               "health:account:status",
             )
           }
@@ -212,14 +213,17 @@ export function accountlyPlugin(): TribePlugin {
             backoffUntil = Date.now() + backoffMs
             log.warn?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
             if (consecutive429s === 1) {
-              ctx.sendMessage("*", `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`, "health:account:error")
+              ctx.sendMessage(
+                "*",
+                `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`,
+                "health:account:error",
+              )
             }
             return backoffMs
           }
           consecutive429s = 0
 
           // Adaptive interval based on current utilization
-          const maxUtil = getActiveMaxUtilization(status)
           nextInterval = computePollInterval(maxUtil)
 
           // Warn about unavailable accounts (skip 429 errors — those are transient)
