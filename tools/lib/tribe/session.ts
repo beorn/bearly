@@ -17,10 +17,22 @@ import { sendMessage, logEvent } from "./messaging.ts"
 // ---------------------------------------------------------------------------
 
 export function registerSession(ctx: TribeContext, projectId?: string): void {
+  const desiredName = ctx.getName()
+  const now = Date.now()
+
+  // Evict stale sessions holding our desired name (e.g., after daemon reload)
+  const STALE_MS = 30_000 // 30s — heartbeat interval is 10s, so 3 missed = dead
+  const evicted = ctx.db
+    .prepare("DELETE FROM sessions WHERE name = $name AND id != $id AND heartbeat < $cutoff")
+    .run({ $name: desiredName, $id: ctx.sessionId, $cutoff: now - STALE_MS })
+  if (evicted.changes > 0) {
+    log.debug?.(`evicted stale session holding name "${desiredName}"`)
+  }
+
   try {
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
-      $name: ctx.getName(),
+      $name: desiredName,
       $role: ctx.sessionRole,
       $domains: JSON.stringify(ctx.domains),
       $pid: process.pid,
@@ -28,12 +40,12 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
       $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
-      $now: Date.now(),
+      $now: now,
     })
   } catch {
-    // Name collision — add random suffix and retry
-    const fallbackName = `${ctx.getName()}-${Math.random().toString(36).slice(2, 5)}`
-    log.debug?.(`name "${ctx.getName()}" taken, using "${fallbackName}"`)
+    // Name still taken by a live session — add random suffix
+    const fallbackName = `${desiredName}-${Math.random().toString(36).slice(2, 5)}`
+    log.debug?.(`name "${desiredName}" taken by live session, using "${fallbackName}"`)
     ctx.setName(fallbackName)
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
@@ -45,7 +57,7 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
       $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
-      $now: Date.now(),
+      $now: now,
     })
   }
 
