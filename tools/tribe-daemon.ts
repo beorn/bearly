@@ -732,6 +732,17 @@ function handleConnection(socket: NetSocket): void {
       } catch {
         /* best effort */
       }
+
+      // Clean up unread direct messages targeted at the pruned session.
+      // Broadcasts (recipient = '*') are kept. Messages FROM this session are kept (useful history).
+      try {
+        const del = db.prepare("DELETE FROM messages WHERE recipient = ?").run(client.name)
+        if (del.changes > 0) {
+          log(`Cleaned up ${del.changes} direct message(s) for pruned session ${client.name}`)
+        }
+      } catch {
+        /* best effort */
+      }
     }
 
     clients.delete(connId)
