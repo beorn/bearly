@@ -167,8 +167,8 @@ export function beadsPlugin(): TribePlugin {
               /* malformed */
             }
           }
-        } catch {
-          /* file error */
+        } catch (err) {
+          log.error?.(`beads poll error: ${err instanceof Error ? err.message : err}`)
         }
       }, 30_000)
 
@@ -246,8 +246,8 @@ export function gitPlugin(): TribePlugin {
             }
           }
           if (head) lastHead = head
-        } catch {
-          /* git error */
+        } catch (err) {
+          log.error?.(`git poll error: ${err instanceof Error ? err.message : err}`)
         }
       }, 30_000)
 
