@@ -824,13 +824,29 @@ function markIdle(): void {
 }
 
 function checkLiveness(): void {
+  // Expire pending sessions that never sent a register message (>60s)
+  const now = Date.now()
+  for (const [connId, client] of clients) {
+    if (client.name.startsWith("pending-") && now - client.registeredAt > 60_000) {
+      log(`Expiring stale pending session: ${client.name} (age=${Math.floor((now - client.registeredAt) / 1000)}s)`)
+      clients.delete(connId)
+      socketToClient.delete(client.socket)
+      lastDelivered.delete(connId)
+      try {
+        client.socket.destroy()
+      } catch {
+        /* already dead */
+      }
+    }
+  }
+
   if (idleDeadline === null) return
   // Defensive: if a client snuck in, abort the countdown
   if (clients.size > 0) {
     idleDeadline = null
     return
   }
-  if (Date.now() >= idleDeadline) {
+  if (now >= idleDeadline) {
     log("Auto-quit: idle deadline reached")
     shutdown()
   }
