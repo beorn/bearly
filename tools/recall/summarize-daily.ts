@@ -349,18 +349,18 @@ export async function summarizeUnprocessedDays(
     }
   }
 
-  // Get distinct days from sessions table
+  // Get distinct days from sessions table (90-day lookback — the limit param caps results)
   const db = getDb()
   let days: string[]
   try {
-    const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000
+    const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000
     const dbRows = db
       .prepare(
         `SELECT DISTINCT date(updated_at / 1000, 'unixepoch', 'localtime') as day
          FROM sessions WHERE updated_at >= ?
          ORDER BY day DESC`,
       )
-      .all(tenDaysAgo) as { day: string }[]
+      .all(ninetyDaysAgo) as { day: string }[]
     days = dbRows.map((r) => r.day)
   } finally {
     closeDb()
@@ -395,13 +395,14 @@ export async function cmdSummarize(
   opts: { verbose?: boolean; project?: string } = {},
 ): Promise<void> {
   if (dateArg) {
-    const result = await summarizeDay(dateArg, {
+    const resolved = resolveDate(dateArg)
+    const result = await summarizeDay(resolved, {
       verbose: true,
       projectFilter: opts.project,
     })
 
     if (result.skipped) {
-      console.error(`Skipped ${dateArg}: ${result.reason}`)
+      console.error(`Skipped ${resolved}: ${result.reason}`)
       return
     }
 
@@ -608,6 +609,8 @@ export async function cmdWeekly(weekOf?: string, opts: { verbose?: boolean } = {
     const lastWeek = new Date()
     lastWeek.setDate(lastWeek.getDate() - 7)
     weekOf = localDateStr(lastWeek)
+  } else {
+    weekOf = resolveDate(weekOf)
   }
 
   const result = await summarizeWeek(weekOf, { verbose: true })
@@ -650,6 +653,7 @@ export async function cmdShow(dateArg?: string): Promise<void> {
 
   // Specific date → show that day
   if (dateArg) {
+    dateArg = resolveDate(dateArg)
     const filePath = path.join(memoryDir, `${dateArg}.md`)
     if (!fs.existsSync(filePath)) {
       console.error(`No summary for ${dateArg}. Run \`bun recall summarize ${dateArg}\` to generate.`)
@@ -701,6 +705,25 @@ function getSessionMemoryDir(): string {
 
 function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
+
+/** Resolve date keywords (today, yesterday, N-days-ago) to YYYY-MM-DD strings. */
+function resolveDate(dateArg: string): string {
+  const lower = dateArg.toLowerCase()
+  if (lower === "today") return localDateStr(new Date())
+  if (lower === "yesterday") {
+    const d = new Date()
+    d.setDate(d.getDate() - 1)
+    return localDateStr(d)
+  }
+  // "3d" or "3-days-ago" style
+  const daysAgoMatch = lower.match(/^(\d+)(?:d|-days?-ago)$/)
+  if (daysAgoMatch) {
+    const d = new Date()
+    d.setDate(d.getDate() - Number(daysAgoMatch[1]))
+    return localDateStr(d)
+  }
+  return dateArg
 }
 
 function displayProject(projectPath: string): string {
