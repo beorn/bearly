@@ -24,3 +24,4 @@ coverage/
 # Playwright cache
 tools/.playwright-cache/
 .claude/worktrees/
+*.tgz
