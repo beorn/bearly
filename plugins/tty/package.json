@@ -5,7 +5,37 @@
   "license": "MIT",
   "bin": "./server.ts",
   "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./server.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "bin": "./dist/server.mjs",
+    "exports": {
+      ".": {
+        "types": "./dist/server.d.mts",
+        "import": "./dist/server.mjs"
+      }
+    }
+  },
+  "tsdown": {
+    "entry": "server.ts",
+    "format": "esm",
+    "dts": true,
+    "clean": true,
+    "external": [
+      "@modelcontextprotocol/sdk",
+      "@termless/core",
+      "@termless/xtermjs",
+      "playwright",
+      "zod"
+    ]
+  },
   "scripts": {
+    "build": "tsdown",
     "start": "bun install --no-summary && bun server.ts"
   },
   "dependencies": {
@@ -14,5 +44,8 @@
     "@termless/xtermjs": "^0.1.0",
     "playwright": "^1.52.0",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsdown": "^0.21.7"
   }
 }

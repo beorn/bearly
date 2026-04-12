@@ -27,6 +27,7 @@
     "./css/glossary-links.css": "./src/css/glossary-links.css"
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
