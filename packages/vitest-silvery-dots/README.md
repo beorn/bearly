@@ -36,20 +36,24 @@ export default defineConfig({
 ## Options
 
 ```ts
-reporters: [["vitest-silvery-dots", {
-  slowThreshold: 500,      // ms — tests slower than this get bigger dots (default: 500)
-  showSlow: true,          // show slow test breakdown at end
-  perfOutput: "perf.json", // write per-test timing data
-  symbols: ["·", "•", "●"], // dot characters for fast → slow
-}]]
+reporters: [
+  [
+    "vitest-silvery-dots",
+    {
+      slowThreshold: 500, // ms — tests slower than this get bigger dots (default: 500)
+      showSlow: true, // show slow test breakdown at end
+      perfOutput: "perf.json", // write per-test timing data
+      symbols: ["·", "•", "●"], // dot characters for fast → slow
+    },
+  ],
+]
 ```
 
 ## Peer Dependencies
 
 - `vitest` >= 4.0.0
 - `react` >= 19.0.0
-- `@silvery/ag-react` >= 0.1.0
-- `@silvery/test` >= 0.1.0
+- `silvery` >= 0.17.0
 
 ## License
 
