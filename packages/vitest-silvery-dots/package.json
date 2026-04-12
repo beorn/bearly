@@ -1,6 +1,6 @@
 {
   "name": "vitest-silvery-dots",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Streaming dot reporter for Vitest, built with Silvery React terminal UI",
   "keywords": [
     "dot-reporter",
@@ -43,15 +43,26 @@
     "entry": "src/index.tsx",
     "format": "esm",
     "dts": true,
-    "clean": true
+    "clean": true,
+    "external": [
+      "silvery",
+      "silvery/*",
+      "react",
+      "react/jsx-runtime",
+      "vitest",
+      "vitest/node",
+      "loggily"
+    ]
   },
   "scripts": {
     "build": "tsdown",
     "prepublishOnly": "bun run build"
   },
+  "dependencies": {
+    "loggily": ">=0.6.0"
+  },
   "peerDependencies": {
-    "@silvery/ag-react": ">=0.1.0",
-    "@silvery/test": ">=0.1.0",
+    "silvery": ">=0.17.0",
     "react": ">=19.0.0",
     "vitest": ">=4.0.0"
   },
