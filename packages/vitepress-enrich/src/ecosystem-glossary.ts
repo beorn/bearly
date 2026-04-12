@@ -48,9 +48,9 @@ const ECOSYSTEM_PROJECTS: EcosystemProject[] = [
   },
   {
     terms: ["Loggily"],
-    href: "https://beorn.codes/loggily",
+    href: "https://loggily.dev",
     tooltip: "Structured logging with namespace filtering, spans, and zero-overhead conditional logging.",
-    hostname: "beorn.codes/loggily",
+    hostname: "loggily.dev",
   },
   {
     terms: ["terminfo.dev"],
