@@ -9,16 +9,7 @@
 import * as fs from "node:fs"
 import React, { useMemo, useSyncExternalStore, type ReactNode } from "react"
 import type { Reporter, TestCase, TestModule, TestSpecification, TestSuite, Vitest } from "vitest/node"
-import {
-  Box,
-  Text,
-  Console,
-  useBoxRect,
-  patchConsole,
-  type Instance,
-  type Term,
-  type PatchedConsole,
-} from "silvery"
+import { Box, Text, Console, useBoxRect, patchConsole, type Instance, type Term, type PatchedConsole } from "silvery"
 import { createLogger } from "loggily"
 
 import { createTestStore, type TestState, type TestStore, type TestStoreState } from "./store.js"

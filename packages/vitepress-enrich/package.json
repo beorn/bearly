@@ -65,23 +65,11 @@
       "./css/glossary-links.css": "./src/css/glossary-links.css"
     }
   },
-  "tsdown": {
-    "entry": [
-      "src/index.ts",
-      "src/glossary.ts",
-      "src/linkify.ts",
-      "src/seo.ts",
-      "src/validate.ts",
-      "src/terminal-glossary.ts",
-      "src/doc-glossary.ts",
-      "src/ecosystem-glossary.ts"
-    ],
-    "format": "esm",
-    "dts": true,
-    "clean": true
-  },
   "scripts": {
     "build": "tsdown"
+  },
+  "devDependencies": {
+    "tsdown": "^0.21.7"
   },
   "peerDependencies": {
     "markdown-it": ">=14",
@@ -95,8 +83,20 @@
       "optional": true
     }
   },
-  "devDependencies": {
-    "tsdown": "^0.21.7"
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": [
+      "src/index.ts",
+      "src/glossary.ts",
+      "src/linkify.ts",
+      "src/seo.ts",
+      "src/validate.ts",
+      "src/terminal-glossary.ts",
+      "src/doc-glossary.ts",
+      "src/ecosystem-glossary.ts"
+    ],
+    "format": "esm"
   },
   "engines": {
     "node": ">=18"

@@ -39,11 +39,25 @@
       }
     }
   },
+  "scripts": {
+    "build": "tsdown",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "loggily": ">=0.6.0"
+  },
+  "devDependencies": {
+    "tsdown": "^0.21.7"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0",
+    "silvery": ">=0.17.0",
+    "vitest": ">=4.0.0"
+  },
   "tsdown": {
-    "entry": "src/index.tsx",
-    "format": "esm",
-    "dts": true,
     "clean": true,
+    "dts": true,
+    "entry": "src/index.tsx",
     "external": [
       "silvery",
       "silvery/*",
@@ -52,21 +66,7 @@
       "vitest",
       "vitest/node",
       "loggily"
-    ]
-  },
-  "scripts": {
-    "build": "tsdown",
-    "prepublishOnly": "bun run build"
-  },
-  "dependencies": {
-    "loggily": ">=0.6.0"
-  },
-  "peerDependencies": {
-    "silvery": ">=0.17.0",
-    "react": ">=19.0.0",
-    "vitest": ">=4.0.0"
-  },
-  "devDependencies": {
-    "tsdown": "^0.21.7"
+    ],
+    "format": "esm"
   }
 }

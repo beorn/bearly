@@ -44,20 +44,20 @@
       }
     }
   },
-  "tsdown": {
-    "entry": "src/index.ts",
-    "format": "esm",
-    "dts": true,
-    "clean": true
-  },
   "scripts": {
     "build": "tsdown",
     "prepublishOnly": "bun run build"
   },
+  "devDependencies": {
+    "tsdown": "^0.21.7"
+  },
   "peerDependencies": {
     "alien-signals": ">=3.0.0"
   },
-  "devDependencies": {
-    "tsdown": "^0.21.7"
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
   }
 }

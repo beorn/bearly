@@ -4,10 +4,10 @@
   "description": "Headless terminal testing MCP server — PTY + xterm.js emulation",
   "license": "MIT",
   "bin": "./server.ts",
-  "type": "module",
   "files": [
     "dist"
   ],
+  "type": "module",
   "exports": {
     ".": "./server.ts"
   },
@@ -20,19 +20,6 @@
         "import": "./dist/server.mjs"
       }
     }
-  },
-  "tsdown": {
-    "entry": "server.ts",
-    "format": "esm",
-    "dts": true,
-    "clean": true,
-    "external": [
-      "@modelcontextprotocol/sdk",
-      "@termless/core",
-      "@termless/xtermjs",
-      "playwright",
-      "zod"
-    ]
   },
   "scripts": {
     "build": "tsdown",
@@ -47,5 +34,18 @@
   },
   "devDependencies": {
     "tsdown": "^0.21.7"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "server.ts",
+    "external": [
+      "@modelcontextprotocol/sdk",
+      "@termless/core",
+      "@termless/xtermjs",
+      "playwright",
+      "zod"
+    ],
+    "format": "esm"
   }
 }
