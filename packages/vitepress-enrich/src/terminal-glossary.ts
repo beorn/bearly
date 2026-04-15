@@ -20,7 +20,7 @@ import { join, dirname } from "node:path"
 import type { GlossaryEntity } from "./types.ts"
 // Direct import as fallback — works in all bundler contexts (Rollup, Vite, Bun, Node)
 // where import.meta.dirname may be undefined (e.g., vitepress SSR build via Rollup)
-import bundledData from "./terminal-glossary-data.json"
+import bundledData from "./terminal-glossary-data.json" with { type: "json" }
 
 const TERMINFO_HOST = "https://terminfo.dev"
 

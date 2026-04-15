@@ -160,10 +160,55 @@ export async function finishResponse(
   query?: string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
+    // Write error to stderr (visible in interactive mode)
     log.error?.("Model returned empty response (no content). This is a silent failure.")
     log.error?.(`Model: ${model.displayName}`)
     if (usage) log.error?.(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}`)
     if (durationMs) log.error?.(`Duration: ${Math.round(durationMs / 1000)}s`)
+
+    // Write error details to the output file so background callers can find it
+    const durationStr = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown"
+    const promptTokens = usage?.promptTokens ?? 0
+    const completionTokens = usage?.completionTokens ?? 0
+    const errorContent = [
+      "# LLM Error: Empty Response",
+      "",
+      "Model returned no content. This usually means the API call failed silently.",
+      "",
+      `- **Model**: ${model.displayName}`,
+      `- **Tokens**: prompt=${promptTokens}, completion=${completionTokens}`,
+      `- **Duration**: ${durationStr}`,
+      `- **Query**: ${query ?? "(none)"}`,
+      "",
+      "Possible causes: API timeout, content filter, rate limit, model overload.",
+      "",
+      "Re-run the command to retry.",
+    ].join("\n")
+
+    const meta: OutputMeta = {
+      query,
+      model: model.displayName,
+      tokens: usage?.totalTokens,
+      durationMs,
+    }
+    const metaComment = buildMetaComment(sessionTag, meta)
+    try {
+      await Bun.write(outputFile, `${metaComment}\n\n${errorContent}`)
+    } catch {
+      // Best-effort — if we can't write the file, the stderr log above is all we have
+    }
+
+    // Emit JSON metadata to stdout so the caller knows the file exists and can detect the error
+    const result: Record<string, unknown> = {
+      error: "empty_response",
+      file: outputFile,
+      model: model.displayName,
+      tokens: usage?.totalTokens ?? 0,
+      durationMs,
+    }
+    if (query) result.query = query
+    console.log(JSON.stringify(result))
+
     process.exit(1)
   }
   const cost = usage ? estimateCost(model as any, usage.promptTokens, usage.completionTokens) : undefined

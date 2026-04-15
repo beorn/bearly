@@ -36,6 +36,15 @@ export interface PluginContext {
   sendMessage(to: string, content: string, type?: string, beadId?: string): void
   /** Check if a chief session is alive */
   hasChief(): boolean
+  /** Get current chief lease info from the leadership table (null if never held) */
+  getLeaseInfo(): {
+    holder_name: string
+    holder_id: string
+    term: number
+    epoch: number
+    lease_until: number
+    acquired_at: number
+  } | null
   /** Check if any session already sent a message with this content prefix (dedup) */
   hasRecentMessage(contentPrefix: string): boolean
   /** Atomic dedup claim — returns true if this session won the claim, false if another session already claimed it */

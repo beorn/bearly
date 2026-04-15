@@ -565,6 +565,8 @@ export interface AlertState {
   ioAboveWarning: number
   /** Track which alerts have been fired to avoid repeating */
   firedAlerts: Set<string>
+  /** Per-alert last-fire timestamps (used by rate-limited alerts like chief:expired) */
+  firedAt: Map<string, number>
   /** Track if we've already alerted about a git lock (dedup) */
   gitLockDetected: boolean
   /** Track when each lock was first seen — key is lock path, value is timestamp */
@@ -585,6 +587,7 @@ export function createAlertState(): AlertState {
     diskAboveWarning: 0,
     ioAboveWarning: 0,
     firedAlerts: new Set(),
+    firedAt: new Map(),
     gitLockDetected: false,
     lockFirstSeen: new Map(),
     lockStaleWarned: new Set(),

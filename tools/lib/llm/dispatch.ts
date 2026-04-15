@@ -578,14 +578,26 @@ export async function runDeep(options: {
   })
 
   // Fire-and-forget: response ID is persisted, recover later with `bun llm recover`
+  // For fire-and-forget deep research, empty content is expected — the research continues
+  // server-side. The response ID was already persisted by the research layer.
   if (!response.content || response.content.trim().length === 0) {
+    if (response.responseId) {
+      // Normal fire-and-forget — recovery info already printed by research layer
+      return
+    }
+    // No response ID AND no content — this is a genuine failure, write error to file
+    await finishResponse(undefined, deepModel, outputFile, sessionTag, response.usage, response.durationMs, topic)
     return
   }
 
   // Fast model that completed immediately (no polling needed)
   if (response.error) {
     log.error?.(`Deep research failed: ${response.error}`)
-    if (!response.content || response.content.trim().length === 0) process.exit(1)
+    if (!response.content || response.content.trim().length === 0) {
+      // Genuine failure — finishResponse will write error details to the output file
+      await finishResponse(undefined, deepModel, outputFile, sessionTag, response.usage, response.durationMs, topic)
+      return
+    }
     log.warn?.("Partial content recovered — writing what we have.")
   }
   await finishResponse(
