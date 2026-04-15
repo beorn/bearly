@@ -40,7 +40,7 @@ import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
-import { acquireLease } from "./lib/tribe/lease.ts"
+import { acquireLease, getLeaseInfo } from "./lib/tribe/lease.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
@@ -78,7 +78,13 @@ const { values: daemonArgs } = parseArgs({
     socket: { type: "string" },
     db: { type: "string" },
     fd: { type: "string" },
-    "quit-timeout": { type: "string", default: "30" },
+    // Default 30 minutes — long enough to survive a Claude Code session
+    // restart (close terminal, reopen, reconnect), short enough that an
+    // idle daemon eventually cleans itself up. The previous 30-second
+    // default caused frequent "tribe MCP disconnected" errors when users
+    // briefly stepped away — see km-tribe.reliability-sweep-0415.
+    // Use --quit-timeout 0 to quit immediately, --quit-timeout -1 to never auto-quit.
+    "quit-timeout": { type: "string", default: "1800" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
@@ -615,6 +621,9 @@ const pluginCtx: PluginContext = {
       if (c.role === "chief") return true
     }
     return false
+  },
+  getLeaseInfo() {
+    return getLeaseInfo(db)
   },
   hasRecentMessage(contentPrefix) {
     const since = Date.now() - 300_000
