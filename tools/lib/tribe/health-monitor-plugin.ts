@@ -191,6 +191,57 @@ export function parseSwapUsage(output: string): number {
   return match ? parseFloat(match[1]!) : 0
 }
 
+/**
+ * Parse macOS `vm_stat` output into a count of pages by category, plus page size.
+ *
+ * On macOS, Node's os.freemem() returns ONLY pages from the "free" pool — it does
+ * not count "inactive" or "speculative" pages even though those are reclaimable
+ * on demand. So a healthy system with 10 GB free + 50 GB inactive is reported as
+ * "96% used" by os.freemem()-based math, triggering false "memory critical"
+ * alarms. The fix is to parse vm_stat directly and compute pressure from the
+ * pages that are actually in use — matching what Activity Monitor reports as
+ * "Memory Used" (app memory + wired + compressed) and treating inactive +
+ * speculative as reclaimable. See km-tribe.reliability-sweep-0415.
+ *
+ * Typical output header:
+ *   Mach Virtual Memory Statistics: (page size of 16384 bytes)
+ *   Pages free:                               641676.
+ *   Pages active:                            3502447.
+ *   Pages inactive:                          3101917.
+ *   Pages speculative:                        461909.
+ *   Pages wired down:                        1234567.
+ *   Pages occupied by compressor:             234567.
+ *   ...
+ */
+export function parseVmStat(output: string): {
+  pageSizeBytes: number
+  free: number
+  active: number
+  inactive: number
+  speculative: number
+  wired: number
+  compressed: number
+} {
+  const pageSizeMatch = output.match(/page size of (\d+) bytes/)
+  const pageSizeBytes = pageSizeMatch ? parseInt(pageSizeMatch[1]!, 10) : 16384
+
+  const readPages = (label: string): number => {
+    const re = new RegExp(`${label}:\\s*(\\d+)\\.?`)
+    const m = output.match(re)
+    return m ? parseInt(m[1]!, 10) : 0
+  }
+
+  return {
+    pageSizeBytes,
+    free: readPages("Pages free"),
+    active: readPages("Pages active"),
+    inactive: readPages("Pages inactive"),
+    speculative: readPages("Pages speculative"),
+    wired: readPages("Pages wired down"),
+    compressed: readPages("Pages occupied by compressor"),
+  }
+}
+
 /** Parse `ps aux` output to extract top processes. */
 export function parseProcessList(psOutput: string): Array<{ pid: number; cpu: number; mem: number; command: string }> {
   const lines = psOutput.trim().split("\n")
@@ -965,7 +1016,13 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
     log.debug?.(`ps failed: ${err instanceof Error ? err.message : err}`)
   }
 
-  // macOS swap detection
+  // macOS swap detection + accurate memory pressure via vm_stat.
+  // os.freemem() on Darwin reports only truly-free pages and misses the
+  // ~50 GB of inactive/compressed memory that is reclaimable on demand, so
+  // it systematically over-reports pressure ("96% used" with 60 GB actually
+  // available). Override with vm_stat-derived numbers matching Activity
+  // Monitor semantics. See km-tribe.reliability-sweep-0415.
+  let memoryOverride: { usedMB: number; availableMB: number; pressurePercent: number } | null = null
   if (process.platform === "darwin") {
     try {
       const swapProc = Bun.spawn(["sysctl", "vm.swapusage"], { stdout: "pipe", stderr: "ignore" })
@@ -973,6 +1030,25 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
       swapUsedMB = parseSwapUsage(swapOutput)
     } catch {
       // Swap info unavailable — not critical
+    }
+    try {
+      const vmStatProc = Bun.spawn(["vm_stat"], { stdout: "pipe", stderr: "ignore" })
+      const vmStatOutput = await new Response(vmStatProc.stdout).text()
+      const vm = parseVmStat(vmStatOutput)
+      const bytesPerMB = 1024 * 1024
+      const toMB = (pages: number): number => Math.round((pages * vm.pageSizeBytes) / bytesPerMB)
+
+      // "Genuinely used" = active + wired + compressed. This is what
+      // Activity Monitor shows as "Memory Used".
+      const usedMB = toMB(vm.active + vm.wired + vm.compressed)
+      // "Available" = free + inactive + speculative. Inactive pages are
+      // reclaimable on demand without pressure; speculative is page cache.
+      const availableMB = toMB(vm.free + vm.inactive + vm.speculative)
+      const totalMB = usedMB + availableMB
+      const pressurePercent = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0
+      memoryOverride = { usedMB, availableMB, pressurePercent }
+    } catch {
+      // Fall back to os.freemem() values if vm_stat is unavailable
     }
   }
 
@@ -984,6 +1060,7 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
       },
       memory: {
         ...osMetrics.memory,
+        ...(memoryOverride ?? {}),
         swapUsedMB,
       },
       disk,

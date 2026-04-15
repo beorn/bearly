@@ -10,6 +10,7 @@ import { describe, test, expect } from "vitest"
 import {
   collectOsMetrics,
   parseSwapUsage,
+  parseVmStat,
   parseProcessList,
   countBunNodeProcesses,
   topCpuConsumers,
@@ -143,6 +144,80 @@ describe("parseSwapUsage", () => {
   test("handles zero swap usage", () => {
     const output = "vm.swapusage: total = 2048.00M  used = 0.00M  free = 2048.00M"
     expect(parseSwapUsage(output)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseVmStat
+// ---------------------------------------------------------------------------
+
+describe("parseVmStat", () => {
+  // Regression for km-tribe.reliability-sweep-0415 — before this parser,
+  // health-monitor used os.freemem() on macOS, missing the ~50 GB of
+  // inactive + compressed memory that is reclaimable on demand, so it
+  // alerted "memory critical 96%" on a system with 60 GB actually
+  // available.
+  const SAMPLE = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                              641676.
+Pages active:                           3502447.
+Pages inactive:                         3101917.
+Pages speculative:                       461909.
+Pages throttled:                              0.
+Pages wired down:                       1234567.
+Pages purgeable:                           1000.
+"Translation faults":                  123456789.
+Pages copy-on-write:                     123456.
+Pages zero filled:                     123456789.
+Pages reactivated:                        12345.
+Pages purged:                              1234.
+File-backed pages:                       500000.
+Anonymous pages:                        3000000.
+Pages stored in compressor:              700000.
+Pages occupied by compressor:            234567.
+Decompressions:                         1234567.
+Compressions:                          12345678.
+Pageins:                               12345678.
+Pageouts:                                 12345.
+Swapins:                                     0.
+Swapouts:                                    0.
+`
+
+  test("parses all categories and page size", () => {
+    const vm = parseVmStat(SAMPLE)
+    expect(vm.pageSizeBytes).toBe(16384)
+    expect(vm.free).toBe(641676)
+    expect(vm.active).toBe(3502447)
+    expect(vm.inactive).toBe(3101917)
+    expect(vm.speculative).toBe(461909)
+    expect(vm.wired).toBe(1234567)
+    expect(vm.compressed).toBe(234567)
+  })
+
+  test("returns zeros for missing fields (malformed output)", () => {
+    const vm = parseVmStat("garbage")
+    expect(vm.pageSizeBytes).toBe(16384) // default
+    expect(vm.free).toBe(0)
+    expect(vm.active).toBe(0)
+    expect(vm.inactive).toBe(0)
+    expect(vm.wired).toBe(0)
+    expect(vm.compressed).toBe(0)
+  })
+
+  test("computed pressure matches Activity Monitor semantics (used vs available)", () => {
+    // With the sample numbers above and a 16 KB page:
+    //   used      = active + wired + compressed = 4,971,581 pages = 77.67 GB
+    //   available = free + inactive + speculative = 4,205,502 pages = 65.71 GB
+    //   total (derived) = 143.38 GB
+    //   pressure% = used / total ≈ 54%
+    const vm = parseVmStat(SAMPLE)
+    const used = vm.active + vm.wired + vm.compressed
+    const avail = vm.free + vm.inactive + vm.speculative
+    const total = used + avail
+    const pressurePercent = Math.round((used / total) * 100)
+    // Range check: should be well under the old bogus "96%" that
+    // freemem()-based math would produce for the same state.
+    expect(pressurePercent).toBeGreaterThanOrEqual(50)
+    expect(pressurePercent).toBeLessThanOrEqual(60)
   })
 })
 

@@ -138,6 +138,8 @@ export function accountlyPlugin(): TribePlugin {
       const thresholds = getThresholds()
       const warnedUnavailable = new Set<string>()
       let lastSwitchTime = 0
+      let lastErrorMessage = ""
+      let lastErrorLoggedAt = 0
       const SWITCH_COOLDOWN = 300_000 // 5 min
       let backoffUntil = 0 // 429 backoff timestamp
       let consecutive429s = 0
@@ -184,6 +186,17 @@ export function accountlyPlugin(): TribePlugin {
             status = JSON.parse(stdout) as AccountlyStatus
           } catch {
             log.warn?.(`accountly status: invalid JSON output`)
+            return nextInterval
+          }
+
+          // Defensive null-check: accountly CLI output has been seen with a
+          // missing or non-array `quotas` field (e.g., error envelopes, partial
+          // init). Before this guard every call was crashing with
+          // "TypeError: status.quotas.filter is not a function" and spamming
+          // the daemon warnings channel every HEALTH_POLL_INTERVAL seconds.
+          // See km-tribe.reliability-sweep-0415.
+          if (!Array.isArray(status.quotas)) {
+            log.debug?.(`accountly status missing quotas array — skipping cycle`)
             return nextInterval
           }
 
@@ -280,7 +293,16 @@ export function accountlyPlugin(): TribePlugin {
             )
           }
         } catch (err) {
-          log.warn?.(`accountly plugin error: ${err}`)
+          // Rate-limit: only log once per unique error message per 10 minutes.
+          // Previously this fired every poll (~5 min), flooding the warnings
+          // channel with the same TypeError. See km-tribe.reliability-sweep-0415.
+          const msg = err instanceof Error ? err.message : String(err)
+          const now = Date.now()
+          if (msg !== lastErrorMessage || now - lastErrorLoggedAt > 10 * 60_000) {
+            log.warn?.(`accountly plugin error: ${msg}`)
+            lastErrorMessage = msg
+            lastErrorLoggedAt = now
+          }
         }
 
         return nextInterval
