@@ -1063,7 +1063,7 @@ async function collectFullMetrics(): Promise<{ metrics: HealthMetrics; pidToPare
       },
       memory: {
         ...osMetrics.memory,
-        ...(memoryOverride ?? {}),
+        ...memoryOverride,
         swapUsedMB,
       },
       disk,
