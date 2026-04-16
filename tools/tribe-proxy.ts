@@ -219,7 +219,7 @@ timers.setInterval(() => {
 // MCP Server
 // ---------------------------------------------------------------------------
 
-const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area and role="member". Do not use "chief" unless explicitly told. No need to call tribe_sessions or tribe_history afterward — just join silently and continue.`
+const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe_sessions or tribe_history afterward — just join silently and continue.`
 
 const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
@@ -297,7 +297,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
     nudgeSent = true
     timers.setTimeout(() => {
       sendChannel(
-        `Auto-identify: call tribe_join(name="${myName}", role="member") with a short name for your focus area. Do not use "chief". Do not call tribe_sessions or tribe_history — just join silently and continue.`,
+        `Auto-identify: call tribe_join(name="${myName}") with a short name for your focus area. Omit the role parameter — the daemon auto-assigns it. Do not call tribe_sessions or tribe_history — just join silently and continue.`,
         { from: "tribe-proxy", type: "system" },
       )
     }, 500)

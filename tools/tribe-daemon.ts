@@ -229,7 +229,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const clientPid = Number(p.pid ?? 0)
         const claudeSessionName = (p.claudeSessionName as string) ?? null
         const claudeSessionId = (p.claudeSessionId as string) ?? null
-        const role = String(p.role ?? "member") as "chief" | "member"
+        const role = detectRole(db, { role: p.role as string | undefined })
 
         // Name priority: explicit > Claude session name > recovered from DB > role-based > pid-based
         let name: string
