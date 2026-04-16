@@ -14,6 +14,8 @@ import {
   type MessageSearchOptions,
 } from "../lib/history/db"
 import { recall, type RecallOptions, type RecallResult } from "../lib/history/recall"
+import type { AgentRecallOptions, AgentRecallResult } from "./agent.ts"
+import type { QueryPlan } from "./plan.ts"
 import { searchLiveSession } from "../lib/history/search"
 import { findSessionFiles, extractTextContent } from "../lib/history/indexer"
 import type { ContentType, ContentRecord, MessageRecord, JsonlRecord } from "../lib/history/types"
@@ -54,6 +56,11 @@ export interface SearchOptions {
   tool?: string
   session?: string
   include?: string
+  agent?: boolean
+  round2?: "auto" | "wider" | "deeper" | "off"
+  maxRounds?: string
+  debugPlan?: boolean
+  planTimeout?: string
 }
 
 // ============================================================================
@@ -116,8 +123,91 @@ export async function cmdSearch(query: string | undefined, options: SearchOption
     projectFilter: project,
   }
 
+  const agentEnabled = !!options.agent || !!options.debugPlan || process.env.RECALL_AGENT === "1"
+  if (agentEnabled) {
+    await runAgentSearch(query!, options, recallOpts)
+    return
+  }
+
   const result = await recall(query!, recallOpts)
   formatRecallOutput(result, { json })
+}
+
+async function runAgentSearch(query: string, options: SearchOptions, base: RecallOptions): Promise<void> {
+  const { recallAgent } = await import("./agent.ts")
+  const agentOpts: AgentRecallOptions = {
+    ...base,
+    round2: options.round2 ?? "auto",
+    maxRounds: options.maxRounds ? (parseInt(options.maxRounds, 10) === 1 ? 1 : 2) : 2,
+    planTimeoutMs: options.planTimeout ? parseInt(options.planTimeout, 10) : undefined,
+    debugPlan: !!options.debugPlan,
+  }
+
+  const result = await recallAgent(query, agentOpts)
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+
+  // Always print the one-line per-round trace so users can see what was searched.
+  printAgentTrace(result, !!options.debugPlan)
+
+  // Reuse the standard output formatter for the final answer.
+  formatRecallOutput(result, { json: false })
+
+  if (result.traceFile) {
+    console.log(`${DIM}trace: ${result.traceFile}${RESET}`)
+  }
+}
+
+function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
+  for (const round of result.trace.rounds) {
+    const label = round.round === 1 ? "plan r1" : `plan r2 (${round.mode ?? "?"})`
+    const plannerInfo = round.planner.model
+      ? `${round.planner.model} ${round.planner.elapsedMs}ms`
+      : round.planner.error
+        ? `${DIM}no-planner (${round.planner.error})${RESET}`
+        : `${DIM}no-planner${RESET}`
+
+    console.log(`${DIM}[${label}]${RESET} ${plannerInfo}`)
+
+    const plan = round.plan as QueryPlan | null
+    if (plan && round.variants.length > 0) {
+      console.log(
+        `  ${DIM}variants (${round.variants.length}):${RESET} ${round.variants.slice(0, 10).join(", ")}${round.variants.length > 10 ? ", …" : ""}`,
+      )
+
+      if (debugPlan) {
+        if (plan.keywords.length) console.log(`    keywords: ${plan.keywords.join(", ")}`)
+        if (plan.phrases.length) console.log(`    phrases:  ${plan.phrases.join(" | ")}`)
+        if (plan.concepts.length) console.log(`    concepts: ${plan.concepts.join(", ")}`)
+        if (plan.paths.length) console.log(`    paths:    ${plan.paths.join(", ")}`)
+        if (plan.errors.length) console.log(`    errors:   ${plan.errors.join(" | ")}`)
+        if (plan.bead_ids.length) console.log(`    bead_ids: ${plan.bead_ids.join(", ")}`)
+        if (plan.time_hint) console.log(`    time_hint: ${plan.time_hint}`)
+        if (plan.notes) console.log(`    notes: ${plan.notes}`)
+      }
+    }
+
+    if (round.variants.length > 0) {
+      const s = round.stats
+      console.log(
+        `  ${DIM}fanout:${RESET} ${s.totalQueries} queries → ${s.rawHits} raw → ${s.uniqueDocs} unique, top-coverage=${s.topCoverage}/${round.variants.length}, median=${s.medianCoverage} (${s.msTotal}ms)`,
+      )
+    }
+  }
+
+  const d = result.trace.decision
+  if (result.trace.rounds.length > 0) {
+    console.log(`${DIM}[decide]${RESET} round2=${d.round2Mode} — ${d.reason}`)
+  }
+
+  if (result.fellThrough) {
+    const reason = result.trace.rounds[0]?.planner.error ?? "planner unavailable"
+    console.log(`${DIM}[fallthrough]${RESET} ${reason} — used default recall`)
+  }
+  console.log()
 }
 
 // ============================================================================

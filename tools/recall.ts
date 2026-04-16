@@ -76,6 +76,11 @@ program
   .option("-t, --tool <name>", "Tool filter: Write, Bash, etc. (implies --raw)")
   .option("--session <id>", "Specific session (implies --raw)")
   .option("-i, --include <types>", "Content types: p,m,s,t,f,b,e,d,c (implies --raw)")
+  .option("--agent", "LLM query-planner mode: plan → fan out → rerank → synthesize")
+  .option("--round2 <mode>", "Round 2 mode: auto|wider|deeper|off (default auto)")
+  .option("--max-rounds <n>", "Cap agent rounds (1 or 2, default 2)", int)
+  .option("--debug-plan", "Print full planner output each round (implies --agent)")
+  .option("--plan-timeout <ms>", "Planner per-call timeout (default 2500)", uint)
   .actionMerged(async (opts) => {
     const searchOpts = opts as unknown as SearchOptions & { query: string }
     await cmdSearch(searchOpts.query, searchOpts)
