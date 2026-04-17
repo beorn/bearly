@@ -1,5 +1,5 @@
 /**
- * Bear daemon — integration tests.
+ * Lore daemon — integration tests.
  *
  * Spawns a real daemon on a temp socket/db, exercises the RPC surface via
  * the canonical socket client, and cleans up. Slow (each spawn ~300ms) so
@@ -11,10 +11,10 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import { connectToDaemon, type BearClient } from "../../tools/lib/bear/socket.ts"
+import { connectToDaemon, type LoreClient } from "../../tools/lib/lore/socket.ts"
 import {
-  BEAR_METHODS,
-  BEAR_PROTOCOL_VERSION,
+  LORE_METHODS,
+  LORE_PROTOCOL_VERSION,
   type HelloResult,
   type StatusResult,
   type SessionsListResult,
@@ -22,12 +22,12 @@ import {
   type SessionHeartbeatResult,
   type PlanOnlyResult,
   type InjectDeltaResult,
-} from "../../tools/lib/bear/rpc.ts"
+} from "../../tools/lib/lore/rpc.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/bear-daemon.ts")
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/lore-daemon.ts")
 
 function tmpPath(suffix: string): string {
-  return `/tmp/bear-test-${randomUUID().slice(0, 8)}.${suffix}`
+  return `/tmp/lore-test-${randomUUID().slice(0, 8)}.${suffix}`
 }
 
 async function waitFor(fn: () => boolean, timeoutMs = 5000, intervalMs = 30): Promise<void> {
@@ -43,11 +43,11 @@ type DaemonHarness = {
   child: ChildProcess
   socketPath: string
   dbPath: string
-  client: BearClient
+  client: LoreClient
   teardown: () => Promise<void>
 }
 
-async function spawnBearDaemon(extraArgs: string[] = []): Promise<DaemonHarness> {
+async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness> {
   const socketPath = tmpPath("sock")
   const dbPath = tmpPath("db")
   const child = spawn(
@@ -55,7 +55,7 @@ async function spawnBearDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
     [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "5", ...extraArgs],
     {
       stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, BEAR_NO_DAEMON: "0" },
+      env: { ...process.env, LORE_NO_DAEMON: "0" },
     },
   )
   child.stderr?.on("data", () => {
@@ -63,10 +63,10 @@ async function spawnBearDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
   })
   await waitFor(() => existsSync(socketPath))
   const client = await connectToDaemon(socketPath, { callTimeoutMs: 5000 })
-  await client.call(BEAR_METHODS.hello, {
+  await client.call(LORE_METHODS.hello, {
     clientName: "test",
     clientVersion: "0.0.0",
-    protocolVersion: BEAR_PROTOCOL_VERSION,
+    protocolVersion: LORE_PROTOCOL_VERSION,
   })
   return {
     child,
@@ -98,7 +98,7 @@ async function spawnBearDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
 
 // ---------------------------------------------------------------------------
 
-describe("bear daemon — handshake", () => {
+describe("lore daemon — handshake", () => {
   let h: DaemonHarness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -106,28 +106,28 @@ describe("bear daemon — handshake", () => {
   })
 
   it("responds to hello with protocol + pid", async () => {
-    h = await spawnBearDaemon()
-    const hello = (await h.client.call(BEAR_METHODS.hello, {
+    h = await spawnLoreDaemon()
+    const hello = (await h.client.call(LORE_METHODS.hello, {
       clientName: "t",
       clientVersion: "1",
-      protocolVersion: BEAR_PROTOCOL_VERSION,
+      protocolVersion: LORE_PROTOCOL_VERSION,
     })) as HelloResult
-    expect(hello.protocolVersion).toBe(BEAR_PROTOCOL_VERSION)
+    expect(hello.protocolVersion).toBe(LORE_PROTOCOL_VERSION)
     expect(hello.daemonPid).toBe(h.child.pid)
     expect(typeof hello.startedAt).toBe("number")
     expect(hello.daemonVersion).toMatch(/\d+\.\d+\.\d+/)
   })
 
   it("rejects unknown methods without crashing", async () => {
-    h = await spawnBearDaemon()
-    await expect(h.client.call("bear.does_not_exist", {})).rejects.toThrow(/unknown method/i)
+    h = await spawnLoreDaemon()
+    await expect(h.client.call("lore.does_not_exist", {})).rejects.toThrow(/unknown method/i)
     // Daemon still alive
-    const s = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 })
 
-describe("bear daemon — session registration", () => {
+describe("lore daemon — session registration", () => {
   let h: DaemonHarness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -135,10 +135,10 @@ describe("bear daemon — session registration", () => {
   })
 
   it("registers, heartbeats, and lists sessions", async () => {
-    h = await spawnBearDaemon()
+    h = await spawnLoreDaemon()
     const pid = 91234
     const sessionId = "deadbeef-1234-4567-8901-abcdef012345"
-    const reg = (await h.client.call(BEAR_METHODS.sessionRegister, {
+    const reg = (await h.client.call(LORE_METHODS.sessionRegister, {
       claudePid: pid,
       sessionId,
       transcriptPath: "/tmp/t.jsonl",
@@ -148,13 +148,13 @@ describe("bear daemon — session registration", () => {
     expect(reg.ok).toBe(true)
     expect(typeof reg.registeredAt).toBe("number")
 
-    const hb = (await h.client.call(BEAR_METHODS.sessionHeartbeat, {
+    const hb = (await h.client.call(LORE_METHODS.sessionHeartbeat, {
       claudePid: pid,
     })) as SessionHeartbeatResult
     expect(hb.ok).toBe(true)
     expect(hb.lastSeen).toBeGreaterThanOrEqual(reg.registeredAt)
 
-    const list = (await h.client.call(BEAR_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(1)
     const row = list.sessions[0]!
     expect(row.claudePid).toBe(pid)
@@ -165,16 +165,16 @@ describe("bear daemon — session registration", () => {
   })
 
   it("re-registration updates the existing row (no duplicates)", async () => {
-    h = await spawnBearDaemon()
+    h = await spawnLoreDaemon()
     const pid = 99999
-    await h.client.call(BEAR_METHODS.sessionRegister, { claudePid: pid, sessionId: "sess-one", cwd: "/tmp/a" })
-    await h.client.call(BEAR_METHODS.sessionRegister, {
+    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: pid, sessionId: "sess-one", cwd: "/tmp/a" })
+    await h.client.call(LORE_METHODS.sessionRegister, {
       claudePid: pid,
       sessionId: "sess-two",
       cwd: "/tmp/b",
       project: "other",
     })
-    const list = (await h.client.call(BEAR_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(1)
     const row = list.sessions[0]!
     expect(row.sessionId).toBe("sess-two")
@@ -183,17 +183,17 @@ describe("bear daemon — session registration", () => {
   })
 
   it("heartbeat for unknown pid returns ok=true (no crash, no fresh row)", async () => {
-    h = await spawnBearDaemon()
-    const hb = (await h.client.call(BEAR_METHODS.sessionHeartbeat, {
+    h = await spawnLoreDaemon()
+    const hb = (await h.client.call(LORE_METHODS.sessionHeartbeat, {
       claudePid: 77777,
     })) as SessionHeartbeatResult
     expect(hb.ok).toBe(true)
-    const list = (await h.client.call(BEAR_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(0)
   })
 })
 
-describe("bear daemon — status", () => {
+describe("lore daemon — status", () => {
   let h: DaemonHarness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -201,20 +201,20 @@ describe("bear daemon — status", () => {
   })
 
   it("reports socket, db, and alive session count", async () => {
-    h = await spawnBearDaemon()
-    const s0 = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    h = await spawnLoreDaemon()
+    const s0 = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s0.sessionCount).toBe(0)
     expect(s0.socketPath).toBe(h.socketPath)
     expect(s0.dbPath).toBe(h.dbPath)
 
-    await h.client.call(BEAR_METHODS.sessionRegister, { claudePid: 1, sessionId: "s" })
-    await h.client.call(BEAR_METHODS.sessionRegister, { claudePid: 2, sessionId: "t" })
-    const s1 = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: 1, sessionId: "s" })
+    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: 2, sessionId: "t" })
+    const s1 = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s1.sessionCount).toBe(2)
   })
 })
 
-describe("bear daemon — inject_delta (Phase 5)", () => {
+describe("lore daemon — inject_delta (Phase 5)", () => {
   let h: DaemonHarness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -222,22 +222,22 @@ describe("bear daemon — inject_delta (Phase 5)", () => {
   })
 
   it("short-circuits short + slash-command + empty prompts", async () => {
-    h = await spawnBearDaemon()
-    const shortPrompt = (await h.client.call(BEAR_METHODS.injectDelta, {
+    h = await spawnLoreDaemon()
+    const shortPrompt = (await h.client.call(LORE_METHODS.injectDelta, {
       prompt: "ok",
       sessionId: "sess-a",
     })) as InjectDeltaResult
     expect(shortPrompt.skipped).toBe(true)
     expect(shortPrompt.reason).toBe("short")
 
-    const slash = (await h.client.call(BEAR_METHODS.injectDelta, {
+    const slash = (await h.client.call(LORE_METHODS.injectDelta, {
       prompt: "/some-command with args",
       sessionId: "sess-a",
     })) as InjectDeltaResult
     expect(slash.skipped).toBe(true)
     expect(slash.reason).toBe("slash_command")
 
-    const empty = (await h.client.call(BEAR_METHODS.injectDelta, {
+    const empty = (await h.client.call(LORE_METHODS.injectDelta, {
       prompt: "",
       sessionId: "sess-a",
     })) as InjectDeltaResult
@@ -246,34 +246,34 @@ describe("bear daemon — inject_delta (Phase 5)", () => {
   })
 
   it("keeps independent dedup state per sessionId", async () => {
-    h = await spawnBearDaemon()
+    h = await spawnLoreDaemon()
     // Fire a substantive prompt against two different sessionIds. We don't
     // assert anything about returned snippets (depends on the recall index
     // in this test environment); we only check that the daemon stays alive
     // and keeps per-session turn counters separate.
-    const r1 = (await h.client.call(BEAR_METHODS.injectDelta, {
-      prompt: "tell me about the bear workspace daemon plan",
+    const r1 = (await h.client.call(LORE_METHODS.injectDelta, {
+      prompt: "tell me about the lore workspace daemon plan",
       sessionId: "sess-A",
     })) as InjectDeltaResult
-    const r2 = (await h.client.call(BEAR_METHODS.injectDelta, {
-      prompt: "tell me about the bear workspace daemon plan",
+    const r2 = (await h.client.call(LORE_METHODS.injectDelta, {
+      prompt: "tell me about the lore workspace daemon plan",
       sessionId: "sess-B",
     })) as InjectDeltaResult
     expect(r1.turnNumber).toBe(1)
     expect(r2.turnNumber).toBe(1)
 
-    const r1b = (await h.client.call(BEAR_METHODS.injectDelta, {
+    const r1b = (await h.client.call(LORE_METHODS.injectDelta, {
       prompt: "another substantive prompt for sess A only",
       sessionId: "sess-A",
     })) as InjectDeltaResult
     expect(r1b.turnNumber).toBe(2)
 
-    const s = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 })
 
-describe("bear daemon — plan_only (no LLM)", () => {
+describe("lore daemon — plan_only (no LLM)", () => {
   let h: DaemonHarness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -281,7 +281,7 @@ describe("bear daemon — plan_only (no LLM)", () => {
   })
 
   it("returns ok:false with graceful error when no LLM provider is available", async () => {
-    h = await spawnBearDaemon()
+    h = await spawnLoreDaemon()
     // With no ANTHROPIC_API_KEY or OPENAI_API_KEY etc. in the test env, the
     // planner should fall through cleanly. We just care that it doesn't crash
     // the daemon. Either ok:false or a library fallthrough is acceptable —
@@ -294,7 +294,7 @@ describe("bear daemon — plan_only (no LLM)", () => {
       env.XAI_API_KEY ||
       env.GROK_API_KEY
     )
-    const result = (await h.client.call(BEAR_METHODS.planOnly, { query: "some vague query" })) as PlanOnlyResult
+    const result = (await h.client.call(LORE_METHODS.planOnly, { query: "some vague query" })) as PlanOnlyResult
     expect(typeof result.elapsedMs).toBe("number")
     if (!hadKeys) {
       expect(result.ok).toBe(false)
@@ -303,7 +303,7 @@ describe("bear daemon — plan_only (no LLM)", () => {
       expect(typeof result.ok).toBe("boolean")
     }
     // Daemon still alive
-    const s = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 })

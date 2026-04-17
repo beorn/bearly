@@ -1,13 +1,13 @@
-# @bearly/bear
+# @bearly/lore
 
 MCP server for Claude Code that exposes the bearly recall library as structured tools:
-`bear.ask`, `bear.current_brief`, `bear.plan_only`, `bear.session_state`,
-`bear.workspace_state`, `bear.inject_delta`. Eliminates the subprocess-spawn
+`lore.ask`, `lore.current_brief`, `lore.plan_only`, `lore.session_state`,
+`lore.workspace_state`, `lore.inject_delta`. Eliminates the subprocess-spawn
 cost (~400ms) of shelling out to `bun recall` from inside a Claude Code turn.
 
 ## Tools
 
-### `bear.ask`
+### `lore.ask`
 
 LLM-driven recall over session history. Wraps `recallAgent()` from the bearly recall
 library.
@@ -25,7 +25,7 @@ Input:
 
 Output: JSON with `answer` (synthesized), `results` (top matches), `trace` (optional).
 
-### `bear.current_brief`
+### `lore.current_brief`
 
 Compact summary of the current Claude Code session: detected session id, paths
 and bead IDs mentioned in the tail, distinctive technical tokens, and the recent
@@ -40,11 +40,11 @@ Output: JSON with `sessionId`, `ageMs`, `exchangeCount`, `mentionedPaths`,
 `mentionedBeads`, `mentionedTokens`, `recentMessages` (truncated tail), or `null`
 if no active session is detectable.
 
-### `bear.plan_only`
+### `lore.plan_only`
 
 Runs only the round-1 planner and returns the variant plan without executing the
 fanout or synthesis. Useful for fast speculative context before deciding whether
-to escalate to a full `bear.ask` call. Wraps `planQuery({ round: 1 })`.
+to escalate to a full `lore.ask` call. Wraps `planQuery({ round: 1 })`.
 
 Input:
 
@@ -62,9 +62,9 @@ Registered in `.mcp.json` as:
 ```json
 {
   "mcpServers": {
-    "bear": {
+    "lore": {
       "command": "bun",
-      "args": ["vendor/bearly/plugins/bear/server.ts"]
+      "args": ["vendor/bearly/plugins/lore/server.ts"]
     }
   }
 }
@@ -72,22 +72,22 @@ Registered in `.mcp.json` as:
 
 ## Status
 
-Phases 1–5 of the bear workspace-daemon plan (bead `km-bear`). The MCP server
-is now a thin reconnecting client to a persistent `bear-daemon` process
-(`bun vendor/bearly/tools/bear-daemon.ts`) at `$XDG_RUNTIME_DIR/bear.sock`.
+Phases 1–5 of the lore workspace-daemon plan (bead `km-bear`). The MCP server
+is now a thin reconnecting client to a persistent `lore-daemon` process
+(`bun vendor/bearly/tools/lore-daemon.ts`) at `$XDG_RUNTIME_DIR/lore.sock`.
 The daemon keeps the recall library warm across calls, eliminating both the
 subprocess-spawn cost and the per-call context-rebuild cost.
 
-The daemon auto-starts on first MCP call, writes its PID to `bear.pid`, and
+The daemon auto-starts on first MCP call, writes its PID to `lore.pid`, and
 idle-quits after 30 minutes of no clients.
 
 ## Env vars
 
-- `BEAR_NO_DAEMON=1` — opt-out; use library directly (Phase 1 behaviour).
-- `BEAR_LOG=1` — enable stderr tracing for connect failures and recall library
+- `LORE_NO_DAEMON=1` — opt-out; use library directly (Phase 1 behaviour).
+- `LORE_LOG=1` — enable stderr tracing for connect failures and recall library
   logs.
-- `BEAR_SOCKET` — override socket path (default `$XDG_RUNTIME_DIR/bear.sock`).
-- `BEAR_DB` — override DB path (default `~/.local/share/bear/bear.db`).
+- `LORE_SOCKET` — override socket path (default `$XDG_RUNTIME_DIR/lore.sock`).
+- `LORE_DB` — override DB path (default `~/.local/share/lore/lore.db`).
 
 ## CLI
 
@@ -96,7 +96,7 @@ idle-quits after 30 minutes of no clients.
 - `status` — show daemon status (auto-starts if needed)
 - `sessions` — list registered Claude Code sessions with focus hints
 - `workspace` — dump full workspace state (sessions + focus cache) as JSON
-- `ask "query"` — run `bear.ask` via the daemon
+- `ask "query"` — run `lore.ask` via the daemon
 - `ping` — cheap liveness check, exits 1 if offline
 - `stop` — SIGTERM the running daemon
 
@@ -104,19 +104,19 @@ idle-quits after 30 minutes of no clients.
 
 The daemon maintains a `session_focus` row per alive Claude Code session,
 refreshed every 60 s from the session's JSONL transcript tail. Exposed via
-the `bear.workspace_state` MCP tool and the `bear sessions` / `bear workspace`
+the `lore.workspace_state` MCP tool and the `lore sessions` / `lore workspace`
 CLI commands.
 
-`bear.current_brief` serves from the cache when the caller passes a
+`lore.current_brief` serves from the cache when the caller passes a
 sessionId and the entry is <2 min old; otherwise it falls through to the
 live tail parse (Phase 2 behaviour).
 
-Control the poll interval with `--focus-poll-ms <ms>` or `BEAR_FOCUS_POLL_MS`
+Control the poll interval with `--focus-poll-ms <ms>` or `LORE_FOCUS_POLL_MS`
 (default 60 000). Tests use 200 ms.
 
 ## Hook dedup (Phase 5)
 
-`bear.inject_delta(prompt, sessionId?, limit?, ttlTurns?)` replaces the
+`lore.inject_delta(prompt, sessionId?, limit?, ttlTurns?)` replaces the
 tmpfile-backed dedup that `bun recall hook` used pre-Phase-5. The daemon
 holds a per-session `Map<key, lastTurn>` in memory so repeated FTS results
 aren't re-injected for `ttlTurns` turns (default 10). The hook falls back to

@@ -1,5 +1,5 @@
 /**
- * Bear configuration — path resolution for socket, PID, and DB.
+ * Lore configuration — path resolution for socket, PID, and DB.
  */
 
 import { existsSync, mkdirSync } from "node:fs"
@@ -9,30 +9,30 @@ import { basename, dirname, resolve } from "node:path"
 // Path resolution
 // ---------------------------------------------------------------------------
 
-/** Resolve daemon socket path. Priority: arg > BEAR_SOCKET env > XDG_RUNTIME_DIR > ~/.local/share/bear */
-export function resolveBearSocketPath(socketArg?: string): string {
+/** Resolve daemon socket path. Priority: arg > LORE_SOCKET env > XDG_RUNTIME_DIR > ~/.local/share/lore */
+export function resolveLoreSocketPath(socketArg?: string): string {
   if (socketArg) return socketArg
-  if (process.env.BEAR_SOCKET) return process.env.BEAR_SOCKET
+  if (process.env.LORE_SOCKET) return process.env.LORE_SOCKET
   const xdg = process.env.XDG_RUNTIME_DIR
-  if (xdg) return resolve(xdg, "bear.sock")
+  if (xdg) return resolve(xdg, "lore.sock")
   const home = process.env.HOME ?? "/tmp"
-  return resolve(home, ".local/share/bear/bear.sock")
+  return resolve(home, ".local/share/lore/lore.sock")
 }
 
 /** Resolve PID file path (derived from socket path) */
-export function resolveBearPidPath(socketPath: string): string {
+export function resolveLorePidPath(socketPath: string): string {
   const base = basename(socketPath).replace(/\.sock$/, "")
   return resolve(dirname(socketPath), `${base}.pid`)
 }
 
-/** DB location: arg > BEAR_DB env > ~/.local/share/bear/bear.db */
-export function resolveBearDbPath(dbArg?: string): string {
+/** DB location: arg > LORE_DB env > ~/.local/share/lore/lore.db */
+export function resolveLoreDbPath(dbArg?: string): string {
   if (dbArg) return dbArg
-  if (process.env.BEAR_DB) return process.env.BEAR_DB
+  if (process.env.LORE_DB) return process.env.LORE_DB
   const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
-  const bearDir = resolve(xdgData, "bear")
-  if (!existsSync(bearDir)) mkdirSync(bearDir, { recursive: true })
-  return resolve(bearDir, "bear.db")
+  const loreDir = resolve(xdgData, "lore")
+  if (!existsSync(loreDir)) mkdirSync(loreDir, { recursive: true })
+  return resolve(loreDir, "lore.db")
 }
 
 /** Ensure parent directory for a file path exists */

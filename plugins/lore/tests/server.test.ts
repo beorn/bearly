@@ -1,5 +1,5 @@
 /**
- * Tests for the @bearly/bear MCP server's tool handlers.
+ * Tests for the @bearly/lore MCP server's tool handlers.
  *
  * We test the handler functions directly (not through stdio MCP) because:
  *  1. Handler logic is what's worth testing — MCP transport is SDK-owned.
@@ -125,7 +125,7 @@ afterEach(() => {
   mockHolder.fn = null
 })
 
-describe("bear.ask handler", () => {
+describe("lore.ask handler", () => {
   test("returns answer + results for a simple query", async () => {
     mockHolder.fn = buildMockQueryModel([
       { match: /query planner/i, content: buildPlanJson({ keywords: ["alpha", "beta"] }) },
@@ -165,7 +165,7 @@ describe("bear.ask handler", () => {
   })
 })
 
-describe("bear.current_brief handler", () => {
+describe("lore.current_brief handler", () => {
   test("returns detected:false when no session is active", async () => {
     // Env var absent, no sentinel → detection fails gracefully in test env
     const out = await handleCurrentBrief({})
@@ -186,7 +186,7 @@ describe("bear.current_brief handler", () => {
   })
 })
 
-describe("bear.plan_only handler", () => {
+describe("lore.plan_only handler", () => {
   test("returns plan + variants without fanout or synth", async () => {
     let synthCalls = 0
     mockHolder.fn = async (opts) => {

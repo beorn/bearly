@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Bear Daemon — single per-user process serving bear MCP proxies.
+ * Lore Daemon — single per-user process serving lore MCP proxies.
  *
  * Phase 2 scope: session registration, heartbeat, and in-process recall RPCs
- * (bear.ask, bear.current_brief, bear.plan_only). Eliminates the ~400ms
+ * (lore.ask, lore.current_brief, lore.plan_only). Eliminates the ~400ms
  * subprocess-spawn cost per hook by keeping recall library warm.
  *
  * Usage:
- *   bun bear-daemon.ts                    # Auto-discover socket path
- *   bun bear-daemon.ts --socket /path     # Explicit socket path
- *   bun bear-daemon.ts --foreground       # Don't detach, log to stdout
- *   bun bear-daemon.ts --quit-timeout 0   # Quit immediately when last client disconnects
+ *   bun lore-daemon.ts                    # Auto-discover socket path
+ *   bun lore-daemon.ts --socket /path     # Explicit socket path
+ *   bun lore-daemon.ts --foreground       # Don't detach, log to stdout
+ *   bun lore-daemon.ts --quit-timeout 0   # Quit immediately when last client disconnects
  */
 
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
@@ -24,19 +24,19 @@ import {
   isRequest,
   type JsonRpcMessage,
   type JsonRpcRequest,
-} from "./lib/bear/socket.ts"
-import { resolveBearSocketPath, resolveBearPidPath, resolveBearDbPath, ensureParentDir } from "./lib/bear/config.ts"
+} from "./lib/lore/socket.ts"
+import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/lore/config.ts"
 import {
-  openBearDatabase,
-  createBearRepo,
+  openLoreDatabase,
+  createLoreRepo,
   sessionRowToInfo,
-  type BearRepo,
+  type LoreRepo,
   type SessionRow,
-} from "./lib/bear/database.ts"
+} from "./lib/lore/database.ts"
 import {
-  BEAR_METHODS,
-  BEAR_ERRORS,
-  BEAR_PROTOCOL_VERSION,
+  LORE_METHODS,
+  LORE_ERRORS,
+  LORE_PROTOCOL_VERSION,
   type HelloParams,
   type HelloResult,
   type AskParams,
@@ -53,14 +53,14 @@ import {
   type StatusResult,
   type WorkspaceStateResult,
   type SessionFocusSummary,
-} from "./lib/bear/rpc.ts"
+} from "./lib/lore/rpc.ts"
 import { recallAgent } from "./recall/agent.ts"
 import { planQuery, planVariants } from "./recall/plan.ts"
 import { buildQueryContext } from "./recall/context.ts"
 import { getCurrentSessionContext, extractSessionFocus } from "./recall/session-context.ts"
 import { setRecallLogging } from "./lib/history/recall-shared.ts"
-import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/bear/summarizer.ts"
-import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/bear/rpc.ts"
+import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/lore/summarizer.ts"
+import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/lore/rpc.ts"
 import { recall } from "./lib/history/search.ts"
 import { ensureProjectSourcesIndexed } from "./lib/history/project-sources.ts"
 
@@ -76,17 +76,17 @@ const { values: args } = parseArgs({
     socket: { type: "string" },
     db: { type: "string" },
     "quit-timeout": { type: "string", default: "1800" },
-    "focus-poll-ms": { type: "string", default: process.env.BEAR_FOCUS_POLL_MS ?? "60000" },
-    "summary-poll-ms": { type: "string", default: process.env.BEAR_SUMMARY_POLL_MS ?? "120000" },
-    "summarizer-model": { type: "string", default: process.env.BEAR_SUMMARIZER_MODEL ?? "off" },
+    "focus-poll-ms": { type: "string", default: process.env.LORE_FOCUS_POLL_MS ?? "60000" },
+    "summary-poll-ms": { type: "string", default: process.env.LORE_SUMMARY_POLL_MS ?? "120000" },
+    "summarizer-model": { type: "string", default: process.env.LORE_SUMMARIZER_MODEL ?? "off" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
 })
 
-const SOCKET_PATH = resolveBearSocketPath(args.socket as string | undefined)
-const PID_PATH = resolveBearPidPath(SOCKET_PATH)
-const DB_PATH = resolveBearDbPath(args.db as string | undefined)
+const SOCKET_PATH = resolveLoreSocketPath(args.socket as string | undefined)
+const PID_PATH = resolveLorePidPath(SOCKET_PATH)
+const DB_PATH = resolveLoreDbPath(args.db as string | undefined)
 const QUIT_TIMEOUT_SEC = parseInt(String(args["quit-timeout"]), 10)
 const FOCUS_POLL_MS = Math.max(100, parseInt(String(args["focus-poll-ms"]), 10) || 60000)
 const SUMMARY_POLL_MS = Math.max(500, parseInt(String(args["summary-poll-ms"]), 10) || 120000)
@@ -97,11 +97,11 @@ ensureParentDir(SOCKET_PATH)
 ensureParentDir(DB_PATH)
 
 // ---------------------------------------------------------------------------
-// Logging — daemon logs go to stderr; silence recall internals unless BEAR_LOG
+// Logging — daemon logs go to stderr; silence recall internals unless LORE_LOG
 // ---------------------------------------------------------------------------
 
-const log = createLogger("bear:daemon")
-setRecallLogging(process.env.BEAR_LOG === "1")
+const log = createLogger("lore:daemon")
+setRecallLogging(process.env.LORE_LOG === "1")
 
 // ---------------------------------------------------------------------------
 // Stale daemon check — avoid duplicate daemons on same socket
@@ -121,7 +121,7 @@ function existingDaemonPid(): number | null {
 
 const staleExisting = existingDaemonPid()
 if (staleExisting !== null) {
-  log.info?.(`Bear daemon already running at pid ${staleExisting} — exiting`)
+  log.info?.(`Lore daemon already running at pid ${staleExisting} — exiting`)
   process.exit(0)
 }
 
@@ -129,8 +129,8 @@ if (staleExisting !== null) {
 // Open database
 // ---------------------------------------------------------------------------
 
-const db = openBearDatabase(DB_PATH)
-const repo: BearRepo = createBearRepo(db)
+const db = openLoreDatabase(DB_PATH)
+const repo: LoreRepo = createLoreRepo(db)
 
 // ---------------------------------------------------------------------------
 // Socket server
@@ -177,7 +177,7 @@ function markIdle(): void {
 
 async function handleHello(_conn: ClientConn, params: HelloParams): Promise<HelloResult> {
   return {
-    protocolVersion: BEAR_PROTOCOL_VERSION,
+    protocolVersion: LORE_PROTOCOL_VERSION,
     daemonVersion: DAEMON_VERSION,
     daemonPid: process.pid,
     startedAt: STARTED_AT,
@@ -380,7 +380,7 @@ function extractFocusHint(tail: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session dedup state for bear.inject_delta (Phase 5)
+// Per-session dedup state for lore.inject_delta (Phase 5)
 // ---------------------------------------------------------------------------
 
 type InjectState = {
@@ -536,35 +536,35 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
   try {
     const params = (req.params ?? {}) as Record<string, unknown>
     switch (req.method) {
-      case BEAR_METHODS.hello:
+      case LORE_METHODS.hello:
         return makeResponse(req.id, await handleHello(conn, params as unknown as HelloParams))
-      case BEAR_METHODS.ask:
+      case LORE_METHODS.ask:
         return makeResponse(req.id, await handleAsk(conn, params as unknown as AskParams))
-      case BEAR_METHODS.currentBrief:
+      case LORE_METHODS.currentBrief:
         return makeResponse(req.id, await handleCurrentBrief(conn, params as unknown as CurrentBriefParams))
-      case BEAR_METHODS.planOnly:
+      case LORE_METHODS.planOnly:
         return makeResponse(req.id, await handlePlanOnly(conn, params as unknown as PlanOnlyParams))
-      case BEAR_METHODS.sessionRegister:
+      case LORE_METHODS.sessionRegister:
         return makeResponse(req.id, handleSessionRegister(conn, params as unknown as SessionRegisterParams))
-      case BEAR_METHODS.sessionHeartbeat:
+      case LORE_METHODS.sessionHeartbeat:
         return makeResponse(req.id, handleSessionHeartbeat(conn, params as unknown as SessionHeartbeatParams))
-      case BEAR_METHODS.sessionsList:
+      case LORE_METHODS.sessionsList:
         return makeResponse(req.id, handleSessionsList())
-      case BEAR_METHODS.workspaceState:
+      case LORE_METHODS.workspaceState:
         return makeResponse(req.id, handleWorkspaceState())
-      case BEAR_METHODS.sessionState:
+      case LORE_METHODS.sessionState:
         return makeResponse(req.id, handleSessionState(params as unknown as SessionStateParams))
-      case BEAR_METHODS.injectDelta:
+      case LORE_METHODS.injectDelta:
         return makeResponse(req.id, await handleInjectDelta(conn, params as unknown as InjectDeltaParams))
-      case BEAR_METHODS.status:
+      case LORE_METHODS.status:
         return makeResponse(req.id, handleStatus())
       default:
-        return makeError(req.id, BEAR_ERRORS.unknownMethod, `Unknown method: ${req.method}`)
+        return makeError(req.id, LORE_ERRORS.unknownMethod, `Unknown method: ${req.method}`)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     log.error?.(`RPC ${req.method} failed: ${msg}`)
-    return makeError(req.id, BEAR_ERRORS.internal, msg)
+    return makeError(req.id, LORE_ERRORS.internal, msg)
   }
 }
 
@@ -617,7 +617,7 @@ server.listen(SOCKET_PATH, () => {
     /* best effort */
   }
   writeFileSync(PID_PATH, String(process.pid))
-  log.info?.(`Bear daemon listening at ${SOCKET_PATH} (pid ${process.pid}, db ${DB_PATH})`)
+  log.info?.(`Lore daemon listening at ${SOCKET_PATH} (pid ${process.pid}, db ${DB_PATH})`)
   markIdle() // Start idle countdown; cleared by first connection
 })
 
@@ -764,5 +764,5 @@ process.on("unhandledRejection", (err) => {
 })
 
 if (FOREGROUND) {
-  log.info?.("Bear daemon running in foreground")
+  log.info?.("Lore daemon running in foreground")
 }

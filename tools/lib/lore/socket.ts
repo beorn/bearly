@@ -1,9 +1,9 @@
 /**
- * Bear socket utilities — JSON-RPC wire protocol + client with auto-start and
+ * Lore socket utilities — JSON-RPC wire protocol + client with auto-start and
  * reconnection. Modeled on tools/lib/tribe/socket.ts (same wire format so a
  * future unified daemon can speak both dialects on one socket).
  *
- * No peer-to-peer sockets here — bear is a pure client/daemon model.
+ * No peer-to-peer sockets here — lore is a pure client/daemon model.
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
@@ -12,9 +12,9 @@ import { spawn } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { createTimers } from "../tribe/timers.ts"
-import { resolveBearPidPath } from "./config.ts"
+import { resolveLorePidPath } from "./config.ts"
 
-const log = createLogger("bear:socket")
+const log = createLogger("lore:socket")
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 types — re-exported from here for dependency locality
@@ -96,7 +96,7 @@ export function createLineParser(onMessage: (msg: JsonRpcMessage) => void): (chu
 // Daemon client
 // ---------------------------------------------------------------------------
 
-export type BearClient = {
+export type LoreClient = {
   call(method: string, params?: Record<string, unknown>): Promise<unknown>
   notify(method: string, params?: Record<string, unknown>): void
   onNotification(handler: (method: string, params?: Record<string, unknown>) => void): void
@@ -104,7 +104,7 @@ export type BearClient = {
   socket: Socket
 }
 
-export function connectToDaemon(socketPath: string, opts?: { callTimeoutMs?: number }): Promise<BearClient> {
+export function connectToDaemon(socketPath: string, opts?: { callTimeoutMs?: number }): Promise<LoreClient> {
   const callTimeoutMs = opts?.callTimeoutMs ?? 30_000
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath)
@@ -140,7 +140,7 @@ export function connectToDaemon(socketPath: string, opts?: { callTimeoutMs?: num
       })
 
       let timeouts = 0
-      const client: BearClient = {
+      const client: LoreClient = {
         call(method, params) {
           return new Promise((res, rej) => {
             const id = nextId++
@@ -192,7 +192,7 @@ export type ConnectOrStartOpts = {
   maxStartupAttempts?: number
 }
 
-export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOpts): Promise<BearClient> {
+export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOpts): Promise<LoreClient> {
   try {
     return await connectToDaemon(socketPath, { callTimeoutMs: opts?.callTimeoutMs })
   } catch (err: unknown) {
@@ -212,7 +212,7 @@ export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOp
   const socketDir = dirname(socketPath)
   if (!existsSync(socketDir)) mkdirSync(socketDir, { recursive: true })
 
-  const script = opts?.daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../bear-daemon.ts")
+  const script = opts?.daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../lore-daemon.ts")
   const daemonArgs = ["--socket", socketPath]
   if (opts?.dbPath) daemonArgs.push("--db", opts.dbPath)
   const child = spawn(process.execPath, [script, ...daemonArgs], {
@@ -233,7 +233,7 @@ export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOp
       /* keep trying */
     }
   }
-  throw new Error(`Failed to connect to bear daemon at ${socketPath} after starting it`)
+  throw new Error(`Failed to connect to lore daemon at ${socketPath} after starting it`)
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOp
 
 export type ReconnectingClientOpts = {
   socketPath: string
-  onConnect?: (client: BearClient) => Promise<void>
+  onConnect?: (client: LoreClient) => Promise<void>
   onDisconnect?: () => void
   onReconnect?: () => void
   maxAttempts?: number
@@ -250,7 +250,7 @@ export type ReconnectingClientOpts = {
   dbPath?: string
 }
 
-export async function createReconnectingClient(opts: ReconnectingClientOpts): Promise<BearClient> {
+export async function createReconnectingClient(opts: ReconnectingClientOpts): Promise<LoreClient> {
   const { socketPath, onConnect, onDisconnect, onReconnect, maxAttempts = 30, callTimeoutMs, dbPath } = opts
   let current = await connectOrStart(socketPath, { callTimeoutMs, dbPath })
   if (onConnect) await onConnect(current)
@@ -308,16 +308,16 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
         }
       return (current as Record<string | symbol, unknown>)[prop]
     },
-  }) as BearClient
+  }) as LoreClient
 }
 
 // ---------------------------------------------------------------------------
 // PID file
 // ---------------------------------------------------------------------------
 
-export function readBearDaemonPid(socketPath: string): number | null {
+export function readLoreDaemonPid(socketPath: string): number | null {
   try {
-    const pid = parseInt(readFileSync(resolveBearPidPath(socketPath), "utf-8").trim(), 10)
+    const pid = parseInt(readFileSync(resolveLorePidPath(socketPath), "utf-8").trim(), 10)
     if (isNaN(pid)) return null
     process.kill(pid, 0)
     return pid

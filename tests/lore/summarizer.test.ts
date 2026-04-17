@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { parseSummary, resolveSummarizerMode } from "../../tools/lib/bear/summarizer.ts"
+import { parseSummary, resolveSummarizerMode } from "../../tools/lib/lore/summarizer.ts"
 
 describe("parseSummary", () => {
   it("accepts strict JSON", () => {
@@ -46,12 +46,12 @@ describe("parseSummary", () => {
 
 describe("resolveSummarizerMode", () => {
   it("defaults to off", () => {
-    const prev = process.env.BEAR_SUMMARIZER_MODEL
+    const prev = process.env.LORE_SUMMARIZER_MODEL
     try {
-      delete process.env.BEAR_SUMMARIZER_MODEL
+      delete process.env.LORE_SUMMARIZER_MODEL
       expect(resolveSummarizerMode()).toBe("off")
     } finally {
-      if (prev !== undefined) process.env.BEAR_SUMMARIZER_MODEL = prev
+      if (prev !== undefined) process.env.LORE_SUMMARIZER_MODEL = prev
     }
   })
 

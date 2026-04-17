@@ -1,24 +1,24 @@
 #!/usr/bin/env bun
 /**
- * @bearly/bear — MCP server bridging Claude Code to the bear daemon.
+ * @bearly/lore — MCP server bridging Claude Code to the lore daemon.
  *
- * Phase 2 of the bear workspace-daemon plan. Each MCP tool call is forwarded
- * to `bear-daemon` over a Unix socket via JSON-RPC, keeping the recall
+ * Phase 2 of the lore workspace-daemon plan. Each MCP tool call is forwarded
+ * to `lore-daemon` over a Unix socket via JSON-RPC, keeping the recall
  * library warm in the daemon process. If the daemon is unreachable we fall
  * through to an in-process library call (preserves Phase 1 behaviour).
  *
  * Tools:
- *   bear.ask           — wraps recallAgent()
- *   bear.current_brief — wraps getCurrentSessionContext()
- *   bear.plan_only     — wraps planQuery({ round: 1 })
+ *   lore.ask           — wraps recallAgent()
+ *   lore.current_brief — wraps getCurrentSessionContext()
+ *   lore.plan_only     — wraps planQuery({ round: 1 })
  *
  * Env:
- *   BEAR_NO_DAEMON=1   — skip the daemon entirely (library-only mode)
- *   BEAR_LOG=1         — enable recall library logging (else silenced)
- *   BEAR_SOCKET        — override socket path (default $XDG_RUNTIME_DIR/bear.sock)
+ *   LORE_NO_DAEMON=1   — skip the daemon entirely (library-only mode)
+ *   LORE_LOG=1         — enable recall library logging (else silenced)
+ *   LORE_SOCKET        — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
  *
  * Usage (registered in .mcp.json):
- *   { "command": "bun", "args": ["vendor/bearly/plugins/bear/server.ts"] }
+ *   { "command": "bun", "args": ["vendor/bearly/plugins/lore/server.ts"] }
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -29,50 +29,50 @@ import { planQuery, planVariants } from "../../tools/recall/plan.ts"
 import { buildQueryContext } from "../../tools/recall/context.ts"
 import { getCurrentSessionContext } from "../../tools/recall/session-context.ts"
 import { setRecallLogging } from "../../tools/lib/history/recall-shared.ts"
-import { createReconnectingClient, type BearClient } from "../../tools/lib/bear/socket.ts"
-import { resolveBearSocketPath } from "../../tools/lib/bear/config.ts"
+import { createReconnectingClient, type LoreClient } from "../../tools/lib/lore/socket.ts"
+import { resolveLoreSocketPath } from "../../tools/lib/lore/config.ts"
 import {
-  BEAR_METHODS,
-  BEAR_PROTOCOL_VERSION,
+  LORE_METHODS,
+  LORE_PROTOCOL_VERSION,
   type AskResult,
   type CurrentBriefResult,
   type PlanOnlyResult,
   type WorkspaceStateResult,
   type SessionStateResult,
   type InjectDeltaResult,
-} from "../../tools/lib/bear/rpc.ts"
+} from "../../tools/lib/lore/rpc.ts"
 import { hookRecall } from "../../tools/lib/history/recall.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
-// Re-enable by setting BEAR_LOG=1.
-if (process.env.BEAR_LOG !== "1") setRecallLogging(false)
+// Re-enable by setting LORE_LOG=1.
+if (process.env.LORE_LOG !== "1") setRecallLogging(false)
 
 // ============================================================================
 // Daemon client (lazy singleton, with fallback on failure)
 // ============================================================================
 
-const USE_DAEMON = process.env.BEAR_NO_DAEMON !== "1"
-let daemonClient: BearClient | null = null
+const USE_DAEMON = process.env.LORE_NO_DAEMON !== "1"
+let daemonClient: LoreClient | null = null
 let daemonDisabled = false // Set after repeated connect failures
 
-async function getDaemon(): Promise<BearClient | null> {
+async function getDaemon(): Promise<LoreClient | null> {
   if (!USE_DAEMON || daemonDisabled) return null
   if (daemonClient) return daemonClient
   try {
-    const socketPath = resolveBearSocketPath()
+    const socketPath = resolveLoreSocketPath()
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
-    await client.call(BEAR_METHODS.hello, {
-      clientName: "@bearly/bear",
+    await client.call(LORE_METHODS.hello, {
+      clientName: "@bearly/lore",
       clientVersion: "0.5.0",
-      protocolVersion: BEAR_PROTOCOL_VERSION,
+      protocolVersion: LORE_PROTOCOL_VERSION,
     })
     daemonClient = client
     // If the reconnecting client eventually gives up, disable for this session.
     return daemonClient
   } catch (err) {
-    if (process.env.BEAR_LOG === "1") {
+    if (process.env.LORE_LOG === "1") {
       process.stderr.write(
-        `[bear] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`,
+        `[lore] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`,
       )
     }
     daemonDisabled = true
@@ -86,7 +86,7 @@ async function getDaemon(): Promise<BearClient | null> {
 
 const TOOLS = [
   {
-    name: "bear.ask",
+    name: "lore.ask",
     description:
       "LLM-driven recall over Claude Code session history. Two-round planner + fanout + synthesis. Use for vague or multi-word queries where single FTS misses. Returns a synthesized answer plus the matched documents.",
     inputSchema: {
@@ -112,7 +112,7 @@ const TOOLS = [
     },
   },
   {
-    name: "bear.current_brief",
+    name: "lore.current_brief",
     description:
       "Summary of the current Claude Code session: paths, bead IDs, distinctive tokens, and a truncated conversation tail. Use to check 'what is the user doing right now' without running a full recall.",
     inputSchema: {
@@ -127,9 +127,9 @@ const TOOLS = [
     },
   },
   {
-    name: "bear.plan_only",
+    name: "lore.plan_only",
     description:
-      "Run only the round-1 planner without fanout or synthesis. Returns the variant plan as JSON — fast (~3s) speculative context before committing to a full bear.ask call.",
+      "Run only the round-1 planner without fanout or synthesis. Returns the variant plan as JSON — fast (~3s) speculative context before committing to a full lore.ask call.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -139,9 +139,9 @@ const TOOLS = [
     },
   },
   {
-    name: "bear.session_state",
+    name: "lore.session_state",
     description:
-      "Detailed state of a single session by sessionId: focus tail + LLM summary (when BEAR_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
+      "Detailed state of a single session by sessionId: focus tail + LLM summary (when LORE_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -151,7 +151,7 @@ const TOOLS = [
     },
   },
   {
-    name: "bear.inject_delta",
+    name: "lore.inject_delta",
     description:
       "Hook-side recall injection with per-session dedup held by the daemon. Returns additionalContext ready to splice into a Claude Code UserPromptSubmit hookSpecificOutput. Dedup is session-scoped with TTL in turns (default 10). Daemon-preferred; falls back to in-process hookRecall when the daemon is unreachable.",
     inputSchema: {
@@ -169,9 +169,9 @@ const TOOLS = [
     },
   },
   {
-    name: "bear.workspace_state",
+    name: "lore.workspace_state",
     description:
-      "Snapshot of all Claude Code sessions currently registered with the bear daemon, each annotated with cached focus data (last activity, focus hint, mentioned paths/beads/tokens). Use to see what other sessions are doing without running a full recall. Daemon-only — returns empty sessions array if the daemon isn't running.",
+      "Snapshot of all Claude Code sessions currently registered with the lore daemon, each annotated with cached focus data (last activity, focus hint, mentioned paths/beads/tokens). Use to see what other sessions are doing without running a full recall. Daemon-only — returns empty sessions array if the daemon isn't running.",
     inputSchema: {
       type: "object" as const,
       properties: {},
@@ -186,7 +186,7 @@ const TOOLS = [
 
 async function handleAsk(args: Record<string, unknown>): Promise<string> {
   const query = String(args.query ?? "")
-  if (!query) throw new Error("bear.ask: `query` is required")
+  if (!query) throw new Error("lore.ask: `query` is required")
 
   const askParams = {
     query,
@@ -205,12 +205,12 @@ async function handleAsk(args: Record<string, unknown>): Promise<string> {
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(BEAR_METHODS.ask, askParams)) as AskResult
+      const result = (await daemon.call(LORE_METHODS.ask, askParams)) as AskResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.BEAR_LOG === "1") {
+      if (process.env.LORE_LOG === "1") {
         process.stderr.write(
-          `[bear] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`,
+          `[lore] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`,
         )
       }
     }
@@ -253,14 +253,14 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
   if (daemon) {
     try {
       const result = (await daemon.call(
-        BEAR_METHODS.currentBrief,
+        LORE_METHODS.currentBrief,
         sessionIdOverride ? { sessionIdOverride } : {},
       )) as CurrentBriefResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.BEAR_LOG === "1") {
+      if (process.env.LORE_LOG === "1") {
         process.stderr.write(
-          `[bear] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+          `[lore] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
       }
     }
@@ -294,17 +294,17 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
 
 async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
   const query = String(args.query ?? "")
-  if (!query) throw new Error("bear.plan_only: `query` is required")
+  if (!query) throw new Error("lore.plan_only: `query` is required")
 
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(BEAR_METHODS.planOnly, { query })) as PlanOnlyResult
+      const result = (await daemon.call(LORE_METHODS.planOnly, { query })) as PlanOnlyResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.BEAR_LOG === "1") {
+      if (process.env.LORE_LOG === "1") {
         process.stderr.write(
-          `[bear] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+          `[lore] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
       }
     }
@@ -348,14 +348,14 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
         generatedAt: Date.now(),
         sessions: [],
         mode: "library",
-        note: "bear daemon not reachable; workspace state is only available via the daemon",
+        note: "lore daemon not reachable; workspace state is only available via the daemon",
       },
       null,
       2,
     )
   }
   try {
-    const result = (await daemon.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const result = (await daemon.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
     return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
   } catch (err) {
     return JSON.stringify(
@@ -373,7 +373,7 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
 
 async function handleInjectDelta(args: Record<string, unknown>): Promise<string> {
   const prompt = typeof args.prompt === "string" ? args.prompt : ""
-  if (!prompt) throw new Error("bear.inject_delta: `prompt` is required")
+  if (!prompt) throw new Error("lore.inject_delta: `prompt` is required")
   const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined
   const limit = typeof args.limit === "number" && args.limit > 0 ? args.limit : undefined
   const ttlTurns = typeof args.ttlTurns === "number" && args.ttlTurns > 0 ? args.ttlTurns : undefined
@@ -381,7 +381,7 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(BEAR_METHODS.injectDelta, {
+      const result = (await daemon.call(LORE_METHODS.injectDelta, {
         prompt,
         sessionId,
         limit,
@@ -389,9 +389,9 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
       })) as InjectDeltaResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.BEAR_LOG === "1") {
+      if (process.env.LORE_LOG === "1") {
         process.stderr.write(
-          `[bear] daemon.inject_delta failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+          `[lore] daemon.inject_delta failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
       }
     }
@@ -421,17 +421,17 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
 
 async function handleSessionState(args: Record<string, unknown>): Promise<string> {
   const sessionId = typeof args.sessionId === "string" ? args.sessionId : ""
-  if (!sessionId) throw new Error("bear.session_state: `sessionId` is required")
+  if (!sessionId) throw new Error("lore.session_state: `sessionId` is required")
   const daemon = await getDaemon()
   if (!daemon) {
     return JSON.stringify(
-      { sessionId, detected: false, mode: "library", note: "bear daemon not reachable; session_state is daemon-only" },
+      { sessionId, detected: false, mode: "library", note: "lore daemon not reachable; session_state is daemon-only" },
       null,
       2,
     )
   }
   try {
-    const result = (await daemon.call(BEAR_METHODS.sessionState, { sessionId })) as SessionStateResult
+    const result = (await daemon.call(LORE_METHODS.sessionState, { sessionId })) as SessionStateResult
     return JSON.stringify({ ...result, detected: true, mode: "daemon" }, null, 2)
   } catch (err) {
     return JSON.stringify(
@@ -451,7 +451,7 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "@bearly/bear", version: "0.5.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "@bearly/lore", version: "0.5.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }
@@ -464,22 +464,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     let text: string
     switch (name) {
-      case "bear.ask":
+      case "lore.ask":
         text = await handleAsk(toolArgs)
         break
-      case "bear.current_brief":
+      case "lore.current_brief":
         text = await handleCurrentBrief(toolArgs)
         break
-      case "bear.plan_only":
+      case "lore.plan_only":
         text = await handlePlanOnly(toolArgs)
         break
-      case "bear.workspace_state":
+      case "lore.workspace_state":
         text = await handleWorkspaceState(toolArgs)
         break
-      case "bear.session_state":
+      case "lore.session_state":
         text = await handleSessionState(toolArgs)
         break
-      case "bear.inject_delta":
+      case "lore.inject_delta":
         text = await handleInjectDelta(toolArgs)
         break
       default:
@@ -504,16 +504,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Process-level guards — MCP server must never crash the Claude Code session
 process.on("uncaughtException", (err) => {
-  process.stderr.write(`[bear] uncaughtException: ${err instanceof Error ? err.stack : String(err)}\n`)
+  process.stderr.write(`[lore] uncaughtException: ${err instanceof Error ? err.stack : String(err)}\n`)
 })
 process.on("unhandledRejection", (reason) => {
-  process.stderr.write(`[bear] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}\n`)
+  process.stderr.write(`[lore] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}\n`)
 })
 
 // Support `--help` / `--list-tools` for the /complete criteria + humans
 const arg = process.argv[2]
 if (arg === "--help" || arg === "-h") {
-  process.stdout.write(`@bearly/bear — MCP server. Tools:\n`)
+  process.stdout.write(`@bearly/lore — MCP server. Tools:\n`)
   for (const t of TOOLS) process.stdout.write(`  ${t.name}  ${t.description}\n`)
   process.exit(0)
 }

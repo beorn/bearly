@@ -1,8 +1,8 @@
 /**
- * Bear focus poller — integration tests.
+ * Lore focus poller — integration tests.
  *
  * Tests the Phase 3 focus pipeline: `extractSessionFocus` + daemon poller +
- * `bear.workspace_state` / `bear.current_brief` cache fast-path.
+ * `lore.workspace_state` / `lore.current_brief` cache fast-path.
  */
 
 import { describe, it, expect, afterEach } from "vitest"
@@ -10,19 +10,19 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync, writeFileSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import { connectToDaemon, type BearClient } from "../../tools/lib/bear/socket.ts"
+import { connectToDaemon, type LoreClient } from "../../tools/lib/lore/socket.ts"
 import {
-  BEAR_METHODS,
-  BEAR_PROTOCOL_VERSION,
+  LORE_METHODS,
+  LORE_PROTOCOL_VERSION,
   type WorkspaceStateResult,
   type CurrentBriefResult,
-} from "../../tools/lib/bear/rpc.ts"
+} from "../../tools/lib/lore/rpc.ts"
 import { extractSessionFocus } from "../../tools/recall/session-context.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/bear-daemon.ts")
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/lore-daemon.ts")
 
 function tmpPath(suffix: string): string {
-  return `/tmp/bear-focus-test-${randomUUID().slice(0, 8)}.${suffix}`
+  return `/tmp/lore-focus-test-${randomUUID().slice(0, 8)}.${suffix}`
 }
 
 async function waitFor<T>(
@@ -56,7 +56,7 @@ function writeFixtureJsonl(path: string, userText: string, assistantText: string
 
 type Harness = {
   child: ChildProcess
-  client: BearClient
+  client: LoreClient
   socketPath: string
   dbPath: string
   teardown: () => Promise<void>
@@ -78,12 +78,12 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
       "--focus-poll-ms",
       String(focusPollMs),
     ],
-    { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, BEAR_NO_DAEMON: "0" } },
+    { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, LORE_NO_DAEMON: "0" } },
   )
   child.stderr?.on("data", () => {})
   await waitFor(() => existsSync(socketPath))
   const client = await connectToDaemon(socketPath, { callTimeoutMs: 5000 })
-  await client.call(BEAR_METHODS.hello, { clientName: "t", clientVersion: "0", protocolVersion: BEAR_PROTOCOL_VERSION })
+  await client.call(LORE_METHODS.hello, { clientName: "t", clientVersion: "0", protocolVersion: LORE_PROTOCOL_VERSION })
   return {
     child,
     client,
@@ -140,7 +140,7 @@ describe("extractSessionFocus — pure function", () => {
   })
 })
 
-describe("bear daemon — focus poller + workspace_state", () => {
+describe("lore daemon — focus poller + workspace_state", () => {
   let h: Harness | null = null
   afterEach(async () => {
     await h?.teardown()
@@ -152,7 +152,7 @@ describe("bear daemon — focus poller + workspace_state", () => {
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "fix the bug in UnifiedOmnibox.tsx", "running tests")
     try {
-      await h.client.call(BEAR_METHODS.sessionRegister, {
+      await h.client.call(LORE_METHODS.sessionRegister, {
         claudePid: 55555,
         sessionId: "focus-test-sess",
         transcriptPath,
@@ -161,7 +161,7 @@ describe("bear daemon — focus poller + workspace_state", () => {
       })
       // Wait until workspace_state returns a non-empty focusHint for this session.
       const result = await waitFor<WorkspaceStateResult>(async () => {
-        const state = (await h!.client.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+        const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
         const hit = state.sessions.find((s) => s.claudePid === 55555)
         return hit?.focusHint ? state : null
       }, 4000)
@@ -182,7 +182,7 @@ describe("bear daemon — focus poller + workspace_state", () => {
     h = await spawnDaemon(200)
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "cached query", "cached answer")
-    await h.client.call(BEAR_METHODS.sessionRegister, {
+    await h.client.call(LORE_METHODS.sessionRegister, {
       claudePid: 55556,
       sessionId: "cache-test-sess",
       transcriptPath,
@@ -191,13 +191,13 @@ describe("bear daemon — focus poller + workspace_state", () => {
     })
     // Wait for initial focus refresh.
     await waitFor(async () => {
-      const state = (await h!.client.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+      const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
       return state.sessions.find((s) => s.claudePid === 55556)?.focusHint ? true : null
     }, 4000)
     unlinkSync(transcriptPath)
     // Next poll tick will try and fail; the cached entry must still be present.
     await new Promise((r) => setTimeout(r, 400))
-    const state = (await h.client.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const state = (await h.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
     const row = state.sessions.find((s) => s.claudePid === 55556)
     expect(row).toBeDefined()
     expect(row!.focusHint).toContain("cached query")
@@ -208,7 +208,7 @@ describe("bear daemon — focus poller + workspace_state", () => {
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "brief test query", "brief answer")
     try {
-      await h.client.call(BEAR_METHODS.sessionRegister, {
+      await h.client.call(LORE_METHODS.sessionRegister, {
         claudePid: 55557,
         sessionId: "brief-test-sess",
         transcriptPath,
@@ -217,10 +217,10 @@ describe("bear daemon — focus poller + workspace_state", () => {
       })
       // Wait for focus to populate.
       await waitFor(async () => {
-        const state = (await h!.client.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+        const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
         return state.sessions.find((s) => s.claudePid === 55557)?.focusHint ? true : null
       }, 4000)
-      const brief = (await h.client.call(BEAR_METHODS.currentBrief, {
+      const brief = (await h.client.call(LORE_METHODS.currentBrief, {
         sessionIdOverride: "brief-test-sess",
       })) as CurrentBriefResult
       expect(brief.detected).toBe(true)

@@ -8,9 +8,9 @@ import * as os from "os"
 import * as fs from "fs"
 import { hookRecall } from "../lib/history/recall"
 import { summarizeUnprocessedDays } from "./summarize-daily"
-import { connectToDaemon } from "../lib/bear/socket.ts"
-import { resolveBearSocketPath } from "../lib/bear/config.ts"
-import { BEAR_METHODS, BEAR_PROTOCOL_VERSION, type InjectDeltaResult } from "../lib/bear/rpc.ts"
+import { connectToDaemon } from "../lib/lore/socket.ts"
+import { resolveLoreSocketPath } from "../lib/lore/config.ts"
+import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../lib/lore/rpc.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)
@@ -97,11 +97,11 @@ export async function cmdSessionStart(): Promise<void> {
     // down (session-context.ts still reads it). Fast and never blocks.
     writeSessionSentinel({ claudePid, sessionId, transcriptPath, cwd })
 
-    // Best-effort register with bear daemon. Non-blocking: if we can't reach
+    // Best-effort register with lore daemon. Non-blocking: if we can't reach
     // the daemon in 1s we give up and rely on the sentinel.
     let daemonStatus = "skipped"
-    if (process.env.BEAR_NO_DAEMON !== "1") {
-      daemonStatus = await registerWithBearDaemon({ claudePid, sessionId, transcriptPath, cwd })
+    if (process.env.LORE_NO_DAEMON !== "1") {
+      daemonStatus = await registerWithLoreDaemon({ claudePid, sessionId, transcriptPath, cwd })
     }
 
     console.error(
@@ -114,28 +114,28 @@ export async function cmdSessionStart(): Promise<void> {
 }
 
 /**
- * Register the current session with the bear daemon. Returns a short status
+ * Register the current session with the lore daemon. Returns a short status
  * string for the log line. Never throws — daemon registration is best-effort
  * and the sentinel file is the ground-truth fallback.
  */
-async function registerWithBearDaemon(input: {
+async function registerWithLoreDaemon(input: {
   claudePid: number
   sessionId: string
   transcriptPath?: string
   cwd: string
 }): Promise<string> {
   const deadline = Date.now() + 1500 // 1.5s overall budget
-  const socketPath = resolveBearSocketPath()
+  const socketPath = resolveLoreSocketPath()
   try {
     const racePromise = (async () => {
       const client = await connectToDaemon(socketPath, { callTimeoutMs: 1000 })
       try {
-        await client.call(BEAR_METHODS.hello, {
+        await client.call(LORE_METHODS.hello, {
           clientName: "recall-hook",
           clientVersion: "0.1.0",
-          protocolVersion: BEAR_PROTOCOL_VERSION,
+          protocolVersion: LORE_PROTOCOL_VERSION,
         })
-        await client.call(BEAR_METHODS.sessionRegister, input)
+        await client.call(LORE_METHODS.sessionRegister, input)
       } finally {
         client.close()
       }
@@ -153,7 +153,7 @@ async function registerWithBearDaemon(input: {
 }
 
 // ============================================================================
-// Daemon path for UserPromptSubmit — bear.inject_delta (Phase 5)
+// Daemon path for UserPromptSubmit — lore.inject_delta (Phase 5)
 // ============================================================================
 
 type InjectDeltaOutcome =
@@ -162,23 +162,23 @@ type InjectDeltaOutcome =
   | { kind: "error"; message: string }
 
 /**
- * Call bear.inject_delta on the daemon. Short budget — if the daemon can't
+ * Call lore.inject_delta on the daemon. Short budget — if the daemon can't
  * answer in time we return `error` so the caller can fall back to the
  * library hookRecall path without blocking the user's prompt.
  */
 async function tryInjectDeltaViaDaemon(prompt: string, sessionId?: string): Promise<InjectDeltaOutcome> {
-  const socketPath = resolveBearSocketPath()
+  const socketPath = resolveLoreSocketPath()
   const deadline = Date.now() + 2500
   try {
     const racePromise = (async (): Promise<InjectDeltaOutcome> => {
       const client = await connectToDaemon(socketPath, { callTimeoutMs: 2000 })
       try {
-        await client.call(BEAR_METHODS.hello, {
+        await client.call(LORE_METHODS.hello, {
           clientName: "recall-hook",
           clientVersion: "0.1.0",
-          protocolVersion: BEAR_PROTOCOL_VERSION,
+          protocolVersion: LORE_PROTOCOL_VERSION,
         })
-        const result = (await client.call(BEAR_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
+        const result = (await client.call(LORE_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
         if (result.skipped) {
           return { kind: "skipped", reason: result.reason ?? "unknown" }
         }
@@ -261,7 +261,7 @@ export async function cmdHook(): Promise<void> {
     // in memory, so repeated injections across the same session don't
     // rely on tmpfile round-trips and survive Claude Code session
     // boundaries as long as the daemon is alive.
-    if (process.env.BEAR_NO_DAEMON !== "1") {
+    if (process.env.LORE_NO_DAEMON !== "1") {
       const daemonOutput = await tryInjectDeltaViaDaemon(prompt, input.session_id)
       if (daemonOutput.kind === "skipped") {
         console.error(

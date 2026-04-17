@@ -1,5 +1,5 @@
 /**
- * Bear database — workspace-state schema for sessions + events.
+ * Lore database — workspace-state schema for sessions + events.
  *
  * Phase 2 scope: sessions + events only. Phases 3-5 add focus, summaries,
  * dedup tables as additive migrations (CREATE TABLE IF NOT EXISTS).
@@ -11,7 +11,7 @@ import { Database } from "bun:sqlite"
 // Schema
 // ---------------------------------------------------------------------------
 
-export function openBearDatabase(path: string): Database {
+export function openLoreDatabase(path: string): Database {
   const db = new Database(path, { create: true })
   db.run("PRAGMA journal_mode = WAL")
   db.run("PRAGMA busy_timeout = 5000")
@@ -144,7 +144,7 @@ export type FocusUpsert = {
   updatedAt: number
 }
 
-export type BearRepo = {
+export type LoreRepo = {
   upsertSession(input: SessionUpsert): SessionRow
   heartbeatSession(claudePid: number, now: number): SessionRow | null
   listSessions(): SessionRow[]
@@ -167,7 +167,7 @@ export type BearRepo = {
   close(): void
 }
 
-export function createBearRepo(db: Database): BearRepo {
+export function createLoreRepo(db: Database): LoreRepo {
   const upsertStmt = db.prepare(`
     INSERT INTO sessions (claude_pid, session_id, transcript_path, cwd, project, started_at, last_seen, status)
     VALUES ($pid, $sessionId, $transcriptPath, $cwd, $project, $now, $now, 'alive')

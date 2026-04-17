@@ -1,5 +1,5 @@
 /**
- * Bear RPC surface — shared types for daemon handlers and proxy client.
+ * Lore RPC surface — shared types for daemon handlers and proxy client.
  *
  * Wire protocol: JSON-RPC 2.0 newline-delimited (see tools/lib/tribe/socket.ts).
  * One RPC method = one daemon capability. Each method's Params/Result types
@@ -10,30 +10,30 @@
 // Protocol
 // ---------------------------------------------------------------------------
 
-export const BEAR_PROTOCOL_VERSION = 1
+export const LORE_PROTOCOL_VERSION = 1
 
 // ---------------------------------------------------------------------------
 // Method names
 // ---------------------------------------------------------------------------
 
-export const BEAR_METHODS = {
-  hello: "bear.hello",
-  ask: "bear.ask",
-  currentBrief: "bear.current_brief",
-  planOnly: "bear.plan_only",
-  sessionRegister: "bear.session_register",
-  sessionHeartbeat: "bear.session_heartbeat",
-  sessionsList: "bear.sessions_list",
-  workspaceState: "bear.workspace_state",
-  sessionState: "bear.session_state",
-  injectDelta: "bear.inject_delta",
-  status: "bear.status",
+export const LORE_METHODS = {
+  hello: "lore.hello",
+  ask: "lore.ask",
+  currentBrief: "lore.current_brief",
+  planOnly: "lore.plan_only",
+  sessionRegister: "lore.session_register",
+  sessionHeartbeat: "lore.session_heartbeat",
+  sessionsList: "lore.sessions_list",
+  workspaceState: "lore.workspace_state",
+  sessionState: "lore.session_state",
+  injectDelta: "lore.inject_delta",
+  status: "lore.status",
 } as const
 
-export type BearMethod = (typeof BEAR_METHODS)[keyof typeof BEAR_METHODS]
+export type LoreMethod = (typeof LORE_METHODS)[keyof typeof LORE_METHODS]
 
 // ---------------------------------------------------------------------------
-// bear.hello — handshake + capability exchange
+// lore.hello — handshake + capability exchange
 // ---------------------------------------------------------------------------
 
 export type HelloParams = {
@@ -50,7 +50,7 @@ export type HelloResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.ask — full recall agent (round 1 + optional round 2 + synthesis)
+// lore.ask — full recall agent (round 1 + optional round 2 + synthesis)
 // ---------------------------------------------------------------------------
 
 export type AskParams = {
@@ -83,7 +83,7 @@ export type AskResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.current_brief — session context for the caller
+// lore.current_brief — session context for the caller
 // ---------------------------------------------------------------------------
 
 export type CurrentBriefParams = {
@@ -103,7 +103,7 @@ export type CurrentBriefResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.plan_only — round-1 planner only (fast speculative context)
+// lore.plan_only — round-1 planner only (fast speculative context)
 // ---------------------------------------------------------------------------
 
 export type PlanOnlyParams = {
@@ -121,7 +121,7 @@ export type PlanOnlyResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.session_register — SessionStart hook writes canonical session record
+// lore.session_register — SessionStart hook writes canonical session record
 // ---------------------------------------------------------------------------
 
 export type SessionRegisterParams = {
@@ -138,7 +138,7 @@ export type SessionRegisterResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.session_heartbeat — periodic liveness update (from UserPromptSubmit)
+// lore.session_heartbeat — periodic liveness update (from UserPromptSubmit)
 // ---------------------------------------------------------------------------
 
 export type SessionHeartbeatParams = {
@@ -152,7 +152,7 @@ export type SessionHeartbeatResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.sessions_list — current alive sessions (for bear status)
+// lore.sessions_list — current alive sessions (for lore status)
 // ---------------------------------------------------------------------------
 
 export type SessionsListParams = Record<string, never>
@@ -173,7 +173,7 @@ export type SessionsListResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.workspace_state — cross-session snapshot (Phase 3)
+// lore.workspace_state — cross-session snapshot (Phase 3)
 // ---------------------------------------------------------------------------
 
 export type WorkspaceStateParams = Record<string, never>
@@ -190,7 +190,7 @@ export type SessionFocusSummary = {
   mentionedPaths: string[]
   mentionedBeads: string[]
   mentionedTokens: string[]
-  /** First ~60 chars of tail; full tail via bear.current_brief. */
+  /** First ~60 chars of tail; full tail via lore.current_brief. */
   focusHint: string
   /** LLM-summarized one-liner (Phase 4). Null when summarizer is off/missing. */
   focusSummary: string | null
@@ -207,7 +207,7 @@ export type WorkspaceStateResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.session_state — single-session focus+summary lookup (Phase 4)
+// lore.session_state — single-session focus+summary lookup (Phase 4)
 // ---------------------------------------------------------------------------
 
 export type SessionStateParams = {
@@ -220,7 +220,7 @@ export type SessionStateResult = SessionFocusSummary & {
 }
 
 // ---------------------------------------------------------------------------
-// bear.inject_delta — hook-side injection with daemon-held dedup (Phase 5)
+// lore.inject_delta — hook-side injection with daemon-held dedup (Phase 5)
 // ---------------------------------------------------------------------------
 
 export type InjectDeltaParams = {
@@ -228,7 +228,7 @@ export type InjectDeltaParams = {
   /**
    * Optional session-id hint. Daemon uses it to key the per-session
    * already-shown set. If omitted, daemon falls back to conn.sessionId
-   * (set during bear.hello if the caller registered).
+   * (set during lore.hello if the caller registered).
    */
   sessionId?: string
   /**
@@ -256,7 +256,7 @@ export type InjectDeltaResult = {
 }
 
 // ---------------------------------------------------------------------------
-// bear.status — daemon health / self-report
+// lore.status — daemon health / self-report
 // ---------------------------------------------------------------------------
 
 export type StatusParams = Record<string, never>
@@ -275,7 +275,7 @@ export type StatusResult = {
 // Error codes
 // ---------------------------------------------------------------------------
 
-export const BEAR_ERRORS = {
+export const LORE_ERRORS = {
   internal: -32000,
   unknownMethod: -32601,
   invalidParams: -32602,

@@ -1,40 +1,40 @@
 #!/usr/bin/env bun
 /**
- * bear — CLI for the bear workspace daemon.
+* lore — CLI for the lore workspace daemon.
  *
  * Usage:
- *   bun bear.ts status              Show daemon status (auto-starts if needed)
- *   bun bear.ts sessions            List registered sessions
- *   bun bear.ts ask "query"         Run bear.ask via the daemon
- *   bun bear.ts ping                Cheap liveness check (bear.hello)
- *   bun bear.ts stop                Ask the daemon to exit (SIGTERM if reachable)
+ *   bun lore.ts status              Show daemon status (auto-starts if needed)
+ *   bun lore.ts sessions            List registered sessions
+ *   bun lore.ts ask "query"         Run lore.ask via the daemon
+ *   bun lore.ts ping                Cheap liveness check (lore.hello)
+ *   bun lore.ts stop                Ask the daemon to exit (SIGTERM if reachable)
  */
 
 import { parseArgs } from "node:util"
-import { connectToDaemon, connectOrStart, readBearDaemonPid, type BearClient } from "./lib/bear/socket.ts"
-import { resolveBearSocketPath, resolveBearPidPath } from "./lib/bear/config.ts"
+import { connectToDaemon, connectOrStart, readLoreDaemonPid, type LoreClient } from "./lib/lore/socket.ts"
+import { resolveLoreSocketPath, resolveLorePidPath } from "./lib/lore/config.ts"
 import {
-  BEAR_METHODS,
-  BEAR_PROTOCOL_VERSION,
+  LORE_METHODS,
+  LORE_PROTOCOL_VERSION,
   type StatusResult,
   type SessionsListResult,
   type AskResult,
   type WorkspaceStateResult,
-} from "./lib/bear/rpc.ts"
+} from "./lib/lore/rpc.ts"
 
-const CLIENT_NAME = "bear-cli"
+const CLIENT_NAME = "lore-cli"
 const CLIENT_VERSION = "0.1.0"
 
-async function withClient<T>(fn: (c: BearClient) => Promise<T>, opts?: { noStart?: boolean }): Promise<T> {
-  const socketPath = resolveBearSocketPath()
+async function withClient<T>(fn: (c: LoreClient) => Promise<T>, opts?: { noStart?: boolean }): Promise<T> {
+  const socketPath = resolveLoreSocketPath()
   const client = opts?.noStart
     ? await connectToDaemon(socketPath, { callTimeoutMs: 2000 })
     : await connectOrStart(socketPath, { callTimeoutMs: 10_000 })
   try {
-    await client.call(BEAR_METHODS.hello, {
+    await client.call(LORE_METHODS.hello, {
       clientName: CLIENT_NAME,
       clientVersion: CLIENT_VERSION,
-      protocolVersion: BEAR_PROTOCOL_VERSION,
+      protocolVersion: LORE_PROTOCOL_VERSION,
     })
     return await fn(client)
   } finally {
@@ -52,12 +52,12 @@ function formatMs(ms: number): string {
 async function cmdStatus(): Promise<void> {
   try {
     await withClient(async (c) => {
-      const s = (await c.call(BEAR_METHODS.status, {})) as StatusResult
-      const sessions = (await c.call(BEAR_METHODS.sessionsList, {})) as SessionsListResult
+      const s = (await c.call(LORE_METHODS.status, {})) as StatusResult
+      const sessions = (await c.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
       const uptime = Date.now() - s.startedAt
       process.stdout.write(
         [
-          `bear daemon  v${s.daemonVersion}  pid=${s.daemonPid}  uptime=${formatMs(uptime)}`,
+          `lore daemon  v${s.daemonVersion}  pid=${s.daemonPid}  uptime=${formatMs(uptime)}`,
           `socket       ${s.socketPath}`,
           `db           ${s.dbPath}`,
           `sessions     ${sessions.sessions.length} total, ${sessions.sessions.filter((x) => x.status === "alive").length} alive`,
@@ -66,14 +66,14 @@ async function cmdStatus(): Promise<void> {
       )
     })
   } catch (err) {
-    process.stderr.write(`bear: cannot reach daemon: ${err instanceof Error ? err.message : err}\n`)
+    process.stderr.write(`lore: cannot reach daemon: ${err instanceof Error ? err.message : err}\n`)
     process.exit(1)
   }
 }
 
 async function cmdSessions(): Promise<void> {
   await withClient(async (c) => {
-    const { sessions } = (await c.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const { sessions } = (await c.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
     if (sessions.length === 0) {
       process.stdout.write("no sessions registered\n")
       return
@@ -96,18 +96,18 @@ async function cmdSessions(): Promise<void> {
 
 async function cmdWorkspace(): Promise<void> {
   await withClient(async (c) => {
-    const state = (await c.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const state = (await c.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
     process.stdout.write(JSON.stringify(state, null, 2) + "\n")
   })
 }
 
 async function cmdAsk(query: string): Promise<void> {
   if (!query) {
-    process.stderr.write("bear ask: query is required\n")
+    process.stderr.write("lore ask: query is required\n")
     process.exit(2)
   }
   await withClient(async (c) => {
-    const result = (await c.call(BEAR_METHODS.ask, { query })) as AskResult
+    const result = (await c.call(LORE_METHODS.ask, { query })) as AskResult
     process.stdout.write(JSON.stringify(result, null, 2) + "\n")
   })
 }
@@ -126,23 +126,23 @@ async function cmdPing(): Promise<void> {
       process.stdout.write("offline\n")
       process.exit(1)
     }
-    process.stderr.write(`bear ping: ${err instanceof Error ? err.message : err}\n`)
+    process.stderr.write(`lore ping: ${err instanceof Error ? err.message : err}\n`)
     process.exit(1)
   }
 }
 
 function cmdStop(): void {
-  const socketPath = resolveBearSocketPath()
-  const pid = readBearDaemonPid(socketPath)
+  const socketPath = resolveLoreSocketPath()
+  const pid = readLoreDaemonPid(socketPath)
   if (!pid) {
-    process.stdout.write("bear: no running daemon\n")
+    process.stdout.write("lore: no running daemon\n")
     return
   }
   try {
     process.kill(pid, "SIGTERM")
-    process.stdout.write(`bear: SIGTERM sent to pid ${pid}\n`)
+    process.stdout.write(`lore: SIGTERM sent to pid ${pid}\n`)
   } catch (err) {
-    process.stderr.write(`bear: stop failed: ${err instanceof Error ? err.message : err}\n`)
+    process.stderr.write(`lore: stop failed: ${err instanceof Error ? err.message : err}\n`)
     process.exit(1)
   }
 }
@@ -150,14 +150,14 @@ function cmdStop(): void {
 function usage(): void {
   process.stdout.write(
     [
-      "bear — CLI for the bear workspace daemon",
+      "lore — CLI for the lore workspace daemon",
       "",
-      "Usage: bun bear.ts <command>",
+      "Usage: bun lore.ts <command>",
       "  status        Show daemon status (auto-starts if needed)",
       "  sessions      List registered sessions with focus hints",
       "  workspace     Dump full workspace state as JSON",
-      "  ask <query>   Run bear.ask via the daemon",
-      "  ping          Cheap liveness check (bear.hello), exits 1 if offline",
+      "  ask <query>   Run lore.ask via the daemon",
+      "  ping          Cheap liveness check (lore.hello), exits 1 if offline",
       "  stop          SIGTERM the running daemon",
       "  --help        Show this help",
       "",
@@ -192,13 +192,13 @@ async function main(): Promise<void> {
       cmdStop()
       break
     default:
-      process.stderr.write(`bear: unknown command '${cmd}'\n`)
+      process.stderr.write(`lore: unknown command '${cmd}'\n`)
       usage()
       process.exit(2)
   }
 }
 
 main().catch((err) => {
-  process.stderr.write(`bear: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
+  process.stderr.write(`lore: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
   process.exit(1)
 })

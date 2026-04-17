@@ -1,8 +1,8 @@
 /**
- * Bear summarizer — turns a session tail into a short "focus + loose_ends"
+ * Lore summarizer — turns a session tail into a short "focus + loose_ends"
  * summary via the cheap-model pool (Haiku by default, or local qwen).
  *
- * Opt-in: gated behind BEAR_SUMMARIZER_MODEL env var (off | haiku | local).
+ * Opt-in: gated behind LORE_SUMMARIZER_MODEL env var (off | haiku | local).
  * Default off — daemons don't burn LLM credits unless the user enables it.
  */
 
@@ -20,7 +20,7 @@ export type SessionSummary = {
 }
 
 export function resolveSummarizerMode(raw?: string): SummarizerMode {
-  const v = (raw ?? process.env.BEAR_SUMMARIZER_MODEL ?? "off").toLowerCase()
+  const v = (raw ?? process.env.LORE_SUMMARIZER_MODEL ?? "off").toLowerCase()
   if (v === "haiku" || v === "local") return v as SummarizerMode
   return "off"
 }
@@ -94,9 +94,9 @@ export async function summarizeTail(
       cost: typeof cost === "number" ? cost : 0,
     }
   } catch (err) {
-    if (process.env.BEAR_LOG === "1") {
+    if (process.env.LORE_LOG === "1") {
       process.stderr.write(
-        `[bear-summarizer] ${model.modelId} failed after ${Date.now() - startedAt}ms: ${err instanceof Error ? err.message : err}\n`,
+        `[lore-summarizer] ${model.modelId} failed after ${Date.now() - startedAt}ms: ${err instanceof Error ? err.message : err}\n`,
       )
     }
     return null
