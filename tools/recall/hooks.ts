@@ -6,7 +6,9 @@
 import * as path from "path"
 import * as os from "os"
 import * as fs from "fs"
+import { spawn } from "child_process"
 import { hookRecall } from "../lib/history/recall"
+import { getDb, closeDb, getIndexMeta } from "../lib/history/db"
 import { summarizeUnprocessedDays } from "./summarize-daily"
 import { connectToDaemon } from "../../plugins/lore/src/lib/socket.ts"
 import { resolveLoreSocketPath } from "../../plugins/lore/src/lib/config.ts"
@@ -48,6 +50,57 @@ export function writeSessionSentinel(sentinel: Omit<SessionSentinel, "ts">): voi
     }
   } catch {
     // Sentinel writing is best-effort — must never block the hook.
+  }
+}
+
+// ============================================================================
+// Background FTS index refresh (shared by SessionStart + SessionEnd hooks)
+// ============================================================================
+
+const SESSION_STALE_MS = 60 * 60 * 1000 // 1 hour
+
+function indexIsStale(maxAgeMs: number): boolean {
+  try {
+    const db = getDb()
+    try {
+      const lastRebuild = getIndexMeta(db, "last_rebuild")
+      if (!lastRebuild) return true
+      const age = Date.now() - new Date(lastRebuild).getTime()
+      return age > maxAgeMs
+    } finally {
+      closeDb()
+    }
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Fire `recall index --incremental` detached and return immediately.
+ * Used by SessionStart (if stale) and SessionEnd (always — a session just
+ * finished, so there is guaranteed to be new content).
+ *
+ * Never blocks, never throws, never holds the hook open.
+ */
+function spawnBackgroundIncrementalIndex(reason: string): void {
+  try {
+    const scriptPath = process.argv[1]
+    if (!scriptPath) return
+    const logDir = path.join(os.homedir(), ".claude", "bearly-sessions")
+    fs.mkdirSync(logDir, { recursive: true })
+    const logPath = path.join(logDir, "index-bg.log")
+    const out = fs.openSync(logPath, "a")
+    const header = `\n[${new Date().toISOString()}] incremental index: ${reason}\n`
+    fs.writeSync(out, header)
+    const child = spawn(process.execPath, [scriptPath, "index", "--incremental"], {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: { ...process.env, RECALL_BG: "1" },
+    })
+    child.unref()
+    fs.closeSync(out)
+  } catch {
+    // best-effort — never block the hook
   }
 }
 
@@ -104,12 +157,57 @@ export async function cmdSessionStart(): Promise<void> {
       daemonStatus = await registerWithLoreDaemon({ claudePid, sessionId, transcriptPath, cwd })
     }
 
+    // If the FTS5 index is stale (>1h since last rebuild), kick off an
+    // incremental refresh in the background. Never blocks session startup.
+    let indexStatus = "fresh"
+    if (process.env.RECALL_NO_BG_INDEX !== "1" && indexIsStale(SESSION_STALE_MS)) {
+      spawnBackgroundIncrementalIndex("SessionStart (stale)")
+      indexStatus = "refreshing"
+    }
+
     console.error(
-      `[recall session-start] claude PID ${claudePid} session=${sessionId.slice(0, 8)} sentinel=ok daemon=${daemonStatus} (${Date.now() - startTime}ms)`,
+      `[recall session-start] claude PID ${claudePid} session=${sessionId.slice(0, 8)} sentinel=ok daemon=${daemonStatus} index=${indexStatus} (${Date.now() - startTime}ms)`,
     )
   } catch (e) {
     console.error(`[recall session-start] error: ${e instanceof Error ? e.message : String(e)}`)
     // Never fail — session startup must not be blocked
+  }
+}
+
+// ============================================================================
+// SessionEnd hook — always triggers incremental index refresh
+// ============================================================================
+
+/**
+ * Claude Code fires SessionEnd when a session ends. A session just produced
+ * new JSONL content, so an incremental index refresh is always worthwhile.
+ * Runs detached — the hook returns immediately.
+ *
+ * Install in .claude/settings.json:
+ *   {
+ *     "hooks": {
+ *       "SessionEnd": [{
+ *         "matcher": "",
+ *         "hooks": [{"type": "command", "command": "bun recall session-end"}]
+ *       }]
+ *     }
+ *   }
+ */
+export async function cmdSessionEnd(): Promise<void> {
+  const startTime = Date.now()
+  try {
+    // Drain stdin so Claude Code doesn't hang on the pipe, but we don't need it.
+    try {
+      await readStdin()
+    } catch {
+      /* best effort */
+    }
+    if (process.env.RECALL_NO_BG_INDEX !== "1") {
+      spawnBackgroundIncrementalIndex("SessionEnd")
+    }
+    console.error(`[recall session-end] background incremental index spawned (${Date.now() - startTime}ms)`)
+  } catch (e) {
+    console.error(`[recall session-end] error: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 

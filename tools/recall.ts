@@ -24,7 +24,7 @@ import { cmdSearch, type SearchOptions } from "./recall/search"
 import { cmdStatus } from "./recall/status"
 import { cmdSessions, cmdIndex } from "./recall/sessions"
 import { cmdFiles } from "./recall/files"
-import { cmdHook, cmdRemember, cmdSessionStart } from "./recall/hooks"
+import { cmdHook, cmdRemember, cmdSessionStart, cmdSessionEnd } from "./recall/hooks"
 import { cmdSummarize, cmdWeekly, cmdShow } from "./recall/summarize-daily"
 
 // ============================================================================
@@ -39,6 +39,7 @@ const SUBCOMMANDS = new Set([
   "hook",
   "remember",
   "session-start",
+  "session-end",
   "summarize",
   "weekly",
   "show",
@@ -152,6 +153,14 @@ program
   .description("SessionStart hook — writes sentinel file for session lookup (reads stdin JSON)")
   .action(async () => {
     await cmdSessionStart()
+  })
+
+// ── session-end (internal) ──────────────────────────────────────────
+program
+  .command("session-end", { hidden: true })
+  .description("SessionEnd hook — spawns detached incremental FTS index refresh")
+  .action(async () => {
+    await cmdSessionEnd()
   })
 
 // ── summarize ─────────────────────────────────────────────────────────
