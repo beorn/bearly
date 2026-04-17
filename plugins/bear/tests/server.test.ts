@@ -104,9 +104,13 @@ function seedCorpus(opts: { sessions: Array<{ id: string; title: string; message
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(s.id, "/test", `/tmp/${s.id}.jsonl`, now - 60_000, now, s.messages.length, s.title)
     for (let i = 0; i < s.messages.length; i++) {
-      db.prepare(
-        `INSERT INTO messages (uuid, session_id, type, content, timestamp) VALUES (?, ?, ?, ?, ?)`,
-      ).run(`${s.id}-${i}`, s.id, "user", s.messages[i]!, now - i * 1000)
+      db.prepare(`INSERT INTO messages (uuid, session_id, type, content, timestamp) VALUES (?, ?, ?, ?, ?)`).run(
+        `${s.id}-${i}`,
+        s.id,
+        "user",
+        s.messages[i]!,
+        now - i * 1000,
+      )
     }
   }
 }
@@ -192,7 +196,7 @@ describe("bear.plan_only handler", () => {
             model: opts.model,
             content: buildPlanJson({ keywords: ["foo", "bar"], phrases: ["foo bar"] }),
             durationMs: 10,
-            usage: { promptTokens: 100, completionTokens: 50 },
+            usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
           },
         }
       }
@@ -202,7 +206,7 @@ describe("bear.plan_only handler", () => {
           model: opts.model,
           content: "synth",
           durationMs: 10,
-          usage: { promptTokens: 10, completionTokens: 5 },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
         },
       }
     }

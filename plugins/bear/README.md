@@ -12,6 +12,7 @@ LLM-driven recall over session history. Wraps `recallAgent()` from the bearly re
 library.
 
 Input:
+
 - `query` (string, required) — the natural-language query
 - `limit` (number, default 5) — max results
 - `since` (string, optional) — time filter (e.g., "1d", "1w", "30d")
@@ -30,6 +31,7 @@ and bead IDs mentioned in the tail, distinctive technical tokens, and the recent
 conversation tail. Wraps `getCurrentSessionContext()`.
 
 Input:
+
 - `sessionId` (string, optional) — override session detection; omit to use the
   caller's inferred session.
 
@@ -44,6 +46,7 @@ fanout or synthesis. Useful for fast speculative context before deciding whether
 to escalate to a full `bear.ask` call. Wraps `planQuery({ round: 1 })`.
 
 Input:
+
 - `query` (string, required)
 - `limit` (number, default 10) — max results to consider for context (not fanout)
 

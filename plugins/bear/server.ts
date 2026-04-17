@@ -190,10 +190,7 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
 // MCP server wiring
 // ============================================================================
 
-const server = new Server(
-  { name: "@bearly/bear", version: "0.1.0" },
-  { capabilities: { tools: {} } },
-)
+const server = new Server({ name: "@bearly/bear", version: "0.1.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }

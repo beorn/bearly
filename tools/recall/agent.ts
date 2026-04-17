@@ -117,9 +117,7 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
 
   // Speculative synth defaults on — env var or explicit option can disable.
   const speculativeSynth =
-    options.speculativeSynth !== undefined
-      ? options.speculativeSynth
-      : process.env.RECALL_SPECULATIVE_SYNTH !== "0"
+    options.speculativeSynth !== undefined ? options.speculativeSynth : process.env.RECALL_SPECULATIVE_SYNTH !== "0"
 
   let decision: { round2Mode: "wider" | "deeper" | "off"; reason: string } = {
     round2Mode: "off",
@@ -290,8 +288,7 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
     const round2Ran = finalFanout !== fanoutR1
     const newDocsInTop = round2Ran ? countNewDocsInTopK(fanoutR1.results, finalFanout.results, limit) : 0
 
-    const useSpeculative =
-      speculativeSynthPromise !== null && (!round2Ran || newDocsInTop < ROUND2_NEW_DOCS_THRESHOLD)
+    const useSpeculative = speculativeSynthPromise !== null && (!round2Ran || newDocsInTop < ROUND2_NEW_DOCS_THRESHOLD)
 
     if (useSpeculative) {
       const specResult = await speculativeSynthPromise!

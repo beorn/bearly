@@ -39,7 +39,7 @@ export interface MockScenario {
   /** Optional simulated error — when set, content is ignored. */
   error?: string
   /** Optional usage tokens for cost-estimation tests. */
-  usage?: { promptTokens: number; completionTokens: number }
+  usage?: { promptTokens: number; completionTokens: number; totalTokens?: number }
 }
 
 export interface MockCall {
@@ -116,12 +116,18 @@ export function buildMockQueryModel(scenarios: MockScenario[]) {
       }
     }
 
+    const baseUsage = scenario.usage ?? { promptTokens: 100, completionTokens: 50 }
+    const usage = {
+      promptTokens: baseUsage.promptTokens,
+      completionTokens: baseUsage.completionTokens,
+      totalTokens: baseUsage.totalTokens ?? baseUsage.promptTokens + baseUsage.completionTokens,
+    }
     return {
       response: {
         model: opts.model,
         content: scenario.content,
         durationMs: duration,
-        usage: scenario.usage ?? { promptTokens: 100, completionTokens: 50 },
+        usage,
       },
     }
   }

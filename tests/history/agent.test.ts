@@ -85,9 +85,13 @@ function seedCorpus(opts: {
     ).run(s.id, "/test", `/tmp/${s.id}.jsonl`, now - 60_000, now, s.messages.length, s.title)
 
     for (let i = 0; i < s.messages.length; i++) {
-      db.prepare(
-        `INSERT INTO messages (uuid, session_id, type, content, timestamp) VALUES (?, ?, ?, ?, ?)`,
-      ).run(`${s.id}-${i}`, s.id, "user", s.messages[i]!, now - i * 1000)
+      db.prepare(`INSERT INTO messages (uuid, session_id, type, content, timestamp) VALUES (?, ?, ?, ?, ?)`).run(
+        `${s.id}-${i}`,
+        s.id,
+        "user",
+        s.messages[i]!,
+        now - i * 1000,
+      )
     }
   }
 
@@ -182,7 +186,7 @@ describe("recallAgent — speculative synth", () => {
             model: opts.model,
             content: planCallCount === 1 ? round1Plan : round2Plan,
             durationMs: 10,
-            usage: { promptTokens: 100, completionTokens: 50 },
+            usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
           },
         }
       }
@@ -192,7 +196,7 @@ describe("recallAgent — speculative synth", () => {
           model: opts.model,
           content: "synthesized answer",
           durationMs: 10,
-          usage: { promptTokens: 100, completionTokens: 50 },
+          usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
         },
       }
     }
@@ -213,10 +217,7 @@ describe("recallAgent — speculative synth", () => {
 
   test("can be disabled via speculativeSynth: false", async () => {
     const plan = buildPlanJson({ keywords: ["alpha"] })
-    mockHolder.fn = buildMockQueryModel([
-      { match: /query planner/i, content: plan },
-      { content: "answer" },
-    ])
+    mockHolder.fn = buildMockQueryModel([{ match: /query planner/i, content: plan }, { content: "answer" }])
 
     seedCorpus({
       sessions: [{ id: "sess-a", title: "A", messages: ["alpha content"] }],
@@ -264,7 +265,7 @@ describe("recallAgent — empty plan handling", () => {
             model: opts.model,
             content,
             durationMs: 10,
-            usage: { promptTokens: 100, completionTokens: 50 },
+            usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
           },
         }
       }
@@ -273,7 +274,7 @@ describe("recallAgent — empty plan handling", () => {
           model: opts.model,
           content: "answer",
           durationMs: 10,
-          usage: { promptTokens: 100, completionTokens: 50 },
+          usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
         },
       }
     }
@@ -294,10 +295,7 @@ describe("recallAgent — empty plan handling", () => {
 describe("recallAgent — time-hint application", () => {
   test("planner time_hint overrides default sinceTime when --since not set", async () => {
     const plan = buildPlanJson({ keywords: ["alpha"], time_hint: "1h" })
-    mockHolder.fn = buildMockQueryModel([
-      { match: /query planner/i, content: plan },
-      { content: "answer" },
-    ])
+    mockHolder.fn = buildMockQueryModel([{ match: /query planner/i, content: plan }, { content: "answer" }])
 
     seedCorpus({
       sessions: [{ id: "sess-a", title: "A", messages: ["alpha"] }],
@@ -313,10 +311,7 @@ describe("recallAgent — time-hint application", () => {
 
   test("caller's --since wins over planner's time_hint", async () => {
     const plan = buildPlanJson({ keywords: ["alpha"], time_hint: "30d" })
-    mockHolder.fn = buildMockQueryModel([
-      { match: /query planner/i, content: plan },
-      { content: "answer" },
-    ])
+    mockHolder.fn = buildMockQueryModel([{ match: /query planner/i, content: plan }, { content: "answer" }])
 
     seedCorpus({
       sessions: [{ id: "sess-a", title: "A", messages: ["alpha"] }],

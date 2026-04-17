@@ -14,11 +14,7 @@ import { execSync } from "child_process"
 import type { Database } from "bun:sqlite"
 import { getDb, DB_PATH, getAllSessionTitles } from "../lib/history/db.ts"
 import type { ContentType } from "../lib/history/types.ts"
-import {
-  getCurrentSessionContext,
-  renderSessionContextForPlanner,
-  type SessionContext,
-} from "./session-context.ts"
+import { getCurrentSessionContext, renderSessionContextForPlanner, type SessionContext } from "./session-context.ts"
 
 // ============================================================================
 // Types
