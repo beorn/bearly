@@ -8,6 +8,9 @@ import * as os from "os"
 import * as fs from "fs"
 import { hookRecall } from "../lib/history/recall"
 import { summarizeUnprocessedDays } from "./summarize-daily"
+import { connectToDaemon } from "../lib/bear/socket.ts"
+import { resolveBearSocketPath } from "../lib/bear/config.ts"
+import { BEAR_METHODS, BEAR_PROTOCOL_VERSION } from "../lib/bear/rpc.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)
@@ -85,19 +88,67 @@ export async function cmdSessionStart(): Promise<void> {
       process.exit(0)
     }
 
-    writeSessionSentinel({
-      claudePid: process.ppid,
-      sessionId: input.session_id,
-      transcriptPath: input.transcript_path,
-      cwd: input.cwd,
-    })
+    const claudePid = process.ppid
+    const sessionId = input.session_id
+    const transcriptPath = input.transcript_path
+    const cwd = input.cwd
+
+    // Always write the sentinel — it's the fallback path when the daemon is
+    // down (session-context.ts still reads it). Fast and never blocks.
+    writeSessionSentinel({ claudePid, sessionId, transcriptPath, cwd })
+
+    // Best-effort register with bear daemon. Non-blocking: if we can't reach
+    // the daemon in 1s we give up and rely on the sentinel.
+    let daemonStatus = "skipped"
+    if (process.env.BEAR_NO_DAEMON !== "1") {
+      daemonStatus = await registerWithBearDaemon({ claudePid, sessionId, transcriptPath, cwd })
+    }
 
     console.error(
-      `[recall session-start] sentinel written for claude PID ${process.ppid} session=${input.session_id.slice(0, 8)} (${Date.now() - startTime}ms)`,
+      `[recall session-start] claude PID ${claudePid} session=${sessionId.slice(0, 8)} sentinel=ok daemon=${daemonStatus} (${Date.now() - startTime}ms)`,
     )
   } catch (e) {
     console.error(`[recall session-start] error: ${e instanceof Error ? e.message : String(e)}`)
     // Never fail — session startup must not be blocked
+  }
+}
+
+/**
+ * Register the current session with the bear daemon. Returns a short status
+ * string for the log line. Never throws — daemon registration is best-effort
+ * and the sentinel file is the ground-truth fallback.
+ */
+async function registerWithBearDaemon(input: {
+  claudePid: number
+  sessionId: string
+  transcriptPath?: string
+  cwd: string
+}): Promise<string> {
+  const deadline = Date.now() + 1500 // 1.5s overall budget
+  const socketPath = resolveBearSocketPath()
+  try {
+    const racePromise = (async () => {
+      const client = await connectToDaemon(socketPath, { callTimeoutMs: 1000 })
+      try {
+        await client.call(BEAR_METHODS.hello, {
+          clientName: "recall-hook",
+          clientVersion: "0.1.0",
+          protocolVersion: BEAR_PROTOCOL_VERSION,
+        })
+        await client.call(BEAR_METHODS.sessionRegister, input)
+      } finally {
+        client.close()
+      }
+    })()
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), Math.max(50, deadline - Date.now())),
+    )
+    await Promise.race([racePromise, timeout])
+    return "ok"
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "ECONNREFUSED" || code === "ENOENT") return "no-daemon"
+    return `err(${err instanceof Error ? err.message : String(err)})`
   }
 }
 

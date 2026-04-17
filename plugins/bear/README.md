@@ -71,12 +71,37 @@ Registered in `.mcp.json` as:
 
 ## Status
 
-Phase 1 of the bear workspace-daemon plan (bead `km-bear`). Standalone stdio MCP
-server with no persistent daemon yet. Each invocation is a short-lived subprocess
-like `bun recall`, but accessed as MCP tools instead of shell commands. Daemon
-support arrives in Phase 2 (`km-bear.daemon`).
+Phases 1–2 of the bear workspace-daemon plan (bead `km-bear`). The MCP server
+is now a thin reconnecting client to a persistent `bear-daemon` process
+(`bun vendor/bearly/tools/bear-daemon.ts`) at `$XDG_RUNTIME_DIR/bear.sock`.
+The daemon keeps the recall library warm across calls, eliminating both the
+subprocess-spawn cost and the per-call context-rebuild cost.
+
+The daemon auto-starts on first MCP call, writes its PID to `bear.pid`, and
+idle-quits after 30 minutes of no clients.
+
+## Env vars
+
+- `BEAR_NO_DAEMON=1` — opt-out; use library directly (Phase 1 behaviour).
+- `BEAR_LOG=1` — enable stderr tracing for connect failures and recall library
+  logs.
+- `BEAR_SOCKET` — override socket path (default `$XDG_RUNTIME_DIR/bear.sock`).
+- `BEAR_DB` — override DB path (default `~/.local/share/bear/bear.db`).
+
+## CLI
+
+`bun vendor/bearly/tools/bear.ts`:
+
+- `status` — show daemon status (auto-starts if needed)
+- `sessions` — list registered Claude Code sessions
+- `ask "query"` — run `bear.ask` via the daemon
+- `ping` — cheap liveness check, exits 1 if offline
+- `stop` — SIGTERM the running daemon
 
 ## Fallthrough
 
-If the underlying recall library can't reach an LLM provider (no API keys), tools
-return the same graceful-fallback response the CLI produces. Never throws.
+Every tool falls through to an in-process library call if the daemon is
+unreachable. Responses include `"mode": "daemon" | "library"` so callers can
+observe which path served them. If the underlying recall library can't reach
+an LLM provider (no API keys), tools return the same graceful-fallback
+response the CLI produces. Never throws.
