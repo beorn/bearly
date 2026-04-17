@@ -1,0 +1,24 @@
+{
+  "name": "@bearly/bear",
+  "version": "0.1.0",
+  "description": "Workspace daemon MCP server — recall memory + (future) coordination for Claude Code",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "plugins/bear"
+  },
+  "files": [
+    "server.ts",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "start": "bun install --no-summary && bun server.ts",
+    "test": "bun --cwd ../.. vitest run --project vendor plugins/bear/tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}
