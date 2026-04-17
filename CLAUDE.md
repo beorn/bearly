@@ -6,21 +6,22 @@ The root `bearly` package is `private: true` at version `0.0.0` — it is never 
 
 ## Packages
 
-### The tribe family (cognitive + social layer)
+### The tribe family (one cohesive product)
 
-Three packages that compose into what a tribe of Claude Code sessions needs to work together. See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#domain-model) for the authoritative vocabulary (tribe, member, chief, agent, daemon, wire, lore, recall).
+See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#domain-model) for the authoritative vocabulary (tribe, member, chief, agent, daemon, wire, lore, recall).
 
-| Package          | npm                                                | Role                                                                       | Entry Point       |
-| ---------------- | -------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- |
-| `@bearly/tribe`  | [npm](https://www.npmjs.com/package/@bearly/tribe) | Coordination layer — presence, broadcasts, events, pub/sub, plugins        | `plugins/tribe/`  |
-| `@bearly/lore`   | _private (0.5.0)_                                  | Memory daemon — focus cache, LLM summarizer, per-session hook dedup        | `plugins/lore/`   |
-| `@bearly/recall` | _private (0.1.0)_                                  | Session-history search primitive — FTS5 + LLM planner/agent. Lore uses it. | `plugins/recall/` |
+| Package         | npm                                                | Role                                                                                                       | Entry Point      |
+| --------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------- |
+| `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Coordination + memory daemon + MCP tools + `tribe` CLI — wire, lore, plugins, watch TUI, all in one package | `plugins/tribe/` |
+
+`@bearly/lore` was folded into `@bearly/tribe` on 2026-04-17 — what was the standalone memory daemon (focus cache, LLM summarizer, per-session hook dedup) now ships inside tribe. The split existed briefly while the concepts stabilized; the unified package is the steady state.
 
 ### Supporting primitives
 
-| Package       | npm               | Role                                                                     | Entry Point    |
-| ------------- | ----------------- | ------------------------------------------------------------------------ | -------------- |
-| `@bearly/llm` | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research | `plugins/llm/` |
+| Package          | npm               | Role                                                                                     | Entry Point       |
+| ---------------- | ----------------- | ---------------------------------------------------------------------------------------- | ----------------- |
+| `@bearly/recall` | _private (0.1.0)_ | Session-history search primitive — FTS5 + LLM planner/agent. Used by tribe internally; also standalone. | `plugins/recall/` |
+| `@bearly/llm`    | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                 | `plugins/llm/`    |
 
 Future packages (not yet extracted): `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
 
