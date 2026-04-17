@@ -22,6 +22,12 @@ export interface TracePayload {
   }
   rounds: RoundTrace[]
   decision: { round2Mode: "wider" | "deeper" | "off"; reason: string }
+  /** Which synth path delivered the answer — lets offline eval diff strategies. */
+  synthPath?: "speculative-round1" | "fresh-merged" | "single-pass" | "none"
+  /** 1 = clean, 2 = speculative was wasted (fresh synth superseded it). */
+  synthCallsUsed?: number
+  /** True if the answer came from round-1 results (speculative or single-pass). */
+  round1ShortCircuited?: boolean
   results: { sessionId: string; type: string; title: string | null; rank: number }[]
   synthesisText: string | null
   timing: {

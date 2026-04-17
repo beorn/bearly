@@ -492,6 +492,9 @@ function buildTracePayload(
     },
     rounds: result.trace.rounds,
     decision: result.trace.decision,
+    synthPath: result.trace.synthPath,
+    synthCallsUsed: result.trace.synthCallsUsed,
+    round1ShortCircuited: result.trace.round1ShortCircuited,
     results: result.results.map((r) => ({
       sessionId: r.sessionId,
       type: r.type,
