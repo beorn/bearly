@@ -25,6 +25,7 @@ export const BEAR_METHODS = {
   sessionHeartbeat: "bear.session_heartbeat",
   sessionsList: "bear.sessions_list",
   workspaceState: "bear.workspace_state",
+  sessionState: "bear.session_state",
   status: "bear.status",
 } as const
 
@@ -190,6 +191,11 @@ export type SessionFocusSummary = {
   mentionedTokens: string[]
   /** First ~60 chars of tail; full tail via bear.current_brief. */
   focusHint: string
+  /** LLM-summarized one-liner (Phase 4). Null when summarizer is off/missing. */
+  focusSummary: string | null
+  looseEnds: string[]
+  summaryModel: string | null
+  summaryUpdatedAt: number | null
   /** When the daemon last refreshed this focus. */
   updatedAt: number | null
 }
@@ -197,6 +203,19 @@ export type SessionFocusSummary = {
 export type WorkspaceStateResult = {
   generatedAt: number
   sessions: SessionFocusSummary[]
+}
+
+// ---------------------------------------------------------------------------
+// bear.session_state — single-session focus+summary lookup (Phase 4)
+// ---------------------------------------------------------------------------
+
+export type SessionStateParams = {
+  sessionId: string
+}
+
+export type SessionStateResult = SessionFocusSummary & {
+  /** Full flattened tail (not just the hint). */
+  tail: string
 }
 
 // ---------------------------------------------------------------------------

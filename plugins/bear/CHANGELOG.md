@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.0 (2026-04-17)
+
+Phase 4 of the bear workspace-daemon plan (bead `km-bear.summarizer`).
+Opt-in LLM summarizer converts each active session's tail into a
+one-sentence focus + loose-ends list. Exposed via new `bear.session_state`
+MCP tool and surfaced in `bear.workspace_state` (new `focusSummary`,
+`looseEnds`, `summaryModel`, `summaryUpdatedAt` fields).
+
+### Added
+
+- `tools/lib/bear/summarizer.ts` — pure `summarizeTail(tail, {mode})` using
+  existing `getCheapModel`/`queryModel`. Haiku 4.5 by default; Ollama when
+  `BEAR_SUMMARIZER_MODEL=local`. Strict-ish JSON parser strips code fences
+  and tolerates prose wrapper.
+- `session_focus` columns (additive try/catch ALTERs): `focus_summary`,
+  `loose_ends`, `summary_updated_at`, `summary_model`, `summary_cost`.
+- Daemon summarizer coroutine — runs every `BEAR_SUMMARY_POLL_MS`
+  (default 120 s). Only summarizes when the focus tail has actually
+  moved since the last summary AND the session is <30 min idle.
+  Skipped entirely when `BEAR_SUMMARIZER_MODEL=off` (default).
+- `bear.session_state(sessionId)` MCP tool + RPC — returns focus +
+  summary + tail for one session. Errors on unknown sessionId.
+- `bear.workspace_state` rows now include `focusSummary`, `looseEnds`,
+  `summaryModel`, `summaryUpdatedAt`.
+- CLI `bear sessions` prefers LLM summary over raw tail hint when
+  present, and shows `loose_ends=N` count.
+
+### Behavior
+
+- `BEAR_SUMMARIZER_MODEL=off` (default) — no LLM calls, no cost.
+- `BEAR_SUMMARIZER_MODEL=haiku` — Claude Haiku 4.5 (~\$0.00001 / summary).
+- `BEAR_SUMMARIZER_MODEL=local` — Ollama when available.
+
+### Tests
+
+7 new summarizer unit tests (`tests/bear/summarizer.test.ts`): JSON
+parser (strict, fenced, prose-wrapped, malformed) and mode resolution.
+
 ## 0.3.0 (2026-04-17)
 
 Phase 3 of the bear workspace-daemon plan (bead `km-bear.focus`). Daemon now

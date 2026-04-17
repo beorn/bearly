@@ -59,6 +59,22 @@ export function openBearDatabase(path: string): Database {
 
   db.run(`CREATE INDEX IF NOT EXISTS idx_session_focus_updated ON session_focus(updated_at)`)
 
+  // Phase 4: opt-in LLM summary columns (additive, try/catch ALTER so
+  // reopening an older DB is a no-op on second run).
+  for (const col of [
+    `ALTER TABLE session_focus ADD COLUMN focus_summary TEXT`,
+    `ALTER TABLE session_focus ADD COLUMN loose_ends TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE session_focus ADD COLUMN summary_updated_at INTEGER`,
+    `ALTER TABLE session_focus ADD COLUMN summary_model TEXT`,
+    `ALTER TABLE session_focus ADD COLUMN summary_cost REAL`,
+  ]) {
+    try {
+      db.run(col)
+    } catch {
+      /* column already present */
+    }
+  }
+
   return db
 }
 
@@ -100,6 +116,20 @@ export type FocusRow = {
   mentioned_tokens: string[]
   tail: string
   updated_at: number
+  focus_summary: string | null
+  loose_ends: string[]
+  summary_updated_at: number | null
+  summary_model: string | null
+  summary_cost: number | null
+}
+
+export type SummaryUpsert = {
+  claudePid: number
+  focusSummary: string
+  looseEnds: string[]
+  summaryModel: string
+  summaryCost: number
+  summaryUpdatedAt: number
 }
 
 export type FocusUpsert = {
@@ -130,6 +160,7 @@ export type BearRepo = {
     meta?: Record<string, unknown>
   }): void
   upsertFocus(input: FocusUpsert): void
+  upsertSummary(input: SummaryUpsert): void
   getFocus(claudePid: number): FocusRow | null
   listFocus(): FocusRow[]
   deleteFocus(claudePid: number): void
@@ -188,6 +219,15 @@ export function createBearRepo(db: Database): BearRepo {
   const getFocusStmt = db.prepare(`SELECT * FROM session_focus WHERE claude_pid = $pid`)
   const listFocusStmt = db.prepare(`SELECT * FROM session_focus ORDER BY updated_at DESC`)
   const deleteFocusStmt = db.prepare(`DELETE FROM session_focus WHERE claude_pid = $pid`)
+  const upsertSummaryStmt = db.prepare(`
+    UPDATE session_focus SET
+      focus_summary = $focus,
+      loose_ends = $looseEnds,
+      summary_updated_at = $updatedAt,
+      summary_model = $model,
+      summary_cost = $cost
+    WHERE claude_pid = $pid
+  `)
 
   type RawFocus = {
     claude_pid: number
@@ -199,6 +239,11 @@ export function createBearRepo(db: Database): BearRepo {
     mentioned_tokens: string
     tail: string
     updated_at: number
+    focus_summary: string | null
+    loose_ends: string | null
+    summary_updated_at: number | null
+    summary_model: string | null
+    summary_cost: number | null
   }
 
   function hydrateFocus(raw: RawFocus): FocusRow {
@@ -212,6 +257,11 @@ export function createBearRepo(db: Database): BearRepo {
       mentioned_tokens: safeParseArray(raw.mentioned_tokens),
       tail: raw.tail,
       updated_at: raw.updated_at,
+      focus_summary: raw.focus_summary,
+      loose_ends: safeParseArray(raw.loose_ends ?? "[]"),
+      summary_updated_at: raw.summary_updated_at,
+      summary_model: raw.summary_model,
+      summary_cost: raw.summary_cost,
     }
   }
 
@@ -283,6 +333,16 @@ export function createBearRepo(db: Database): BearRepo {
     },
     deleteFocus(claudePid) {
       deleteFocusStmt.run({ $pid: claudePid })
+    },
+    upsertSummary(input) {
+      upsertSummaryStmt.run({
+        $pid: input.claudePid,
+        $focus: input.focusSummary,
+        $looseEnds: JSON.stringify(input.looseEnds),
+        $updatedAt: input.summaryUpdatedAt,
+        $model: input.summaryModel,
+        $cost: input.summaryCost,
+      })
     },
     close() {
       db.close()

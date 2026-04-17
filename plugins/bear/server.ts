@@ -38,6 +38,7 @@ import {
   type CurrentBriefResult,
   type PlanOnlyResult,
   type WorkspaceStateResult,
+  type SessionStateResult,
 } from "../../tools/lib/bear/rpc.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
@@ -60,7 +61,7 @@ async function getDaemon(): Promise<BearClient | null> {
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(BEAR_METHODS.hello, {
       clientName: "@bearly/bear",
-      clientVersion: "0.3.0",
+      clientVersion: "0.4.0",
       protocolVersion: BEAR_PROTOCOL_VERSION,
     })
     daemonClient = client
@@ -133,6 +134,18 @@ const TOOLS = [
         query: { type: "string", description: "The natural-language query" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "bear.session_state",
+    description:
+      "Detailed state of a single session by sessionId: focus tail + LLM summary (when BEAR_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "The session id to inspect" },
+      },
+      required: ["sessionId"],
     },
   },
   {
@@ -338,11 +351,39 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
   }
 }
 
+async function handleSessionState(args: Record<string, unknown>): Promise<string> {
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : ""
+  if (!sessionId) throw new Error("bear.session_state: `sessionId` is required")
+  const daemon = await getDaemon()
+  if (!daemon) {
+    return JSON.stringify(
+      { sessionId, detected: false, mode: "library", note: "bear daemon not reachable; session_state is daemon-only" },
+      null,
+      2,
+    )
+  }
+  try {
+    const result = (await daemon.call(BEAR_METHODS.sessionState, { sessionId })) as SessionStateResult
+    return JSON.stringify({ ...result, detected: true, mode: "daemon" }, null, 2)
+  } catch (err) {
+    return JSON.stringify(
+      {
+        sessionId,
+        detected: false,
+        mode: "error",
+        error: err instanceof Error ? err.message : String(err),
+      },
+      null,
+      2,
+    )
+  }
+}
+
 // ============================================================================
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "@bearly/bear", version: "0.3.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "@bearly/bear", version: "0.4.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }
@@ -366,6 +407,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break
       case "bear.workspace_state":
         text = await handleWorkspaceState(toolArgs)
+        break
+      case "bear.session_state":
+        text = await handleSessionState(toolArgs)
         break
       default:
         return {

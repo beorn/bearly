@@ -59,8 +59,10 @@ import { planQuery, planVariants } from "./recall/plan.ts"
 import { buildQueryContext } from "./recall/context.ts"
 import { getCurrentSessionContext, extractSessionFocus } from "./recall/session-context.ts"
 import { setRecallLogging } from "./lib/history/recall-shared.ts"
+import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/bear/summarizer.ts"
+import type { SessionStateParams, SessionStateResult } from "./lib/bear/rpc.ts"
 
-const DAEMON_VERSION = "0.3.0"
+const DAEMON_VERSION = "0.4.0"
 const STARTED_AT = Date.now()
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,8 @@ const { values: args } = parseArgs({
     db: { type: "string" },
     "quit-timeout": { type: "string", default: "1800" },
     "focus-poll-ms": { type: "string", default: process.env.BEAR_FOCUS_POLL_MS ?? "60000" },
+    "summary-poll-ms": { type: "string", default: process.env.BEAR_SUMMARY_POLL_MS ?? "120000" },
+    "summarizer-model": { type: "string", default: process.env.BEAR_SUMMARIZER_MODEL ?? "off" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
@@ -83,6 +87,8 @@ const PID_PATH = resolveBearPidPath(SOCKET_PATH)
 const DB_PATH = resolveBearDbPath(args.db as string | undefined)
 const QUIT_TIMEOUT_SEC = parseInt(String(args["quit-timeout"]), 10)
 const FOCUS_POLL_MS = Math.max(100, parseInt(String(args["focus-poll-ms"]), 10) || 60000)
+const SUMMARY_POLL_MS = Math.max(500, parseInt(String(args["summary-poll-ms"]), 10) || 120000)
+const SUMMARIZER_MODE: SummarizerMode = resolveSummarizerMode(String(args["summarizer-model"]))
 const FOREGROUND = args.foreground as boolean
 
 ensureParentDir(SOCKET_PATH)
@@ -312,29 +318,43 @@ function handleSessionsList(): SessionsListResult {
   return { sessions: rows.map(sessionRowToInfo) }
 }
 
+function buildSessionSummary(row: ReturnType<typeof repo.listSessions>[number]): SessionFocusSummary {
+  const focus = repo.getFocus(row.claude_pid)
+  const now = Date.now()
+  return {
+    claudePid: row.claude_pid,
+    sessionId: row.session_id,
+    project: row.project,
+    status: row.status,
+    lastSeen: row.last_seen,
+    lastActivityTs: focus?.last_activity_ts ?? null,
+    ageMs:
+      focus?.last_activity_ts !== null && focus?.last_activity_ts !== undefined ? now - focus.last_activity_ts : null,
+    exchangeCount: focus?.exchange_count ?? 0,
+    mentionedPaths: focus?.mentioned_paths ?? [],
+    mentionedBeads: focus?.mentioned_beads ?? [],
+    mentionedTokens: focus?.mentioned_tokens ?? [],
+    focusHint: focus ? extractFocusHint(focus.tail) : "",
+    focusSummary: focus?.focus_summary ?? null,
+    looseEnds: focus?.loose_ends ?? [],
+    summaryModel: focus?.summary_model ?? null,
+    summaryUpdatedAt: focus?.summary_updated_at ?? null,
+    updatedAt: focus?.updated_at ?? null,
+  }
+}
+
 function handleWorkspaceState(): WorkspaceStateResult {
   const rows = repo.listSessions()
-  const now = Date.now()
-  const sessions: SessionFocusSummary[] = rows.map((row) => {
-    const focus = repo.getFocus(row.claude_pid)
-    return {
-      claudePid: row.claude_pid,
-      sessionId: row.session_id,
-      project: row.project,
-      status: row.status,
-      lastSeen: row.last_seen,
-      lastActivityTs: focus?.last_activity_ts ?? null,
-      ageMs:
-        focus?.last_activity_ts !== null && focus?.last_activity_ts !== undefined ? now - focus.last_activity_ts : null,
-      exchangeCount: focus?.exchange_count ?? 0,
-      mentionedPaths: focus?.mentioned_paths ?? [],
-      mentionedBeads: focus?.mentioned_beads ?? [],
-      mentionedTokens: focus?.mentioned_tokens ?? [],
-      focusHint: focus ? extractFocusHint(focus.tail) : "",
-      updatedAt: focus?.updated_at ?? null,
-    }
-  })
-  return { generatedAt: now, sessions }
+  const sessions: SessionFocusSummary[] = rows.map(buildSessionSummary)
+  return { generatedAt: Date.now(), sessions }
+}
+
+function handleSessionState(params: SessionStateParams): SessionStateResult {
+  const row = repo.getSessionBySessionId(params.sessionId)
+  if (!row) throw new Error(`Unknown sessionId: ${params.sessionId}`)
+  const summary = buildSessionSummary(row)
+  const focus = repo.getFocus(row.claude_pid)
+  return { ...summary, tail: focus?.tail ?? "" }
 }
 
 function extractFocusHint(tail: string): string {
@@ -394,6 +414,8 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
         return makeResponse(req.id, handleSessionsList())
       case BEAR_METHODS.workspaceState:
         return makeResponse(req.id, handleWorkspaceState())
+      case BEAR_METHODS.sessionState:
+        return makeResponse(req.id, handleSessionState(params as unknown as SessionStateParams))
       case BEAR_METHODS.status:
         return makeResponse(req.id, handleStatus())
       default:
@@ -507,6 +529,54 @@ function refreshAllFocus(): void {
 
 const focusPoller: NodeJS.Timeout = setInterval(refreshAllFocus, FOCUS_POLL_MS) as unknown as NodeJS.Timeout
 focusPoller.unref?.()
+
+// ---------------------------------------------------------------------------
+// Summarizer poller (Phase 4) — opt-in via --summarizer-model
+// ---------------------------------------------------------------------------
+
+const SUMMARY_STALE_IF_IDLE_MS = 30 * 60 * 1000 // skip sessions idle >30min
+
+async function refreshSummariesOnce(): Promise<void> {
+  if (SUMMARIZER_MODE === "off") return
+  for (const row of repo.listSessions()) {
+    if (row.status !== "alive") continue
+    const focus = repo.getFocus(row.claude_pid)
+    if (!focus || !focus.tail) continue
+    const ageMs = focus.last_activity_ts ? Date.now() - focus.last_activity_ts : null
+    if (ageMs !== null && ageMs > SUMMARY_STALE_IF_IDLE_MS) continue
+    // Skip if we already summarized this activity ts.
+    if (
+      focus.summary_updated_at !== null &&
+      focus.last_activity_ts !== null &&
+      focus.summary_updated_at >= focus.last_activity_ts
+    ) {
+      continue
+    }
+    try {
+      const summary = await summarizeTail(focus.tail, { mode: SUMMARIZER_MODE, timeoutMs: 10_000 })
+      if (!summary) continue
+      repo.upsertSummary({
+        claudePid: row.claude_pid,
+        focusSummary: summary.focus,
+        looseEnds: summary.looseEnds,
+        summaryModel: summary.model,
+        summaryCost: summary.cost,
+        summaryUpdatedAt: Date.now(),
+      })
+      log.debug?.(`summary refreshed pid=${row.claude_pid} model=${summary.model} cost=$${summary.cost.toFixed(5)}`)
+    } catch (err) {
+      log.debug?.(`summary refresh failed for pid=${row.claude_pid}: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+}
+
+const summarizerPoller: NodeJS.Timeout | null =
+  SUMMARIZER_MODE !== "off"
+    ? (setInterval(() => {
+        void refreshSummariesOnce()
+      }, SUMMARY_POLL_MS) as unknown as NodeJS.Timeout)
+    : null
+summarizerPoller?.unref?.()
 
 // ---------------------------------------------------------------------------
 // Signal handlers + shutdown

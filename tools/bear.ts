@@ -84,9 +84,11 @@ async function cmdSessions(): Promise<void> {
       const pid = String(s.claudePid).padStart(6, " ")
       const sid = s.sessionId.slice(0, 8)
       const proj = s.project ?? "-"
-      const focus = s.focusHint ? ` focus="${s.focusHint}"` : ""
+      const focus = s.focusSummary ?? s.focusHint
+      const focusStr = focus ? ` focus="${focus}"` : ""
+      const loose = s.looseEnds.length > 0 ? ` loose_ends=${s.looseEnds.length}` : ""
       process.stdout.write(
-        `${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${lastSeen}${focus}\n`,
+        `${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${lastSeen}${focusStr}${loose}\n`,
       )
     }
   })
