@@ -24,7 +24,7 @@ import { cmdSearch, type SearchOptions } from "./recall/search"
 import { cmdStatus } from "./recall/status"
 import { cmdSessions, cmdIndex } from "./recall/sessions"
 import { cmdFiles } from "./recall/files"
-import { cmdHook, cmdRemember } from "./recall/hooks"
+import { cmdHook, cmdRemember, cmdSessionStart } from "./recall/hooks"
 import { cmdSummarize, cmdWeekly, cmdShow } from "./recall/summarize-daily"
 
 // ============================================================================
@@ -38,6 +38,7 @@ const SUBCOMMANDS = new Set([
   "files",
   "hook",
   "remember",
+  "session-start",
   "summarize",
   "weekly",
   "show",
@@ -142,6 +143,14 @@ program
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
     await cmdRemember(opts)
+  })
+
+// ── session-start (internal) ────────────────────────────────────────
+program
+  .command("session-start", { hidden: true })
+  .description("SessionStart hook — writes sentinel file for session lookup (reads stdin JSON)")
+  .action(async () => {
+    await cmdSessionStart()
   })
 
 // ── summarize ─────────────────────────────────────────────────────────

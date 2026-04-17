@@ -12,6 +12,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
+import { execSync } from "child_process"
 
 // ============================================================================
 // Types
@@ -73,9 +74,13 @@ export function getCurrentSessionContext(opts: BuildSessionContextOptions = {}):
 
   const cwd = cwdOverride ?? process.cwd()
 
-  // Claude Code doesn't always set CLAUDE_SESSION_ID in subprocess env, so
-  // we also fall back to "most-recently-modified JSONL for this project" —
-  // typically the session that just launched this subprocess.
+  // Detection priority (best to fallback):
+  //   1. Explicit override (tests)
+  //   2. CLAUDE_SESSION_ID env var (ideal, but Claude Code doesn't set this
+  //      in Bash subprocess env today)
+  //   3. Sentinel file written by the UserPromptSubmit hook, keyed by the
+  //      ancestor claude PID — deterministic even with parallel sessions
+  //   4. Most-recently-modified JSONL for this cwd — last-resort heuristic
   const explicitId = sessionIdOverride ?? process.env.CLAUDE_SESSION_ID
   let sessionId = explicitId
   let jsonlPath: string | null = null
@@ -84,8 +89,15 @@ export function getCurrentSessionContext(opts: BuildSessionContextOptions = {}):
     jsonlPath = resolveSessionJsonl(sessionId, cwd)
   }
   if (!jsonlPath) {
-    // Fallback — only triggered when env isn't set, which is common for
-    // subprocesses spawned from Claude Code's Bash tool.
+    const viaSentinel = readSessionSentinel()
+    if (viaSentinel) {
+      sessionId = viaSentinel.sessionId
+      jsonlPath = viaSentinel.transcriptPath ?? resolveSessionJsonl(viaSentinel.sessionId, viaSentinel.cwd ?? cwd)
+    }
+  }
+  if (!jsonlPath) {
+    // Last-resort fallback: most-recently-modified JSONL. Works for typical
+    // single-session use but can misidentify under concurrent sessions.
     const found = findMostRecentJsonl(cwd)
     if (found) {
       jsonlPath = found.path
@@ -194,6 +206,75 @@ export function renderSessionContextForPlanner(ctx: SessionContext): string {
 // ============================================================================
 // JSONL reading
 // ============================================================================
+
+// ============================================================================
+// Session sentinel reader
+// ============================================================================
+
+const SENTINEL_DIR = path.join(os.homedir(), ".claude", "bearly-sessions")
+
+interface SessionSentinelRead {
+  claudePid: number
+  sessionId: string
+  transcriptPath?: string
+  cwd?: string
+  ts: number
+}
+
+/**
+ * Read the sentinel written by the UserPromptSubmit hook. Walks up the
+ * process tree to find the ancestor `claude` process, then reads
+ * `~/.claude/bearly-sessions/pid-<pid>.json`.
+ *
+ * Returns null if no ancestor claude PID is found or no sentinel exists
+ * for it. Silent on all errors — sentinel is an optimization, not required.
+ */
+function readSessionSentinel(): SessionSentinelRead | null {
+  // First try: any ancestor PID has a sentinel. Walk up cheaply.
+  const ancestors = walkProcessAncestors(6)
+  for (const pid of ancestors) {
+    const file = path.join(SENTINEL_DIR, `pid-${pid}.json`)
+    try {
+      if (!fs.existsSync(file)) continue
+      const raw = fs.readFileSync(file, "utf8")
+      const parsed = JSON.parse(raw) as SessionSentinelRead
+      if (!parsed.sessionId) continue
+      // Stale sentinel check: hook may not have run recently if the session
+      // is idle. 2h is generous for "still the active session".
+      if (Date.now() - parsed.ts > 2 * 60 * 60 * 1000) continue
+      return parsed
+    } catch {
+      /* try next ancestor */
+    }
+  }
+  return null
+}
+
+/**
+ * Walk up the process tree, returning ancestor PIDs up to `maxDepth`.
+ * Uses `ps` because macOS doesn't expose /proc. Returns empty on failure.
+ */
+function walkProcessAncestors(maxDepth: number): number[] {
+  const pids: number[] = []
+  let pid = process.ppid
+  for (let i = 0; i < maxDepth; i++) {
+    if (!pid || pid === 1) break
+    pids.push(pid)
+    try {
+      const out = execSync(`ps -o ppid= -p ${pid}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 500,
+      }).trim()
+      const next = parseInt(out, 10)
+      if (!Number.isFinite(next) || next === pid) break
+      pid = next
+    } catch {
+      break
+    }
+  }
+  return pids
+}
 
 /**
  * Fallback when CLAUDE_SESSION_ID isn't set: find the most recently modified
