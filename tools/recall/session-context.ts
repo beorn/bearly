@@ -204,6 +204,65 @@ export function renderSessionContextForPlanner(ctx: SessionContext): string {
 }
 
 // ============================================================================
+// Focus extraction — path-based (used by the bear daemon's focus poller)
+// ============================================================================
+
+export interface SessionFocus {
+  sessionId: string | null
+  transcriptPath: string
+  ageMs: number | null
+  lastActivityTs: number | null
+  exchangeCount: number
+  mentionedPaths: string[]
+  mentionedBeads: string[]
+  mentionedTokens: string[]
+  /** Flattened tail of recent exchanges, truncated to maxChars. */
+  tail: string
+}
+
+/**
+ * Extract focus from a JSONL transcript path. Pure — no detection, no env
+ * lookups, no sentinel reads. The caller supplies the path. Used by the
+ * bear daemon to poll each registered session's current activity.
+ *
+ * Unlike `getCurrentSessionContext`, this does NOT drop stale sessions —
+ * the caller decides staleness policy. Returns null only if the file is
+ * unreadable or empty.
+ */
+export function extractSessionFocus(
+  transcriptPath: string,
+  opts: { tailLines?: number; maxChars?: number; maxTokens?: number; sessionId?: string } = {},
+): SessionFocus | null {
+  const { tailLines = 400, maxChars = 6000, maxTokens = 40, sessionId = null } = opts
+  let lines: string[]
+  try {
+    lines = readLastLines(transcriptPath, tailLines)
+  } catch {
+    return null
+  }
+  if (lines.length === 0) return null
+
+  const messages = extractUserAssistantText(lines)
+  const lastTimestamp = findLastTimestamp(lines)
+  const ageMs = lastTimestamp !== null ? Date.now() - lastTimestamp : null
+
+  const flat = messages.map(formatExchange).join("\n\n")
+  const tail = flat.length > maxChars ? flat.slice(-maxChars) : flat
+
+  return {
+    sessionId,
+    transcriptPath,
+    ageMs,
+    lastActivityTs: lastTimestamp,
+    exchangeCount: messages.length,
+    mentionedPaths: extractPaths(tail),
+    mentionedBeads: extractBeadIds(tail),
+    mentionedTokens: extractTechTokens(tail).slice(0, maxTokens),
+    tail,
+  }
+}
+
+// ============================================================================
 // JSONL reading
 // ============================================================================
 

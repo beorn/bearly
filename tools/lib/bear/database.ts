@@ -43,6 +43,22 @@ export function openBearDatabase(path: string): Database {
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, ts)`)
 
+  // Phase 3: focus cache — one row per alive Claude Code session, refreshed
+  // by the daemon's background poller. Arrays stored as JSON strings.
+  db.run(`CREATE TABLE IF NOT EXISTS session_focus (
+    claude_pid        INTEGER PRIMARY KEY,
+    last_activity_ts  INTEGER,
+    age_ms            INTEGER,
+    exchange_count    INTEGER NOT NULL DEFAULT 0,
+    mentioned_paths   TEXT NOT NULL DEFAULT '[]',
+    mentioned_beads   TEXT NOT NULL DEFAULT '[]',
+    mentioned_tokens  TEXT NOT NULL DEFAULT '[]',
+    tail              TEXT NOT NULL DEFAULT '',
+    updated_at        INTEGER NOT NULL
+  )`)
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_session_focus_updated ON session_focus(updated_at)`)
+
   return db
 }
 
@@ -74,6 +90,30 @@ export type SessionUpsert = {
 // Repository
 // ---------------------------------------------------------------------------
 
+export type FocusRow = {
+  claude_pid: number
+  last_activity_ts: number | null
+  age_ms: number | null
+  exchange_count: number
+  mentioned_paths: string[]
+  mentioned_beads: string[]
+  mentioned_tokens: string[]
+  tail: string
+  updated_at: number
+}
+
+export type FocusUpsert = {
+  claudePid: number
+  lastActivityTs: number | null
+  ageMs: number | null
+  exchangeCount: number
+  mentionedPaths: string[]
+  mentionedBeads: string[]
+  mentionedTokens: string[]
+  tail: string
+  updatedAt: number
+}
+
 export type BearRepo = {
   upsertSession(input: SessionUpsert): SessionRow
   heartbeatSession(claudePid: number, now: number): SessionRow | null
@@ -89,6 +129,10 @@ export type BearRepo = {
     type: string
     meta?: Record<string, unknown>
   }): void
+  upsertFocus(input: FocusUpsert): void
+  getFocus(claudePid: number): FocusRow | null
+  listFocus(): FocusRow[]
+  deleteFocus(claudePid: number): void
   close(): void
 }
 
@@ -122,6 +166,54 @@ export function createBearRepo(db: Database): BearRepo {
   const insertEventStmt = db.prepare(
     `INSERT INTO events (ts, session_id, claude_pid, type, meta) VALUES ($ts, $sessionId, $pid, $type, $meta)`,
   )
+
+  const upsertFocusStmt = db.prepare(`
+    INSERT INTO session_focus (
+      claude_pid, last_activity_ts, age_ms, exchange_count,
+      mentioned_paths, mentioned_beads, mentioned_tokens, tail, updated_at
+    ) VALUES (
+      $pid, $lastActivityTs, $ageMs, $exchangeCount,
+      $paths, $beads, $tokens, $tail, $updatedAt
+    )
+    ON CONFLICT(claude_pid) DO UPDATE SET
+      last_activity_ts = excluded.last_activity_ts,
+      age_ms = excluded.age_ms,
+      exchange_count = excluded.exchange_count,
+      mentioned_paths = excluded.mentioned_paths,
+      mentioned_beads = excluded.mentioned_beads,
+      mentioned_tokens = excluded.mentioned_tokens,
+      tail = excluded.tail,
+      updated_at = excluded.updated_at
+  `)
+  const getFocusStmt = db.prepare(`SELECT * FROM session_focus WHERE claude_pid = $pid`)
+  const listFocusStmt = db.prepare(`SELECT * FROM session_focus ORDER BY updated_at DESC`)
+  const deleteFocusStmt = db.prepare(`DELETE FROM session_focus WHERE claude_pid = $pid`)
+
+  type RawFocus = {
+    claude_pid: number
+    last_activity_ts: number | null
+    age_ms: number | null
+    exchange_count: number
+    mentioned_paths: string
+    mentioned_beads: string
+    mentioned_tokens: string
+    tail: string
+    updated_at: number
+  }
+
+  function hydrateFocus(raw: RawFocus): FocusRow {
+    return {
+      claude_pid: raw.claude_pid,
+      last_activity_ts: raw.last_activity_ts,
+      age_ms: raw.age_ms,
+      exchange_count: raw.exchange_count,
+      mentioned_paths: safeParseArray(raw.mentioned_paths),
+      mentioned_beads: safeParseArray(raw.mentioned_beads),
+      mentioned_tokens: safeParseArray(raw.mentioned_tokens),
+      tail: raw.tail,
+      updated_at: raw.updated_at,
+    }
+  }
 
   return {
     upsertSession(input) {
@@ -169,9 +261,41 @@ export function createBearRepo(db: Database): BearRepo {
         $meta: input.meta ? JSON.stringify(input.meta) : null,
       })
     },
+    upsertFocus(input) {
+      upsertFocusStmt.run({
+        $pid: input.claudePid,
+        $lastActivityTs: input.lastActivityTs,
+        $ageMs: input.ageMs,
+        $exchangeCount: input.exchangeCount,
+        $paths: JSON.stringify(input.mentionedPaths),
+        $beads: JSON.stringify(input.mentionedBeads),
+        $tokens: JSON.stringify(input.mentionedTokens),
+        $tail: input.tail,
+        $updatedAt: input.updatedAt,
+      })
+    },
+    getFocus(claudePid) {
+      const raw = getFocusStmt.get({ $pid: claudePid }) as RawFocus | undefined
+      return raw ? hydrateFocus(raw) : null
+    },
+    listFocus() {
+      return (listFocusStmt.all() as RawFocus[]).map(hydrateFocus)
+    },
+    deleteFocus(claudePid) {
+      deleteFocusStmt.run({ $pid: claudePid })
+    },
     close() {
       db.close()
     },
+  }
+}
+
+function safeParseArray(raw: string): string[] {
+  try {
+    const out = JSON.parse(raw)
+    return Array.isArray(out) ? out.map(String) : []
+  } catch {
+    return []
   }
 }
 

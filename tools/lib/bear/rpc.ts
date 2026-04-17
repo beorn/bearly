@@ -24,6 +24,7 @@ export const BEAR_METHODS = {
   sessionRegister: "bear.session_register",
   sessionHeartbeat: "bear.session_heartbeat",
   sessionsList: "bear.sessions_list",
+  workspaceState: "bear.workspace_state",
   status: "bear.status",
 } as const
 
@@ -167,6 +168,35 @@ export type SessionInfo = {
 
 export type SessionsListResult = {
   sessions: SessionInfo[]
+}
+
+// ---------------------------------------------------------------------------
+// bear.workspace_state — cross-session snapshot (Phase 3)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceStateParams = Record<string, never>
+
+export type SessionFocusSummary = {
+  claudePid: number
+  sessionId: string
+  project: string | null
+  status: "alive" | "stale"
+  lastSeen: number
+  lastActivityTs: number | null
+  ageMs: number | null
+  exchangeCount: number
+  mentionedPaths: string[]
+  mentionedBeads: string[]
+  mentionedTokens: string[]
+  /** First ~60 chars of tail; full tail via bear.current_brief. */
+  focusHint: string
+  /** When the daemon last refreshed this focus. */
+  updatedAt: number | null
+}
+
+export type WorkspaceStateResult = {
+  generatedAt: number
+  sessions: SessionFocusSummary[]
 }
 
 // ---------------------------------------------------------------------------

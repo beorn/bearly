@@ -37,6 +37,7 @@ import {
   type AskResult,
   type CurrentBriefResult,
   type PlanOnlyResult,
+  type WorkspaceStateResult,
 } from "../../tools/lib/bear/rpc.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
@@ -59,7 +60,7 @@ async function getDaemon(): Promise<BearClient | null> {
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(BEAR_METHODS.hello, {
       clientName: "@bearly/bear",
-      clientVersion: "0.2.0",
+      clientVersion: "0.3.0",
       protocolVersion: BEAR_PROTOCOL_VERSION,
     })
     daemonClient = client
@@ -132,6 +133,16 @@ const TOOLS = [
         query: { type: "string", description: "The natural-language query" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "bear.workspace_state",
+    description:
+      "Snapshot of all Claude Code sessions currently registered with the bear daemon, each annotated with cached focus data (last activity, focus hint, mentioned paths/beads/tokens). Use to see what other sessions are doing without running a full recall. Daemon-only — returns empty sessions array if the daemon isn't running.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
     },
   },
 ]
@@ -294,11 +305,44 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
   )
 }
 
+async function handleWorkspaceState(_args: Record<string, unknown>): Promise<string> {
+  const daemon = await getDaemon()
+  if (!daemon) {
+    // No library fallback — this method only makes sense against the daemon
+    // (there is no in-process equivalent of a cross-session registry).
+    return JSON.stringify(
+      {
+        generatedAt: Date.now(),
+        sessions: [],
+        mode: "library",
+        note: "bear daemon not reachable; workspace state is only available via the daemon",
+      },
+      null,
+      2,
+    )
+  }
+  try {
+    const result = (await daemon.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
+  } catch (err) {
+    return JSON.stringify(
+      {
+        generatedAt: Date.now(),
+        sessions: [],
+        mode: "error",
+        error: err instanceof Error ? err.message : String(err),
+      },
+      null,
+      2,
+    )
+  }
+}
+
 // ============================================================================
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "@bearly/bear", version: "0.2.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "@bearly/bear", version: "0.3.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }
@@ -319,6 +363,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break
       case "bear.plan_only":
         text = await handlePlanOnly(toolArgs)
+        break
+      case "bear.workspace_state":
+        text = await handleWorkspaceState(toolArgs)
         break
       default:
         return {

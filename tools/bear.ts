@@ -19,6 +19,7 @@ import {
   type StatusResult,
   type SessionsListResult,
   type AskResult,
+  type WorkspaceStateResult,
 } from "./lib/bear/rpc.ts"
 
 const CLIENT_NAME = "bear-cli"
@@ -72,22 +73,29 @@ async function cmdStatus(): Promise<void> {
 
 async function cmdSessions(): Promise<void> {
   await withClient(async (c) => {
-    const { sessions } = (await c.call(BEAR_METHODS.sessionsList, {})) as SessionsListResult
+    const { sessions } = (await c.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
     if (sessions.length === 0) {
       process.stdout.write("no sessions registered\n")
       return
     }
     const now = Date.now()
     for (const s of sessions) {
-      const age = formatMs(now - s.lastSeen)
+      const lastSeen = formatMs(now - s.lastSeen)
       const pid = String(s.claudePid).padStart(6, " ")
       const sid = s.sessionId.slice(0, 8)
       const proj = s.project ?? "-"
-      const cwd = s.cwd ?? "-"
+      const focus = s.focusHint ? ` focus="${s.focusHint}"` : ""
       process.stdout.write(
-        `${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${age} cwd=${cwd}\n`,
+        `${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${lastSeen}${focus}\n`,
       )
     }
+  })
+}
+
+async function cmdWorkspace(): Promise<void> {
+  await withClient(async (c) => {
+    const state = (await c.call(BEAR_METHODS.workspaceState, {})) as WorkspaceStateResult
+    process.stdout.write(JSON.stringify(state, null, 2) + "\n")
   })
 }
 
@@ -144,7 +152,8 @@ function usage(): void {
       "",
       "Usage: bun bear.ts <command>",
       "  status        Show daemon status (auto-starts if needed)",
-      "  sessions      List registered sessions",
+      "  sessions      List registered sessions with focus hints",
+      "  workspace     Dump full workspace state as JSON",
       "  ask <query>   Run bear.ask via the daemon",
       "  ping          Cheap liveness check (bear.hello), exits 1 if offline",
       "  stop          SIGTERM the running daemon",
@@ -167,6 +176,9 @@ async function main(): Promise<void> {
       break
     case "sessions":
       await cmdSessions()
+      break
+    case "workspace":
+      await cmdWorkspace()
       break
     case "ask":
       await cmdAsk(rest.join(" "))

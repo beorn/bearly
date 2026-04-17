@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.0 (2026-04-17)
+
+Phase 3 of the bear workspace-daemon plan (bead `km-bear.focus`). Daemon now
+maintains a per-session focus cache, refreshed every 60 s by a background
+poller. `bear.current_brief` reads from the cache when fresh.
+
+### Added
+
+- **Focus poller** — daemon spawns a `setInterval(--focus-poll-ms, default 60 s)`
+  loop that parses the JSONL tail of every alive session and upserts
+  `session_focus` (last-activity ts, exchange count, mentioned
+  paths/beads/tokens, flattened tail).
+- **`bear.workspace_state` MCP tool** — cross-session snapshot; each entry
+  combines session metadata with cached focus. Used by `bear sessions` /
+  `bear workspace` CLI commands.
+- **`bear.current_brief` cache fast-path** — when the caller supplies a
+  sessionId and the cache entry is <2 min old, served from cache.
+  Otherwise falls through to the live `getCurrentSessionContext` parse.
+- **`bear sessions` shows focus hints** inline; new `bear workspace`
+  dumps the full `WorkspaceStateResult` as JSON.
+- **`extractSessionFocus`** — new pure export in
+  `tools/recall/session-context.ts`: takes a JSONL path directly (no
+  detection, no env lookup), used by the daemon poller and fully
+  unit-testable.
+
+### Schema
+
+- New `session_focus` table keyed by `claude_pid` (stores arrays as JSON
+  strings). Additive migration (`CREATE TABLE IF NOT EXISTS`).
+
+### CLI
+
+- `bun vendor/bearly/tools/bear.ts sessions` now shows `focus="<hint>"`
+  for each alive session.
+- New `bun vendor/bearly/tools/bear.ts workspace` dumps raw
+  workspace state as JSON.
+- `bear-daemon --focus-poll-ms <ms>` and `BEAR_FOCUS_POLL_MS` env var
+  expose the poll interval (tests use 200 ms, default 60 s).
+
+### Tests
+
+5 new integration + unit tests (`tests/bear/focus.test.ts`): pure
+extraction, cache population via the poller, cache persistence after the
+transcript is removed, and the current-brief fast-path.
+
 ## 0.2.0 (2026-04-17)
 
 Phase 2 of the bear workspace-daemon plan (bead `km-bear.daemon`). The MCP

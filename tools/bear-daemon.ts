@@ -26,7 +26,13 @@ import {
   type JsonRpcRequest,
 } from "./lib/bear/socket.ts"
 import { resolveBearSocketPath, resolveBearPidPath, resolveBearDbPath, ensureParentDir } from "./lib/bear/config.ts"
-import { openBearDatabase, createBearRepo, sessionRowToInfo, type BearRepo } from "./lib/bear/database.ts"
+import {
+  openBearDatabase,
+  createBearRepo,
+  sessionRowToInfo,
+  type BearRepo,
+  type SessionRow,
+} from "./lib/bear/database.ts"
 import {
   BEAR_METHODS,
   BEAR_ERRORS,
@@ -45,14 +51,16 @@ import {
   type SessionHeartbeatResult,
   type SessionsListResult,
   type StatusResult,
+  type WorkspaceStateResult,
+  type SessionFocusSummary,
 } from "./lib/bear/rpc.ts"
 import { recallAgent } from "./recall/agent.ts"
 import { planQuery, planVariants } from "./recall/plan.ts"
 import { buildQueryContext } from "./recall/context.ts"
-import { getCurrentSessionContext } from "./recall/session-context.ts"
+import { getCurrentSessionContext, extractSessionFocus } from "./recall/session-context.ts"
 import { setRecallLogging } from "./lib/history/recall-shared.ts"
 
-const DAEMON_VERSION = "0.2.0"
+const DAEMON_VERSION = "0.3.0"
 const STARTED_AT = Date.now()
 
 // ---------------------------------------------------------------------------
@@ -64,6 +72,7 @@ const { values: args } = parseArgs({
     socket: { type: "string" },
     db: { type: "string" },
     "quit-timeout": { type: "string", default: "1800" },
+    "focus-poll-ms": { type: "string", default: process.env.BEAR_FOCUS_POLL_MS ?? "60000" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
@@ -73,6 +82,7 @@ const SOCKET_PATH = resolveBearSocketPath(args.socket as string | undefined)
 const PID_PATH = resolveBearPidPath(SOCKET_PATH)
 const DB_PATH = resolveBearDbPath(args.db as string | undefined)
 const QUIT_TIMEOUT_SEC = parseInt(String(args["quit-timeout"]), 10)
+const FOCUS_POLL_MS = Math.max(100, parseInt(String(args["focus-poll-ms"]), 10) || 60000)
 const FOREGROUND = args.foreground as boolean
 
 ensureParentDir(SOCKET_PATH)
@@ -196,6 +206,30 @@ async function handleAsk(_conn: ClientConn, params: AskParams): Promise<AskResul
 
 async function handleCurrentBrief(conn: ClientConn, params: CurrentBriefParams): Promise<CurrentBriefResult> {
   const override = params.sessionIdOverride ?? conn.sessionId ?? undefined
+
+  // Prefer cache when we know which session the caller belongs to and the
+  // entry is fresh (<2 min). Saves the ~50-200ms of JSONL re-parse.
+  const CACHE_FRESH_MS = 2 * 60 * 1000
+  if (override) {
+    const row = repo.getSessionBySessionId(override)
+    if (row) {
+      const focus = repo.getFocus(row.claude_pid)
+      if (focus && Date.now() - focus.updated_at < CACHE_FRESH_MS) {
+        return {
+          sessionId: row.session_id,
+          detected: true,
+          ageMs: focus.age_ms,
+          exchangeCount: focus.exchange_count,
+          mentionedPaths: focus.mentioned_paths,
+          mentionedBeads: focus.mentioned_beads,
+          mentionedTokens: focus.mentioned_tokens,
+          recentMessages: focus.tail,
+        }
+      }
+    }
+  }
+
+  // Fall through to live parse (Phase 2 behavior).
   const ctx = getCurrentSessionContext(override ? { sessionIdOverride: override } : {})
   if (!ctx) return { sessionId: null, detected: false }
   return {
@@ -255,6 +289,11 @@ function handleSessionRegister(conn: ClientConn, params: SessionRegisterParams):
   conn.claudePid = params.claudePid
   conn.sessionId = params.sessionId
   log.debug?.(`session registered pid=${params.claudePid} session=${params.sessionId.slice(0, 8)}`)
+  // Kick an initial focus refresh so workspace_state has data before the
+  // next poll tick.
+  if (row.transcript_path) {
+    queueMicrotask(() => refreshFocusFor(row))
+  }
   return { ok: true, registeredAt: row.started_at }
 }
 
@@ -271,6 +310,51 @@ function handleSessionHeartbeat(conn: ClientConn, params: SessionHeartbeatParams
 function handleSessionsList(): SessionsListResult {
   const rows = repo.listSessions()
   return { sessions: rows.map(sessionRowToInfo) }
+}
+
+function handleWorkspaceState(): WorkspaceStateResult {
+  const rows = repo.listSessions()
+  const now = Date.now()
+  const sessions: SessionFocusSummary[] = rows.map((row) => {
+    const focus = repo.getFocus(row.claude_pid)
+    return {
+      claudePid: row.claude_pid,
+      sessionId: row.session_id,
+      project: row.project,
+      status: row.status,
+      lastSeen: row.last_seen,
+      lastActivityTs: focus?.last_activity_ts ?? null,
+      ageMs:
+        focus?.last_activity_ts !== null && focus?.last_activity_ts !== undefined ? now - focus.last_activity_ts : null,
+      exchangeCount: focus?.exchange_count ?? 0,
+      mentionedPaths: focus?.mentioned_paths ?? [],
+      mentionedBeads: focus?.mentioned_beads ?? [],
+      mentionedTokens: focus?.mentioned_tokens ?? [],
+      focusHint: focus ? extractFocusHint(focus.tail) : "",
+      updatedAt: focus?.updated_at ?? null,
+    }
+  })
+  return { generatedAt: now, sessions }
+}
+
+function extractFocusHint(tail: string): string {
+  if (!tail) return ""
+  // Tail format (from recall/session-context.ts formatExchange):
+  //   [USER] ...text...
+  //   [ASSISTANT] ...text...
+  // Prefer the LAST user message — that's the user's current intent.
+  const blocks = tail.trim().split(/\n\n+/)
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i]
+    if (block?.startsWith("[USER]")) {
+      const hint = block.slice("[USER]".length).trim()
+      if (hint) return hint.slice(0, 120)
+    }
+  }
+  // Fall back to the last block regardless of role.
+  const last = blocks[blocks.length - 1]
+  if (!last) return ""
+  return last.replace(/^\[(USER|ASSISTANT)\]\s*/, "").slice(0, 120)
 }
 
 function handleStatus(): StatusResult {
@@ -308,6 +392,8 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
         return makeResponse(req.id, handleSessionHeartbeat(conn, params as unknown as SessionHeartbeatParams))
       case BEAR_METHODS.sessionsList:
         return makeResponse(req.id, handleSessionsList())
+      case BEAR_METHODS.workspaceState:
+        return makeResponse(req.id, handleWorkspaceState())
       case BEAR_METHODS.status:
         return makeResponse(req.id, handleStatus())
       default:
@@ -386,6 +472,41 @@ const janitor: NodeJS.Timeout = setInterval(() => {
   }
 }, 30_000) as unknown as NodeJS.Timeout
 janitor.unref?.()
+
+// ---------------------------------------------------------------------------
+// Focus poller (Phase 3) — refresh session_focus for alive sessions
+// ---------------------------------------------------------------------------
+
+function refreshFocusFor(row: SessionRow): void {
+  if (!row.transcript_path) return
+  try {
+    const focus = extractSessionFocus(row.transcript_path, { sessionId: row.session_id })
+    if (!focus) return
+    repo.upsertFocus({
+      claudePid: row.claude_pid,
+      lastActivityTs: focus.lastActivityTs,
+      ageMs: focus.ageMs,
+      exchangeCount: focus.exchangeCount,
+      mentionedPaths: focus.mentionedPaths,
+      mentionedBeads: focus.mentionedBeads,
+      mentionedTokens: focus.mentionedTokens,
+      tail: focus.tail,
+      updatedAt: Date.now(),
+    })
+  } catch (err) {
+    log.debug?.(`focus refresh failed for pid=${row.claude_pid}: ${err instanceof Error ? err.message : err}`)
+  }
+}
+
+function refreshAllFocus(): void {
+  for (const row of repo.listSessions()) {
+    if (row.status !== "alive") continue
+    refreshFocusFor(row)
+  }
+}
+
+const focusPoller: NodeJS.Timeout = setInterval(refreshAllFocus, FOCUS_POLL_MS) as unknown as NodeJS.Timeout
+focusPoller.unref?.()
 
 // ---------------------------------------------------------------------------
 // Signal handlers + shutdown

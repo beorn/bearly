@@ -93,10 +93,25 @@ idle-quits after 30 minutes of no clients.
 `bun vendor/bearly/tools/bear.ts`:
 
 - `status` — show daemon status (auto-starts if needed)
-- `sessions` — list registered Claude Code sessions
+- `sessions` — list registered Claude Code sessions with focus hints
+- `workspace` — dump full workspace state (sessions + focus cache) as JSON
 - `ask "query"` — run `bear.ask` via the daemon
 - `ping` — cheap liveness check, exits 1 if offline
 - `stop` — SIGTERM the running daemon
+
+## Focus cache (Phase 3)
+
+The daemon maintains a `session_focus` row per alive Claude Code session,
+refreshed every 60 s from the session's JSONL transcript tail. Exposed via
+the `bear.workspace_state` MCP tool and the `bear sessions` / `bear workspace`
+CLI commands.
+
+`bear.current_brief` serves from the cache when the caller passes a
+sessionId and the entry is <2 min old; otherwise it falls through to the
+live tail parse (Phase 2 behaviour).
+
+Control the poll interval with `--focus-poll-ms <ms>` or `BEAR_FOCUS_POLL_MS`
+(default 60 000). Tests use 200 ms.
 
 ## Fallthrough
 
