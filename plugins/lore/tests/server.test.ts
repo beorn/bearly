@@ -229,3 +229,98 @@ describe("lore.plan_only handler", () => {
     expect(out.error).toBeDefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Library-fallback handler behaviour for Phase 3-5 tools.
+//
+// When the lore daemon is unreachable, the MCP server falls back to either
+// the in-process library (hookRecall for inject_delta) or an empty-result
+// shape (workspace_state, session_state are daemon-only). These tests exercise
+// the fallback shape using the same re-implementation strategy as the Phase 1
+// tools above.
+// ---------------------------------------------------------------------------
+
+import { hookRecall } from "../../recall/src/history/scanner"
+
+async function handleInjectDeltaLibraryFallback(args: Record<string, unknown>) {
+  const prompt = typeof args.prompt === "string" ? args.prompt : ""
+  if (!prompt) throw new Error("prompt required")
+  const result = await hookRecall(prompt)
+  if (result.skipped) {
+    return { skipped: true, reason: result.reason, seenCount: 0, turnNumber: 0, mode: "library" as const }
+  }
+  return {
+    skipped: false,
+    additionalContext: result.hookOutput?.hookSpecificOutput.additionalContext ?? "",
+    seenCount: 0,
+    turnNumber: 0,
+    mode: "library" as const,
+  }
+}
+
+function handleWorkspaceStateLibraryFallback() {
+  // Daemon-only — library path returns empty with a note.
+  return {
+    generatedAt: Date.now(),
+    sessions: [] as const,
+    mode: "library" as const,
+    note: "bear daemon not reachable; workspace state is only available via the daemon",
+  }
+}
+
+function handleSessionStateLibraryFallback(args: Record<string, unknown>) {
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : ""
+  if (!sessionId) throw new Error("sessionId required")
+  return {
+    sessionId,
+    detected: false,
+    mode: "library" as const,
+    note: "bear daemon not reachable; session_state is daemon-only",
+  }
+}
+
+describe("lore.inject_delta handler (library fallback)", () => {
+  test("returns skipped=true with reason for empty prompt", async () => {
+    mockHolder.fn = buildMockQueryModel([])
+    const out = await handleInjectDeltaLibraryFallback({ prompt: "x" })
+    expect(out.skipped).toBe(true)
+    expect(out.reason).toBe("short")
+    expect(out.mode).toBe("library")
+  })
+
+  test("returns skipped=true for slash commands", async () => {
+    mockHolder.fn = buildMockQueryModel([])
+    const out = await handleInjectDeltaLibraryFallback({ prompt: "/some-command with args" })
+    expect(out.skipped).toBe(true)
+    expect(out.reason).toBe("slash_command")
+  })
+
+  test("throws when prompt is missing entirely", async () => {
+    mockHolder.fn = buildMockQueryModel([])
+    await expect(handleInjectDeltaLibraryFallback({})).rejects.toThrow(/prompt required/)
+  })
+})
+
+describe("lore.workspace_state handler (library fallback)", () => {
+  test("returns empty sessions with explanatory note", () => {
+    const out = handleWorkspaceStateLibraryFallback()
+    expect(out.sessions).toHaveLength(0)
+    expect(out.mode).toBe("library")
+    expect(out.note).toMatch(/daemon not reachable/i)
+    expect(typeof out.generatedAt).toBe("number")
+  })
+})
+
+describe("lore.session_state handler (library fallback)", () => {
+  test("returns detected=false with sessionId echoed", () => {
+    const out = handleSessionStateLibraryFallback({ sessionId: "some-uuid" })
+    expect(out.detected).toBe(false)
+    expect(out.sessionId).toBe("some-uuid")
+    expect(out.mode).toBe("library")
+    expect(out.note).toMatch(/daemon-only/i)
+  })
+
+  test("throws when sessionId is missing", () => {
+    expect(() => handleSessionStateLibraryFallback({})).toThrow(/sessionId required/)
+  })
+})
