@@ -18,9 +18,9 @@ Three packages that compose into what a tribe of Claude Code sessions needs to w
 
 ### Supporting primitives
 
-| Package        | npm               | Role                                                                           | Entry Point    |
-| -------------- | ----------------- | ------------------------------------------------------------------------------ | -------------- |
-| `@bearly/llm`  | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research       | `plugins/llm/` |
+| Package       | npm               | Role                                                                     | Entry Point    |
+| ------------- | ----------------- | ------------------------------------------------------------------------ | -------------- |
+| `@bearly/llm` | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research | `plugins/llm/` |
 
 Future packages (not yet extracted): `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
 

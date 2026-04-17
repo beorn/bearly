@@ -295,7 +295,7 @@ export async function maybeAutoUpdatePricing(command: string | undefined): Promi
         if (c.oldInput !== c.newInput) console.error(`      input:  $${c.oldInput}/M → $${c.newInput}/M`)
         if (c.oldOutput !== c.newOutput) console.error(`      output: $${c.oldOutput}/M → $${c.newOutput}/M`)
       }
-      console.error(`\n  ⚠️  To persist: update tools/lib/llm/types.ts`)
+      console.error(`\n  ⚠️  To persist: update plugins/llm/src/lib/types.ts`)
     }
 
     if (hasNewModels) {
@@ -306,7 +306,7 @@ export async function maybeAutoUpdatePricing(command: string | undefined): Promi
       if (newModels.length > 15) {
         console.error(`    ... and ${newModels.length - 15} more`)
       }
-      console.error(`\n  ℹ️  Add to MODELS in tools/lib/llm/types.ts`)
+      console.error(`\n  ℹ️  Add to MODELS in plugins/llm/src/lib/types.ts`)
     }
 
     if (updateResult.extractionCost) {

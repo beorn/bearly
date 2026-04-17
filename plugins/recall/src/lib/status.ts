@@ -40,7 +40,7 @@ import {
 /**
  * Resolve the project root directory.
  * The recall.ts script lives at vendor/bearly/tools/recall.ts
- * So project root is 4 levels up from __dirname (tools/recall/ → tools/ → tools/ → vendor/ → root)
+ * So project root is 4 levels up from __dirname (plugins/recall/src/lib/ → plugins/recall/src/ → plugins/recall/ → plugins/ → vendor/bearly/)
  */
 function getProjectRoot(): string {
   let dir = path.resolve(import.meta.dir)

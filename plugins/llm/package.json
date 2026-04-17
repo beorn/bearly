@@ -9,11 +9,11 @@
     "url": "https://github.com/beorn/bearly.git",
     "directory": "plugins/llm"
   },
-  "type": "module",
   "files": [
     "src",
     "README.md"
   ],
+  "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts"

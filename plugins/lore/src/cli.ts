@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
-* lore — CLI for the lore workspace daemon.
+ * lore — CLI for the lore workspace daemon.
  *
  * Usage:
  *   bun lore.ts status              Show daemon status (auto-starts if needed)

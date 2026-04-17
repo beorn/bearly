@@ -26,13 +26,7 @@ import {
   type JsonRpcRequest,
 } from "./lib/socket.ts"
 import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/config.ts"
-import {
-  openLoreDatabase,
-  createLoreRepo,
-  sessionRowToInfo,
-  type LoreRepo,
-  type SessionRow,
-} from "./lib/database.ts"
+import { openLoreDatabase, createLoreRepo, sessionRowToInfo, type LoreRepo, type SessionRow } from "./lib/database.ts"
 import {
   LORE_METHODS,
   LORE_ERRORS,

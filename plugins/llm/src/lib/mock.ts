@@ -7,16 +7,16 @@
  * Usage (in a test file):
  *
  *   import { vi } from "vitest"
- *   import { buildMockQueryModel, alwaysAvailable } from "../../tools/lib/llm/mock"
+ *   import { buildMockQueryModel, alwaysAvailable } from "/llm/src/lib/mock"
  *
- *   vi.mock("../../tools/lib/llm/research", () => ({
+ *   vi.mock("/llm/src/lib/research", () => ({
  *     queryModel: buildMockQueryModel([
  *       { match: /planner/i, content: JSON.stringify({ keywords: ["foo"] }) },
  *       { content: "synthesized answer" },  // default for other calls
  *     ]),
  *   }))
- *   vi.mock("../../tools/lib/llm/providers", async (importOriginal) => ({
- *     ...(await importOriginal<typeof import("../../tools/lib/llm/providers")>()),
+ *   vi.mock("/llm/src/lib/providers", async (importOriginal) => ({
+ *     ...(await importOriginal<typeof import("/llm/src/lib/providers")>()),
  *     isProviderAvailable: alwaysAvailable,
  *   }))
  *

@@ -16,15 +16,17 @@ export { getCurrentSessionContext, extractSessionFocus } from "./lib/session-con
 export { writeTrace } from "./lib/trace.ts"
 
 export { recall, boostedRank, expandQueryVariants, setRecallLogging, parseTimeToMs } from "./history/search.ts"
-export { synthesizeResults, raceLlmModels, remember, SYNTHESIS_PROMPT, formatResultsForLlm } from "./history/synthesize.ts"
+export {
+  synthesizeResults,
+  raceLlmModels,
+  remember,
+  SYNTHESIS_PROMPT,
+  formatResultsForLlm,
+} from "./history/synthesize.ts"
 export { hookRecall, extractTranscriptMessages, reviewMemorySystem } from "./history/scanner.ts"
 export { ensureProjectSourcesIndexed } from "./history/project-sources.ts"
 
-export type {
-  RecallOptions,
-  RecallResult,
-  RecallSearchResult,
-} from "./history/recall-shared.ts"
+export type { RecallOptions, RecallResult, RecallSearchResult } from "./history/recall-shared.ts"
 export type {
   LlmRaceModelResult,
   LlmRaceResult,

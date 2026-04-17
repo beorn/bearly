@@ -422,7 +422,7 @@ export async function main() {
           if (c.oldInput !== c.newInput) console.error(`    input:  $${c.oldInput}/M → $${c.newInput}/M`)
           if (c.oldOutput !== c.newOutput) console.error(`    output: $${c.oldOutput}/M → $${c.newOutput}/M`)
         }
-        console.error(`\n⚠️  To persist, update tools/lib/llm/types.ts`)
+        console.error(`\n⚠️  To persist, update plugins/llm/src/lib/types.ts`)
       }
       console.error("✓ Pricing cache updated.")
       if (result.extractionCost) console.error(`  (extraction cost: ${result.extractionCost})`)
