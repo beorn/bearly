@@ -8,6 +8,9 @@
  * (the memory daemon that adds focus cache, summaries, and dedup on top).
  */
 
+export { classifyPromptSkip, cleanSnippet, TRIVIAL_PROMPTS } from "./lib/prompt-filter.ts"
+export type { InjectSkipReason } from "./lib/prompt-filter.ts"
+
 export { recallAgent } from "./lib/agent.ts"
 export { planQuery, planVariants } from "./lib/plan.ts"
 export { fanoutSearch, mergeFanouts } from "./lib/fanout.ts"

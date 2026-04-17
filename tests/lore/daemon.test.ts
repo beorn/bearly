@@ -287,7 +287,7 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
       })) as InjectDeltaResult
       expect(r.turnNumber).toBe(i)
       expect(r.turnNumber).toBeGreaterThan(lastTurn)
-      lastTurn = r.turnNumber
+      lastTurn = r.turnNumber ?? 0
     }
 
     // Short-circuited prompts (empty, short, slash) do NOT advance the counter —

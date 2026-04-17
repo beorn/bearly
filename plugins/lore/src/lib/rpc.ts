@@ -242,17 +242,20 @@ export type InjectDeltaParams = {
   ttlTurns?: number
 }
 
+/** Reasons the daemon / library path might skip injection. */
+export type InjectSkipReason = "empty" | "short" | "trivial" | "slash_command" | "no_results" | "all_seen"
+
 export type InjectDeltaResult = {
   skipped: boolean
-  reason?: string
+  reason?: InjectSkipReason
   /** Same format as hookRecall: ready to pass through hookSpecificOutput.additionalContext */
   additionalContext?: string
-  /** Keys newly added to the seen set this call, for debugging. */
+  /** Keys newly added to the seen set this call. Daemon-only; omitted on library fallback. */
   newKeys?: string[]
-  /** Current size of the per-session seen set (for observability). */
-  seenCount: number
-  /** Current turn counter for the session. */
-  turnNumber: number
+  /** Current size of the per-session seen set. Daemon-only; omitted on library fallback. */
+  seenCount?: number
+  /** Current turn counter for the session. Daemon-only; omitted on library fallback. */
+  turnNumber?: number
 }
 
 // ---------------------------------------------------------------------------

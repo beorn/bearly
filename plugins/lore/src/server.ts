@@ -398,20 +398,16 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
   }
 
   // Library fallback — existing hookRecall uses tmpfile-based dedup.
+  // Observability fields (seenCount/turnNumber/newKeys) are daemon-only
+  // and omitted here by design.
   const result = await hookRecall(prompt)
   if (result.skipped) {
-    return JSON.stringify(
-      { skipped: true, reason: result.reason, seenCount: 0, turnNumber: 0, mode: "library" },
-      null,
-      2,
-    )
+    return JSON.stringify({ skipped: true, reason: result.reason, mode: "library" }, null, 2)
   }
   return JSON.stringify(
     {
       skipped: false,
       additionalContext: result.hookOutput?.hookSpecificOutput.additionalContext ?? "",
-      seenCount: 0,
-      turnNumber: 0,
       mode: "library",
     },
     null,

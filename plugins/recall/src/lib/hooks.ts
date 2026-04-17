@@ -238,11 +238,16 @@ async function registerWithLoreDaemon(input: {
         client.close()
       }
     })()
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), Math.max(50, deadline - Date.now())),
-    )
-    await Promise.race([racePromise, timeout])
-    return "ok"
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error("timeout")), Math.max(50, deadline - Date.now()))
+    })
+    try {
+      await Promise.race([racePromise, timeout])
+      return "ok"
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === "ECONNREFUSED" || code === "ENOENT") return "no-daemon"
@@ -292,10 +297,18 @@ async function tryInjectDeltaViaDaemon(prompt: string, sessionId?: string): Prom
         client.close()
       }
     })()
-    const timeout = new Promise<InjectDeltaOutcome>((resolve) =>
-      setTimeout(() => resolve({ kind: "error", message: "timeout" }), Math.max(50, deadline - Date.now())),
-    )
-    return await Promise.race([racePromise, timeout])
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<InjectDeltaOutcome>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve({ kind: "error", message: "timeout" }),
+        Math.max(50, deadline - Date.now()),
+      )
+    })
+    try {
+      return await Promise.race([racePromise, timeout])
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === "ECONNREFUSED" || code === "ENOENT") return { kind: "error", message: "no-daemon" }

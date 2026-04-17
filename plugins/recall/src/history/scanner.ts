@@ -22,6 +22,7 @@ import { getCheapModels } from "../../../llm/src/lib/types"
 import { isProviderAvailable } from "../../../llm/src/lib/providers"
 import { log, ONE_HOUR_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 import type { RecallSearchResult } from "./recall-shared.ts"
+import { classifyPromptSkip, cleanSnippet } from "../lib/prompt-filter.ts"
 import { recall, parseTimeToMs } from "./search.ts"
 import { SYNTHESIS_PROMPT, raceLlmModels, formatResultsForLlm, type LlmRaceModelResult } from "./synthesize.ts"
 import { ensureProjectSourcesIndexed } from "./project-sources.ts"
@@ -86,7 +87,7 @@ export function extractTranscriptMessages(transcriptPath: string): string | null
 
 export interface HookResult {
   skipped: boolean
-  reason?: string
+  reason?: import("../lib/prompt-filter.ts").InjectSkipReason
   hookOutput?: {
     hookSpecificOutput: {
       additionalContext: string
@@ -100,45 +101,9 @@ export interface HookResult {
  * Throws on actual errors (fail loud).
  */
 export async function hookRecall(prompt: string): Promise<HookResult> {
-  // Skip empty prompts
-  if (!prompt || prompt.trim().length === 0) {
-    return { skipped: true, reason: "empty" }
-  }
-
-  // Skip short prompts (< 15 chars)
-  if (prompt.trim().length < 15) {
-    return { skipped: true, reason: "short" }
-  }
-
-  // Skip trivial responses
-  const lower = prompt.toLowerCase().trim()
-  const trivial = [
-    "yes",
-    "no",
-    "y",
-    "n",
-    "ok",
-    "okay",
-    "sure",
-    "continue",
-    "go ahead",
-    "lgtm",
-    "looks good",
-    "do it",
-    "proceed",
-    "thanks",
-    "thank you",
-    "done",
-    "sounds good",
-    "go for it",
-  ]
-  if (trivial.includes(lower)) {
-    return { skipped: true, reason: "trivial" }
-  }
-
-  // Skip slash commands
-  if (prompt.startsWith("/")) {
-    return { skipped: true, reason: "slash_command" }
+  const skipReason = classifyPromptSkip(prompt)
+  if (skipReason) {
+    return { skipped: true, reason: skipReason }
   }
 
   // Index project sources if CLAUDE_PROJECT_DIR is set (fast mtime checks)
@@ -180,26 +145,12 @@ export async function hookRecall(prompt: string): Promise<HookResult> {
   for (const r of result.results) {
     const key = `${r.sessionId}:${r.type}`
     if (key in seen && turnNumber - seen[key]! < DEDUP_TTL_TURNS) continue
-    let text = r.snippet.trim()
-    // Strip FTS5 highlight markers (both >>> and <<<)
-    text = text.replace(/>>>|<<</g, "")
-    // Strip JSON-like fragments (tool calls, parameters)
-    text = text
-      .replace(/\{"[^"]*"[^}]*\}/g, "")
-      .replace(/\{[^}]{0,50}\}?/g, "")
-      .trim()
-    // Strip [Assistant]/[User] prefixes and --- separators
-    text = text
-      .replace(/\[(?:Assistant|User)\]\s*/g, "")
-      .replace(/^-{3,}\n?/gm, "")
-      .trim()
-    // Collapse whitespace
-    text = text.replace(/\n{3,}/g, "\n\n").trim()
-    if (text.length < 20) continue // Skip near-empty results
+    const text = cleanSnippet(r.snippet)
+    if (text.length < 20) continue
     const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
     snippets.push(`[${r.type}] ${label}: ${text.slice(0, 300)}`)
     newKeys.push(key)
-    if (snippets.length >= 3) break // Cap at 3 snippets
+    if (snippets.length >= 3) break
   }
 
   // Persist seen keys + turn counter for future calls in this session

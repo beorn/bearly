@@ -57,6 +57,7 @@ import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib
 import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/rpc.ts"
 import { recall } from "../../recall/src/history/search.ts"
 import { ensureProjectSourcesIndexed } from "../../recall/src/history/project-sources.ts"
+import { classifyPromptSkip, cleanSnippet } from "../../recall/src/lib/prompt-filter.ts"
 
 const DAEMON_VERSION = "0.5.0"
 const STARTED_AT = Date.now()
@@ -395,42 +396,6 @@ function injectStateFor(sessionId: string): InjectState {
   return state
 }
 
-const TRIVIAL_PROMPTS = new Set([
-  "yes",
-  "no",
-  "y",
-  "n",
-  "ok",
-  "okay",
-  "sure",
-  "continue",
-  "go ahead",
-  "lgtm",
-  "looks good",
-  "do it",
-  "proceed",
-  "thanks",
-  "thank you",
-  "done",
-  "sounds good",
-  "go for it",
-])
-
-function cleanSnippet(raw: string): string {
-  let text = raw.trim()
-  text = text.replace(/>>>|<<</g, "")
-  text = text
-    .replace(/\{"[^"]*"[^}]*\}/g, "")
-    .replace(/\{[^}]{0,50}\}?/g, "")
-    .trim()
-  text = text
-    .replace(/\[(?:Assistant|User)\]\s*/g, "")
-    .replace(/^-{3,}\n?/gm, "")
-    .trim()
-  text = text.replace(/\n{3,}/g, "\n\n").trim()
-  return text
-}
-
 async function handleInjectDelta(conn: ClientConn, params: InjectDeltaParams): Promise<InjectDeltaResult> {
   const prompt = params.prompt ?? ""
   const limitSnippets = typeof params.limit === "number" && params.limit > 0 ? params.limit : 3
@@ -439,18 +404,9 @@ async function handleInjectDelta(conn: ClientConn, params: InjectDeltaParams): P
 
   const state = injectStateFor(sessionId)
 
-  if (!prompt || prompt.trim().length === 0) {
-    return { skipped: true, reason: "empty", seenCount: state.seen.size, turnNumber: state.turnNumber }
-  }
-  if (prompt.trim().length < 15) {
-    return { skipped: true, reason: "short", seenCount: state.seen.size, turnNumber: state.turnNumber }
-  }
-  const lower = prompt.toLowerCase().trim()
-  if (TRIVIAL_PROMPTS.has(lower)) {
-    return { skipped: true, reason: "trivial", seenCount: state.seen.size, turnNumber: state.turnNumber }
-  }
-  if (prompt.startsWith("/")) {
-    return { skipped: true, reason: "slash_command", seenCount: state.seen.size, turnNumber: state.turnNumber }
+  const skipReason = classifyPromptSkip(prompt)
+  if (skipReason) {
+    return { skipped: true, reason: skipReason, seenCount: state.seen.size, turnNumber: state.turnNumber }
   }
 
   ensureProjectSourcesIndexed()
@@ -622,6 +578,14 @@ server.listen(SOCKET_PATH, () => {
 const janitor: NodeJS.Timeout = setInterval(() => {
   const now = Date.now()
   repo.sweepDeadSessions(now, 15 * 60 * 1000) // stale after 15min no heartbeat
+  // Prune inject-dedup state for sessions that are gone. Without this the
+  // per-session Map grows unbounded across daemon lifetime.
+  const liveSessionIds = new Set(repo.listSessions().map((r) => r.session_id))
+  for (const sessionId of injectStates.keys()) {
+    if (sessionId !== "unknown" && !liveSessionIds.has(sessionId)) {
+      injectStates.delete(sessionId)
+    }
+  }
   if (idleDeadline !== null && now >= idleDeadline) {
     log.info?.("Idle timeout reached; shutting down")
     void shutdown(0)
