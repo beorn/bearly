@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * @bearly/lore — MCP server bridging Claude Code to the lore daemon.
+ * Lore — MCP server (subpackage of /tribe) bridging Claude Code to the lore daemon.
  *
  * Phase 2 of the lore workspace-daemon plan. Each MCP tool call is forwarded
  * to `lore-daemon` over a Unix socket via JSON-RPC, keeping the recall
@@ -62,7 +62,7 @@ async function getDaemon(): Promise<LoreClient | null> {
     const socketPath = resolveLoreSocketPath()
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(LORE_METHODS.hello, {
-      clientName: "@bearly/lore",
+      clientName: "/tribe/lore",
       clientVersion: "0.5.0",
       protocolVersion: LORE_PROTOCOL_VERSION,
     })
@@ -447,7 +447,7 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "@bearly/lore", version: "0.5.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "/tribe", version: "0.5.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }
@@ -509,7 +509,7 @@ process.on("unhandledRejection", (reason) => {
 // Support `--help` / `--list-tools` for the /complete criteria + humans
 const arg = process.argv[2]
 if (arg === "--help" || arg === "-h") {
-  process.stdout.write(`@bearly/lore — MCP server. Tools:\n`)
+  process.stdout.write(`/tribe (lore) — MCP server. Tools:\n`)
   for (const t of TOOLS) process.stdout.write(`  ${t.name}  ${t.description}\n`)
   process.exit(0)
 }

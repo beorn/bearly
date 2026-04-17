@@ -1,5 +1,5 @@
 /**
- * Tests for the @bearly/lore MCP server's tool handlers.
+ * Tests for the lore MCP server (internal to /tribe)'s tool handlers.
  *
  * We test the handler functions directly (not through stdio MCP) because:
  *  1. Handler logic is what's worth testing — MCP transport is SDK-owned.

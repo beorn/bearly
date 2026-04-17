@@ -4,7 +4,7 @@
  * Session history recall: FTS-indexed search, LLM-driven planner, multi-round
  * agent over Claude Code transcripts. Stateless per-call library + CLI.
  *
- * Used standalone via `bun recall` CLI, or as a dependency of @bearly/lore
+ * Used standalone via `bun recall` CLI, or as a dependency of /tribe
  * (the memory daemon that adds focus cache, summaries, and dedup on top).
  */
 

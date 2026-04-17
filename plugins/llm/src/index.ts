@@ -6,7 +6,7 @@
  * wrappers around OpenAI, Anthropic, Gemini, xAI, and Ollama.
  *
  * Consumed by @bearly/recall (LLM-driven query planning + synthesis),
- * @bearly/lore (session summarizer), and the standalone `bun llm` CLI.
+ * @bearly/tribe (session summarizer — internally), and the standalone `bun llm` CLI.
  */
 
 export { queryModel } from "./lib/research.ts"
