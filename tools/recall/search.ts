@@ -61,6 +61,11 @@ export interface SearchOptions {
   maxRounds?: string
   debugPlan?: boolean
   planTimeout?: string
+  /**
+   * Commander maps --no-speculative-synth to speculativeSynth:false.
+   * Default (undefined) = speculative synth enabled.
+   */
+  speculativeSynth?: boolean
 }
 
 // ============================================================================
@@ -141,6 +146,7 @@ async function runAgentSearch(query: string, options: SearchOptions, base: Recal
     maxRounds: options.maxRounds ? (parseInt(options.maxRounds, 10) === 1 ? 1 : 2) : 2,
     planTimeoutMs: options.planTimeout ? parseInt(options.planTimeout, 10) : undefined,
     debugPlan: !!options.debugPlan,
+    speculativeSynth: options.speculativeSynth,
   }
 
   const result = await recallAgent(query, agentOpts)
@@ -156,9 +162,42 @@ async function runAgentSearch(query: string, options: SearchOptions, base: Recal
   // Reuse the standard output formatter for the final answer.
   formatRecallOutput(result, { json: false })
 
+  // Surface the synth path explicitly after the answer — users should know
+  // whether the answer was short-circuited after round 1 or cost 2 synth
+  // calls (one of which was wasted).
+  const synthLabel = describeSynthPath(result.trace)
+  if (synthLabel) {
+    console.log(`${DIM}${synthLabel}${RESET}`)
+  }
+
   if (result.traceFile) {
     console.log(`${DIM}trace: ${result.traceFile}${RESET}`)
   }
+}
+
+function describeSynthPath(trace: AgentRecallResult["trace"]): string {
+  const { synthPath, synthCallsUsed, round1ShortCircuited, rounds } = trace
+  if (!synthPath || synthPath === "none") return ""
+
+  const calls = synthCallsUsed ?? 1
+  const callsLabel = calls === 2 ? "2 synth calls (1 WASTED)" : "1 synth call"
+  const round2Ran = rounds.length >= 2 && rounds[1]!.variants.length > 0
+
+  // Four honest outcomes:
+  if (!round2Ran) {
+    // Round 1 was enough (short-circuit or max-rounds=1). One synth call.
+    return `↳ short-circuited after round 1 — ${callsLabel}`
+  }
+  if (round1ShortCircuited) {
+    // Round 2 ran but was judged marginal; spec answer was used. One synth call.
+    return `↳ round 2 ran but was marginal — used round-1 speculative synth — ${callsLabel}`
+  }
+  if (calls === 2) {
+    // Speculative was fired AND a fresh synth was also needed. Two synth calls.
+    return `↳ round 2 added new top-K docs — fresh synth ran AND speculative was WASTED — ${callsLabel}`
+  }
+  // Speculative was disabled; single fresh synth on merged results.
+  return `↳ fresh synth on merged round-1+round-2 results (speculative disabled) — ${callsLabel}`
 }
 
 function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
@@ -201,6 +240,10 @@ function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
   const d = result.trace.decision
   if (result.trace.rounds.length > 0) {
     console.log(`${DIM}[decide]${RESET} round2=${d.round2Mode} — ${d.reason}`)
+  }
+
+  if (result.trace.synthPath && result.trace.synthPath !== "none") {
+    console.log(`${DIM}[synth]${RESET} path=${result.trace.synthPath}`)
   }
 
   if (result.fellThrough) {

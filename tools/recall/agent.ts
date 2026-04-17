@@ -36,6 +36,14 @@ export interface AgentRecallOptions extends RecallOptions {
   planTimeoutMs?: number
   /** Debug-plan mode — callers render the returned trace themselves. */
   debugPlan?: boolean
+  /**
+   * When true (default), fire synthesis on round-1 results in parallel with
+   * round-2 planning. If round 2 doesn't add meaningful new top-K docs, we
+   * use the speculative synth and save ~3s. If round 2 does change the top,
+   * we fresh-synth on merged results (slight extra cost, same latency).
+   * Set false to always synth on the final merged results (one at a time).
+   */
+  speculativeSynth?: boolean
 }
 
 export interface AgentRecallResult extends RecallResult {
@@ -43,6 +51,17 @@ export interface AgentRecallResult extends RecallResult {
     rounds: RoundTrace[]
     decision: { round2Mode: "wider" | "deeper" | "off"; reason: string }
     contextChars: number
+    /** Which synth path delivered the answer. */
+    synthPath?: "speculative-round1" | "fresh-merged" | "single-pass" | "none"
+    /**
+     * How many synth calls were actually made (billed). 1 = no waste.
+     * 2 = speculative was fired AND a fresh synth was also needed —
+     * the speculative answer was discarded because round 2 added new
+     * top-K docs. Use this to see whether speculative mode paid off.
+     */
+    synthCallsUsed?: number
+    /** True iff a round-1-only answer was ever produced (speculative or single-pass). */
+    round1ShortCircuited?: boolean
   }
   /** Path the trace file was written to, if RECALL_AGENT_TRACE is set. */
   traceFile?: string | null
@@ -61,7 +80,17 @@ const DEFAULT_LIMIT = 10
 // Round-2 decision thresholds
 const STRONG_COVERAGE = 4 // top doc hit by ≥4 variants → "strong cluster"
 const WEAK_DOC_COUNT = 3 // fewer than this many docs with coverage > 1 → weak
-const SHORT_CIRCUIT_COVERAGE = 0.4 // fraction of variants → skip round 2
+// Short-circuit (skip round 2 when round 1 is already good enough).
+// We short-circuit if EITHER the fraction is high OR the absolute count is
+// high. Absolute count catches specific-token queries where the planner
+// produces many variants (say 26) and the top doc matches ~8 of them —
+// 8/26 = 0.31 fraction (below 0.4) but 8 is a clear cluster.
+const SHORT_CIRCUIT_COVERAGE_FRACTION = 0.35
+const SHORT_CIRCUIT_COVERAGE_ABSOLUTE = 6
+
+// Round-2-adds-value threshold — how many NEW top-K docs does round 2 need
+// to contribute before we pay for a fresh synth on merged results?
+const ROUND2_NEW_DOCS_THRESHOLD = 2
 
 // ============================================================================
 // Public API
@@ -85,6 +114,12 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
   const planCosts: number[] = []
   const planElapsed: number[] = []
   const fanoutElapsed: number[] = []
+
+  // Speculative synth defaults on — env var or explicit option can disable.
+  const speculativeSynth =
+    options.speculativeSynth !== undefined
+      ? options.speculativeSynth
+      : process.env.RECALL_SPECULATIVE_SYNTH !== "0"
 
   let decision: { round2Mode: "wider" | "deeper" | "off"; reason: string } = {
     round2Mode: "off",
@@ -167,6 +202,24 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
   )
 
   // ──────────────────────────────────────────────────────────────────────
+  // Speculative synth (runs in parallel with round 2)
+  //
+  // Kick off a synthesis on round-1 results before we commit to round 2.
+  // If round 2 ends up not changing the top-K docs meaningfully, we'll
+  // use this speculative answer — saving ~3s of serial LLM time. If
+  // round 2 DOES change the top, we pay for a fresh synth on merged
+  // results (the speculative call settles in the background, wasted).
+  // ──────────────────────────────────────────────────────────────────────
+  const speculativeSynthStart = Date.now()
+  const speculativeSynthPromise: Promise<{ text: string | null; cost?: number }> | null =
+    speculativeSynth && fanoutR1.results.length > 0
+      ? synthesizeResults(query, fanoutR1.results, timeout).catch(() => ({ text: null }))
+      : null
+  if (speculativeSynthPromise) {
+    log(`agent: speculative synth fired on round-1 results (${fanoutR1.results.length} docs)`)
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   // Decide round 2
   // ──────────────────────────────────────────────────────────────────────
   let finalFanout: FanoutResult = fanoutR1
@@ -221,14 +274,57 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Synthesis
+  // Synthesis — choose between speculative (round-1) and fresh (merged)
+  //
+  // If round 2 ran AND contributed ≥2 new top-K docs, the speculative
+  // synth is now stale — run a fresh synth on merged results. Otherwise
+  // the speculative result reflects what matters, and we save ~3s.
   // ──────────────────────────────────────────────────────────────────────
   const synthStart = Date.now()
   let synthesis: { text: string | null; cost?: number } = { text: null }
+  let synthPath: NonNullable<AgentRecallResult["trace"]["synthPath"]> = "none"
+  let synthCallsUsed = 0
+  let round1ShortCircuited = false
 
   if (finalFanout.results.length > 0) {
-    const synthResult = await synthesizeResults(query, finalFanout.results, timeout)
-    synthesis = { text: synthResult.text, cost: synthResult.cost }
+    const round2Ran = finalFanout !== fanoutR1
+    const newDocsInTop = round2Ran ? countNewDocsInTopK(fanoutR1.results, finalFanout.results, limit) : 0
+
+    const useSpeculative =
+      speculativeSynthPromise !== null && (!round2Ran || newDocsInTop < ROUND2_NEW_DOCS_THRESHOLD)
+
+    if (useSpeculative) {
+      const specResult = await speculativeSynthPromise!
+      synthesis = { text: specResult.text, cost: specResult.cost }
+      synthPath = round2Ran ? "speculative-round1" : "single-pass"
+      synthCallsUsed = 1
+      round1ShortCircuited = true
+      const saved = Date.now() - speculativeSynthStart
+      log(
+        `agent: using speculative synth on round 1 (${round2Ran ? `r2 added ${newDocsInTop}<${ROUND2_NEW_DOCS_THRESHOLD} new top-K` : "no round 2"}, elapsed=${saved}ms, 1 synth call)`,
+      )
+    } else {
+      // Fresh synth on merged results. Await the speculative synth too
+      // (usually already done) to capture its cost — it was a real billed
+      // call whose result we're abandoning, and our cost + synth-count
+      // report should reflect that honestly.
+      const [freshResult, abandonedSpec] = await Promise.all([
+        synthesizeResults(query, finalFanout.results, timeout),
+        speculativeSynthPromise ?? Promise.resolve({ text: null as string | null, cost: undefined }),
+      ])
+      synthesis = {
+        text: freshResult.text,
+        cost: (freshResult.cost ?? 0) + (abandonedSpec.cost ?? 0),
+      }
+      synthPath = round2Ran ? "fresh-merged" : "single-pass"
+      synthCallsUsed = speculativeSynthPromise ? 2 : 1
+      round1ShortCircuited = false
+      log(
+        `agent: using fresh synth on ${round2Ran ? `merged results (r2 added ${newDocsInTop} new top-K)` : "round 1 results (speculative disabled)"} — ${synthCallsUsed} synth call${synthCallsUsed === 1 ? "" : "s"}${
+          abandonedSpec.cost ? ` (abandoned spec cost $${abandonedSpec.cost.toFixed(4)})` : ""
+        }`,
+      )
+    }
   }
   const synthMs = Date.now() - synthStart
 
@@ -250,7 +346,7 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
       searchMs: fanoutElapsed.reduce((a, b) => a + b, 0),
       llmMs: planElapsed.reduce((a, b) => a + b, 0) + synthMs,
     },
-    trace: { rounds, decision, contextChars },
+    trace: { rounds, decision, contextChars, synthPath, synthCallsUsed, round1ShortCircuited },
   }
 
   const traceFile = writeTrace(buildTracePayload(result, options, context, synthMs, plannerUsd, synthUsd))
@@ -277,12 +373,21 @@ function chooseRound2Mode(
   // auto
   const { stats, results } = fanoutR1
 
-  // Short-circuit: already have enough results with decent coverage
+  // Short-circuit: round 1 is already good enough.
+  //   Fraction ≥ 0.35 covers queries with a clear majority consensus.
+  //   Absolute ≥ 6 covers specific-token queries where variant count is high
+  //     (e.g., 8/26 = 0.31 fraction but 8 is still a strong cluster).
   const coverageFraction = variantCount > 0 ? stats.topCoverage / variantCount : 0
-  if (results.length >= limit && coverageFraction >= SHORT_CIRCUIT_COVERAGE) {
+  const haveFullResults = results.length >= limit
+  const fractionShort = coverageFraction >= SHORT_CIRCUIT_COVERAGE_FRACTION
+  const absoluteShort = stats.topCoverage >= SHORT_CIRCUIT_COVERAGE_ABSOLUTE
+  if (haveFullResults && (fractionShort || absoluteShort)) {
+    const rationale = fractionShort
+      ? `fraction=${coverageFraction.toFixed(2)}≥${SHORT_CIRCUIT_COVERAGE_FRACTION}`
+      : `absolute=${stats.topCoverage}≥${SHORT_CIRCUIT_COVERAGE_ABSOLUTE}`
     return {
       round2Mode: "off",
-      reason: `short-circuit (top-coverage=${stats.topCoverage}/${variantCount}=${coverageFraction.toFixed(2)}, results=${results.length}/${limit})`,
+      reason: `short-circuit (top-coverage=${stats.topCoverage}/${variantCount}, ${rationale}, results=${results.length}/${limit})`,
     }
   }
 
@@ -318,6 +423,21 @@ function chooseRound2Mode(
 function countDocsAbove(hitCounts: Map<string, number>, threshold: number): number {
   let n = 0
   for (const v of hitCounts.values()) if (v > threshold) n++
+  return n
+}
+
+/**
+ * How many of the top-K docs in `after` are NOT present in top-K of `before`?
+ * Used to decide if round 2 meaningfully changed the answer set — below the
+ * threshold, the speculative synth on round-1 results is still fine.
+ */
+function countNewDocsInTopK(before: RecallSearchResult[], after: RecallSearchResult[], k: number): number {
+  const beforeKeys = new Set(before.slice(0, k).map((r) => `${r.type}:${r.sessionId}`))
+  let n = 0
+  for (const r of after.slice(0, k)) {
+    const key = `${r.type}:${r.sessionId}`
+    if (!beforeKeys.has(key)) n++
+  }
   return n
 }
 

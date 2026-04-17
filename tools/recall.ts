@@ -83,6 +83,7 @@ program
   .option("--max-rounds <n>", "Cap agent rounds (1 or 2, default 2)", int)
   .option("--debug-plan", "Print full planner output each round (implies --agent)")
   .option("--plan-timeout <ms>", "Planner per-call timeout (default 2500)", uint)
+  .option("--no-speculative-synth", "Disable speculative synthesis on round-1 (runs synth only after round 2 merge)")
   .actionMerged(async (opts) => {
     const searchOpts = opts as unknown as SearchOptions & { query: string }
     await cmdSearch(searchOpts.query, searchOpts)
