@@ -22,7 +22,7 @@ import { getCheapModels } from "../../../llm/src/lib/types"
 import { isProviderAvailable } from "../../../llm/src/lib/providers"
 import { log, ONE_HOUR_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 import type { RecallSearchResult } from "./recall-shared.ts"
-import { classifyPromptSkip, cleanSnippet } from "../lib/prompt-filter.ts"
+import { runInjectDelta, createTmpfileSeenStore } from "../lib/inject-core.ts"
 import { recall, parseTimeToMs } from "./search.ts"
 import { SYNTHESIS_PROMPT, raceLlmModels, formatResultsForLlm, type LlmRaceModelResult } from "./synthesize.ts"
 import { ensureProjectSourcesIndexed } from "./project-sources.ts"
@@ -101,79 +101,14 @@ export interface HookResult {
  * Throws on actual errors (fail loud).
  */
 export async function hookRecall(prompt: string): Promise<HookResult> {
-  const skipReason = classifyPromptSkip(prompt)
-  if (skipReason) {
-    return { skipped: true, reason: skipReason }
-  }
-
-  // Index project sources if CLAUDE_PROJECT_DIR is set (fast mtime checks)
-  ensureProjectSourcesIndexed()
-
-  // Session-level dedup: don't re-inject the same source session+type
-  // Results become eligible again after DEDUP_TTL_TURNS turns
-  const DEDUP_TTL_TURNS = 10
   const claudeSessionId = process.env.CLAUDE_SESSION_ID
   const seenFile = claudeSessionId ? path.join(os.tmpdir(), `recall-hook-seen-${claudeSessionId}.json`) : null
-  let seen: Record<string, number> = {} // key → turn number when last injected
-  let turnNumber = 0
-  if (seenFile) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = JSON.parse(fs.readFileSync(seenFile, "utf8")) as any
-      seen = data.seen ?? {}
-      turnNumber = (data.turn ?? 0) + 1
-    } catch {
-      // First call in session or corrupt file
-    }
-  }
-
-  const result = await recall(prompt, {
-    limit: 5, // Fetch extra to compensate for dedup filtering
-    raw: true, // No LLM synthesis — just fast FTS5 search (~200ms)
-    timeout: 2000,
-    snippetTokens: 80,
-    json: true,
-  })
-
-  if (result.results.length === 0) {
-    return { skipped: true, reason: "no_results" }
-  }
-
-  // Filter out already-injected results, then format
-  const snippets: string[] = []
-  const newKeys: string[] = []
-  for (const r of result.results) {
-    const key = `${r.sessionId}:${r.type}`
-    if (key in seen && turnNumber - seen[key]! < DEDUP_TTL_TURNS) continue
-    const text = cleanSnippet(r.snippet)
-    if (text.length < 20) continue
-    const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
-    snippets.push(`[${r.type}] ${label}: ${text.slice(0, 300)}`)
-    newKeys.push(key)
-    if (snippets.length >= 3) break
-  }
-
-  // Persist seen keys + turn counter for future calls in this session
-  if (seenFile) {
-    for (const k of newKeys) seen[k] = turnNumber
-    try {
-      fs.writeFileSync(seenFile, JSON.stringify({ turn: turnNumber, seen }))
-    } catch {
-      // Non-fatal
-    }
-  }
-
-  if (snippets.length === 0) {
-    return { skipped: true, reason: "all_seen" }
-  }
-
+  const store = createTmpfileSeenStore(seenFile)
+  const core = await runInjectDelta(prompt, store)
+  if (core.skipped) return { skipped: true, reason: core.reason }
   return {
     skipped: false,
-    hookOutput: {
-      hookSpecificOutput: {
-        additionalContext: `## Session Memory\n\n${snippets.join("\n")}`,
-      },
-    },
+    hookOutput: { hookSpecificOutput: { additionalContext: core.additionalContext } },
   }
 }
 

@@ -325,3 +325,52 @@ export function readLoreDaemonPid(socketPath: string): number | null {
     return null
   }
 }
+
+// ---------------------------------------------------------------------------
+// Deadline-bounded single-shot daemon call
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared connect → fn(client) → close pattern with a Promise.race deadline
+ * and ECONNREFUSED/ENOENT → "no-daemon" mapping. Used by short-lived hooks
+ * (e.g. UserPromptSubmit, SessionStart) that can't tolerate blocking.
+ *
+ * The caller supplies the per-client RPC body via `fn(client)`. On deadline
+ * or socket error the function returns a discriminated error result rather
+ * than throwing — hooks want structured failure, not exception plumbing.
+ */
+export type DaemonCallOutcome<T> =
+  | { kind: "ok"; value: T }
+  | { kind: "timeout" }
+  | { kind: "no-daemon" }
+  | { kind: "error"; message: string }
+
+export async function withDaemonCall<T>(
+  opts: { socketPath: string; deadlineMs: number; callTimeoutMs?: number },
+  fn: (client: LoreClient) => Promise<T>,
+): Promise<DaemonCallOutcome<T>> {
+  const deadline = Date.now() + opts.deadlineMs
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  try {
+    const racePromise = (async (): Promise<DaemonCallOutcome<T>> => {
+      const client = await connectToDaemon(opts.socketPath, {
+        callTimeoutMs: opts.callTimeoutMs ?? opts.deadlineMs,
+      })
+      try {
+        return { kind: "ok", value: await fn(client) }
+      } finally {
+        client.close()
+      }
+    })()
+    const timeout = new Promise<DaemonCallOutcome<T>>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), Math.max(50, deadline - Date.now()))
+    })
+    return await Promise.race([racePromise, timeout])
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "ECONNREFUSED" || code === "ENOENT") return { kind: "no-daemon" }
+    return { kind: "error", message: err instanceof Error ? err.message : String(err) }
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
+  }
+}

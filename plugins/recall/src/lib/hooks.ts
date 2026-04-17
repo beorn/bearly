@@ -10,7 +10,7 @@ import { spawn } from "child_process"
 import { hookRecall } from "../history/recall"
 import { getDb, closeDb, getIndexMeta } from "../history/db"
 import { summarizeUnprocessedDays } from "./summarize-daily"
-import { connectToDaemon } from "../../../lore/src/lib/socket.ts"
+import { withDaemonCall } from "../../../lore/src/lib/socket.ts"
 import { resolveLoreSocketPath } from "../../../lore/src/lib/config.ts"
 import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../lore/src/lib/rpc.ts"
 
@@ -222,41 +222,31 @@ async function registerWithLoreDaemon(input: {
   transcriptPath?: string
   cwd: string
 }): Promise<string> {
-  const deadline = Date.now() + 1500 // 1.5s overall budget
-  const socketPath = resolveLoreSocketPath()
-  try {
-    const racePromise = (async () => {
-      const client = await connectToDaemon(socketPath, { callTimeoutMs: 1000 })
-      try {
-        await client.call(LORE_METHODS.hello, {
-          clientName: "recall-hook",
-          clientVersion: "0.1.0",
-          protocolVersion: LORE_PROTOCOL_VERSION,
-        })
-        await client.call(LORE_METHODS.sessionRegister, input)
-      } finally {
-        client.close()
-      }
-    })()
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => reject(new Error("timeout")), Math.max(50, deadline - Date.now()))
-    })
-    try {
-      await Promise.race([racePromise, timeout])
+  const outcome = await withDaemonCall(
+    { socketPath: resolveLoreSocketPath(), deadlineMs: 1500, callTimeoutMs: 1000 },
+    async (client) => {
+      await client.call(LORE_METHODS.hello, {
+        clientName: "recall-hook",
+        clientVersion: "0.1.0",
+        protocolVersion: LORE_PROTOCOL_VERSION,
+      })
+      await client.call(LORE_METHODS.sessionRegister, input)
+    },
+  )
+  switch (outcome.kind) {
+    case "ok":
       return "ok"
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle)
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === "ECONNREFUSED" || code === "ENOENT") return "no-daemon"
-    return `err(${err instanceof Error ? err.message : String(err)})`
+    case "no-daemon":
+      return "no-daemon"
+    case "timeout":
+      return "err(timeout)"
+    case "error":
+      return `err(${outcome.message})`
   }
 }
 
 // ============================================================================
-// Daemon path for UserPromptSubmit — lore.inject_delta (Phase 5)
+// Daemon path for UserPromptSubmit — lore.inject_delta
 // ============================================================================
 
 type InjectDeltaOutcome =
@@ -270,49 +260,37 @@ type InjectDeltaOutcome =
  * library hookRecall path without blocking the user's prompt.
  */
 async function tryInjectDeltaViaDaemon(prompt: string, sessionId?: string): Promise<InjectDeltaOutcome> {
-  const socketPath = resolveLoreSocketPath()
-  const deadline = Date.now() + 2500
-  try {
-    const racePromise = (async (): Promise<InjectDeltaOutcome> => {
-      const client = await connectToDaemon(socketPath, { callTimeoutMs: 2000 })
-      try {
-        await client.call(LORE_METHODS.hello, {
-          clientName: "recall-hook",
-          clientVersion: "0.1.0",
-          protocolVersion: LORE_PROTOCOL_VERSION,
-        })
-        const result = (await client.call(LORE_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
-        if (result.skipped) {
-          return { kind: "skipped", reason: result.reason ?? "unknown" }
-        }
-        const ctx = result.additionalContext ?? ""
-        return {
-          kind: "ok",
-          additionalContext: ctx,
-          contextLen: ctx.length,
-          seenCount: result.seenCount ?? 0,
-          turnNumber: result.turnNumber ?? 0,
-        }
-      } finally {
-        client.close()
+  const outcome = await withDaemonCall(
+    { socketPath: resolveLoreSocketPath(), deadlineMs: 2500, callTimeoutMs: 2000 },
+    async (client): Promise<InjectDeltaOutcome> => {
+      await client.call(LORE_METHODS.hello, {
+        clientName: "recall-hook",
+        clientVersion: "0.1.0",
+        protocolVersion: LORE_PROTOCOL_VERSION,
+      })
+      const result = (await client.call(LORE_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
+      if (result.skipped) {
+        return { kind: "skipped", reason: result.reason ?? "unknown" }
       }
-    })()
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
-    const timeout = new Promise<InjectDeltaOutcome>((resolve) => {
-      timeoutHandle = setTimeout(
-        () => resolve({ kind: "error", message: "timeout" }),
-        Math.max(50, deadline - Date.now()),
-      )
-    })
-    try {
-      return await Promise.race([racePromise, timeout])
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle)
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === "ECONNREFUSED" || code === "ENOENT") return { kind: "error", message: "no-daemon" }
-    return { kind: "error", message: err instanceof Error ? err.message : String(err) }
+      const ctx = result.additionalContext ?? ""
+      return {
+        kind: "ok",
+        additionalContext: ctx,
+        contextLen: ctx.length,
+        seenCount: result.seenCount ?? 0,
+        turnNumber: result.turnNumber ?? 0,
+      }
+    },
+  )
+  switch (outcome.kind) {
+    case "ok":
+      return outcome.value
+    case "no-daemon":
+      return { kind: "error", message: "no-daemon" }
+    case "timeout":
+      return { kind: "error", message: "timeout" }
+    case "error":
+      return { kind: "error", message: outcome.message }
   }
 }
 
@@ -368,7 +346,7 @@ export async function cmdHook(): Promise<void> {
       process.exit(0)
     }
 
-    // Try daemon first (Phase 5). Daemon holds per-session dedup state
+    // Try daemon first. Daemon holds per-session dedup state
     // in memory, so repeated injections across the same session don't
     // rely on tmpfile round-trips and survive Claude Code session
     // boundaries as long as the daemon is alive.

@@ -173,7 +173,7 @@ export type SessionsListResult = {
 }
 
 // ---------------------------------------------------------------------------
-// lore.workspace_state — cross-session snapshot (Phase 3)
+// lore.workspace_state — cross-session snapshot
 // ---------------------------------------------------------------------------
 
 export type WorkspaceStateParams = Record<string, never>
@@ -192,7 +192,7 @@ export type SessionFocusSummary = {
   mentionedTokens: string[]
   /** First ~60 chars of tail; full tail via lore.current_brief. */
   focusHint: string
-  /** LLM-summarized one-liner (Phase 4). Null when summarizer is off/missing. */
+  /** LLM-summarized one-liner. Null when summarizer is off/missing. */
   focusSummary: string | null
   looseEnds: string[]
   summaryModel: string | null
@@ -207,7 +207,7 @@ export type WorkspaceStateResult = {
 }
 
 // ---------------------------------------------------------------------------
-// lore.session_state — single-session focus+summary lookup (Phase 4)
+// lore.session_state — single-session focus+summary lookup
 // ---------------------------------------------------------------------------
 
 export type SessionStateParams = {
@@ -220,7 +220,7 @@ export type SessionStateResult = SessionFocusSummary & {
 }
 
 // ---------------------------------------------------------------------------
-// lore.inject_delta — hook-side injection with daemon-held dedup (Phase 5)
+// lore.inject_delta — hook-side injection with daemon-held dedup
 // ---------------------------------------------------------------------------
 
 export type InjectDeltaParams = {

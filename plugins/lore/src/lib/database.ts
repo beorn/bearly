@@ -43,7 +43,7 @@ export function openLoreDatabase(path: string): Database {
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, ts)`)
 
-  // Phase 3: focus cache — one row per alive Claude Code session, refreshed
+  // focus cache — one row per alive Claude Code session, refreshed
   // by the daemon's background poller. Arrays stored as JSON strings.
   db.run(`CREATE TABLE IF NOT EXISTS session_focus (
     claude_pid        INTEGER PRIMARY KEY,
@@ -59,7 +59,7 @@ export function openLoreDatabase(path: string): Database {
 
   db.run(`CREATE INDEX IF NOT EXISTS idx_session_focus_updated ON session_focus(updated_at)`)
 
-  // Phase 4: opt-in LLM summary columns (additive, try/catch ALTER so
+  // opt-in LLM summary columns (additive, try/catch ALTER so
   // reopening an older DB is a no-op on second run).
   for (const col of [
     `ALTER TABLE session_focus ADD COLUMN focus_summary TEXT`,

@@ -2,15 +2,17 @@
 /**
  * Lore Daemon — single per-user process serving lore MCP proxies.
  *
- * Phase 2 scope: session registration, heartbeat, and in-process recall RPCs
- * (lore.ask, lore.current_brief, lore.plan_only). Eliminates the ~400ms
- * subprocess-spawn cost per hook by keeping recall library warm.
+ * Keeps the recall library warm (eliminates the ~400 ms subprocess-spawn
+ * cost per hook), runs a focus poller that refreshes each alive session's
+ * workspace snapshot, optionally runs a cheap-LLM summarizer over session
+ * tails, and holds per-session dedup state for hook-time `inject_delta`
+ * injection so the same document isn't re-shown within TTL turns.
  *
  * Usage:
- *   bun lore-daemon.ts                    # Auto-discover socket path
- *   bun lore-daemon.ts --socket /path     # Explicit socket path
- *   bun lore-daemon.ts --foreground       # Don't detach, log to stdout
- *   bun lore-daemon.ts --quit-timeout 0   # Quit immediately when last client disconnects
+ *   bun daemon.ts                    # Auto-discover socket path
+ *   bun daemon.ts --socket /path     # Explicit socket path
+ *   bun daemon.ts --foreground       # Don't detach, log to stdout
+ *   bun daemon.ts --quit-timeout 0   # Quit immediately when last client disconnects
  */
 
 import { createServer, type Socket as NetSocket, type Server } from "node:net"
@@ -55,9 +57,7 @@ import { getCurrentSessionContext, extractSessionFocus } from "../../recall/src/
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/summarizer.ts"
 import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/rpc.ts"
-import { recall } from "../../recall/src/history/search.ts"
-import { ensureProjectSourcesIndexed } from "../../recall/src/history/project-sources.ts"
-import { classifyPromptSkip, cleanSnippet } from "../../recall/src/lib/prompt-filter.ts"
+import { runInjectDelta, createMemorySeenStore, type SeenStore } from "../../recall/src/lib/inject-core.ts"
 
 const DAEMON_VERSION = "0.5.0"
 const STARTED_AT = Date.now()
@@ -171,6 +171,13 @@ function markIdle(): void {
 // ---------------------------------------------------------------------------
 
 async function handleHello(_conn: ClientConn, params: HelloParams): Promise<HelloResult> {
+  // Reject clients that speak a different protocol version. Silent agreement
+  // would mask future incompatibilities — make them surface loudly.
+  if (params.protocolVersion !== LORE_PROTOCOL_VERSION) {
+    throw new Error(
+      `protocol version mismatch: client ${params.clientName} speaks v${params.protocolVersion}, daemon speaks v${LORE_PROTOCOL_VERSION}`,
+    )
+  }
   return {
     protocolVersion: LORE_PROTOCOL_VERSION,
     daemonVersion: DAEMON_VERSION,
@@ -375,93 +382,36 @@ function extractFocusHint(tail: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session dedup state for lore.inject_delta (Phase 5)
+// Per-session dedup state for lore.inject_delta
 // ---------------------------------------------------------------------------
 
-type InjectState = {
-  /** Turn counter for the session (1-indexed on first inject). */
-  turnNumber: number
-  /** Map of `sessionId:type` key → last turn number at which it was injected. */
-  seen: Map<string, number>
-}
+const injectStores = new Map<string, SeenStore>()
 
-const injectStates = new Map<string, InjectState>()
-
-function injectStateFor(sessionId: string): InjectState {
-  let state = injectStates.get(sessionId)
-  if (!state) {
-    state = { turnNumber: 0, seen: new Map() }
-    injectStates.set(sessionId, state)
+function injectStoreFor(sessionId: string): SeenStore {
+  let store = injectStores.get(sessionId)
+  if (!store) {
+    store = createMemorySeenStore()
+    injectStores.set(sessionId, store)
   }
-  return state
+  return store
 }
 
 async function handleInjectDelta(conn: ClientConn, params: InjectDeltaParams): Promise<InjectDeltaResult> {
-  const prompt = params.prompt ?? ""
-  const limitSnippets = typeof params.limit === "number" && params.limit > 0 ? params.limit : 3
-  const ttlTurns = typeof params.ttlTurns === "number" && params.ttlTurns > 0 ? params.ttlTurns : 10
   const sessionId = params.sessionId ?? conn.sessionId ?? "unknown"
-
-  const state = injectStateFor(sessionId)
-
-  const skipReason = classifyPromptSkip(prompt)
-  if (skipReason) {
-    return { skipped: true, reason: skipReason, seenCount: state.seen.size, turnNumber: state.turnNumber }
-  }
-
-  ensureProjectSourcesIndexed()
-
-  // Advance the turn BEFORE doing work — we want stable numbering even on
-  // recall failure.
-  state.turnNumber += 1
-  const turn = state.turnNumber
-
-  const result = await recall(prompt, {
-    limit: 5,
-    raw: true,
-    timeout: 2000,
-    snippetTokens: 80,
-    json: true,
+  const store = injectStoreFor(sessionId)
+  const core = await runInjectDelta(params.prompt ?? "", store, {
+    limit: params.limit,
+    ttlTurns: params.ttlTurns,
   })
-
-  if (result.results.length === 0) {
-    return { skipped: true, reason: "no_results", seenCount: state.seen.size, turnNumber: turn }
+  if (core.skipped) {
+    return { skipped: true, reason: core.reason, seenCount: store.size(), turnNumber: store.turn() }
   }
-
-  const snippets: string[] = []
-  const newKeys: string[] = []
-  for (const r of result.results) {
-    const key = `${r.sessionId}:${r.type}`
-    const lastTurn = state.seen.get(key)
-    if (lastTurn !== undefined && turn - lastTurn < ttlTurns) continue
-    const text = cleanSnippet(r.snippet)
-    if (text.length < 20) continue
-    const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
-    snippets.push(`[${r.type}] ${label}: ${text.slice(0, 300)}`)
-    newKeys.push(key)
-    if (snippets.length >= limitSnippets) break
-  }
-
-  for (const k of newKeys) state.seen.set(k, turn)
-
-  // Opportunistic GC: drop entries older than 4×TTL to keep the Map bounded.
-  if (state.seen.size > 500) {
-    const cutoff = turn - ttlTurns * 4
-    for (const [k, t] of state.seen) {
-      if (t < cutoff) state.seen.delete(k)
-    }
-  }
-
-  if (snippets.length === 0) {
-    return { skipped: true, reason: "all_seen", seenCount: state.seen.size, turnNumber: turn }
-  }
-
   return {
     skipped: false,
-    additionalContext: `## Session Memory\n\n${snippets.join("\n")}`,
-    newKeys,
-    seenCount: state.seen.size,
-    turnNumber: turn,
+    additionalContext: core.additionalContext,
+    newKeys: core.newKeys,
+    seenCount: store.size(),
+    turnNumber: core.turn,
   }
 }
 
@@ -581,9 +531,9 @@ const janitor: NodeJS.Timeout = setInterval(() => {
   // Prune inject-dedup state for sessions that are gone. Without this the
   // per-session Map grows unbounded across daemon lifetime.
   const liveSessionIds = new Set(repo.listSessions().map((r) => r.session_id))
-  for (const sessionId of injectStates.keys()) {
+  for (const sessionId of injectStores.keys()) {
     if (sessionId !== "unknown" && !liveSessionIds.has(sessionId)) {
-      injectStates.delete(sessionId)
+      injectStores.delete(sessionId)
     }
   }
   if (idleDeadline !== null && now >= idleDeadline) {
@@ -594,7 +544,7 @@ const janitor: NodeJS.Timeout = setInterval(() => {
 janitor.unref?.()
 
 // ---------------------------------------------------------------------------
-// Focus poller (Phase 3) — refresh session_focus for alive sessions
+// Focus poller — refresh session_focus for alive sessions
 // ---------------------------------------------------------------------------
 
 function refreshFocusFor(row: SessionRow): void {
@@ -629,7 +579,7 @@ const focusPoller: NodeJS.Timeout = setInterval(refreshAllFocus, FOCUS_POLL_MS) 
 focusPoller.unref?.()
 
 // ---------------------------------------------------------------------------
-// Summarizer poller (Phase 4) — opt-in via --summarizer-model
+// Summarizer poller — opt-in via --summarizer-model
 // ---------------------------------------------------------------------------
 
 const SUMMARY_STALE_IF_IDLE_MS = 30 * 60 * 1000 // skip sessions idle >30min
