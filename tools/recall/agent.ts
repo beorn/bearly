@@ -188,7 +188,11 @@ export async function recallAgent(query: string, options: AgentRecallOptions = {
       if (planR2.cost) planCosts.push(planR2.cost)
 
       if (!planR2.plan) {
-        log(`agent: round 2 planner failed (${planR2.error ?? "unknown"}) — keeping round 1 results`)
+        const msg =
+          planR2.error === "empty-plan"
+            ? "round 2 planner had nothing new to add (empty plan) — keeping round 1 results"
+            : `round 2 planner failed (${planR2.error ?? "unknown"}) — keeping round 1 results`
+        log(`agent: ${msg}`)
         rounds.push(buildRoundTrace(2, decision.round2Mode, planR2, [], null))
       } else {
         // Filter out variants we already tried in round 1

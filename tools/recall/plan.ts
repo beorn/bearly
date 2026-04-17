@@ -184,14 +184,14 @@ export async function planQuery(query: string, context: QueryContext, options: P
     }
   }
 
-  const plan = parsePlan(rawResponse)
+  const parsed = parsePlanResult(rawResponse)
   return {
-    plan,
+    plan: parsed.plan,
     model: model.modelId,
     elapsedMs: Date.now() - startedAt,
     cost,
     rawResponse,
-    error: plan ? undefined : "plan-parse-failed",
+    error: parsed.plan ? undefined : parsed.reason,
   }
 }
 
@@ -306,14 +306,17 @@ function buildUserPrompt(
   return parts.join("\n")
 }
 
+export type PlanParseReason = "empty-input" | "parse-failed" | "empty-plan"
+
 /**
- * Parse the planner response into a QueryPlan. Tolerates:
- *  - plain JSON
- *  - JSON wrapped in ```json fences
- *  - extra prose before/after (extracts first {...} block)
+ * Parse the planner response with a typed failure reason. Distinguishes:
+ *  - `parse-failed`: JSON malformed or missing → planner output was broken
+ *  - `empty-plan`: JSON parsed fine but all buckets were empty → planner had
+ *    nothing new to add (legitimate in round 2 when everything useful was
+ *    already tried in round 1)
  */
-export function parsePlan(raw: string): QueryPlan | null {
-  if (!raw) return null
+export function parsePlanResult(raw: string): { plan: QueryPlan | null; reason?: PlanParseReason } {
+  if (!raw) return { plan: null, reason: "empty-input" }
 
   // Strip code fences
   let text = raw.trim()
@@ -322,17 +325,17 @@ export function parsePlan(raw: string): QueryPlan | null {
   // Find first JSON object
   const start = text.indexOf("{")
   const end = text.lastIndexOf("}")
-  if (start < 0 || end <= start) return null
+  if (start < 0 || end <= start) return { plan: null, reason: "parse-failed" }
   const jsonStr = text.slice(start, end + 1)
 
   let parsed: unknown
   try {
     parsed = JSON.parse(jsonStr)
   } catch {
-    return null
+    return { plan: null, reason: "parse-failed" }
   }
 
-  if (!parsed || typeof parsed !== "object") return null
+  if (!parsed || typeof parsed !== "object") return { plan: null, reason: "parse-failed" }
   const obj = parsed as Record<string, unknown>
 
   const asStringArray = (v: unknown): string[] => {
@@ -351,7 +354,8 @@ export function parsePlan(raw: string): QueryPlan | null {
     notes: typeof obj.notes === "string" ? obj.notes.trim() : undefined,
   }
 
-  // Reject totally empty plans — parse technically succeeded but output is useless.
+  // Well-formed but empty — legitimate in round-2 when the planner has no
+  // new angle to suggest. Distinct from a parse failure.
   const total =
     plan.keywords.length +
     plan.phrases.length +
@@ -359,7 +363,15 @@ export function parsePlan(raw: string): QueryPlan | null {
     plan.paths.length +
     plan.errors.length +
     plan.bead_ids.length
-  if (total === 0) return null
+  if (total === 0) return { plan: null, reason: "empty-plan" }
 
-  return plan
+  return { plan }
+}
+
+/**
+ * Back-compat: returns null on any failure (doesn't expose the reason).
+ * Kept for existing tests and external callers.
+ */
+export function parsePlan(raw: string): QueryPlan | null {
+  return parsePlanResult(raw).plan
 }

@@ -14,6 +14,11 @@ import { execSync } from "child_process"
 import type { Database } from "bun:sqlite"
 import { getDb, DB_PATH, getAllSessionTitles } from "../lib/history/db.ts"
 import type { ContentType } from "../lib/history/types.ts"
+import {
+  getCurrentSessionContext,
+  renderSessionContextForPlanner,
+  type SessionContext,
+} from "./session-context.ts"
 
 // ============================================================================
 // Types
@@ -47,6 +52,13 @@ export interface QueryContext {
   rareVocabulary: string[]
   scopeEpics: string[]
   recentCommits: string[]
+  /**
+   * Transcript excerpt of the CURRENT Claude Code session (if one is
+   * active). This is the single biggest quality lever for vague queries:
+   * "that link thing" makes sense given the last 200 lines of this
+   * conversation. Null when invoked outside a session (CI, scripts).
+   */
+  sessionContext: SessionContext | null
 }
 
 // ============================================================================
@@ -87,7 +99,9 @@ export function buildQueryContext(opts: BuildContextOptions = {}): QueryContext 
 
   const dbMtime = safeStatMtime(DB_PATH)
   if (!noCache && _cache && _cache.dbMtime === dbMtime && _cache.cwd === cwd) {
-    return _cache.context
+    // Project context is cached, but session context changes every exchange
+    // — refresh it on every call so the planner always sees the latest tail.
+    return { ..._cache.context, sessionContext: getCurrentSessionContext({ cwdOverride: cwd }) }
   }
 
   const db = getDb()
@@ -99,6 +113,9 @@ export function buildQueryContext(opts: BuildContextOptions = {}): QueryContext 
     rareVocabulary: [],
     scopeEpics: [],
     recentCommits: loadRecentCommits(cwd, maxCommits),
+    // Session context is intentionally NOT cached with the rest — it changes
+    // every exchange, so recompute each call. ~50ms cost.
+    sessionContext: getCurrentSessionContext({ cwdOverride: cwd }),
   }
 
   // Scope epics: beads that look like `km-<scope>` (no dot, open status).
@@ -124,12 +141,25 @@ export function buildQueryContext(opts: BuildContextOptions = {}): QueryContext 
  * Soft-budgets to ~10KB. Callers can pass maxChars to override.
  */
 export function renderContextPrompt(ctx: QueryContext, opts: { maxChars?: number } = {}): string {
-  const { maxChars = 10_000 } = opts
+  // Bumped from 10K: session context can contribute ~7KB on top of project
+  // context. Haiku's context window is 200K — 20KB is trivial for the model,
+  // but costs ~$0.0005 extra per call. Worth it for quality.
+  const { maxChars = 18_000 } = opts
   const lines: string[] = []
 
   lines.push(`Today: ${ctx.today}`)
   lines.push(`Project root: ${ctx.cwd}`)
   lines.push("")
+
+  // Session context FIRST — it's the most load-bearing signal when present.
+  // The planner should anchor on "what is the user doing right now" before
+  // pulling from the project-level vocabulary.
+  if (ctx.sessionContext) {
+    lines.push(renderSessionContextForPlanner(ctx.sessionContext))
+    lines.push("")
+    lines.push("---")
+    lines.push("")
+  }
 
   if (ctx.scopeEpics.length > 0) {
     lines.push("Scope epics (active areas of work):")

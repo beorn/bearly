@@ -118,7 +118,22 @@ export function fanoutSearch(db: Database, variants: string[], opts: FanoutOptio
   }
 
   for (const variant of variants) {
-    const variantKeys: string[] = []
+    // Dedupe doc keys WITHIN this variant — coverage means "how many distinct
+    // variants found this doc", not "how many rows matched". Multiple messages
+    // from the same session matching one variant is still just 1 coverage hit.
+    const variantSeen = new Set<string>()
+    const ingest = (
+      key: string,
+      entry: Omit<AggregatedDoc, "bestRank" | "bestSnippet"> & { rank: number; snippet: string },
+    ) => {
+      // Always update the aggregated doc (best rank / snippet across all hits)
+      updateDoc(docs, key, entry)
+      // But only count coverage once per variant
+      if (!variantSeen.has(key)) {
+        variantSeen.add(key)
+        hitCounts.set(key, (hitCounts.get(key) ?? 0) + 1)
+      }
+    }
 
     // Messages
     try {
@@ -126,9 +141,7 @@ export function fanoutSearch(db: Database, variants: string[], opts: FanoutOptio
       totalQueries++
       rawHits += res.results.length
       for (const r of res.results) {
-        const key = `message:${r.session_id}`
-        variantKeys.push(key)
-        registerHit(docs, hitCounts, key, {
+        ingest(`message:${r.session_id}`, {
           type: "message",
           sessionId: r.session_id,
           sessionTitle: sessionTitles.get(r.session_id) ?? null,
@@ -148,9 +161,7 @@ export function fanoutSearch(db: Database, variants: string[], opts: FanoutOptio
       rawHits += res.results.length
       for (const r of res.results) {
         const docType = r.content_type as RecallSearchResult["type"]
-        const key = `${docType}:${r.source_id}`
-        variantKeys.push(key)
-        registerHit(docs, hitCounts, key, {
+        ingest(`${docType}:${r.source_id}`, {
           type: docType,
           sessionId: r.source_id,
           sessionTitle: r.title ?? sessionTitles.get(r.source_id) ?? null,
@@ -170,9 +181,7 @@ export function fanoutSearch(db: Database, variants: string[], opts: FanoutOptio
       rawHits += res.results.length
       for (const r of res.results) {
         const docType = r.content_type as RecallSearchResult["type"]
-        const key = `${docType}:${r.source_id}`
-        variantKeys.push(key)
-        registerHit(docs, hitCounts, key, {
+        ingest(`${docType}:${r.source_id}`, {
           type: docType,
           sessionId: r.source_id,
           sessionTitle: r.title ?? sessionTitles.get(r.source_id) ?? null,
@@ -185,7 +194,7 @@ export function fanoutSearch(db: Database, variants: string[], opts: FanoutOptio
       /* skip */
     }
 
-    variantHits.set(variant, [...new Set(variantKeys)])
+    variantHits.set(variant, [...variantSeen])
   }
 
   // Coverage-first rerank: multi-variant hits dominate single-variant hits
@@ -343,14 +352,11 @@ interface ScoredDoc {
   finalRank: number
 }
 
-function registerHit(
+function updateDoc(
   docs: Map<string, AggregatedDoc>,
-  hitCounts: Map<string, number>,
   key: string,
   incoming: Omit<AggregatedDoc, "bestRank" | "bestSnippet"> & { rank: number; snippet: string },
 ): void {
-  hitCounts.set(key, (hitCounts.get(key) ?? 0) + 1)
-
   const existing = docs.get(key)
   if (!existing || incoming.rank < existing.bestRank) {
     docs.set(key, {

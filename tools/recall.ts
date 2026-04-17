@@ -41,6 +41,7 @@ const SUBCOMMANDS = new Set([
   "summarize",
   "weekly",
   "show",
+  "current-brief",
   "help",
   "--help",
   "-h",
@@ -169,6 +170,21 @@ program
   .description("Weekly summary from daily summaries (date = any day in the target week, default: last week)")
   .actionMerged(async (opts: { date?: string }) => {
     await cmdWeekly(opts.date)
+  })
+
+// ── current-brief ────────────────────────────────────────────────────
+program
+  .command("current-brief")
+  .description("Print a compact summary of the current Claude Code session (for /recall skill embed)")
+  .option("--json", "JSON output")
+  .action(async (opts: { json?: boolean }) => {
+    const { getCurrentSessionContext, renderSessionBrief } = await import("./recall/session-context.ts")
+    const ctx = getCurrentSessionContext()
+    if (opts.json) {
+      console.log(JSON.stringify(ctx, null, 2))
+    } else {
+      console.log(renderSessionBrief(ctx))
+    }
   })
 
 // ============================================================================
