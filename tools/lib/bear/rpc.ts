@@ -26,6 +26,7 @@ export const BEAR_METHODS = {
   sessionsList: "bear.sessions_list",
   workspaceState: "bear.workspace_state",
   sessionState: "bear.session_state",
+  injectDelta: "bear.inject_delta",
   status: "bear.status",
 } as const
 
@@ -216,6 +217,42 @@ export type SessionStateParams = {
 export type SessionStateResult = SessionFocusSummary & {
   /** Full flattened tail (not just the hint). */
   tail: string
+}
+
+// ---------------------------------------------------------------------------
+// bear.inject_delta — hook-side injection with daemon-held dedup (Phase 5)
+// ---------------------------------------------------------------------------
+
+export type InjectDeltaParams = {
+  prompt: string
+  /**
+   * Optional session-id hint. Daemon uses it to key the per-session
+   * already-shown set. If omitted, daemon falls back to conn.sessionId
+   * (set during bear.hello if the caller registered).
+   */
+  sessionId?: string
+  /**
+   * Max snippets to inject (default 3).
+   */
+  limit?: number
+  /**
+   * Number of turns a `sessionId:type` key remains in the seen set
+   * before becoming eligible again. Default 10.
+   */
+  ttlTurns?: number
+}
+
+export type InjectDeltaResult = {
+  skipped: boolean
+  reason?: string
+  /** Same format as hookRecall: ready to pass through hookSpecificOutput.additionalContext */
+  additionalContext?: string
+  /** Keys newly added to the seen set this call, for debugging. */
+  newKeys?: string[]
+  /** Current size of the per-session seen set (for observability). */
+  seenCount: number
+  /** Current turn counter for the session. */
+  turnNumber: number
 }
 
 // ---------------------------------------------------------------------------

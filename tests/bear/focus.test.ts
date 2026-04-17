@@ -25,7 +25,11 @@ function tmpPath(suffix: string): string {
   return `/tmp/bear-focus-test-${randomUUID().slice(0, 8)}.${suffix}`
 }
 
-async function waitFor<T>(fn: () => T | Promise<T | null | undefined> | null | undefined, timeoutMs = 3000, intervalMs = 30): Promise<T> {
+async function waitFor<T>(
+  fn: () => T | Promise<T | null | undefined> | null | undefined,
+  timeoutMs = 3000,
+  intervalMs = 30,
+): Promise<T> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     const v = await fn()

@@ -60,9 +60,11 @@ import { buildQueryContext } from "./recall/context.ts"
 import { getCurrentSessionContext, extractSessionFocus } from "./recall/session-context.ts"
 import { setRecallLogging } from "./lib/history/recall-shared.ts"
 import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/bear/summarizer.ts"
-import type { SessionStateParams, SessionStateResult } from "./lib/bear/rpc.ts"
+import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/bear/rpc.ts"
+import { recall } from "./lib/history/search.ts"
+import { ensureProjectSourcesIndexed } from "./lib/history/project-sources.ts"
 
-const DAEMON_VERSION = "0.4.0"
+const DAEMON_VERSION = "0.5.0"
 const STARTED_AT = Date.now()
 
 // ---------------------------------------------------------------------------
@@ -377,6 +379,142 @@ function extractFocusHint(tail: string): string {
   return last.replace(/^\[(USER|ASSISTANT)\]\s*/, "").slice(0, 120)
 }
 
+// ---------------------------------------------------------------------------
+// Per-session dedup state for bear.inject_delta (Phase 5)
+// ---------------------------------------------------------------------------
+
+type InjectState = {
+  /** Turn counter for the session (1-indexed on first inject). */
+  turnNumber: number
+  /** Map of `sessionId:type` key → last turn number at which it was injected. */
+  seen: Map<string, number>
+}
+
+const injectStates = new Map<string, InjectState>()
+
+function injectStateFor(sessionId: string): InjectState {
+  let state = injectStates.get(sessionId)
+  if (!state) {
+    state = { turnNumber: 0, seen: new Map() }
+    injectStates.set(sessionId, state)
+  }
+  return state
+}
+
+const TRIVIAL_PROMPTS = new Set([
+  "yes",
+  "no",
+  "y",
+  "n",
+  "ok",
+  "okay",
+  "sure",
+  "continue",
+  "go ahead",
+  "lgtm",
+  "looks good",
+  "do it",
+  "proceed",
+  "thanks",
+  "thank you",
+  "done",
+  "sounds good",
+  "go for it",
+])
+
+function cleanSnippet(raw: string): string {
+  let text = raw.trim()
+  text = text.replace(/>>>|<<</g, "")
+  text = text
+    .replace(/\{"[^"]*"[^}]*\}/g, "")
+    .replace(/\{[^}]{0,50}\}?/g, "")
+    .trim()
+  text = text
+    .replace(/\[(?:Assistant|User)\]\s*/g, "")
+    .replace(/^-{3,}\n?/gm, "")
+    .trim()
+  text = text.replace(/\n{3,}/g, "\n\n").trim()
+  return text
+}
+
+async function handleInjectDelta(conn: ClientConn, params: InjectDeltaParams): Promise<InjectDeltaResult> {
+  const prompt = params.prompt ?? ""
+  const limitSnippets = typeof params.limit === "number" && params.limit > 0 ? params.limit : 3
+  const ttlTurns = typeof params.ttlTurns === "number" && params.ttlTurns > 0 ? params.ttlTurns : 10
+  const sessionId = params.sessionId ?? conn.sessionId ?? "unknown"
+
+  const state = injectStateFor(sessionId)
+
+  if (!prompt || prompt.trim().length === 0) {
+    return { skipped: true, reason: "empty", seenCount: state.seen.size, turnNumber: state.turnNumber }
+  }
+  if (prompt.trim().length < 15) {
+    return { skipped: true, reason: "short", seenCount: state.seen.size, turnNumber: state.turnNumber }
+  }
+  const lower = prompt.toLowerCase().trim()
+  if (TRIVIAL_PROMPTS.has(lower)) {
+    return { skipped: true, reason: "trivial", seenCount: state.seen.size, turnNumber: state.turnNumber }
+  }
+  if (prompt.startsWith("/")) {
+    return { skipped: true, reason: "slash_command", seenCount: state.seen.size, turnNumber: state.turnNumber }
+  }
+
+  ensureProjectSourcesIndexed()
+
+  // Advance the turn BEFORE doing work — we want stable numbering even on
+  // recall failure.
+  state.turnNumber += 1
+  const turn = state.turnNumber
+
+  const result = await recall(prompt, {
+    limit: 5,
+    raw: true,
+    timeout: 2000,
+    snippetTokens: 80,
+    json: true,
+  })
+
+  if (result.results.length === 0) {
+    return { skipped: true, reason: "no_results", seenCount: state.seen.size, turnNumber: turn }
+  }
+
+  const snippets: string[] = []
+  const newKeys: string[] = []
+  for (const r of result.results) {
+    const key = `${r.sessionId}:${r.type}`
+    const lastTurn = state.seen.get(key)
+    if (lastTurn !== undefined && turn - lastTurn < ttlTurns) continue
+    const text = cleanSnippet(r.snippet)
+    if (text.length < 20) continue
+    const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
+    snippets.push(`[${r.type}] ${label}: ${text.slice(0, 300)}`)
+    newKeys.push(key)
+    if (snippets.length >= limitSnippets) break
+  }
+
+  for (const k of newKeys) state.seen.set(k, turn)
+
+  // Opportunistic GC: drop entries older than 4×TTL to keep the Map bounded.
+  if (state.seen.size > 500) {
+    const cutoff = turn - ttlTurns * 4
+    for (const [k, t] of state.seen) {
+      if (t < cutoff) state.seen.delete(k)
+    }
+  }
+
+  if (snippets.length === 0) {
+    return { skipped: true, reason: "all_seen", seenCount: state.seen.size, turnNumber: turn }
+  }
+
+  return {
+    skipped: false,
+    additionalContext: `## Session Memory\n\n${snippets.join("\n")}`,
+    newKeys,
+    seenCount: state.seen.size,
+    turnNumber: turn,
+  }
+}
+
 function handleStatus(): StatusResult {
   return {
     daemonPid: process.pid,
@@ -416,6 +554,8 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
         return makeResponse(req.id, handleWorkspaceState())
       case BEAR_METHODS.sessionState:
         return makeResponse(req.id, handleSessionState(params as unknown as SessionStateParams))
+      case BEAR_METHODS.injectDelta:
+        return makeResponse(req.id, await handleInjectDelta(conn, params as unknown as InjectDeltaParams))
       case BEAR_METHODS.status:
         return makeResponse(req.id, handleStatus())
       default:
@@ -541,7 +681,7 @@ async function refreshSummariesOnce(): Promise<void> {
   for (const row of repo.listSessions()) {
     if (row.status !== "alive") continue
     const focus = repo.getFocus(row.claude_pid)
-    if (!focus || !focus.tail) continue
+    if (!focus?.tail) continue
     const ageMs = focus.last_activity_ts ? Date.now() - focus.last_activity_ts : null
     if (ageMs !== null && ageMs > SUMMARY_STALE_IF_IDLE_MS) continue
     // Skip if we already summarized this activity ts.

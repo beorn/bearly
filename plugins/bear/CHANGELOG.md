@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0 (2026-04-17)
+
+Phase 5 of the bear workspace-daemon plan (bead `km-bear.dedup-inject`).
+Hook-side recall injection moves from tmpfile-based dedup to a
+daemon-held, per-session, in-memory set — eliminating tmpfile round-trips
+and keeping dedup coherent across Claude Code session boundaries for as
+long as the daemon is alive.
+
+### Added
+
+- `bear.inject_delta(prompt, sessionId?, limit?, ttlTurns?)` — new MCP
+  tool and RPC method. Runs the same FTS5 recall as the pre-existing hook
+  but filters results against a per-session seen set (key =
+  `${sessionId}:${type}`, TTL = 10 turns by default). Returns
+  `additionalContext` ready for Claude Code's
+  `hookSpecificOutput.additionalContext` plus observability fields
+  (`seenCount`, `turnNumber`, `newKeys`).
+- Per-session inject state in daemon memory — `Map<sessionId,
+{ turnNumber, seen: Map<key, lastTurn> }>`. Bounded by opportunistic
+  GC when a session's seen set exceeds 500 entries.
+- `UserPromptSubmit` hook (`bun recall hook`) tries the daemon first
+  with a 2.5 s budget; on timeout or daemon error it falls back to the
+  existing library `hookRecall` tmpfile path. The fall-back is
+  explicitly labelled `mode=library` in the MCP response so callers can
+  see which path served them.
+
+### Behaviour
+
+- No behaviour change when daemon is reachable — same dedup semantics
+  (short/trivial/slash-command skips, `${sessionId}:${type}` keys,
+  10-turn TTL) — just no tmpfile I/O and no 400 ms subprocess spawn per
+  prompt.
+- `BEAR_NO_DAEMON=1` still forces the library path; integration tests
+  exercise both.
+- Skipped prompts still log a reason (`empty`, `short`, `trivial`,
+  `slash_command`, `no_results`, `all_seen`) and exit 0 without
+  injection.
+
+### Tests
+
+2 new integration tests (`tests/bear/daemon.test.ts`): inject_delta
+short-circuits + per-session turn counter isolation. 30/30 bear +
+plugin tests green.
+
 ## 0.4.0 (2026-04-17)
 
 Phase 4 of the bear workspace-daemon plan (bead `km-bear.summarizer`).

@@ -1,7 +1,8 @@
 # @bearly/bear
 
 MCP server for Claude Code that exposes the bearly recall library as structured tools:
-`bear.ask`, `bear.current_brief`, `bear.plan_only`. Eliminates the subprocess-spawn
+`bear.ask`, `bear.current_brief`, `bear.plan_only`, `bear.session_state`,
+`bear.workspace_state`, `bear.inject_delta`. Eliminates the subprocess-spawn
 cost (~400ms) of shelling out to `bun recall` from inside a Claude Code turn.
 
 ## Tools
@@ -71,7 +72,7 @@ Registered in `.mcp.json` as:
 
 ## Status
 
-Phases 1–2 of the bear workspace-daemon plan (bead `km-bear`). The MCP server
+Phases 1–5 of the bear workspace-daemon plan (bead `km-bear`). The MCP server
 is now a thin reconnecting client to a persistent `bear-daemon` process
 (`bun vendor/bearly/tools/bear-daemon.ts`) at `$XDG_RUNTIME_DIR/bear.sock`.
 The daemon keeps the recall library warm across calls, eliminating both the
@@ -112,6 +113,14 @@ live tail parse (Phase 2 behaviour).
 
 Control the poll interval with `--focus-poll-ms <ms>` or `BEAR_FOCUS_POLL_MS`
 (default 60 000). Tests use 200 ms.
+
+## Hook dedup (Phase 5)
+
+`bear.inject_delta(prompt, sessionId?, limit?, ttlTurns?)` replaces the
+tmpfile-backed dedup that `bun recall hook` used pre-Phase-5. The daemon
+holds a per-session `Map<key, lastTurn>` in memory so repeated FTS results
+aren't re-injected for `ttlTurns` turns (default 10). The hook falls back to
+the library `hookRecall` path (tmpfile dedup) when the daemon is unreachable.
 
 ## Fallthrough
 

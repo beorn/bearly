@@ -10,7 +10,7 @@ import { hookRecall } from "../lib/history/recall"
 import { summarizeUnprocessedDays } from "./summarize-daily"
 import { connectToDaemon } from "../lib/bear/socket.ts"
 import { resolveBearSocketPath } from "../lib/bear/config.ts"
-import { BEAR_METHODS, BEAR_PROTOCOL_VERSION } from "../lib/bear/rpc.ts"
+import { BEAR_METHODS, BEAR_PROTOCOL_VERSION, type InjectDeltaResult } from "../lib/bear/rpc.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)
@@ -153,6 +153,59 @@ async function registerWithBearDaemon(input: {
 }
 
 // ============================================================================
+// Daemon path for UserPromptSubmit — bear.inject_delta (Phase 5)
+// ============================================================================
+
+type InjectDeltaOutcome =
+  | { kind: "skipped"; reason: string }
+  | { kind: "ok"; additionalContext: string; contextLen: number; seenCount: number; turnNumber: number }
+  | { kind: "error"; message: string }
+
+/**
+ * Call bear.inject_delta on the daemon. Short budget — if the daemon can't
+ * answer in time we return `error` so the caller can fall back to the
+ * library hookRecall path without blocking the user's prompt.
+ */
+async function tryInjectDeltaViaDaemon(prompt: string, sessionId?: string): Promise<InjectDeltaOutcome> {
+  const socketPath = resolveBearSocketPath()
+  const deadline = Date.now() + 2500
+  try {
+    const racePromise = (async (): Promise<InjectDeltaOutcome> => {
+      const client = await connectToDaemon(socketPath, { callTimeoutMs: 2000 })
+      try {
+        await client.call(BEAR_METHODS.hello, {
+          clientName: "recall-hook",
+          clientVersion: "0.1.0",
+          protocolVersion: BEAR_PROTOCOL_VERSION,
+        })
+        const result = (await client.call(BEAR_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
+        if (result.skipped) {
+          return { kind: "skipped", reason: result.reason ?? "unknown" }
+        }
+        const ctx = result.additionalContext ?? ""
+        return {
+          kind: "ok",
+          additionalContext: ctx,
+          contextLen: ctx.length,
+          seenCount: result.seenCount ?? 0,
+          turnNumber: result.turnNumber ?? 0,
+        }
+      } finally {
+        client.close()
+      }
+    })()
+    const timeout = new Promise<InjectDeltaOutcome>((resolve) =>
+      setTimeout(() => resolve({ kind: "error", message: "timeout" }), Math.max(50, deadline - Date.now())),
+    )
+    return await Promise.race([racePromise, timeout])
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "ECONNREFUSED" || code === "ENOENT") return { kind: "error", message: "no-daemon" }
+    return { kind: "error", message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// ============================================================================
 // Stdin reader
 // ============================================================================
 
@@ -203,6 +256,33 @@ export async function cmdHook(): Promise<void> {
       console.error(`[recall hook] no prompt in stdin (${Date.now() - startTime}ms)`)
       process.exit(0)
     }
+
+    // Try daemon first (Phase 5). Daemon holds per-session dedup state
+    // in memory, so repeated injections across the same session don't
+    // rely on tmpfile round-trips and survive Claude Code session
+    // boundaries as long as the daemon is alive.
+    if (process.env.BEAR_NO_DAEMON !== "1") {
+      const daemonOutput = await tryInjectDeltaViaDaemon(prompt, input.session_id)
+      if (daemonOutput.kind === "skipped") {
+        console.error(
+          `[recall hook] daemon skipped: ${daemonOutput.reason} (${Date.now() - startTime}ms) prompt="${prompt.slice(0, 60)}"`,
+        )
+        process.exit(0)
+      }
+      if (daemonOutput.kind === "ok") {
+        console.error(
+          `[recall hook] daemon OK: ${daemonOutput.contextLen} chars synthesis (${Date.now() - startTime}ms, seen=${daemonOutput.seenCount} turn=${daemonOutput.turnNumber}) prompt="${prompt.slice(0, 60)}"`,
+        )
+        console.log(
+          JSON.stringify({
+            hookSpecificOutput: { additionalContext: daemonOutput.additionalContext },
+          }),
+        )
+        process.exit(0)
+      }
+      // kind === "error" — fall through to library path below.
+    }
+
     const result = await hookRecall(prompt)
     const elapsed = Date.now() - startTime
     if (result.skipped) {

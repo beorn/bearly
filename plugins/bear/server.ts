@@ -39,7 +39,9 @@ import {
   type PlanOnlyResult,
   type WorkspaceStateResult,
   type SessionStateResult,
+  type InjectDeltaResult,
 } from "../../tools/lib/bear/rpc.ts"
+import { hookRecall } from "../../tools/lib/history/recall.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
 // Re-enable by setting BEAR_LOG=1.
@@ -61,7 +63,7 @@ async function getDaemon(): Promise<BearClient | null> {
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(BEAR_METHODS.hello, {
       clientName: "@bearly/bear",
-      clientVersion: "0.4.0",
+      clientVersion: "0.5.0",
       protocolVersion: BEAR_PROTOCOL_VERSION,
     })
     daemonClient = client
@@ -146,6 +148,24 @@ const TOOLS = [
         sessionId: { type: "string", description: "The session id to inspect" },
       },
       required: ["sessionId"],
+    },
+  },
+  {
+    name: "bear.inject_delta",
+    description:
+      "Hook-side recall injection with per-session dedup held by the daemon. Returns additionalContext ready to splice into a Claude Code UserPromptSubmit hookSpecificOutput. Dedup is session-scoped with TTL in turns (default 10). Daemon-preferred; falls back to in-process hookRecall when the daemon is unreachable.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "The user's prompt text" },
+        sessionId: {
+          type: "string",
+          description: "Session id hint for dedup keying (defaults to the caller's registered session)",
+        },
+        limit: { type: "number", description: "Max snippets to inject (default 3)" },
+        ttlTurns: { type: "number", description: "Turns a seen doc stays excluded (default 10)" },
+      },
+      required: ["prompt"],
     },
   },
   {
@@ -351,6 +371,54 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
   }
 }
 
+async function handleInjectDelta(args: Record<string, unknown>): Promise<string> {
+  const prompt = typeof args.prompt === "string" ? args.prompt : ""
+  if (!prompt) throw new Error("bear.inject_delta: `prompt` is required")
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined
+  const limit = typeof args.limit === "number" && args.limit > 0 ? args.limit : undefined
+  const ttlTurns = typeof args.ttlTurns === "number" && args.ttlTurns > 0 ? args.ttlTurns : undefined
+
+  const daemon = await getDaemon()
+  if (daemon) {
+    try {
+      const result = (await daemon.call(BEAR_METHODS.injectDelta, {
+        prompt,
+        sessionId,
+        limit,
+        ttlTurns,
+      })) as InjectDeltaResult
+      return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
+    } catch (err) {
+      if (process.env.BEAR_LOG === "1") {
+        process.stderr.write(
+          `[bear] daemon.inject_delta failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+        )
+      }
+    }
+  }
+
+  // Library fallback — existing hookRecall uses tmpfile-based dedup.
+  const result = await hookRecall(prompt)
+  if (result.skipped) {
+    return JSON.stringify(
+      { skipped: true, reason: result.reason, seenCount: 0, turnNumber: 0, mode: "library" },
+      null,
+      2,
+    )
+  }
+  return JSON.stringify(
+    {
+      skipped: false,
+      additionalContext: result.hookOutput?.hookSpecificOutput.additionalContext ?? "",
+      seenCount: 0,
+      turnNumber: 0,
+      mode: "library",
+    },
+    null,
+    2,
+  )
+}
+
 async function handleSessionState(args: Record<string, unknown>): Promise<string> {
   const sessionId = typeof args.sessionId === "string" ? args.sessionId : ""
   if (!sessionId) throw new Error("bear.session_state: `sessionId` is required")
@@ -383,7 +451,7 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "@bearly/bear", version: "0.4.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "@bearly/bear", version: "0.5.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }
@@ -410,6 +478,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break
       case "bear.session_state":
         text = await handleSessionState(toolArgs)
+        break
+      case "bear.inject_delta":
+        text = await handleInjectDelta(toolArgs)
         break
       default:
         return {

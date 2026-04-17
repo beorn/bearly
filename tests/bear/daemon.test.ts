@@ -21,6 +21,7 @@ import {
   type SessionRegisterResult,
   type SessionHeartbeatResult,
   type PlanOnlyResult,
+  type InjectDeltaResult,
 } from "../../tools/lib/bear/rpc.ts"
 
 const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/bear-daemon.ts")
@@ -210,6 +211,65 @@ describe("bear daemon — status", () => {
     await h.client.call(BEAR_METHODS.sessionRegister, { claudePid: 2, sessionId: "t" })
     const s1 = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
     expect(s1.sessionCount).toBe(2)
+  })
+})
+
+describe("bear daemon — inject_delta (Phase 5)", () => {
+  let h: DaemonHarness | null = null
+  afterEach(async () => {
+    await h?.teardown()
+    h = null
+  })
+
+  it("short-circuits short + slash-command + empty prompts", async () => {
+    h = await spawnBearDaemon()
+    const shortPrompt = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "ok",
+      sessionId: "sess-a",
+    })) as InjectDeltaResult
+    expect(shortPrompt.skipped).toBe(true)
+    expect(shortPrompt.reason).toBe("short")
+
+    const slash = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "/some-command with args",
+      sessionId: "sess-a",
+    })) as InjectDeltaResult
+    expect(slash.skipped).toBe(true)
+    expect(slash.reason).toBe("slash_command")
+
+    const empty = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "",
+      sessionId: "sess-a",
+    })) as InjectDeltaResult
+    expect(empty.skipped).toBe(true)
+    expect(empty.reason).toBe("empty")
+  })
+
+  it("keeps independent dedup state per sessionId", async () => {
+    h = await spawnBearDaemon()
+    // Fire a substantive prompt against two different sessionIds. We don't
+    // assert anything about returned snippets (depends on the recall index
+    // in this test environment); we only check that the daemon stays alive
+    // and keeps per-session turn counters separate.
+    const r1 = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "tell me about the bear workspace daemon plan",
+      sessionId: "sess-A",
+    })) as InjectDeltaResult
+    const r2 = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "tell me about the bear workspace daemon plan",
+      sessionId: "sess-B",
+    })) as InjectDeltaResult
+    expect(r1.turnNumber).toBe(1)
+    expect(r2.turnNumber).toBe(1)
+
+    const r1b = (await h.client.call(BEAR_METHODS.injectDelta, {
+      prompt: "another substantive prompt for sess A only",
+      sessionId: "sess-A",
+    })) as InjectDeltaResult
+    expect(r1b.turnNumber).toBe(2)
+
+    const s = (await h.client.call(BEAR_METHODS.status, {})) as StatusResult
+    expect(s.daemonPid).toBe(h.child.pid)
   })
 })
 
