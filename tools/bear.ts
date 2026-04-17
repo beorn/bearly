@@ -13,7 +13,13 @@
 import { parseArgs } from "node:util"
 import { connectToDaemon, connectOrStart, readBearDaemonPid, type BearClient } from "./lib/bear/socket.ts"
 import { resolveBearSocketPath, resolveBearPidPath } from "./lib/bear/config.ts"
-import { BEAR_METHODS, BEAR_PROTOCOL_VERSION, type StatusResult, type SessionsListResult, type AskResult } from "./lib/bear/rpc.ts"
+import {
+  BEAR_METHODS,
+  BEAR_PROTOCOL_VERSION,
+  type StatusResult,
+  type SessionsListResult,
+  type AskResult,
+} from "./lib/bear/rpc.ts"
 
 const CLIENT_NAME = "bear-cli"
 const CLIENT_VERSION = "0.1.0"
@@ -78,7 +84,9 @@ async function cmdSessions(): Promise<void> {
       const sid = s.sessionId.slice(0, 8)
       const proj = s.project ?? "-"
       const cwd = s.cwd ?? "-"
-      process.stdout.write(`${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${age} cwd=${cwd}\n`)
+      process.stdout.write(
+        `${s.status === "alive" ? "●" : "○"} pid=${pid} sess=${sid} proj=${proj} last_seen=${age} cwd=${cwd}\n`,
+      )
     }
   })
 }
@@ -96,9 +104,12 @@ async function cmdAsk(query: string): Promise<void> {
 
 async function cmdPing(): Promise<void> {
   try {
-    await withClient(async () => {
-      process.stdout.write("pong\n")
-    }, { noStart: true })
+    await withClient(
+      async () => {
+        process.stdout.write("pong\n")
+      },
+      { noStart: true },
+    )
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === "ECONNREFUSED" || code === "ENOENT") {
@@ -174,6 +185,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`bear: fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
+  process.stderr.write(`bear: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
   process.exit(1)
 })

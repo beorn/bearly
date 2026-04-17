@@ -11,10 +11,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import {
-  connectToDaemon,
-  type BearClient,
-} from "../../tools/lib/bear/socket.ts"
+import { connectToDaemon, type BearClient } from "../../tools/lib/bear/socket.ts"
 import {
   BEAR_METHODS,
   BEAR_PROTOCOL_VERSION,
@@ -230,8 +227,13 @@ describe("bear daemon — plan_only (no LLM)", () => {
     // the daemon. Either ok:false or a library fallthrough is acceptable —
     // the contract is: the daemon stays alive and returns a structured result.
     const env = process.env
-    const hadKeys =
-      !!(env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY || env.GEMINI_API_KEY || env.XAI_API_KEY || env.GROK_API_KEY)
+    const hadKeys = !!(
+      env.ANTHROPIC_API_KEY ||
+      env.OPENAI_API_KEY ||
+      env.GEMINI_API_KEY ||
+      env.XAI_API_KEY ||
+      env.GROK_API_KEY
+    )
     const result = (await h.client.call(BEAR_METHODS.planOnly, { query: "some vague query" })) as PlanOnlyResult
     expect(typeof result.elapsedMs).toBe("number")
     if (!hadKeys) {

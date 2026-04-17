@@ -120,7 +120,8 @@ export function connectToDaemon(socketPath: string, opts?: { callTimeoutMs?: num
         const p = pending.get(msg.id)
         if (p) {
           pending.delete(msg.id)
-          if (msg.error) p.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code, data: msg.error.data }))
+          if (msg.error)
+            p.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code, data: msg.error.data }))
           else p.resolve(msg.result)
         }
       } else if (isNotification(msg)) {

@@ -6,9 +6,9 @@ The root `bearly` package is `private: true` at version `0.0.0` — it is never 
 
 ## Packages
 
-| Package         | npm                                                | Description                                                                                                   | Entry Point      |
-| --------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Cross-session coordination (daemon, proxy, watch, CLI)                                                        | `plugins/tribe/` |
+| Package         | npm                                                | Description                                                                                                      | Entry Point      |
+| --------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Cross-session coordination (daemon, proxy, watch, CLI)                                                           | `plugins/tribe/` |
 | `@bearly/bear`  | _private (0.2.0)_                                  | Workspace daemon MCP server — recall memory + future coordination. Phases 1–2 of the bear plan (bead `km-bear`). | `plugins/bear/`  |
 
 Future packages (not yet extracted): `@bearly/recall`, `@bearly/llm`, `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.

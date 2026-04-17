@@ -82,7 +82,13 @@ export type BearRepo = {
   getSessionBySessionId(sessionId: string): SessionRow | null
   markStale(pid: number, now: number): void
   sweepDeadSessions(now: number, staleAfterMs: number): number
-  appendEvent(input: { ts: number; sessionId?: string | null; claudePid?: number | null; type: string; meta?: Record<string, unknown> }): void
+  appendEvent(input: {
+    ts: number
+    sessionId?: string | null
+    claudePid?: number | null
+    type: string
+    meta?: Record<string, unknown>
+  }): void
   close(): void
 }
 
@@ -112,9 +118,7 @@ export function createBearRepo(db: Database): BearRepo {
   )
   const listStmt = db.prepare(`SELECT * FROM sessions ORDER BY last_seen DESC`)
   const markStaleStmt = db.prepare(`UPDATE sessions SET status = 'stale' WHERE claude_pid = $pid`)
-  const sweepStmt = db.prepare(
-    `UPDATE sessions SET status = 'stale' WHERE status = 'alive' AND last_seen < $threshold`,
-  )
+  const sweepStmt = db.prepare(`UPDATE sessions SET status = 'stale' WHERE status = 'alive' AND last_seen < $threshold`)
   const insertEventStmt = db.prepare(
     `INSERT INTO events (ts, session_id, claude_pid, type, meta) VALUES ($ts, $sessionId, $pid, $type, $meta)`,
   )

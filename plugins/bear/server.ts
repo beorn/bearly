@@ -31,7 +31,13 @@ import { getCurrentSessionContext } from "../../tools/recall/session-context.ts"
 import { setRecallLogging } from "../../tools/lib/history/recall-shared.ts"
 import { createReconnectingClient, type BearClient } from "../../tools/lib/bear/socket.ts"
 import { resolveBearSocketPath } from "../../tools/lib/bear/config.ts"
-import { BEAR_METHODS, BEAR_PROTOCOL_VERSION, type AskResult, type CurrentBriefResult, type PlanOnlyResult } from "../../tools/lib/bear/rpc.ts"
+import {
+  BEAR_METHODS,
+  BEAR_PROTOCOL_VERSION,
+  type AskResult,
+  type CurrentBriefResult,
+  type PlanOnlyResult,
+} from "../../tools/lib/bear/rpc.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
 // Re-enable by setting BEAR_LOG=1.
@@ -61,7 +67,9 @@ async function getDaemon(): Promise<BearClient | null> {
     return daemonClient
   } catch (err) {
     if (process.env.BEAR_LOG === "1") {
-      process.stderr.write(`[bear] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`)
+      process.stderr.write(
+        `[bear] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`,
+      )
     }
     daemonDisabled = true
     return null
@@ -157,7 +165,9 @@ async function handleAsk(args: Record<string, unknown>): Promise<string> {
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
       if (process.env.BEAR_LOG === "1") {
-        process.stderr.write(`[bear] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`)
+        process.stderr.write(
+          `[bear] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`,
+        )
       }
     }
   }
@@ -198,11 +208,16 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(BEAR_METHODS.currentBrief, sessionIdOverride ? { sessionIdOverride } : {})) as CurrentBriefResult
+      const result = (await daemon.call(
+        BEAR_METHODS.currentBrief,
+        sessionIdOverride ? { sessionIdOverride } : {},
+      )) as CurrentBriefResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
       if (process.env.BEAR_LOG === "1") {
-        process.stderr.write(`[bear] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`)
+        process.stderr.write(
+          `[bear] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+        )
       }
     }
   }
@@ -244,7 +259,9 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
       if (process.env.BEAR_LOG === "1") {
-        process.stderr.write(`[bear] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`)
+        process.stderr.write(
+          `[bear] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`,
+        )
       }
     }
   }

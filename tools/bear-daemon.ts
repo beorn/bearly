@@ -426,7 +426,7 @@ async function shutdown(code: number): Promise<never> {
 process.on("SIGINT", () => void shutdown(0))
 process.on("SIGTERM", () => void shutdown(0))
 process.on("uncaughtException", (err) => {
-  log.error?.(`Uncaught: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+  log.error?.(`Uncaught: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`)
 })
 process.on("unhandledRejection", (err) => {
   log.error?.(`Unhandled rejection: ${err instanceof Error ? err.message : String(err)}`)
