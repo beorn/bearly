@@ -6,7 +6,29 @@ One session becomes **chief** (coordinator); the rest are **members** (workers).
 
 ## Install
 
-Add to your project's `.mcp.json`:
+The recommended way is as a Claude Code plugin from the `bearly` marketplace. This installs tribe globally across every project, so you don't need per-project `.mcp.json` entries.
+
+```bash
+claude plugin install tribe@bearly
+```
+
+Then launch Claude Code with the channel flag so asynchronous messages (session join/leave, broadcasts, daemon notifications) can be pushed into your session:
+
+```bash
+claude --dangerously-load-development-channels plugin:tribe@bearly
+```
+
+A convenient wrapper for your shell:
+
+```zsh
+claude() { command claude "$@" --dangerously-load-development-channels plugin:tribe@bearly }
+```
+
+Without the flag, tribe's MCP tools still work (you can send messages and query state), but you won't _receive_ pushed messages from other sessions or the daemon.
+
+### Alternatives
+
+Per-project MCP install (legacy, no channel push):
 
 ```json
 {
@@ -19,7 +41,7 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-Or install globally:
+Or install the CLI on its own:
 
 ```bash
 npm install -g @bearly/tribe
