@@ -54,15 +54,15 @@ import {
   type WorkspaceStateResult,
   type SessionFocusSummary,
 } from "./lib/rpc.ts"
-import { recallAgent } from "../../../tools/recall/agent.ts"
-import { planQuery, planVariants } from "../../../tools/recall/plan.ts"
-import { buildQueryContext } from "../../../tools/recall/context.ts"
-import { getCurrentSessionContext, extractSessionFocus } from "../../../tools/recall/session-context.ts"
-import { setRecallLogging } from "../../../tools/lib/history/recall-shared.ts"
+import { recallAgent } from "../../recall/src/lib/agent.ts"
+import { planQuery, planVariants } from "../../recall/src/lib/plan.ts"
+import { buildQueryContext } from "../../recall/src/lib/context.ts"
+import { getCurrentSessionContext, extractSessionFocus } from "../../recall/src/lib/session-context.ts"
+import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/summarizer.ts"
 import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/rpc.ts"
-import { recall } from "../../../tools/lib/history/search.ts"
-import { ensureProjectSourcesIndexed } from "../../../tools/lib/history/project-sources.ts"
+import { recall } from "../../recall/src/history/search.ts"
+import { ensureProjectSourcesIndexed } from "../../recall/src/history/project-sources.ts"
 
 const DAEMON_VERSION = "0.5.0"
 const STARTED_AT = Date.now()

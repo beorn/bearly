@@ -9,8 +9,8 @@
 
 import { describe, test, expect, beforeEach } from "vitest"
 import { Database } from "bun:sqlite"
-import { initSchema } from "../../tools/lib/history/db-schema"
-import { fanoutSearch, mergeFanouts } from "../../tools/recall/fanout"
+import { initSchema } from "../../src/history/db-schema"
+import { fanoutSearch, mergeFanouts } from "../../src/lib/fanout"
 
 // ============================================================================
 // Test DB setup

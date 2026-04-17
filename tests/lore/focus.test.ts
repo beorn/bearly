@@ -17,7 +17,7 @@ import {
   type WorkspaceStateResult,
   type CurrentBriefResult,
 } from "../../plugins/lore/src/lib/rpc.ts"
-import { extractSessionFocus } from "../../tools/recall/session-context.ts"
+import { extractSessionFocus } from "../../plugins/recall/src/lib/session-context.ts"
 
 const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/lore/src/daemon.ts")
 

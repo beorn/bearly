@@ -5,9 +5,9 @@
 import * as path from "path"
 import * as fs from "fs"
 import * as readline from "readline"
-import { getDb, closeDb, PROJECTS_DIR, getAllSessionTitles, getSessionTitle } from "../lib/history/db"
-import { rebuildIndex, findSessionFiles } from "../lib/history/indexer"
-import type { JsonlRecord } from "../lib/history/types"
+import { getDb, closeDb, PROJECTS_DIR, getAllSessionTitles, getSessionTitle } from "../history/db"
+import { rebuildIndex, findSessionFiles } from "../history/indexer"
+import type { JsonlRecord } from "../history/types"
 import {
   THIRTY_DAYS_MS,
   formatBytes,

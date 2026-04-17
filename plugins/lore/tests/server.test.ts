@@ -29,13 +29,13 @@ vi.mock("../../../tools/lib/llm/providers", async (importOriginal) => {
   return { ...orig, isProviderAvailable: alwaysAvailable }
 })
 
-vi.mock("../../../tools/lib/history/db-schema", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../../tools/lib/history/db-schema")>()
+vi.mock("../../recall/src/history/db-schema", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../recall/src/history/db-schema")>()
   return { ...orig, DB_PATH: ":memory:" }
 })
 
-vi.mock("../../../tools/recall/context", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../../tools/recall/context")>()
+vi.mock("../../recall/src/lib/context", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../recall/src/lib/context")>()
   return {
     ...orig,
     buildQueryContext: () => ({
@@ -52,11 +52,11 @@ vi.mock("../../../tools/recall/context", async (importOriginal) => {
   }
 })
 
-import { recallAgent } from "../../../tools/recall/agent"
-import { planQuery, planVariants } from "../../../tools/recall/plan"
-import { getCurrentSessionContext } from "../../../tools/recall/session-context"
-import { setRecallLogging } from "../../../tools/lib/history/recall-shared"
-import { getDb, closeDb } from "../../../tools/lib/history/db"
+import { recallAgent } from "../../recall/src/lib/agent"
+import { planQuery, planVariants } from "../../recall/src/lib/plan"
+import { getCurrentSessionContext } from "../../recall/src/lib/session-context"
+import { setRecallLogging } from "../../recall/src/history/recall-shared"
+import { getDb, closeDb } from "../../recall/src/history/db"
 
 // Re-implement the handler wrappers inline so tests exercise the same logic
 // as server.ts without needing to load the MCP SDK. If server.ts diverges
@@ -89,7 +89,7 @@ async function handleCurrentBrief(args: Record<string, unknown>) {
 
 async function handlePlanOnly(args: Record<string, unknown>) {
   const query = String(args.query ?? "")
-  const { buildQueryContext } = await import("../../../tools/recall/context")
+  const { buildQueryContext } = await import("../../recall/src/lib/context")
   const call = await planQuery(query, buildQueryContext(), { round: 1 })
   if (!call.plan) return { ok: false, error: call.error }
   return { ok: true, plan: call.plan, variants: planVariants(call.plan), model: call.model }

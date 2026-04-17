@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeAll } from "vitest"
 import * as fs from "fs"
-import { parseTimeToMs, setRecallLogging, boostedRank, expandQueryVariants } from "../../tools/lib/history/recall"
-import type { RecallResult } from "../../tools/lib/history/recall"
-import { toFts5Query, DB_PATH } from "../../tools/lib/history/db"
+import { parseTimeToMs, setRecallLogging, boostedRank, expandQueryVariants } from "../../src/history/recall"
+import type { RecallResult } from "../../src/history/recall"
+import { toFts5Query, DB_PATH } from "../../src/history/db"
 
 // Suppress verbose [recall] logging during tests
 beforeAll(() => {
@@ -298,12 +298,12 @@ describe("recall integration", () => {
 
   // Dynamic import to avoid module-level side effects when DB doesn't exist
   async function getRecall(): Promise<(query: string, options?: Record<string, unknown>) => Promise<RecallResult>> {
-    const mod = await import("../../tools/lib/history/recall")
+    const mod = await import("../../src/history/recall")
     return mod.recall
   }
 
   async function getCloseDb(): Promise<() => void> {
-    const mod = await import("../../tools/lib/history/db")
+    const mod = await import("../../src/history/db")
     return mod.closeDb
   }
 

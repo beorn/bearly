@@ -11,12 +11,12 @@
 import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
-import { getDb, closeDb } from "../lib/history/db"
+import { getDb, closeDb } from "../history/db"
 import { summarizeSessionBatch, type SessionSummary } from "./summarize-session"
 import { findSessionJsonl } from "./extract"
-import { getCheapModel } from "../lib/llm/types"
-import { queryModel } from "../lib/llm/research"
-import { isProviderAvailable } from "../lib/llm/providers"
+import { getCheapModel } from "../../../../tools/lib/llm/types"
+import { queryModel } from "../../../../tools/lib/llm/research"
+import { isProviderAvailable } from "../../../../tools/lib/llm/providers"
 import { createRetroBeads } from "./summarize-beads"
 
 // ============================================================================

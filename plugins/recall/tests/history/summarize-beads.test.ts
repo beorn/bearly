@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest"
-import { parseActionableItems } from "../../tools/recall/summarize-beads"
+import { parseActionableItems } from "../../src/lib/summarize-beads"
 
 // ============================================================================
 // parseActionableItems

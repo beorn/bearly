@@ -13,11 +13,11 @@
  * `recall()` path — agent mode never makes things worse than today.
  */
 
-import { getDb, closeDb } from "../lib/history/db.ts"
-import { parseTimeToMs, recall } from "../lib/history/search.ts"
-import { synthesizeResults } from "../lib/history/synthesize.ts"
-import { log, THIRTY_DAYS_MS } from "../lib/history/recall-shared.ts"
-import type { RecallOptions, RecallResult, RecallSearchResult } from "../lib/history/recall-shared.ts"
+import { getDb, closeDb } from "../history/db.ts"
+import { parseTimeToMs, recall } from "../history/search.ts"
+import { synthesizeResults } from "../history/synthesize.ts"
+import { log, THIRTY_DAYS_MS } from "../history/recall-shared.ts"
+import type { RecallOptions, RecallResult, RecallSearchResult } from "../history/recall-shared.ts"
 import { buildQueryContext, renderContextPrompt, type QueryContext } from "./context.ts"
 import { planQuery, planVariants, type PlanCall, type QueryPlan } from "./plan.ts"
 import { fanoutSearch, mergeFanouts, type FanoutResult } from "./fanout.ts"

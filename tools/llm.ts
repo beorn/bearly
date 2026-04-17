@@ -18,7 +18,7 @@
 import { getAvailableProviders } from "./lib/llm/providers"
 import { getModel, MODELS, type Model } from "./lib/llm/types"
 import { initializePricing, getStaleWarning } from "./lib/llm/pricing"
-import { getDb, closeDb, findSimilarQueries } from "./lib/history/db"
+import { getDb, closeDb, findSimilarQueries } from "../plugins/recall/src/history/db"
 import {
   performPricingUpdate,
   maybeAutoUpdatePricing,

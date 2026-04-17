@@ -24,11 +24,11 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { recallAgent } from "../../../tools/recall/agent.ts"
-import { planQuery, planVariants } from "../../../tools/recall/plan.ts"
-import { buildQueryContext } from "../../../tools/recall/context.ts"
-import { getCurrentSessionContext } from "../../../tools/recall/session-context.ts"
-import { setRecallLogging } from "../../../tools/lib/history/recall-shared.ts"
+import { recallAgent } from "../../recall/src/lib/agent.ts"
+import { planQuery, planVariants } from "../../recall/src/lib/plan.ts"
+import { buildQueryContext } from "../../recall/src/lib/context.ts"
+import { getCurrentSessionContext } from "../../recall/src/lib/session-context.ts"
+import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath } from "./lib/config.ts"
 import {
@@ -41,7 +41,7 @@ import {
   type SessionStateResult,
   type InjectDeltaResult,
 } from "./lib/rpc.ts"
-import { hookRecall } from "../../../tools/lib/history/recall.ts"
+import { hookRecall } from "../../recall/src/history/recall.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
 // Re-enable by setting LORE_LOG=1.

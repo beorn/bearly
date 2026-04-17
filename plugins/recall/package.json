@@ -1,0 +1,21 @@
+{
+  "name": "@bearly/recall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Session history recall — FTS-indexed search, LLM-driven planner, multi-round agent over Claude Code transcripts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "plugins/recall"
+  },
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  }
+}

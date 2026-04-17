@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
-import { buildMockQueryModel, buildPlanJson, alwaysAvailable } from "../../tools/lib/llm/mock"
+import { buildMockQueryModel, buildPlanJson, alwaysAvailable } from "../../../../tools/lib/llm/mock"
 
 // ──────────────────────────────────────────────────────────────────────
 // Mock the LLM call sites BEFORE any module under test is imported.
@@ -20,29 +20,29 @@ const mockHolder: {
   fn: ReturnType<typeof buildMockQueryModel> | null
 } = { fn: null }
 
-vi.mock("../../tools/lib/llm/research", () => ({
+vi.mock("../../../../tools/lib/llm/research", () => ({
   queryModel: (opts: Parameters<NonNullable<typeof mockHolder.fn>>[0]) => {
     if (!mockHolder.fn) throw new Error("Test did not install a mock queryModel")
     return mockHolder.fn(opts)
   },
 }))
 
-vi.mock("../../tools/lib/llm/providers", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../tools/lib/llm/providers")>()
+vi.mock("../../../../tools/lib/llm/providers", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../../../tools/lib/llm/providers")>()
   return { ...orig, isProviderAvailable: alwaysAvailable }
 })
 
 // Use bun:sqlite's `:memory:` path so each test gets a fresh DB when we
 // close + reopen via closeDb() in afterEach. Vi.mock factory is hoisted
 // so we can't close over top-level consts; the path is inlined.
-vi.mock("../../tools/lib/history/db-schema", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../tools/lib/history/db-schema")>()
+vi.mock("../../src/history/db-schema", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../src/history/db-schema")>()
   return { ...orig, DB_PATH: ":memory:" }
 })
 
 // Disable context-build side effects that aren't relevant to agent orchestration
-vi.mock("../../tools/recall/context", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../tools/recall/context")>()
+vi.mock("../../src/lib/context", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../src/lib/context")>()
   return {
     ...orig,
     buildQueryContext: () => ({
@@ -63,9 +63,9 @@ vi.mock("../../tools/recall/context", async (importOriginal) => {
 // Imports AFTER vi.mock declarations (hoisted by Vitest)
 // ──────────────────────────────────────────────────────────────────────
 
-import { recallAgent } from "../../tools/recall/agent"
-import { setRecallLogging } from "../../tools/lib/history/recall-shared"
-import { getDb, closeDb } from "../../tools/lib/history/db"
+import { recallAgent } from "../../src/lib/agent"
+import { setRecallLogging } from "../../src/history/recall-shared"
+import { getDb, closeDb } from "../../src/history/db"
 
 // ──────────────────────────────────────────────────────────────────────
 // Fixture helpers

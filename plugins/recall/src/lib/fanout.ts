@@ -14,10 +14,10 @@ import {
   getAllSessionTitles,
   type MessageSearchOptions,
   type ContentSearchOptions,
-} from "../lib/history/db.ts"
-import type { ContentType } from "../lib/history/types.ts"
-import type { RecallSearchResult } from "../lib/history/recall-shared.ts"
-import { boostedRank } from "../lib/history/search.ts"
+} from "../history/db.ts"
+import type { ContentType } from "../history/types.ts"
+import type { RecallSearchResult } from "../history/recall-shared.ts"
+import { boostedRank } from "../history/search.ts"
 
 // ============================================================================
 // Types

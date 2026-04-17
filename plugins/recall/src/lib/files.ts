@@ -3,8 +3,8 @@
  */
 
 import * as os from "os"
-import { getDb, closeDb } from "../lib/history/db"
-import type { WriteRecord } from "../lib/history/types"
+import { getDb, closeDb } from "../history/db"
+import type { WriteRecord } from "../history/types"
 import { formatBytes, groupBy, BOLD, DIM, RESET } from "./format"
 
 // ============================================================================

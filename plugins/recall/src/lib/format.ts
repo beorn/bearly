@@ -2,7 +2,7 @@
  * Shared formatting utilities for the recall CLI.
  */
 
-import type { ContentType } from "../lib/history/types"
+import type { ContentType } from "../history/types"
 
 // ============================================================================
 // ANSI codes

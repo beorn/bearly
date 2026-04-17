@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "vitest"
-import { parsePlan, planVariants, type QueryPlan } from "../../tools/recall/plan"
+import { parsePlan, planVariants, type QueryPlan } from "../../src/lib/plan"
 
 describe("parsePlan", () => {
   test("parses a well-formed JSON plan", () => {

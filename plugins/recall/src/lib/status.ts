@@ -14,9 +14,9 @@ import {
   getActivitySummary,
   getIndexMeta,
   getAllSessionTitles,
-} from "../lib/history/db"
-import { reviewMemorySystem } from "../lib/history/recall"
-import { formatCost } from "../lib/llm/types"
+} from "../history/db"
+import { reviewMemorySystem } from "../history/recall"
+import { formatCost } from "../../../../tools/lib/llm/types"
 import {
   BOLD,
   RESET,

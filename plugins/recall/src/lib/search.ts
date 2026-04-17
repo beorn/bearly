@@ -12,13 +12,13 @@ import {
   searchAll,
   getAllSessionTitles,
   type MessageSearchOptions,
-} from "../lib/history/db"
-import { recall, type RecallOptions, type RecallResult } from "../lib/history/recall"
+} from "../history/db"
+import { recall, type RecallOptions, type RecallResult } from "../history/recall"
 import type { AgentRecallOptions, AgentRecallResult } from "./agent.ts"
 import type { QueryPlan } from "./plan.ts"
-import { searchLiveSession } from "../lib/history/search"
-import { findSessionFiles, extractTextContent } from "../lib/history/indexer"
-import type { ContentType, ContentRecord, MessageRecord, JsonlRecord } from "../lib/history/types"
+import { searchLiveSession } from "../history/search"
+import { findSessionFiles, extractTextContent } from "../history/indexer"
+import type { ContentType, ContentRecord, MessageRecord, JsonlRecord } from "../history/types"
 import {
   BOLD,
   RESET,

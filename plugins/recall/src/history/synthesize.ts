@@ -5,9 +5,9 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { getCheapModels, getCheapModel, estimateCost, type Model } from "../llm/types"
-import { queryModel } from "../llm/research"
-import { isProviderAvailable } from "../llm/providers"
+import { getCheapModels, getCheapModel, estimateCost, type Model } from "../../../../tools/lib/llm/types"
+import { queryModel } from "../../../../tools/lib/llm/research"
+import { isProviderAvailable } from "../../../../tools/lib/llm/providers"
 import { log } from "./recall-shared.ts"
 import type { RecallSearchResult } from "./recall-shared.ts"
 

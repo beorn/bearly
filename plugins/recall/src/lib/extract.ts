@@ -8,7 +8,7 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { getDb, closeDb, PROJECTS_DIR } from "../lib/history/db"
+import { getDb, closeDb, PROJECTS_DIR } from "../history/db"
 
 // ============================================================================
 // Types
