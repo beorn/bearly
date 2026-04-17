@@ -51,9 +51,9 @@ import {
   createEditset as migrateCreateEditset,
   summarizeMatches,
 } from "./lib/pattern-migrate"
-import { ask } from "./lib/llm/research"
-import { isProviderAvailable } from "./lib/llm/providers"
-import { getBestAvailableModel } from "./lib/llm/types"
+import { ask } from "../plugins/llm/src/lib/research"
+import { isProviderAvailable } from "../plugins/llm/src/lib/providers"
+import { getBestAvailableModel } from "../plugins/llm/src/lib/types"
 
 // Import core utilities
 import { filterEditset, saveEditset, loadEditset } from "./lib/core/editset"
@@ -1215,7 +1215,7 @@ With /i, all phases apply case-preservation.`,
       // 3. Get LLM model
       let model
       if (modelOverride) {
-        const { getModel } = await import("./lib/llm/types")
+        const { getModel } = await import("../plugins/llm/src/lib/types")
         model = getModel(modelOverride)
         if (!model) error(`Unknown model: ${modelOverride}`)
       } else {

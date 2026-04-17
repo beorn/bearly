@@ -10,7 +10,7 @@ import { retrieveResponse, pollForCompletion } from "./openai-deep"
 import { listPartials, findPartialByResponseId, cleanupPartials } from "./persistence"
 import { consensus } from "./consensus"
 import { isProviderAvailable, getProviderEnvVar } from "./providers"
-import { getDb, closeDb, ftsSearchWithSnippet } from "../../../plugins/recall/src/history/db"
+import { getDb, closeDb, ftsSearchWithSnippet } from "../../../recall/src/history/db"
 import { estimateCost, formatCost, getBestAvailableModel, getModel, MODELS, type Model, type ModelMode } from "./types"
 import { isPricingStale, cacheCurrentPricing, PRICING_SOURCES } from "./pricing"
 

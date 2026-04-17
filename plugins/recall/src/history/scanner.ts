@@ -18,8 +18,8 @@ import {
   getIndexMeta,
 } from "./db.ts"
 import type { ContentType } from "./types.ts"
-import { getCheapModels } from "../../../../tools/lib/llm/types"
-import { isProviderAvailable } from "../../../../tools/lib/llm/providers"
+import { getCheapModels } from "../../../llm/src/lib/types"
+import { isProviderAvailable } from "../../../llm/src/lib/providers"
 import { log, ONE_HOUR_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
 import type { RecallSearchResult } from "./recall-shared.ts"
 import { recall, parseTimeToMs } from "./search.ts"

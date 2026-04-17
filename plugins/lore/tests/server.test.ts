@@ -11,21 +11,21 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
-import { buildMockQueryModel, buildPlanJson, alwaysAvailable } from "../../../tools/lib/llm/mock"
+import { buildMockQueryModel, buildPlanJson, alwaysAvailable } from "../../llm/src/lib/mock"
 
 const mockHolder: {
   fn: ReturnType<typeof buildMockQueryModel> | null
 } = { fn: null }
 
-vi.mock("../../../tools/lib/llm/research", () => ({
+vi.mock("../../llm/src/lib/research", () => ({
   queryModel: (opts: Parameters<NonNullable<typeof mockHolder.fn>>[0]) => {
     if (!mockHolder.fn) throw new Error("Test did not install a mock queryModel")
     return mockHolder.fn(opts)
   },
 }))
 
-vi.mock("../../../tools/lib/llm/providers", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../../tools/lib/llm/providers")>()
+vi.mock("../../llm/src/lib/providers", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../llm/src/lib/providers")>()
   return { ...orig, isProviderAvailable: alwaysAvailable }
 })
 

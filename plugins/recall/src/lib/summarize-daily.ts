@@ -14,9 +14,9 @@ import * as os from "os"
 import { getDb, closeDb } from "../history/db"
 import { summarizeSessionBatch, type SessionSummary } from "./summarize-session"
 import { findSessionJsonl } from "./extract"
-import { getCheapModel } from "../../../../tools/lib/llm/types"
-import { queryModel } from "../../../../tools/lib/llm/research"
-import { isProviderAvailable } from "../../../../tools/lib/llm/providers"
+import { getCheapModel } from "../../../llm/src/lib/types"
+import { queryModel } from "../../../llm/src/lib/research"
+import { isProviderAvailable } from "../../../llm/src/lib/providers"
 import { createRetroBeads } from "./summarize-beads"
 
 // ============================================================================

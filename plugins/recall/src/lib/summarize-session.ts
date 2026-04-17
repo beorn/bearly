@@ -9,9 +9,9 @@ import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
 import { extractSessionContent, type SessionExtract } from "./extract"
-import { getCheapModel } from "../../../../tools/lib/llm/types"
-import { queryModel } from "../../../../tools/lib/llm/research"
-import { isProviderAvailable } from "../../../../tools/lib/llm/providers"
+import { getCheapModel } from "../../../llm/src/lib/types"
+import { queryModel } from "../../../llm/src/lib/research"
+import { isProviderAvailable } from "../../../llm/src/lib/providers"
 
 // ============================================================================
 // Types

@@ -10,9 +10,9 @@
  *   - deeper: strong round-1 cluster → mine entities from top snippets
  */
 
-import { getCheapModel, getCheapModels, estimateCost, getModel, type Model } from "../../../../tools/lib/llm/types.ts"
-import { isProviderAvailable } from "../../../../tools/lib/llm/providers.ts"
-import { queryModel } from "../../../../tools/lib/llm/research.ts"
+import { getCheapModel, getCheapModels, estimateCost, getModel, type Model } from "../../../llm/src/lib/types.ts"
+import { isProviderAvailable } from "../../../llm/src/lib/providers.ts"
+import { queryModel } from "../../../llm/src/lib/research.ts"
 import type { RecallSearchResult } from "../history/recall-shared.ts"
 import type { QueryContext } from "./context.ts"
 import { renderContextPrompt } from "./context.ts"
