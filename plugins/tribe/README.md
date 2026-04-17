@@ -16,7 +16,7 @@ A **tribe** is the set of Claude Code sessions working together on a project. Ea
 | **agent**     | A sub-process a member spawns to do scoped work (an `Agent` tool call, `/max` teammate, worktree worker). Agents serve the spawning member; they are not tribe members themselves.         |
 | **daemon**    | The long-lived per-user process that hosts the tribe. Carries wire traffic; stores lore. Exactly one per project.                                                                          |
 | **wire**      | Real-time signals among members: presence (heartbeats), broadcasts, events (git commits, bead updates, GitHub notifications), channel pub/sub. What travels between members _now_.         |
-| **lore**      | Accumulated memory: session history (FTS-indexed), focus state, LLM-derived summaries, hook-dedup state. What the tribe _remembers_. The `@bearly/lore` package (formerly `@bearly/bear`). |
+| **lore**      | Accumulated memory: session history (FTS-indexed), focus state, LLM-derived summaries, hook-dedup state. What the tribe _remembers_. Lives inside `@bearly/tribe` as the memory daemon. |
 | **recall**    | The action of searching lore. `bun recall "query"` is how a member retrieves lore. Same verb as everyday English — you recall a memory, the tribe recalls its lore.                        |
 | **plugin**    | Optional capabilities that run in the daemon and activate based on environment: `git`, `beads`, `github`, `health`, `accountly`. Plugins emit events onto the wire and may write to lore.  |
 | **channel**   | A pub/sub topic on the wire. Members subscribe to receive pushed messages of that type.                                                                                                    |
@@ -50,12 +50,13 @@ Agents are not tribe members; they serve the chief and terminate when done.
 
 ### Packages
 
-| Package         | What it holds                                                                                                                |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `@bearly/tribe` | The coordination layer — daemon, wire protocol, MCP proxy, CLI, watch TUI, plugins. This package.                            |
-| `@bearly/lore`  | The memory layer — FTS-indexed session history, focus cache, LLM summaries, per-session hook dedup. Formerly `@bearly/bear`. |
+`@bearly/tribe` is a single package containing the coordination layer, memory daemon, wire protocol, MCP tools, CLI, watch TUI, and plugins. Everything a tribe of Claude Code sessions needs to work together — presence, broadcasts, events, focus cache, LLM summaries, per-session hook dedup — lives in this one package.
 
-The two packages compose: `@bearly/lore` is consumed by `@bearly/tribe`'s daemon to give the tribe memory. They may merge into one runtime process over time; the package split is by domain, not by deployment.
+`@bearly/recall` is a separate companion package providing the FTS search primitive that tribe uses internally for session-history lookup; it can also be used standalone (e.g., `bun recall "query"` from the CLI).
+
+`@bearly/llm` is an independent multi-provider LLM dispatcher (cheap-model race, consensus, deep research) that `@bearly/recall` uses internally for its planner/agent.
+
+History: lore started as its own package in April 2026 (renamed from `@bearly/bear`); folded back into `@bearly/tribe` the same month once the concepts stabilized.
 
 ## Install
 
