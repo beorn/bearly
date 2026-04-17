@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import { connectToDaemon, type LoreClient } from "../../tools/lib/lore/socket.ts"
+import { connectToDaemon, type LoreClient } from "../../plugins/lore/src/lib/socket.ts"
 import {
   LORE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -22,9 +22,9 @@ import {
   type SessionHeartbeatResult,
   type PlanOnlyResult,
   type InjectDeltaResult,
-} from "../../tools/lib/lore/rpc.ts"
+} from "../../plugins/lore/src/lib/rpc.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/lore-daemon.ts")
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/lore/src/daemon.ts")
 
 function tmpPath(suffix: string): string {
   return `/tmp/lore-test-${randomUUID().slice(0, 8)}.${suffix}`

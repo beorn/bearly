@@ -6,9 +6,9 @@
  * Default off — daemons don't burn LLM credits unless the user enables it.
  */
 
-import { queryModel } from "../llm/research.ts"
-import { getCheapModel, getCheapModels, type Model } from "../llm/types.ts"
-import { isProviderAvailable } from "../llm/providers.ts"
+import { queryModel } from "../../../../tools/lib/llm/research.ts"
+import { getCheapModel, getCheapModels, type Model } from "../../../../tools/lib/llm/types.ts"
+import { isProviderAvailable } from "../../../../tools/lib/llm/providers.ts"
 
 export type SummarizerMode = "off" | "haiku" | "local"
 

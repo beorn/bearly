@@ -7,11 +7,12 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "declaration": true,
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["tools/**/*.ts", "tests/**/*.ts"],
+  "include": ["tools/**/*.ts", "tests/**/*.ts", "plugins/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

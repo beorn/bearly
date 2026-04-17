@@ -8,9 +8,9 @@ import * as os from "os"
 import * as fs from "fs"
 import { hookRecall } from "../lib/history/recall"
 import { summarizeUnprocessedDays } from "./summarize-daily"
-import { connectToDaemon } from "../lib/lore/socket.ts"
-import { resolveLoreSocketPath } from "../lib/lore/config.ts"
-import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../lib/lore/rpc.ts"
+import { connectToDaemon } from "../../plugins/lore/src/lib/socket.ts"
+import { resolveLoreSocketPath } from "../../plugins/lore/src/lib/config.ts"
+import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../plugins/lore/src/lib/rpc.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)

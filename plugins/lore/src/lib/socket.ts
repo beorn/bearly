@@ -11,7 +11,7 @@ import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
-import { createTimers } from "../tribe/timers.ts"
+import { createTimers } from "../../../../tools/lib/tribe/timers.ts"
 import { resolveLorePidPath } from "./config.ts"
 
 const log = createLogger("lore:socket")

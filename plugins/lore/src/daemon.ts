@@ -24,15 +24,15 @@ import {
   isRequest,
   type JsonRpcMessage,
   type JsonRpcRequest,
-} from "./lib/lore/socket.ts"
-import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/lore/config.ts"
+} from "./lib/socket.ts"
+import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/config.ts"
 import {
   openLoreDatabase,
   createLoreRepo,
   sessionRowToInfo,
   type LoreRepo,
   type SessionRow,
-} from "./lib/lore/database.ts"
+} from "./lib/database.ts"
 import {
   LORE_METHODS,
   LORE_ERRORS,
@@ -53,16 +53,16 @@ import {
   type StatusResult,
   type WorkspaceStateResult,
   type SessionFocusSummary,
-} from "./lib/lore/rpc.ts"
-import { recallAgent } from "./recall/agent.ts"
-import { planQuery, planVariants } from "./recall/plan.ts"
-import { buildQueryContext } from "./recall/context.ts"
-import { getCurrentSessionContext, extractSessionFocus } from "./recall/session-context.ts"
-import { setRecallLogging } from "./lib/history/recall-shared.ts"
-import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/lore/summarizer.ts"
-import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/lore/rpc.ts"
-import { recall } from "./lib/history/search.ts"
-import { ensureProjectSourcesIndexed } from "./lib/history/project-sources.ts"
+} from "./lib/rpc.ts"
+import { recallAgent } from "../../../tools/recall/agent.ts"
+import { planQuery, planVariants } from "../../../tools/recall/plan.ts"
+import { buildQueryContext } from "../../../tools/recall/context.ts"
+import { getCurrentSessionContext, extractSessionFocus } from "../../../tools/recall/session-context.ts"
+import { setRecallLogging } from "../../../tools/lib/history/recall-shared.ts"
+import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "./lib/summarizer.ts"
+import type { SessionStateParams, SessionStateResult, InjectDeltaParams, InjectDeltaResult } from "./lib/rpc.ts"
+import { recall } from "../../../tools/lib/history/search.ts"
+import { ensureProjectSourcesIndexed } from "../../../tools/lib/history/project-sources.ts"
 
 const DAEMON_VERSION = "0.5.0"
 const STARTED_AT = Date.now()

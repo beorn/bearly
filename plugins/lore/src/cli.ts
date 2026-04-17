@@ -11,8 +11,8 @@
  */
 
 import { parseArgs } from "node:util"
-import { connectToDaemon, connectOrStart, readLoreDaemonPid, type LoreClient } from "./lib/lore/socket.ts"
-import { resolveLoreSocketPath, resolveLorePidPath } from "./lib/lore/config.ts"
+import { connectToDaemon, connectOrStart, readLoreDaemonPid, type LoreClient } from "./lib/socket.ts"
+import { resolveLoreSocketPath, resolveLorePidPath } from "./lib/config.ts"
 import {
   LORE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -20,7 +20,7 @@ import {
   type SessionsListResult,
   type AskResult,
   type WorkspaceStateResult,
-} from "./lib/lore/rpc.ts"
+} from "./lib/rpc.ts"
 
 const CLIENT_NAME = "lore-cli"
 const CLIENT_VERSION = "0.1.0"
