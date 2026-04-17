@@ -271,6 +271,34 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
     const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
+
+  it("advances the turn counter on every non-short-circuit call", async () => {
+    h = await spawnLoreDaemon()
+    const sessionId = "sess-ttl-" + Math.random().toString(36).slice(2, 8)
+    // Fire 5 substantive prompts with a small ttlTurns so we exercise the
+    // counter increments. We don't assert on seenCount contents — depends on
+    // the recall corpus in this test env — only on turnNumber semantics.
+    let lastTurn = 0
+    for (let i = 1; i <= 5; i++) {
+      const r = (await h.client.call(LORE_METHODS.injectDelta, {
+        prompt: `substantive prompt number ${i} for ttl turn counter verification`,
+        sessionId,
+        ttlTurns: 3,
+      })) as InjectDeltaResult
+      expect(r.turnNumber).toBe(i)
+      expect(r.turnNumber).toBeGreaterThan(lastTurn)
+      lastTurn = r.turnNumber
+    }
+
+    // Short-circuited prompts (empty, short, slash) do NOT advance the counter —
+    // they fail-fast before the turn increment in the daemon handler.
+    const shortPrompt = (await h.client.call(LORE_METHODS.injectDelta, {
+      prompt: "y",
+      sessionId,
+    })) as InjectDeltaResult
+    expect(shortPrompt.skipped).toBe(true)
+    expect(shortPrompt.turnNumber).toBe(5) // unchanged from last non-short call
+  })
 })
 
 describe("lore daemon — plan_only (no LLM)", () => {
