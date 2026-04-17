@@ -10,9 +10,9 @@ import { spawn } from "child_process"
 import { hookRecall } from "../history/recall"
 import { getDb, closeDb, getIndexMeta } from "../history/db"
 import { summarizeUnprocessedDays } from "./summarize-daily"
-import { withDaemonCall } from "../../../lore/src/lib/socket.ts"
-import { resolveLoreSocketPath } from "../../../lore/src/lib/config.ts"
-import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../lore/src/lib/rpc.ts"
+import { withDaemonCall } from "../../../tribe/lore/lib/socket.ts"
+import { resolveLoreSocketPath } from "../../../tribe/lore/lib/config.ts"
+import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../tribe/lore/lib/rpc.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)

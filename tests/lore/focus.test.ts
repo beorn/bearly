@@ -10,16 +10,16 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync, writeFileSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import { connectToDaemon, type LoreClient } from "../../plugins/lore/src/lib/socket.ts"
+import { connectToDaemon, type LoreClient } from "../../plugins/tribe/lore/lib/socket.ts"
 import {
   LORE_METHODS,
   LORE_PROTOCOL_VERSION,
   type WorkspaceStateResult,
   type CurrentBriefResult,
-} from "../../plugins/lore/src/lib/rpc.ts"
+} from "../../plugins/tribe/lore/lib/rpc.ts"
 import { extractSessionFocus } from "../../plugins/recall/src/lib/session-context.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/lore/src/daemon.ts")
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/tribe/lore/daemon.ts")
 
 function tmpPath(suffix: string): string {
   return `/tmp/lore-focus-test-${randomUUID().slice(0, 8)}.${suffix}`

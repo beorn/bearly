@@ -18,7 +18,7 @@
  *   LORE_SOCKET        — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
  *
  * Usage (registered in .mcp.json):
- *   { "command": "bun", "args": ["vendor/bearly/plugins/lore/server.ts"] }
+ *   { "command": "bun", "args": ["vendor/bearly/plugins/tribe/lore/server.ts"] }
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { parseSummary, resolveSummarizerMode } from "../../plugins/lore/src/lib/summarizer.ts"
+import { parseSummary, resolveSummarizerMode } from "../../plugins/tribe/lore/lib/summarizer.ts"
 
 describe("parseSummary", () => {
   it("accepts strict JSON", () => {
