@@ -1,5 +1,8 @@
 /**
  * Tribe MCP tools list — tool definitions for ListToolsRequest.
+ *
+ * Names live in the canonical `tribe.*` namespace. The legacy `tribe_*`
+ * forms were removed in @bearly/tribe 0.10.0.
  */
 
 // ---------------------------------------------------------------------------
@@ -8,7 +11,7 @@
 
 export const TOOLS_LIST = [
   {
-    name: "tribe_send",
+    name: "tribe.send",
     description: "Send a message to a specific tribe member",
     inputSchema: {
       type: "object" as const,
@@ -28,7 +31,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_broadcast",
+    name: "tribe.broadcast",
     description: "Broadcast a message to all tribe members",
     inputSchema: {
       type: "object" as const,
@@ -46,7 +49,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_sessions",
+    name: "tribe.members",
     description: "List active tribe sessions with their roles and domains",
     inputSchema: {
       type: "object" as const,
@@ -56,7 +59,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_history",
+    name: "tribe.history",
     description: "View recent message history",
     inputSchema: {
       type: "object" as const,
@@ -67,7 +70,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_rename",
+    name: "tribe.rename",
     description: "Rename this session in the tribe",
     inputSchema: {
       type: "object" as const,
@@ -78,7 +81,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_health",
+    name: "tribe.health",
     description: "Diagnostic: check for silent members, stale beads, unread messages",
     inputSchema: {
       type: "object" as const,
@@ -86,7 +89,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_join",
+    name: "tribe.join",
     description: "Re-announce this session's name, role, and domains (e.g. after compaction/rejoin)",
     inputSchema: {
       type: "object" as const,
@@ -107,7 +110,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_reload",
+    name: "tribe.reload",
     description:
       "Hot-reload the tribe MCP server — re-exec with latest code from disk. Use after tribe code is updated to pick up fixes without restarting the Claude Code session.",
     inputSchema: {
@@ -121,7 +124,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_retro",
+    name: "tribe.retro",
     description:
       "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
     inputSchema: {
@@ -141,7 +144,7 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe_leadership",
+    name: "tribe.leadership",
     description: "Show the current chief lease holder, term number, and time until expiry",
     inputSchema: {
       type: "object" as const,

@@ -13,22 +13,18 @@
 /**
  * Protocol version.
  *
- * - v2 (@bearly/tribe 0.9.0): MCP-surface rename to tribe.* namespace.
- *   Daemon-internal method strings still used the legacy lore.* / tribe_*
- *   forms on the wire.
- * - v3 (@bearly/tribe 0.9.0, Phase 4): daemon-internal RPC methods renamed
- *   to the unified tribe.* namespace. Daemons accept the legacy names
- *   as silent aliases for the 0.9 upgrade window; removal in 0.10.
+ * - v4 (@bearly/tribe 0.10.0): legacy lore.* / tribe_* wire-name aliases
+ *   removed. Daemons only speak the canonical tribe.* namespace. Clients
+ *   running pre-0.10 that send legacy names now receive "method not found".
+ *
+ * Constant name retained as LORE_PROTOCOL_VERSION for import stability —
+ * renaming would ripple across daemon, proxy, CLI, and tests for no
+ * behavioural gain.
  */
-export const LORE_PROTOCOL_VERSION = 3
+export const LORE_PROTOCOL_VERSION = 4
 
 // ---------------------------------------------------------------------------
-// Method names
-//
-// TRIBE_METHODS is the canonical source of truth for the wire protocol.
-// LORE_METHODS is a deprecated alias kept for backwards compatibility with
-// any external importers; it resolves to the same values (the new
-// `tribe.*` strings), NOT the historical `lore.*` strings.
+// Method names — canonical tribe.* wire protocol, single source of truth.
 // ---------------------------------------------------------------------------
 
 export const TRIBE_METHODS = {
@@ -46,36 +42,6 @@ export const TRIBE_METHODS = {
 } as const
 
 export type TribeMethod = (typeof TRIBE_METHODS)[keyof typeof TRIBE_METHODS]
-
-/**
- * @deprecated Use `TRIBE_METHODS` instead. Preserved with the SAME string
- * values as TRIBE_METHODS — both resolve to the new `tribe.*` wire names.
- * Scheduled for removal in @bearly/tribe 0.10.
- */
-export const LORE_METHODS = TRIBE_METHODS
-
-/** @deprecated Use `TribeMethod` instead. */
-export type LoreMethod = TribeMethod
-
-/**
- * Legacy daemon-internal method names (the `lore.*` / `tribe_*` wire strings
- * that v2 daemons used). These are accepted by v3 daemons as silent aliases
- * for the 0.9 upgrade window; clients should use TRIBE_METHODS on new code.
- * Removal target: 0.10.
- */
-export const LEGACY_METHOD_ALIASES: Readonly<Record<string, string>> = {
-  "lore.hello": TRIBE_METHODS.hello,
-  "lore.ask": TRIBE_METHODS.ask,
-  "lore.current_brief": TRIBE_METHODS.currentBrief,
-  "lore.plan_only": TRIBE_METHODS.planOnly,
-  "lore.session_register": TRIBE_METHODS.sessionRegister,
-  "lore.session_heartbeat": TRIBE_METHODS.sessionHeartbeat,
-  "lore.sessions_list": TRIBE_METHODS.sessionsList,
-  "lore.workspace_state": TRIBE_METHODS.workspaceState,
-  "lore.session_state": TRIBE_METHODS.sessionState,
-  "lore.inject_delta": TRIBE_METHODS.injectDelta,
-  "lore.status": TRIBE_METHODS.status,
-}
 
 // ---------------------------------------------------------------------------
 // lore.hello — handshake + capability exchange

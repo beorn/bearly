@@ -15,8 +15,10 @@
  *   recall files --restore <file>     # Recover file content
  *
  * Internal (hook system):
- *   recall hook                       # UserPromptSubmit (stdin JSON)
  *   recall remember                   # SessionEnd (stdin JSON)
+ *
+ * Note: SessionStart, UserPromptSubmit, and SessionEnd hooks are dispatched
+ * via `tribe hook <event>` — not recall CLI — as of @bearly/tribe 0.10.0.
  */
 
 import { Command, CommanderError, int, uint } from "@silvery/commander"
@@ -24,20 +26,8 @@ import { cmdSearch, type SearchOptions } from "./lib/search"
 import { cmdStatus } from "./lib/status"
 import { cmdSessions, cmdIndex } from "./lib/sessions"
 import { cmdFiles } from "./lib/files"
-import { cmdHook, cmdRemember, cmdSessionStart, cmdSessionEnd } from "./lib/hooks"
+import { cmdRemember } from "./lib/hooks"
 import { cmdSummarize, cmdWeekly, cmdShow } from "./lib/summarize-daily"
-
-// ── Deprecation shim ────────────────────────────────────────────────────
-// `recall session-start` / `session-end` / `hook` are now `tribe hook <event>`.
-// Keep them functional but emit a one-line deprecation warning so users
-// migrate. Will be removed in 0.10.
-
-let DEPRECATED_WARNING_EMITTED = false
-function warnDeprecated(oldCmd: string, newCmd: string): void {
-  if (DEPRECATED_WARNING_EMITTED) return
-  DEPRECATED_WARNING_EMITTED = true
-  console.error(`[deprecated] \`recall ${oldCmd}\` is now \`${newCmd}\` — will be removed in 0.10`)
-}
 
 // ============================================================================
 // CLI
@@ -48,10 +38,7 @@ const SUBCOMMANDS = new Set([
   "status",
   "sessions",
   "files",
-  "hook",
   "remember",
-  "session-start",
-  "session-end",
   "summarize",
   "weekly",
   "show",
@@ -142,15 +129,6 @@ program
     await cmdFiles(opts.pattern, opts)
   })
 
-// ── hook (internal) ─────────────────────────────────────────────────────
-program
-  .command("hook", { hidden: true })
-  .description("UserPromptSubmit hook (reads stdin JSON)")
-  .action(async () => {
-    warnDeprecated("hook", "tribe hook prompt")
-    await cmdHook()
-  })
-
 // ── remember (internal) ─────────────────────────────────────────────────
 program
   .command("remember", { hidden: true })
@@ -158,24 +136,6 @@ program
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
     await cmdRemember(opts)
-  })
-
-// ── session-start (internal) ────────────────────────────────────────
-program
-  .command("session-start", { hidden: true })
-  .description("SessionStart hook — writes sentinel file for session lookup (reads stdin JSON)")
-  .action(async () => {
-    warnDeprecated("session-start", "tribe hook session-start")
-    await cmdSessionStart()
-  })
-
-// ── session-end (internal) ──────────────────────────────────────────
-program
-  .command("session-end", { hidden: true })
-  .description("SessionEnd hook — spawns detached incremental FTS index refresh")
-  .action(async () => {
-    warnDeprecated("session-end", "tribe hook session-end")
-    await cmdSessionEnd()
   })
 
 // ── summarize ─────────────────────────────────────────────────────────

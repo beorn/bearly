@@ -10,20 +10,20 @@ The root `bearly` package is `private: true` at version `0.0.0` — it is never 
 
 See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#domain-model) for the authoritative vocabulary (tribe, member, chief, agent, daemon, wire, lore, recall).
 
-| Package         | npm                                                | Role                                                                                                       | Entry Point      |
-| --------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------- |
+| Package         | npm                                                | Role                                                                                                        | Entry Point      |
+| --------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------- |
 | `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Coordination + memory daemon + MCP tools + `tribe` CLI — wire, lore, plugins, watch TUI, all in one package | `plugins/tribe/` |
 
 `@bearly/lore` was folded into `@bearly/tribe` on 2026-04-17 — what was the standalone memory daemon (focus cache, LLM summarizer, per-session hook dedup) now ships inside tribe. The split existed briefly while the concepts stabilized; the unified package is the steady state.
 
-**0.9.0 namespace unification (2026-04-17)** — MCP tools moved to the unified `tribe.*` namespace (`tribe.ask`, `tribe.send`, `tribe.members`, …) and env vars to the `TRIBE_*` prefix. Old `lore.*` / `tribe_*` / `LORE_*` names still work as deprecated aliases through 0.10. See `plugins/tribe/CHANGELOG.md` for the full rename table.
+**0.10.0 — purge complete (2026-04-17)** — MCP tools live exclusively under the `tribe.*` namespace, env vars exclusively under `TRIBE_*`. All legacy `lore.*` / `tribe_*` / `LORE_*` names introduced for the 0.9.0 deprecation window have been removed — both tools/list emission and dispatch reject them. Daemon wire-protocol version 4. See `plugins/tribe/CHANGELOG.md` for the full purge scope.
 
 ### Supporting primitives
 
-| Package          | npm               | Role                                                                                     | Entry Point       |
-| ---------------- | ----------------- | ---------------------------------------------------------------------------------------- | ----------------- |
+| Package          | npm               | Role                                                                                                    | Entry Point       |
+| ---------------- | ----------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
 | `@bearly/recall` | _private (0.1.0)_ | Session-history search primitive — FTS5 + LLM planner/agent. Used by tribe internally; also standalone. | `plugins/recall/` |
-| `@bearly/llm`    | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                 | `plugins/llm/`    |
+| `@bearly/llm`    | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                                | `plugins/llm/`    |
 
 Future packages (not yet extracted): `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
 

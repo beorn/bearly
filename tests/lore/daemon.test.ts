@@ -13,7 +13,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
 import { connectToDaemon, type LoreClient } from "../../plugins/tribe/lore/lib/socket.ts"
 import {
-  LORE_METHODS,
+  TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
   type HelloResult,
   type StatusResult,
@@ -63,7 +63,7 @@ async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
   })
   await waitFor(() => existsSync(socketPath))
   const client = await connectToDaemon(socketPath, { callTimeoutMs: 5000 })
-  await client.call(LORE_METHODS.hello, {
+  await client.call(TRIBE_METHODS.hello, {
     clientName: "test",
     clientVersion: "0.0.0",
     protocolVersion: LORE_PROTOCOL_VERSION,
@@ -107,7 +107,7 @@ describe("lore daemon — handshake", () => {
 
   it("responds to hello with protocol + pid", async () => {
     h = await spawnLoreDaemon()
-    const hello = (await h.client.call(LORE_METHODS.hello, {
+    const hello = (await h.client.call(TRIBE_METHODS.hello, {
       clientName: "t",
       clientVersion: "1",
       protocolVersion: LORE_PROTOCOL_VERSION,
@@ -122,26 +122,10 @@ describe("lore daemon — handshake", () => {
     h = await spawnLoreDaemon()
     await expect(h.client.call("lore.does_not_exist", {})).rejects.toThrow(/unknown method/i)
     // Daemon still alive
-    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 
-  it("accepts legacy lore.* method names as silent aliases (Phase 4)", async () => {
-    h = await spawnLoreDaemon()
-    // Hand-typed legacy wire name must dispatch to the same handler as
-    // the canonical tribe.status.
-    const legacy = (await h.client.call("lore.status", {})) as StatusResult
-    expect(legacy.daemonPid).toBe(h.child.pid)
-    expect(legacy.socketPath).toBe(h.socketPath)
-
-    // lore.sessions_list must also work.
-    const list = (await h.client.call("lore.sessions_list", {})) as SessionsListResult
-    expect(Array.isArray(list.sessions)).toBe(true)
-
-    // Canonical tribe.status returns the same result.
-    const canonical = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
-    expect(canonical.daemonPid).toBe(h.child.pid)
-  })
 })
 
 describe("lore daemon — session registration", () => {
@@ -155,7 +139,7 @@ describe("lore daemon — session registration", () => {
     h = await spawnLoreDaemon()
     const pid = 91234
     const sessionId = "deadbeef-1234-4567-8901-abcdef012345"
-    const reg = (await h.client.call(LORE_METHODS.sessionRegister, {
+    const reg = (await h.client.call(TRIBE_METHODS.sessionRegister, {
       claudePid: pid,
       sessionId,
       transcriptPath: "/tmp/t.jsonl",
@@ -165,13 +149,13 @@ describe("lore daemon — session registration", () => {
     expect(reg.ok).toBe(true)
     expect(typeof reg.registeredAt).toBe("number")
 
-    const hb = (await h.client.call(LORE_METHODS.sessionHeartbeat, {
+    const hb = (await h.client.call(TRIBE_METHODS.sessionHeartbeat, {
       claudePid: pid,
     })) as SessionHeartbeatResult
     expect(hb.ok).toBe(true)
     expect(hb.lastSeen).toBeGreaterThanOrEqual(reg.registeredAt)
 
-    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(TRIBE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(1)
     const row = list.sessions[0]!
     expect(row.claudePid).toBe(pid)
@@ -184,14 +168,14 @@ describe("lore daemon — session registration", () => {
   it("re-registration updates the existing row (no duplicates)", async () => {
     h = await spawnLoreDaemon()
     const pid = 99999
-    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: pid, sessionId: "sess-one", cwd: "/tmp/a" })
-    await h.client.call(LORE_METHODS.sessionRegister, {
+    await h.client.call(TRIBE_METHODS.sessionRegister, { claudePid: pid, sessionId: "sess-one", cwd: "/tmp/a" })
+    await h.client.call(TRIBE_METHODS.sessionRegister, {
       claudePid: pid,
       sessionId: "sess-two",
       cwd: "/tmp/b",
       project: "other",
     })
-    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(TRIBE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(1)
     const row = list.sessions[0]!
     expect(row.sessionId).toBe("sess-two")
@@ -201,11 +185,11 @@ describe("lore daemon — session registration", () => {
 
   it("heartbeat for unknown pid returns ok=true (no crash, no fresh row)", async () => {
     h = await spawnLoreDaemon()
-    const hb = (await h.client.call(LORE_METHODS.sessionHeartbeat, {
+    const hb = (await h.client.call(TRIBE_METHODS.sessionHeartbeat, {
       claudePid: 77777,
     })) as SessionHeartbeatResult
     expect(hb.ok).toBe(true)
-    const list = (await h.client.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
+    const list = (await h.client.call(TRIBE_METHODS.sessionsList, {})) as SessionsListResult
     expect(list.sessions).toHaveLength(0)
   })
 })
@@ -219,14 +203,14 @@ describe("lore daemon — status", () => {
 
   it("reports socket, db, and alive session count", async () => {
     h = await spawnLoreDaemon()
-    const s0 = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    const s0 = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s0.sessionCount).toBe(0)
     expect(s0.socketPath).toBe(h.socketPath)
     expect(s0.dbPath).toBe(h.dbPath)
 
-    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: 1, sessionId: "s" })
-    await h.client.call(LORE_METHODS.sessionRegister, { claudePid: 2, sessionId: "t" })
-    const s1 = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    await h.client.call(TRIBE_METHODS.sessionRegister, { claudePid: 1, sessionId: "s" })
+    await h.client.call(TRIBE_METHODS.sessionRegister, { claudePid: 2, sessionId: "t" })
+    const s1 = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s1.sessionCount).toBe(2)
   })
 })
@@ -240,21 +224,21 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
 
   it("short-circuits short + slash-command + empty prompts", async () => {
     h = await spawnLoreDaemon()
-    const shortPrompt = (await h.client.call(LORE_METHODS.injectDelta, {
+    const shortPrompt = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "ok",
       sessionId: "sess-a",
     })) as InjectDeltaResult
     expect(shortPrompt.skipped).toBe(true)
     expect(shortPrompt.reason).toBe("short")
 
-    const slash = (await h.client.call(LORE_METHODS.injectDelta, {
+    const slash = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "/some-command with args",
       sessionId: "sess-a",
     })) as InjectDeltaResult
     expect(slash.skipped).toBe(true)
     expect(slash.reason).toBe("slash_command")
 
-    const empty = (await h.client.call(LORE_METHODS.injectDelta, {
+    const empty = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "",
       sessionId: "sess-a",
     })) as InjectDeltaResult
@@ -268,24 +252,24 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
     // assert anything about returned snippets (depends on the recall index
     // in this test environment); we only check that the daemon stays alive
     // and keeps per-session turn counters separate.
-    const r1 = (await h.client.call(LORE_METHODS.injectDelta, {
+    const r1 = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "tell me about the lore workspace daemon plan",
       sessionId: "sess-A",
     })) as InjectDeltaResult
-    const r2 = (await h.client.call(LORE_METHODS.injectDelta, {
+    const r2 = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "tell me about the lore workspace daemon plan",
       sessionId: "sess-B",
     })) as InjectDeltaResult
     expect(r1.turnNumber).toBe(1)
     expect(r2.turnNumber).toBe(1)
 
-    const r1b = (await h.client.call(LORE_METHODS.injectDelta, {
+    const r1b = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "another substantive prompt for sess A only",
       sessionId: "sess-A",
     })) as InjectDeltaResult
     expect(r1b.turnNumber).toBe(2)
 
-    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 
@@ -297,7 +281,7 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
     // the recall corpus in this test env — only on turnNumber semantics.
     let lastTurn = 0
     for (let i = 1; i <= 5; i++) {
-      const r = (await h.client.call(LORE_METHODS.injectDelta, {
+      const r = (await h.client.call(TRIBE_METHODS.injectDelta, {
         prompt: `substantive prompt number ${i} for ttl turn counter verification`,
         sessionId,
         ttlTurns: 3,
@@ -309,7 +293,7 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
 
     // Short-circuited prompts (empty, short, slash) do NOT advance the counter —
     // they fail-fast before the turn increment in the daemon handler.
-    const shortPrompt = (await h.client.call(LORE_METHODS.injectDelta, {
+    const shortPrompt = (await h.client.call(TRIBE_METHODS.injectDelta, {
       prompt: "y",
       sessionId,
     })) as InjectDeltaResult
@@ -339,7 +323,7 @@ describe("lore daemon — plan_only (no LLM)", () => {
       env.XAI_API_KEY ||
       env.GROK_API_KEY
     )
-    const result = (await h.client.call(LORE_METHODS.planOnly, { query: "some vague query" })) as PlanOnlyResult
+    const result = (await h.client.call(TRIBE_METHODS.planOnly, { query: "some vague query" })) as PlanOnlyResult
     expect(typeof result.elapsedMs).toBe("number")
     if (!hadKeys) {
       expect(result.ok).toBe(false)
@@ -348,7 +332,7 @@ describe("lore daemon — plan_only (no LLM)", () => {
       expect(typeof result.ok).toBe("boolean")
     }
     // Daemon still alive
-    const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    const s = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
 })

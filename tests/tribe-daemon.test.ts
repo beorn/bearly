@@ -515,11 +515,11 @@ describe("tribe daemon integration", () => {
   })
 
   // -------------------------------------------------------------------------
-  // Tool forwarding (tribe_sessions)
+  // Tool forwarding (tribe.members)
   // -------------------------------------------------------------------------
 
   describe("tool forwarding", () => {
-    it("tribe_sessions returns list of connected sessions", async () => {
+    it("tribe.members returns list of connected sessions", async () => {
       daemon = await spawnDaemon(socketPath)
 
       const chief = await connect()
@@ -529,7 +529,7 @@ describe("tribe daemon integration", () => {
       await worker.call("register", { name: "worker-1", role: "member", domains: ["testing"] })
 
       // Query sessions from chief's perspective
-      const result = (await chief.call("tribe_sessions")) as Record<string, unknown>
+      const result = (await chief.call("tribe.members")) as Record<string, unknown>
 
       // Result is a tool result with content array
       expect(result.content).toBeDefined()
@@ -538,12 +538,12 @@ describe("tribe daemon integration", () => {
       expect(content).toContain("worker-1")
     }, 10_000)
 
-    it("tribe_sessions works for unregistered client (uses daemon context)", async () => {
+    it("tribe.members works for unregistered client (uses daemon context)", async () => {
       daemon = await spawnDaemon(socketPath)
 
       // Connect without registering — should still work via daemon context
       const client = await connect()
-      const result = (await client.call("tribe_sessions")) as Record<string, unknown>
+      const result = (await client.call("tribe.members")) as Record<string, unknown>
 
       expect(result.content).toBeDefined()
     }, 10_000)

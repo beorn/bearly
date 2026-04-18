@@ -1455,7 +1455,7 @@ async function createReconnectingClient(opts) {
 // tools/lib/tribe/tools-list.ts
 var TOOLS_LIST = [
   {
-    name: "tribe_send",
+    name: "tribe.send",
     description: "Send a message to a specific tribe member",
     inputSchema: {
       type: "object",
@@ -1475,7 +1475,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_broadcast",
+    name: "tribe.broadcast",
     description: "Broadcast a message to all tribe members",
     inputSchema: {
       type: "object",
@@ -1493,7 +1493,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_sessions",
+    name: "tribe.members",
     description: "List active tribe sessions with their roles and domains",
     inputSchema: {
       type: "object",
@@ -1503,7 +1503,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_history",
+    name: "tribe.history",
     description: "View recent message history",
     inputSchema: {
       type: "object",
@@ -1514,7 +1514,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_rename",
+    name: "tribe.rename",
     description: "Rename this session in the tribe",
     inputSchema: {
       type: "object",
@@ -1525,7 +1525,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_health",
+    name: "tribe.health",
     description: "Diagnostic: check for silent members, stale beads, unread messages",
     inputSchema: {
       type: "object",
@@ -1533,7 +1533,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_join",
+    name: "tribe.join",
     description: "Re-announce this session's name, role, and domains (e.g. after compaction/rejoin)",
     inputSchema: {
       type: "object",
@@ -1554,7 +1554,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_reload",
+    name: "tribe.reload",
     description: "Hot-reload the tribe MCP server \u2014 re-exec with latest code from disk. Use after tribe code is updated to pick up fixes without restarting the Claude Code session.",
     inputSchema: {
       type: "object",
@@ -1567,7 +1567,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_retro",
+    name: "tribe.retro",
     description: "Generate a retrospective report analyzing tribe message history, coordination health, and per-member activity",
     inputSchema: {
       type: "object",
@@ -1586,7 +1586,7 @@ var TOOLS_LIST = [
     }
   },
   {
-    name: "tribe_leadership",
+    name: "tribe.leadership",
     description: "Show the current chief lease holder, term number, and time until expiry",
     inputSchema: {
       type: "object",
@@ -1594,55 +1594,6 @@ var TOOLS_LIST = [
     }
   }
 ];
-
-// plugins/tribe/lib/deprecation.ts
-var TRIBE_TOOL_RENAMES = [
-  ["tribe.ask", "lore.ask"],
-  ["tribe.brief", "lore.current_brief"],
-  ["tribe.plan", "lore.plan_only"],
-  ["tribe.session", "lore.session_state"],
-  ["tribe.workspace", "lore.workspace_state"],
-  ["tribe.inject_delta", "lore.inject_delta"],
-  ["tribe.send", "tribe_send"],
-  ["tribe.broadcast", "tribe_broadcast"],
-  ["tribe.members", "tribe_sessions"],
-  ["tribe.history", "tribe_history"],
-  ["tribe.rename", "tribe_rename"],
-  ["tribe.health", "tribe_health"],
-  ["tribe.join", "tribe_join"],
-  ["tribe.reload", "tribe_reload"],
-  ["tribe.retro", "tribe_retro"],
-  ["tribe.leadership", "tribe_leadership"]
-];
-var OLD_TO_NEW = new Map(TRIBE_TOOL_RENAMES.map(([nu, old]) => [old, nu]));
-var NEW_TO_OLD = new Map(TRIBE_TOOL_RENAMES.map(([nu, old]) => [nu, old]));
-var warned = new Set;
-var TRIBE_DEPRECATION_REMOVAL_VERSION = "0.10";
-function normalizeToolName(name) {
-  const nu = OLD_TO_NEW.get(name);
-  if (nu === undefined)
-    return name;
-  if (!warned.has(name)) {
-    warned.add(name);
-    process.stderr.write(`[deprecated] MCP tool '${name}' is now '${nu}' \u2014 old name will be removed in @bearly/tribe ${TRIBE_DEPRECATION_REMOVAL_VERSION}
-`);
-  }
-  return nu;
-}
-function buildDeprecatedAliasTools(baseTools) {
-  const aliases = [];
-  for (const tool of baseTools) {
-    const oldName = NEW_TO_OLD.get(tool.name);
-    if (!oldName)
-      continue;
-    aliases.push({
-      ...tool,
-      name: oldName,
-      description: `[deprecated alias of ${tool.name}] ${tool.description ?? ""}`.trim()
-    });
-  }
-  return aliases;
-}
 
 // tools/lib/tribe/hot-reload.ts
 import { createHash as createHash2 } from "crypto";
@@ -1919,7 +1870,6 @@ function tryAutoRenameOnClaim(content) {
 }
 let __stack = [];
 try {
-  var MCP_TO_DAEMON_METHOD = new Map(TRIBE_TOOL_RENAMES.filter(([nu]) => nu.startsWith("tribe.")).filter(([, old]) => old.startsWith("tribe_")).map(([nu]) => [nu, nu]));
   var log4 = createLogger("tribe:proxy");
   var proxyAc = new AbortController;
   var timers = createTimers(proxyAc.signal);
@@ -2018,7 +1968,7 @@ Message format rules:
 - Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed"
 
 Don't over-communicate \u2014 only broadcast when it changes what someone else should know.`;
-  mcp = new Server({ name: "tribe", version: "0.9.0" }, {
+  mcp = new Server({ name: "tribe", version: "0.10.0" }, {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {}
@@ -2033,25 +1983,19 @@ Don't over-communicate \u2014 only broadcast when it changes what someone else s
         sendChannel(`Auto-identify: call tribe.join(name="${myName}") with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns it. Do not call tribe.members or tribe.history \u2014 just join silently and continue.`, { from: "tribe-proxy", type: "system" });
       }, 500);
     }
-    const canonical = TOOLS_LIST.map((t) => {
-      const match = TRIBE_TOOL_RENAMES.find(([, old]) => old === t.name);
-      return match ? { ...t, name: match[0] } : t;
-    });
-    return { tools: [...canonical, ...buildDeprecatedAliasTools(canonical)] };
+    return { tools: TOOLS_LIST };
   });
   mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const { name: rawName, arguments: toolArgs } = req.params;
+    const { name, arguments: toolArgs } = req.params;
     const a = toolArgs ?? {};
-    const canonicalName = normalizeToolName(rawName);
-    const daemonMethod = MCP_TO_DAEMON_METHOD.get(canonicalName) ?? canonicalName;
     try {
-      if (canonicalName === "tribe.send" && a.to && typeof a.to === "string") {
+      if (name === "tribe.send" && a.to && typeof a.to === "string") {
         const directResult = await trySendDirect(a);
         if (directResult)
           return directResult;
       }
-      const result = await daemon.call(daemonMethod, a);
-      if (canonicalName === "tribe.join" || canonicalName === "tribe.rename") {
+      const result = await daemon.call(name, a);
+      if (name === "tribe.join" || name === "tribe.rename") {
         const r = result;
         try {
           const data = JSON.parse(r.content[0]?.text ?? "{}");

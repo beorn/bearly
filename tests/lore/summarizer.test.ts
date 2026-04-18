@@ -46,12 +46,12 @@ describe("parseSummary", () => {
 
 describe("resolveSummarizerMode", () => {
   it("defaults to off", () => {
-    const prev = process.env.LORE_SUMMARIZER_MODEL
+    const prev = process.env.TRIBE_SUMMARIZER_MODEL
     try {
-      delete process.env.LORE_SUMMARIZER_MODEL
+      delete process.env.TRIBE_SUMMARIZER_MODEL
       expect(resolveSummarizerMode()).toBe("off")
     } finally {
-      if (prev !== undefined) process.env.LORE_SUMMARIZER_MODEL = prev
+      if (prev !== undefined) process.env.TRIBE_SUMMARIZER_MODEL = prev
     }
   })
 

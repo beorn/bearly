@@ -1,8 +1,8 @@
 /**
  * Lore focus poller — integration tests.
  *
- * Tests the Phase 3 focus pipeline: `extractSessionFocus` + daemon poller +
- * `lore.workspace_state` / `lore.current_brief` cache fast-path.
+ * Tests the focus pipeline: `extractSessionFocus` + daemon poller +
+ * `tribe.workspace` / `tribe.brief` cache fast-path.
  */
 
 import { describe, it, expect, afterEach } from "vitest"
@@ -12,7 +12,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
 import { connectToDaemon, type LoreClient } from "../../plugins/tribe/lore/lib/socket.ts"
 import {
-  LORE_METHODS,
+  TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
   type WorkspaceStateResult,
   type CurrentBriefResult,
@@ -83,7 +83,7 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
   child.stderr?.on("data", () => {})
   await waitFor(() => existsSync(socketPath))
   const client = await connectToDaemon(socketPath, { callTimeoutMs: 5000 })
-  await client.call(LORE_METHODS.hello, { clientName: "t", clientVersion: "0", protocolVersion: LORE_PROTOCOL_VERSION })
+  await client.call(TRIBE_METHODS.hello, { clientName: "t", clientVersion: "0", protocolVersion: LORE_PROTOCOL_VERSION })
   return {
     child,
     client,
@@ -152,7 +152,7 @@ describe("lore daemon — focus poller + workspace_state", () => {
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "fix the bug in UnifiedOmnibox.tsx", "running tests")
     try {
-      await h.client.call(LORE_METHODS.sessionRegister, {
+      await h.client.call(TRIBE_METHODS.sessionRegister, {
         claudePid: 55555,
         sessionId: "focus-test-sess",
         transcriptPath,
@@ -161,7 +161,7 @@ describe("lore daemon — focus poller + workspace_state", () => {
       })
       // Wait until workspace_state returns a non-empty focusHint for this session.
       const result = await waitFor<WorkspaceStateResult>(async () => {
-        const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+        const state = (await h!.client.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
         const hit = state.sessions.find((s) => s.claudePid === 55555)
         return hit?.focusHint ? state : null
       }, 4000)
@@ -182,7 +182,7 @@ describe("lore daemon — focus poller + workspace_state", () => {
     h = await spawnDaemon(200)
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "cached query", "cached answer")
-    await h.client.call(LORE_METHODS.sessionRegister, {
+    await h.client.call(TRIBE_METHODS.sessionRegister, {
       claudePid: 55556,
       sessionId: "cache-test-sess",
       transcriptPath,
@@ -191,13 +191,13 @@ describe("lore daemon — focus poller + workspace_state", () => {
     })
     // Wait for initial focus refresh.
     await waitFor(async () => {
-      const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+      const state = (await h!.client.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
       return state.sessions.find((s) => s.claudePid === 55556)?.focusHint ? true : null
     }, 4000)
     unlinkSync(transcriptPath)
     // Next poll tick will try and fail; the cached entry must still be present.
     await new Promise((r) => setTimeout(r, 400))
-    const state = (await h.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const state = (await h.client.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
     const row = state.sessions.find((s) => s.claudePid === 55556)
     expect(row).toBeDefined()
     expect(row!.focusHint).toContain("cached query")
@@ -208,7 +208,7 @@ describe("lore daemon — focus poller + workspace_state", () => {
     const transcriptPath = tmpPath("jsonl")
     writeFixtureJsonl(transcriptPath, "brief test query", "brief answer")
     try {
-      await h.client.call(LORE_METHODS.sessionRegister, {
+      await h.client.call(TRIBE_METHODS.sessionRegister, {
         claudePid: 55557,
         sessionId: "brief-test-sess",
         transcriptPath,
@@ -217,10 +217,10 @@ describe("lore daemon — focus poller + workspace_state", () => {
       })
       // Wait for focus to populate.
       await waitFor(async () => {
-        const state = (await h!.client.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+        const state = (await h!.client.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
         return state.sessions.find((s) => s.claudePid === 55557)?.focusHint ? true : null
       }, 4000)
-      const brief = (await h.client.call(LORE_METHODS.currentBrief, {
+      const brief = (await h.client.call(TRIBE_METHODS.currentBrief, {
         sessionIdOverride: "brief-test-sess",
       })) as CurrentBriefResult
       expect(brief.detected).toBe(true)

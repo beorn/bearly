@@ -5,6 +5,63 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.10.0 — 2026-04-17
+
+### Removed — all 0.9.0 compat aliases purged (BREAKING)
+
+The one-release deprecation window announced in 0.9.0 closes here. Every
+legacy name that mapped to a `tribe.*` canonical now returns an error.
+
+**MCP tools** (removed from both `tools/list` emission and dispatch):
+
+- `lore.ask`, `lore.current_brief`, `lore.plan_only`, `lore.session_state`,
+  `lore.workspace_state`, `lore.inject_delta`
+- `tribe_send`, `tribe_broadcast`, `tribe_sessions`, `tribe_history`,
+  `tribe_rename`, `tribe_health`, `tribe_join`, `tribe_reload`,
+  `tribe_retro`, `tribe_leadership`
+
+**Env vars** (direct `process.env.TRIBE_*` lookup only — no fallback):
+
+- `LORE_NO_DAEMON`, `LORE_LOG`, `LORE_SOCKET`, `LORE_DB`,
+  `LORE_SUMMARIZER_MODEL`, `LORE_FOCUS_POLL_MS`, `LORE_SUMMARY_POLL_MS`
+
+**Daemon wire protocol** (legacy method aliases removed, daemons reject them):
+
+- Lore daemon: `lore.hello`, `lore.ask`, `lore.current_brief`,
+  `lore.plan_only`, `lore.session_register`, `lore.session_heartbeat`,
+  `lore.sessions_list`, `lore.workspace_state`, `lore.session_state`,
+  `lore.inject_delta`, `lore.status`
+- Tribe coord daemon: `tribe_send`, `tribe_broadcast`, `tribe_sessions`,
+  `tribe_history`, `tribe_rename`, `tribe_health`, `tribe_join`,
+  `tribe_reload`, `tribe_retro`, `tribe_leadership`
+
+**Recall CLI subcommands** (use `tribe hook <event>` instead):
+
+- `recall hook`, `recall session-start`, `recall session-end`
+
+**Modules** (deleted):
+
+- `plugins/tribe/lib/deprecation.ts` (MCP tool rename shim)
+- `plugins/tribe/lore/lib/env.ts` (LORE_* → TRIBE_* resolver)
+- Exports `LORE_METHODS`, `LEGACY_METHOD_ALIASES`, `TRIBE_LEGACY_METHOD_ALIASES`
+- Tests `deprecation.test.ts`, `env.test.ts`, `protocol-aliases.test.ts`
+
+### Protocol
+
+- Lore daemon protocol version bumped **3 → 4**. Daemons shipped in 0.10+
+  will reject handshakes from pre-0.10 clients that claim `protocolVersion: 3`.
+  Restart all in-flight sessions after upgrading.
+
+### Migration
+
+If you see a "method not found" or "unknown tool" error after upgrading,
+you (or a script/skill) are still using the pre-0.9 name. Consult the 0.9.0
+rename table below and update to the canonical `tribe.*` form.
+
+Per [docs/lessons/refactoring.md](../../docs/lessons/refactoring.md):
+deprecated is not done. The aliases existed exactly long enough to let users
+migrate; they're gone now.
+
 ## 0.9.0 — 2026-04-17
 
 ### Changed — MCP namespace unification under `tribe.*`

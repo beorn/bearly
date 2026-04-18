@@ -28,11 +28,9 @@ import {
   type JsonRpcRequest,
 } from "./lib/socket.ts"
 import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/config.ts"
-import { getEnv } from "./lib/env.ts"
 import { openLoreDatabase, createLoreRepo, sessionRowToInfo, type LoreRepo, type SessionRow } from "./lib/database.ts"
 import {
   TRIBE_METHODS,
-  LEGACY_METHOD_ALIASES,
   LORE_ERRORS,
   LORE_PROTOCOL_VERSION,
   type HelloParams,
@@ -73,9 +71,9 @@ const { values: args } = parseArgs({
     socket: { type: "string" },
     db: { type: "string" },
     "quit-timeout": { type: "string", default: "1800" },
-    "focus-poll-ms": { type: "string", default: getEnv("TRIBE_FOCUS_POLL_MS") ?? "60000" },
-    "summary-poll-ms": { type: "string", default: getEnv("TRIBE_SUMMARY_POLL_MS") ?? "120000" },
-    "summarizer-model": { type: "string", default: getEnv("TRIBE_SUMMARIZER_MODEL") ?? "off" },
+    "focus-poll-ms": { type: "string", default: process.env.TRIBE_FOCUS_POLL_MS ?? "60000" },
+    "summary-poll-ms": { type: "string", default: process.env.TRIBE_SUMMARY_POLL_MS ?? "120000" },
+    "summarizer-model": { type: "string", default: process.env.TRIBE_SUMMARIZER_MODEL ?? "off" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
@@ -98,7 +96,7 @@ ensureParentDir(DB_PATH)
 // ---------------------------------------------------------------------------
 
 const log = createLogger("lore:daemon")
-setRecallLogging(getEnv("TRIBE_LOG") === "1")
+setRecallLogging(process.env.TRIBE_LOG === "1")
 
 // ---------------------------------------------------------------------------
 // Stale daemon check — avoid duplicate daemons on same socket
@@ -437,13 +435,7 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
   markActive()
   try {
     const params = (req.params ?? {}) as Record<string, unknown>
-    // Silently normalize legacy lore.* method names to the canonical tribe.*
-    // form. Wire protocol — no stderr warning. Upgrade window only; the
-    // legacy aliases are slated for removal in 0.10.
-    const method = LEGACY_METHOD_ALIASES[req.method] ?? req.method
-    if (method !== req.method) {
-      log.debug?.(`legacy RPC method '${req.method}' dispatched as '${method}'`)
-    }
+    const method = req.method
     switch (method) {
       case TRIBE_METHODS.hello:
         return makeResponse(req.id, await handleHello(conn, params as unknown as HelloParams))

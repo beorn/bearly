@@ -42,22 +42,6 @@ import { randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
-import { normalizeToolName, buildDeprecatedAliasTools, TRIBE_TOOL_RENAMES } from "../plugins/tribe/lib/deprecation.ts"
-
-/**
- * MCP tool name -> daemon RPC method. Post-Phase 4, the daemon speaks the
- * canonical tribe.* namespace natively, so this is an identity forward for
- * all tribe.* tools (daemon accepts legacy tribe_* aliases internally too,
- * but the proxy always sends the new names).
- *
- * The TRIBE_TOOL_RENAMES filter preserves the structure for documentation
- * symmetry with Phase 2 and makes future additions trivial.
- */
-const MCP_TO_DAEMON_METHOD: ReadonlyMap<string, string> = new Map(
-  TRIBE_TOOL_RENAMES.filter(([nu]) => nu.startsWith("tribe."))
-    .filter(([, old]) => old.startsWith("tribe_"))
-    .map(([nu]) => [nu, nu]),
-)
 
 const log = createLogger("tribe:proxy")
 
@@ -288,7 +272,7 @@ Message format rules:
 Don't over-communicate — only broadcast when it changes what someone else should know.`
 
 mcp = new Server(
-  { name: "tribe", version: "0.9.0" },
+  { name: "tribe", version: "0.10.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -318,37 +302,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
       )
     }, 500)
   }
-  // Publish each tool twice: once under its canonical tribe.* name (remapped
-  // from the legacy tribe_* source list) and once under the deprecated alias.
-  // Deprecation warnings fire on call, not on list.
-  const canonical = TOOLS_LIST.map((t) => {
-    // Find the matching new name for each legacy tribe_* tool.
-    const match = TRIBE_TOOL_RENAMES.find(([, old]) => old === t.name)
-    return match ? { ...t, name: match[0] } : t
-  })
-  return { tools: [...canonical, ...buildDeprecatedAliasTools(canonical)] }
+  return { tools: TOOLS_LIST }
 })
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name: rawName, arguments: toolArgs } = req.params
+  const { name, arguments: toolArgs } = req.params
   const a = (toolArgs ?? {}) as Record<string, unknown>
-  // Normalize the MCP-surface name (emits one-time deprecation warning for
-  // legacy tribe_* callers). The result is the canonical tribe.* name.
-  const canonicalName = normalizeToolName(rawName)
-  // Post-Phase 4: the daemon speaks tribe.* natively; this is an identity
-  // forward for all canonical names.
-  const daemonMethod = MCP_TO_DAEMON_METHOD.get(canonicalName) ?? canonicalName
 
   try {
-    // Try direct peer messaging for tribe.send (canonical name)
-    if (canonicalName === "tribe.send" && a.to && typeof a.to === "string") {
+    // Try direct peer messaging for tribe.send
+    if (name === "tribe.send" && a.to && typeof a.to === "string") {
       const directResult = await trySendDirect(a)
       if (directResult) return directResult
     }
 
-    const result = await daemon.call(daemonMethod, a)
+    const result = await daemon.call(name, a)
     // Update local name/role after join/rename
-    if (canonicalName === "tribe.join" || canonicalName === "tribe.rename") {
+    if (name === "tribe.join" || name === "tribe.rename") {
       const r = result as { content: Array<{ type: string; text: string }> }
       try {
         const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>

@@ -4,7 +4,6 @@
 
 import { existsSync, mkdirSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
-import { getEnv } from "./env.ts"
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -13,7 +12,7 @@ import { getEnv } from "./env.ts"
 /** Resolve daemon socket path. Priority: arg > TRIBE_LORE_SOCKET env > XDG_RUNTIME_DIR > ~/.local/share/lore */
 export function resolveLoreSocketPath(socketArg?: string): string {
   if (socketArg) return socketArg
-  const fromEnv = getEnv("TRIBE_LORE_SOCKET")
+  const fromEnv = process.env.TRIBE_LORE_SOCKET
   if (fromEnv) return fromEnv
   const xdg = process.env.XDG_RUNTIME_DIR
   if (xdg) return resolve(xdg, "lore.sock")
@@ -30,7 +29,7 @@ export function resolveLorePidPath(socketPath: string): string {
 /** DB location: arg > TRIBE_LORE_DB env > ~/.local/share/lore/lore.db */
 export function resolveLoreDbPath(dbArg?: string): string {
   if (dbArg) return dbArg
-  const fromEnv = getEnv("TRIBE_LORE_DB")
+  const fromEnv = process.env.TRIBE_LORE_DB
   if (fromEnv) return fromEnv
   const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
   const loreDir = resolve(xdgData, "lore")

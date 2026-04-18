@@ -11,18 +11,12 @@
  *   tribe.ask    — wraps recallAgent()
  *   tribe.brief  — wraps getCurrentSessionContext()
  *   tribe.plan   — wraps planQuery({ round: 1 })
- *
- * Deprecated aliases (removed in 0.10): lore.ask, lore.current_brief,
- *   lore.plan_only, lore.session_state, lore.workspace_state,
- *   lore.inject_delta — still dispatched, emit a one-time stderr warning.
+ *   tribe.session, tribe.workspace, tribe.inject_delta — daemon-backed.
  *
  * Env:
  *   TRIBE_NO_DAEMON=1       — skip the daemon entirely (library-only mode)
  *   TRIBE_LOG=1             — enable recall library logging (else silenced)
  *   TRIBE_LORE_SOCKET       — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
- *
- * Legacy LORE_NO_DAEMON / LORE_LOG / LORE_SOCKET still work but emit a
- * one-time deprecation warning (removed in 0.10).
  *
  * Usage (registered in .mcp.json):
  *   { "command": "bun", "args": ["vendor/bearly/plugins/tribe/lore/server.ts"] }
@@ -38,7 +32,6 @@ import { getCurrentSessionContext } from "../../recall/src/lib/session-context.t
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath } from "./lib/config.ts"
-import { getEnv } from "./lib/env.ts"
 import {
   TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -50,17 +43,16 @@ import {
   type InjectDeltaResult,
 } from "./lib/rpc.ts"
 import { hookRecall } from "../../recall/src/history/recall.ts"
-import { normalizeToolName, buildDeprecatedAliasTools } from "../lib/deprecation.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
-// Re-enable by setting TRIBE_LOG=1 (legacy LORE_LOG still honoured).
-if (getEnv("TRIBE_LOG") !== "1") setRecallLogging(false)
+// Re-enable by setting TRIBE_LOG=1.
+if (process.env.TRIBE_LOG !== "1") setRecallLogging(false)
 
 // ============================================================================
 // Daemon client (lazy singleton, with fallback on failure)
 // ============================================================================
 
-const USE_DAEMON = getEnv("TRIBE_NO_DAEMON") !== "1"
+const USE_DAEMON = process.env.TRIBE_NO_DAEMON !== "1"
 let daemonClient: LoreClient | null = null
 let daemonDisabled = false // Set after repeated connect failures
 
@@ -72,14 +64,14 @@ async function getDaemon(): Promise<LoreClient | null> {
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(TRIBE_METHODS.hello, {
       clientName: "/tribe/lore",
-      clientVersion: "0.9.0",
+      clientVersion: "0.10.0",
       protocolVersion: LORE_PROTOCOL_VERSION,
     })
     daemonClient = client
     // If the reconnecting client eventually gives up, disable for this session.
     return daemonClient
   } catch (err) {
-    if (getEnv("TRIBE_LOG") === "1") {
+    if (process.env.TRIBE_LOG === "1") {
       process.stderr.write(
         `[lore] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`,
       )
@@ -217,7 +209,7 @@ async function handleAsk(args: Record<string, unknown>): Promise<string> {
       const result = (await daemon.call(TRIBE_METHODS.ask, askParams)) as AskResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (getEnv("TRIBE_LOG") === "1") {
+      if (process.env.TRIBE_LOG === "1") {
         process.stderr.write(
           `[lore] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -267,7 +259,7 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
       )) as CurrentBriefResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (getEnv("TRIBE_LOG") === "1") {
+      if (process.env.TRIBE_LOG === "1") {
         process.stderr.write(
           `[lore] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -311,7 +303,7 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
       const result = (await daemon.call(TRIBE_METHODS.planOnly, { query })) as PlanOnlyResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (getEnv("TRIBE_LOG") === "1") {
+      if (process.env.TRIBE_LOG === "1") {
         process.stderr.write(
           `[lore] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -398,7 +390,7 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
       })) as InjectDeltaResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (getEnv("TRIBE_LOG") === "1") {
+      if (process.env.TRIBE_LOG === "1") {
         process.stderr.write(
           `[lore] daemon.inject_delta failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -456,18 +448,15 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "/tribe", version: "0.9.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "/tribe", version: "0.10.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Publish every tool twice: once with its canonical tribe.* name, once with
-  // the deprecated lore.* alias. Removal scheduled for @bearly/tribe 0.10.
-  return { tools: [...TOOLS, ...buildDeprecatedAliasTools(TOOLS)] }
+  return { tools: TOOLS }
 })
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name: rawName, arguments: args } = request.params
+  const { name, arguments: args } = request.params
   const toolArgs = (args ?? {}) as Record<string, unknown>
-  const name = normalizeToolName(rawName)
 
   try {
     let text: string
@@ -492,7 +481,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break
       default:
         return {
-          content: [{ type: "text" as const, text: `Error: unknown tool "${rawName}"` }],
+          content: [{ type: "text" as const, text: `Error: unknown tool "${name}"` }],
           isError: true,
         }
     }

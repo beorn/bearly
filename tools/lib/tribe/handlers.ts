@@ -13,11 +13,7 @@ import { sendMessage, logEvent } from "./messaging.ts"
 import { cleanupOldPrunedSessions } from "./session.ts"
 
 // ---------------------------------------------------------------------------
-// Canonical tribe-coordination daemon RPC method names (Phase 4).
-//
-// Daemons accept both these new dotted names and the legacy tribe_* forms
-// (via TRIBE_LEGACY_METHOD_ALIASES) during the 0.9 upgrade window. Removal
-// target: 0.10.
+// Canonical tribe-coordination daemon RPC method names.
 // ---------------------------------------------------------------------------
 
 export const TRIBE_COORD_METHODS = {
@@ -34,23 +30,6 @@ export const TRIBE_COORD_METHODS = {
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
-
-/**
- * Legacy method-name aliases for the tribe coordination daemon. v3 daemons
- * accept both old and new silently; callers should prefer the dotted names.
- */
-export const TRIBE_LEGACY_METHOD_ALIASES: Readonly<Record<string, string>> = {
-  tribe_send: TRIBE_COORD_METHODS.send,
-  tribe_broadcast: TRIBE_COORD_METHODS.broadcast,
-  tribe_sessions: TRIBE_COORD_METHODS.members,
-  tribe_history: TRIBE_COORD_METHODS.history,
-  tribe_rename: TRIBE_COORD_METHODS.rename,
-  tribe_health: TRIBE_COORD_METHODS.health,
-  tribe_join: TRIBE_COORD_METHODS.join,
-  tribe_reload: TRIBE_COORD_METHODS.reload,
-  tribe_retro: TRIBE_COORD_METHODS.retro,
-  tribe_leadership: TRIBE_COORD_METHODS.leadership,
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,11 +52,7 @@ export function handleToolCall(
     setUserRenamed: (v: boolean) => void
   },
 ): ToolResult | Promise<ToolResult> {
-  // Silently normalize legacy tribe_* names to the canonical tribe.* form.
-  // Wire protocol — no stderr warning. Upgrade window only; aliases slated
-  // for removal in 0.10.
-  const canonical = TRIBE_LEGACY_METHOD_ALIASES[name] ?? name
-  switch (canonical) {
+  switch (name) {
     case TRIBE_COORD_METHODS.send:
       return handleSend(ctx, a)
     case TRIBE_COORD_METHODS.broadcast:

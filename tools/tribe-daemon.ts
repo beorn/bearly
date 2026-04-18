@@ -37,7 +37,7 @@ import {
 } from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
-import { handleToolCall, TRIBE_COORD_METHODS, TRIBE_LEGACY_METHOD_ALIASES } from "./lib/tribe/handlers.ts"
+import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
 import { acquireLease, getLeaseInfo } from "./lib/tribe/lease.ts"
@@ -223,13 +223,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
   const { method, params, id } = req
   const p = (params ?? {}) as Record<string, unknown>
 
-  // Silently normalize legacy tribe_* method names to the canonical
-  // tribe.* form. Wire protocol — no stderr warning. Upgrade window only;
-  // aliases slated for removal in 0.10.
-  const canonicalMethod = TRIBE_LEGACY_METHOD_ALIASES[method] ?? method
-
   try {
-    switch (canonicalMethod) {
+    switch (method) {
       case "register": {
         const clientPid = Number(p.pid ?? 0)
         const claudeSessionName = (p.claudeSessionName as string) ?? null
@@ -351,9 +346,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         })
       }
 
-      // Tribe tool calls — delegate to existing handlers. Accept both
-      // canonical tribe.* names and legacy tribe_* aliases (normalized
-      // above via TRIBE_LEGACY_METHOD_ALIASES).
+      // Tribe tool calls — delegate to existing handlers.
       case TRIBE_COORD_METHODS.send:
       case TRIBE_COORD_METHODS.broadcast:
       case TRIBE_COORD_METHODS.members:
@@ -367,13 +360,13 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
 
-        const result = await handleToolCall(ctx, canonicalMethod, p, DAEMON_HANDLER_OPTS)
+        const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
 
         // Sync client registry after name/role changes
         // (Don't logActivity here — the handler already broadcasts for rename,
         // and for join the session announces itself. Avoids duplicate messages.)
         if (
-          (canonicalMethod === TRIBE_COORD_METHODS.join || canonicalMethod === TRIBE_COORD_METHODS.rename) &&
+          (method === TRIBE_COORD_METHODS.join || method === TRIBE_COORD_METHODS.rename) &&
           client
         ) {
           client.name = ctx.getName()

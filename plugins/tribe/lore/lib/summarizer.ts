@@ -3,14 +3,12 @@
  * summary via the cheap-model pool (Haiku by default, or local qwen).
  *
  * Opt-in: gated behind TRIBE_SUMMARIZER_MODEL env var (off | haiku | local).
- * Legacy LORE_SUMMARIZER_MODEL still honoured. Default off — daemons don't
- * burn LLM credits unless the user enables it.
+ * Default off — daemons don't burn LLM credits unless the user enables it.
  */
 
 import { queryModel } from "../../../llm/src/lib/research.ts"
 import { getCheapModel, getCheapModels, type Model } from "../../../llm/src/lib/types.ts"
 import { isProviderAvailable } from "../../../llm/src/lib/providers.ts"
-import { getEnv } from "./env.ts"
 
 export type SummarizerMode = "off" | "haiku" | "local"
 
@@ -22,7 +20,7 @@ export type SessionSummary = {
 }
 
 export function resolveSummarizerMode(raw?: string): SummarizerMode {
-  const v = (raw ?? getEnv("TRIBE_SUMMARIZER_MODEL") ?? "off").toLowerCase()
+  const v = (raw ?? process.env.TRIBE_SUMMARIZER_MODEL ?? "off").toLowerCase()
   if (v === "haiku" || v === "local") return v as SummarizerMode
   return "off"
 }
@@ -96,7 +94,7 @@ export async function summarizeTail(
       cost: typeof cost === "number" ? cost : 0,
     }
   } catch (err) {
-    if (getEnv("TRIBE_LOG") === "1") {
+    if (process.env.TRIBE_LOG === "1") {
       process.stderr.write(
         `[lore-summarizer] ${model.modelId} failed after ${Date.now() - startedAt}ms: ${err instanceof Error ? err.message : err}\n`,
       )
