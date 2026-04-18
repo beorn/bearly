@@ -7,6 +7,44 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — collapse aliases + events tables (Phase 4 of km-tribe.plateau)
+
+Dropped two vestigial SQLite tables from the tribe database, net ~60 LOC
+deletion:
+
+- **`aliases`** — removed entirely. Renames via `tribe.rename` /
+  `tribe.join(name=...)` and initial-slug naming now update
+  `sessions.name` in place; the old name is not preserved and mail to
+  the old name is no longer routed to the renamed session. Callers that
+  need to reach a renamed session must re-discover the new name via
+  `tribe.members` / `tribe.health`.
+- **`events`** — collapsed into `messages`. Event rows (`session.joined`,
+  `session.renamed`, `session.reload`, `bead.claimed`, etc.) now live
+  in `messages` with `type = 'event.<orig-type>'`, `sender` = session
+  name, `recipient = 'log'` (a sentinel — never delivered to any
+  session), and `content` = JSON-encoded data. Queryable via
+  `SELECT * FROM messages WHERE type LIKE 'event.%'`.
+
+Migration is automatic on daemon start: existing `events` rows are
+copied into `messages`, both legacy tables are dropped with
+`DROP TABLE`, and their prepared statements / indexes are gone. Fresh
+installs skip the migration cleanly.
+
+Callers updated:
+
+- `retro` — reads events from `messages WHERE type LIKE 'event.%'` and
+  strips the `event.` prefix before dispatching formatters; regular
+  message counts and timelines filter out `event.*` rows.
+- `messageHistory` prepared statement now excludes `event.*` rows so
+  the user-facing history view stays clean.
+- `tribe.health` stats block counts event rows via the same
+  type-prefix filter.
+- `/tribe events` skill command updated to the new query form.
+
+The `event_log` table is untouched — that's the separate
+per-session activity log consumed by the health monitor, not the
+coordination event stream.
+
 ### Changed — chief is now derived from connection order
 
 Replaced the lease-based chief election (timed DB lease, heartbeat renewal,
