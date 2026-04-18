@@ -199,6 +199,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return
   }
 
+  // Hook subcommands were removed in @bearly/tribe 0.10.0 — fail loud instead
+  // of falling through to a search for the literal event name.
+  if (argv[0] === "session-start" || argv[0] === "session-end") {
+    console.error(`[recall] '${argv[0]}' was removed in @bearly/tribe 0.10.0 — use 'tribe hook ${argv[0]}' instead`)
+    process.exit(2)
+  }
+  if (argv[0] === "hook") {
+    console.error(`[recall] 'hook' was removed in @bearly/tribe 0.10.0 — use 'tribe hook <event>' instead`)
+    process.exit(2)
+  }
+
   // If first arg isn't a known subcommand, treat as `search <query> [opts]`
   if (!SUBCOMMANDS.has(argv[0]!)) {
     argv = ["search", ...argv]
