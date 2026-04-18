@@ -62,9 +62,16 @@ History: lore started as its own package in April 2026 (renamed from `@bearly/be
 
 Three invariants the tribe system is designed to guarantee. They shape every lifecycle decision — when daemons start, how sessions connect, who holds the chief role — so the user never has to think about the coordination layer.
 
-### 1. Agents auto-connect
+### 1. Agents come and go — auto-connecting every time
 
-Starting a Claude Code session is enough. The tribe MCP loads, the proxy connects to the daemon, and if the daemon isn't running the `SessionStart` hook spawns it on demand. If the daemon restarts mid-session (crash, hot-reload), the proxy reconnects transparently on the next tool call — no manual `tribe restart`, no lost MCP registration. In steady state the user forgets the daemon exists; in degraded state it self-heals.
+Sessions are transient by nature: a Claude Code window opens, does work, closes; a sub-agent spawns for a task and exits; a worktree session runs for ten minutes. The tribe accommodates all of this without ceremony. There is no "register" step, no manual join, no explicit leave.
+
+- **Arrival**: starting a Claude Code session is enough. The tribe MCP loads, the proxy connects to the daemon, and if the daemon isn't running the `SessionStart` hook spawns it on demand.
+- **Reconnection**: if the daemon restarts mid-session (crash, hot-reload), the proxy reconnects transparently on the next tool call. No manual `tribe restart`, no lost MCP registration.
+- **Departure**: closing the terminal is enough. The socket closes, the daemon notices, the session is marked gone. No cleanup call required.
+- **Return**: reopening later — with the same Claude Code session id, same working directory, or same explicit name — the session rejoins the tribe and resumes its identity.
+
+The tribe treats churn as the default case, not an edge case. Steady state: the user forgets the daemon exists. Degraded state: it self-heals.
 
 ### 2. There is always a chief
 
