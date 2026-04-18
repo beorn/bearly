@@ -13,6 +13,7 @@ import { summarizeUnprocessedDays } from "./summarize-daily"
 import { withDaemonCall } from "../../../tribe/lore/lib/socket.ts"
 import { resolveLoreSocketPath } from "../../../tribe/lore/lib/config.ts"
 import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../tribe/lore/lib/rpc.ts"
+import { getEnv as getTribeEnv } from "../../../tribe/lore/lib/env.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)
@@ -153,7 +154,7 @@ export async function cmdSessionStart(): Promise<void> {
     // Best-effort register with lore daemon. Non-blocking: if we can't reach
     // the daemon in 1s we give up and rely on the sentinel.
     let daemonStatus = "skipped"
-    if (process.env.LORE_NO_DAEMON !== "1") {
+    if (getTribeEnv("TRIBE_NO_DAEMON") !== "1") {
       daemonStatus = await registerWithLoreDaemon({ claudePid, sessionId, transcriptPath, cwd })
     }
 
@@ -350,7 +351,7 @@ export async function cmdHook(): Promise<void> {
     // in memory, so repeated injections across the same session don't
     // rely on tmpfile round-trips and survive Claude Code session
     // boundaries as long as the daemon is alive.
-    if (process.env.LORE_NO_DAEMON !== "1") {
+    if (getTribeEnv("TRIBE_NO_DAEMON") !== "1") {
       const daemonOutput = await tryInjectDeltaViaDaemon(prompt, input.session_id)
       if (daemonOutput.kind === "skipped") {
         console.error(

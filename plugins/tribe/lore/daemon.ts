@@ -28,6 +28,7 @@ import {
   type JsonRpcRequest,
 } from "./lib/socket.ts"
 import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensureParentDir } from "./lib/config.ts"
+import { getEnv } from "./lib/env.ts"
 import { openLoreDatabase, createLoreRepo, sessionRowToInfo, type LoreRepo, type SessionRow } from "./lib/database.ts"
 import {
   LORE_METHODS,
@@ -71,9 +72,9 @@ const { values: args } = parseArgs({
     socket: { type: "string" },
     db: { type: "string" },
     "quit-timeout": { type: "string", default: "1800" },
-    "focus-poll-ms": { type: "string", default: process.env.LORE_FOCUS_POLL_MS ?? "60000" },
-    "summary-poll-ms": { type: "string", default: process.env.LORE_SUMMARY_POLL_MS ?? "120000" },
-    "summarizer-model": { type: "string", default: process.env.LORE_SUMMARIZER_MODEL ?? "off" },
+    "focus-poll-ms": { type: "string", default: getEnv("TRIBE_FOCUS_POLL_MS") ?? "60000" },
+    "summary-poll-ms": { type: "string", default: getEnv("TRIBE_SUMMARY_POLL_MS") ?? "120000" },
+    "summarizer-model": { type: "string", default: getEnv("TRIBE_SUMMARIZER_MODEL") ?? "off" },
     foreground: { type: "boolean", default: false },
   },
   strict: false,
@@ -92,11 +93,11 @@ ensureParentDir(SOCKET_PATH)
 ensureParentDir(DB_PATH)
 
 // ---------------------------------------------------------------------------
-// Logging — daemon logs go to stderr; silence recall internals unless LORE_LOG
+// Logging — daemon logs go to stderr; silence recall internals unless TRIBE_LOG
 // ---------------------------------------------------------------------------
 
 const log = createLogger("lore:daemon")
-setRecallLogging(process.env.LORE_LOG === "1")
+setRecallLogging(getEnv("TRIBE_LOG") === "1")
 
 // ---------------------------------------------------------------------------
 // Stale daemon check — avoid duplicate daemons on same socket

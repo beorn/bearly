@@ -63,6 +63,32 @@ release cycle and **will be removed in 0.10**.
   table, `normalizeToolName()`, and `buildDeprecatedAliasTools()` helper
   — shared by the tribe-proxy and the lore MCP server.
 
+### Changed — env var prefix `TRIBE_*`
+
+`LORE_*` environment variables are renamed to `TRIBE_*`. Old names still
+resolve but emit a single aggregated stderr deprecation line on the next
+microtask after the first read. Removal target: **0.10**.
+
+| Old                     | New                     |
+| ----------------------- | ----------------------- |
+| `LORE_NO_DAEMON`        | `TRIBE_NO_DAEMON`       |
+| `LORE_LOG`              | `TRIBE_LOG`             |
+| `LORE_SOCKET`           | `TRIBE_LORE_SOCKET`     |
+| `LORE_DB`               | `TRIBE_LORE_DB`         |
+| `LORE_SUMMARIZER_MODEL` | `TRIBE_SUMMARIZER_MODEL` |
+| `LORE_FOCUS_POLL_MS`    | `TRIBE_FOCUS_POLL_MS`   |
+| `LORE_SUMMARY_POLL_MS`  | `TRIBE_SUMMARY_POLL_MS` |
+
+`TRIBE_LORE_SOCKET` / `TRIBE_LORE_DB` (not `TRIBE_SOCKET` / `TRIBE_DB`)
+because the plain forms are already used by the tribe **coordination**
+daemon (different socket and DB from the lore workspace daemon).
+
+`RECALL_*` env vars (in `@bearly/recall`) are unchanged.
+
+Resolution is centralised in `plugins/tribe/lore/lib/env.ts`: callers
+invoke `getEnv("TRIBE_*")`, which tries the new name first, falls back
+to the legacy `LORE_*`, and schedules the one-time deprecation warning.
+
 ## 0.8.1
 
 Previous release baseline (no changelog recorded).

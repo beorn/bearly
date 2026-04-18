@@ -17,9 +17,12 @@
  *   lore.inject_delta — still dispatched, emit a one-time stderr warning.
  *
  * Env:
- *   LORE_NO_DAEMON=1   — skip the daemon entirely (library-only mode)
- *   LORE_LOG=1         — enable recall library logging (else silenced)
- *   LORE_SOCKET        — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
+ *   TRIBE_NO_DAEMON=1       — skip the daemon entirely (library-only mode)
+ *   TRIBE_LOG=1             — enable recall library logging (else silenced)
+ *   TRIBE_LORE_SOCKET       — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
+ *
+ * Legacy LORE_NO_DAEMON / LORE_LOG / LORE_SOCKET still work but emit a
+ * one-time deprecation warning (removed in 0.10).
  *
  * Usage (registered in .mcp.json):
  *   { "command": "bun", "args": ["vendor/bearly/plugins/tribe/lore/server.ts"] }
@@ -35,6 +38,7 @@ import { getCurrentSessionContext } from "../../recall/src/lib/session-context.t
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath } from "./lib/config.ts"
+import { getEnv } from "./lib/env.ts"
 import {
   LORE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -49,14 +53,14 @@ import { hookRecall } from "../../recall/src/history/recall.ts"
 import { normalizeToolName, buildDeprecatedAliasTools } from "../lib/deprecation.ts"
 
 // Silence stderr logging — MCP stdio protocol allows stderr, but it's noisy.
-// Re-enable by setting LORE_LOG=1.
-if (process.env.LORE_LOG !== "1") setRecallLogging(false)
+// Re-enable by setting TRIBE_LOG=1 (legacy LORE_LOG still honoured).
+if (getEnv("TRIBE_LOG") !== "1") setRecallLogging(false)
 
 // ============================================================================
 // Daemon client (lazy singleton, with fallback on failure)
 // ============================================================================
 
-const USE_DAEMON = process.env.LORE_NO_DAEMON !== "1"
+const USE_DAEMON = getEnv("TRIBE_NO_DAEMON") !== "1"
 let daemonClient: LoreClient | null = null
 let daemonDisabled = false // Set after repeated connect failures
 
@@ -75,7 +79,7 @@ async function getDaemon(): Promise<LoreClient | null> {
     // If the reconnecting client eventually gives up, disable for this session.
     return daemonClient
   } catch (err) {
-    if (process.env.LORE_LOG === "1") {
+    if (getEnv("TRIBE_LOG") === "1") {
       process.stderr.write(
         `[lore] daemon unavailable, using library fallback: ${err instanceof Error ? err.message : err}\n`,
       )
@@ -146,7 +150,7 @@ const TOOLS = [
   {
     name: "tribe.session",
     description:
-      "Detailed state of a single session by sessionId: focus tail + LLM summary (when LORE_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
+      "Detailed state of a single session by sessionId: focus tail + LLM summary (when TRIBE_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -213,7 +217,7 @@ async function handleAsk(args: Record<string, unknown>): Promise<string> {
       const result = (await daemon.call(LORE_METHODS.ask, askParams)) as AskResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.LORE_LOG === "1") {
+      if (getEnv("TRIBE_LOG") === "1") {
         process.stderr.write(
           `[lore] daemon.ask failed, falling back to library: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -263,7 +267,7 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
       )) as CurrentBriefResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.LORE_LOG === "1") {
+      if (getEnv("TRIBE_LOG") === "1") {
         process.stderr.write(
           `[lore] daemon.current_brief failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -307,7 +311,7 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
       const result = (await daemon.call(LORE_METHODS.planOnly, { query })) as PlanOnlyResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.LORE_LOG === "1") {
+      if (getEnv("TRIBE_LOG") === "1") {
         process.stderr.write(
           `[lore] daemon.plan_only failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
@@ -394,7 +398,7 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
       })) as InjectDeltaResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
-      if (process.env.LORE_LOG === "1") {
+      if (getEnv("TRIBE_LOG") === "1") {
         process.stderr.write(
           `[lore] daemon.inject_delta failed, falling back: ${err instanceof Error ? err.message : err}\n`,
         )
