@@ -9,15 +9,14 @@
  *   bun tribe-daemon.ts --fd 3             # Inherit socket fd (for hot-reload re-exec)
  */
 
-import { createServer, type Socket as NetSocket, type Server } from "node:net"
-import { existsSync, unlinkSync, writeFileSync, chmodSync, readdirSync, readFileSync, watch } from "node:fs"
+import { createConnection, createServer, type Socket as NetSocket, type Server } from "node:net"
+import { existsSync, unlinkSync, chmodSync, readdirSync, readFileSync, watch } from "node:fs"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { dirname as pathDirname, resolve as pathResolve } from "node:path"
 import {
   resolveSocketPath,
-  resolvePidPath,
   createLineParser,
   makeResponse,
   makeError,
@@ -90,7 +89,6 @@ const { values: daemonArgs } = parseArgs({
 })
 
 const SOCKET_PATH = resolveSocketPath(daemonArgs.socket as string | undefined)
-const PID_PATH = resolvePidPath(SOCKET_PATH)
 const QUIT_TIMEOUT = parseInt(String(daemonArgs["quit-timeout"]), 10)
 const INHERIT_FD = daemonArgs.fd ? parseInt(String(daemonArgs.fd), 10) : null
 
@@ -847,32 +845,40 @@ if (INHERIT_FD !== null) {
   server.listen({ fd: INHERIT_FD })
   log(`Inherited socket fd ${INHERIT_FD} (hot-reload)`)
 } else {
-  // Check if another daemon is already running
-  if (existsSync(PID_PATH)) {
-    try {
-      const existingPid = parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10)
-      if (!isNaN(existingPid)) {
-        try {
-          process.kill(existingPid, 0) // Throws if dead
-          log(`Another daemon is already running (pid ${existingPid}), exiting`)
-          process.exit(0)
-        } catch {
-          // PID is dead — stale file, continue startup
-        }
-      }
-    } catch {
-      /* can't read PID file */
-    }
-  }
-
-  // Fresh start: clean up stale socket, create new one
+  // Check if another daemon is already running by probing the socket.
+  // If the connect succeeds, a live daemon is listening — exit quietly.
+  // If it fails (ECONNREFUSED / ENOENT), the socket is stale or absent.
   if (existsSync(SOCKET_PATH)) {
+    const alive = await new Promise<boolean>((resolvePromise) => {
+      const probe = createConnection(SOCKET_PATH)
+      let settled = false
+      const finish = (v: boolean) => {
+        if (settled) return
+        settled = true
+        try {
+          probe.destroy()
+        } catch {
+          /* ignore */
+        }
+        resolvePromise(v)
+      }
+      probe.once("connect", () => finish(true))
+      probe.once("error", () => finish(false))
+      // Safety timeout — don't hang daemon startup on a wedged socket
+      setTimeout(() => finish(false), 500).unref()
+    })
+    if (alive) {
+      log(`Another daemon is already listening on ${SOCKET_PATH}, exiting`)
+      process.exit(0)
+    }
+    // Stale socket file — remove it so bind() succeeds below.
     try {
       unlinkSync(SOCKET_PATH)
     } catch {
       /* ignore */
     }
   }
+
   server = createServer(handleConnection)
   server.listen(SOCKET_PATH, () => {
     // Restrict socket to owner only (no group/other access)
@@ -884,9 +890,6 @@ if (INHERIT_FD !== null) {
   })
   log(`Listening on ${SOCKET_PATH}`)
 }
-
-// Write PID file (owner-only)
-writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 })
 
 // ---------------------------------------------------------------------------
 // Auto-quit liveness — declarative deadline + periodic check
@@ -1066,11 +1069,6 @@ function shutdown(): void {
   server.close()
   try {
     unlinkSync(SOCKET_PATH)
-  } catch {
-    /* ignore */
-  }
-  try {
-    unlinkSync(PID_PATH)
   } catch {
     /* ignore */
   }

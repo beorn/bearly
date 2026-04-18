@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, relative, resolve } from "node:path"
-import { resolveSocketPath, resolvePidPath, readDaemonPid } from "./socket.ts"
+import { resolveSocketPath, probeDaemonPid } from "./socket.ts"
 import {
   DEFAULT_AUTOSTART,
   readTribeConfig,
@@ -460,7 +460,7 @@ export interface DoctorReport {
   hasFailures: boolean
 }
 
-export function doctorReport(env: InstallEnv): DoctorReport {
+export async function doctorReport(env: InstallEnv): Promise<DoctorReport> {
   const checks: DoctorCheck[] = []
 
   // 1. Claude settings.json
@@ -571,30 +571,25 @@ export function doctorReport(env: InstallEnv): DoctorReport {
     }
   }
 
-  // 3. Daemon
+  // 3. Daemon — liveness = "can we connect to the socket and get a PID back"
   const socketPath = resolveSocketPath()
-  const pid = readDaemonPid(socketPath)
+  const pid = await probeDaemonPid(socketPath)
   if (pid) {
     checks.push({ name: "daemon", level: "pass", message: `running (pid=${pid}, socket=${socketPath})` })
+  } else if (existsSync(socketPath)) {
+    checks.push({
+      name: "daemon",
+      level: "warn",
+      message: `not running but stale socket present (${socketPath})`,
+      hint: "run `tribe start` to start (or delete the stale socket)",
+    })
   } else {
-    const pidPath = resolvePidPath(socketPath)
-    const stalePid = existsSync(pidPath)
-    const staleSock = existsSync(socketPath)
-    if (stalePid || staleSock) {
-      checks.push({
-        name: "daemon",
-        level: "warn",
-        message: `not running but stale artifacts present (socket=${staleSock}, pidfile=${stalePid})`,
-        hint: "run `tribe start` to start (or delete the stale files)",
-      })
-    } else {
-      checks.push({
-        name: "daemon",
-        level: "warn",
-        message: `not running`,
-        hint: "run `tribe start` if you want coordination live",
-      })
-    }
+    checks.push({
+      name: "daemon",
+      level: "warn",
+      message: `not running`,
+      hint: "run `tribe start` if you want coordination live",
+    })
   }
 
   // 4. Autostart mode
