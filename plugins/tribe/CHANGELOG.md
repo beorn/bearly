@@ -7,6 +7,32 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — daemon liveness is socket connectability, not a pidfile
+
+The daemon no longer writes, reads, or deletes `tribe.pid`. Liveness is now
+"the Unix socket accepts a connection" — the kernel owns the proof, so
+there is nothing on-disk to go stale when a daemon crashes or is SIGKILLed.
+
+User-visible changes:
+
+- `tribe doctor` probes the socket instead of reading a pidfile. The PID
+  shown in `tribe doctor` / `tribe stop` / `tribe reload` now comes from
+  the daemon's own `cli_daemon` RPC response (daemon reports its own PID).
+- Stale `.pid` files left over from previous versions are harmless and can
+  be deleted by hand; new daemons will never recreate them.
+- Daemon startup: if another daemon is already listening on the socket,
+  the new process exits quietly. If the socket is stale (no one listening),
+  it is unlinked and replaced.
+
+API:
+
+- Added `probeDaemonPid(socketPath)` and `isSocketAlive(socketPath)` in
+  `tools/lib/tribe/socket.ts`. Removed `resolvePidPath` and `readDaemonPid`.
+- `doctorReport` is now `async` (it awaits the socket probe). Callers must
+  `await` the result.
+
+Phase 3 of `km-tribe.plateau` — net ~30 LOC deletion.
+
 ### Changed — collapse aliases + events tables (Phase 4 of km-tribe.plateau)
 
 Dropped two vestigial SQLite tables from the tribe database, net ~60 LOC

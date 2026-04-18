@@ -9,7 +9,7 @@ import { existsSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { Database } from "bun:sqlite"
 import { Command, int } from "@silvery/commander"
-import { resolveSocketPath, connectToDaemon, readDaemonPid } from "./lib/tribe/socket.ts"
+import { resolveSocketPath, connectToDaemon, probeDaemonPid } from "./lib/tribe/socket.ts"
 import { generateRetro, formatMarkdown, parseDuration } from "./lib/tribe/retro.ts"
 import {
   defaultInstallEnv,
@@ -311,9 +311,9 @@ function getSocketPath(): string {
   return resolveSocketPath()
 }
 
-function cmdStart(): void {
+async function cmdStart(): Promise<void> {
   const socketPath = getSocketPath()
-  const pid = readDaemonPid(socketPath)
+  const pid = await probeDaemonPid(socketPath)
   if (pid) {
     console.log(`Daemon already running (pid=${pid})`)
     return
@@ -327,9 +327,9 @@ function cmdStart(): void {
   child.on("exit", (code) => process.exit(code ?? 0))
 }
 
-function cmdStop(): void {
+async function cmdStop(): Promise<void> {
   const socketPath = getSocketPath()
-  const pid = readDaemonPid(socketPath)
+  const pid = await probeDaemonPid(socketPath)
   if (!pid) {
     console.log("No daemon running.")
     return
@@ -339,9 +339,9 @@ function cmdStop(): void {
   console.log("Sent SIGTERM.")
 }
 
-function cmdReload(): void {
+async function cmdReload(): Promise<void> {
   const socketPath = getSocketPath()
-  const pid = readDaemonPid(socketPath)
+  const pid = await probeDaemonPid(socketPath)
   if (!pid) {
     console.log("No daemon running.")
     return
@@ -415,17 +415,17 @@ program
 program
   .command("start")
   .description("Start daemon in foreground")
-  .action(() => cmdStart())
+  .action(() => void cmdStart())
 
 program
   .command("stop")
   .description("Stop daemon (SIGTERM)")
-  .action(() => cmdStop())
+  .action(() => void cmdStop())
 
 program
   .command("reload")
   .description("Hot-reload daemon code (SIGHUP)")
-  .action(() => cmdReload())
+  .action(() => void cmdReload())
 
 program
   .command("watch")
@@ -488,7 +488,7 @@ program
   .description("Diagnose the tribe setup — hooks, MCP, daemon, stale sockets")
   .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
   .option("--mcp-name <name>", "mcpServers key to check (default: tribe)")
-  .action((opts: { claudeDir?: string; mcpName?: string }) => {
+  .action(async (opts: { claudeDir?: string; mcpName?: string }) => {
     const overrides: Parameters<typeof defaultInstallEnv>[0] = {}
     if (opts.claudeDir) {
       overrides.claudeSettingsPath = resolve(opts.claudeDir, "settings.json")
@@ -496,7 +496,7 @@ program
     }
     if (opts.mcpName) overrides.mcpName = opts.mcpName
     const env = defaultInstallEnv(overrides)
-    const report = doctorReport(env)
+    const report = await doctorReport(env)
     console.log(formatDoctorReport(report))
     if (report.hasFailures) process.exit(1)
   })

@@ -104,8 +104,8 @@ function resolveProjectId(cwd) {
 }
 
 // tools/lib/tribe/socket.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync, readFileSync as readFileSync2 } from "fs";
-import { resolve as resolve2, dirname as dirname2, basename as basename2 } from "path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync } from "fs";
+import { resolve as resolve2, dirname as dirname2 } from "path";
 import { createConnection } from "net";
 import { spawn } from "child_process";
 
@@ -219,6 +219,159 @@ function shouldSample() {
   return Math.random() < sampleRate;
 }
 
+// ../loggily/src/console-sinks.ts
+function isBrowserRuntime() {
+  return typeof globalThis !== "undefined" && typeof globalThis.window !== "undefined" && typeof globalThis.document !== "undefined";
+}
+function timeStr(time) {
+  return new Date(time).toISOString().split("T")[1]?.split(".")[0] ?? "";
+}
+function levelLabel(level) {
+  switch (level) {
+    case "trace":
+      return "TRACE";
+    case "debug":
+      return "DEBUG";
+    case "info":
+      return "INFO";
+    case "warn":
+      return "WARN";
+    case "error":
+      return "ERROR";
+  }
+}
+function userArgsOf(event) {
+  if ("userArgs" in event && Array.isArray(event.userArgs)) {
+    const ua = event.userArgs;
+    return ua.filter((v) => v !== undefined);
+  }
+  if (event.props && Object.keys(event.props).length > 0) {
+    return [event.props];
+  }
+  return [];
+}
+function createTerminalConsoleSink(format = "console") {
+  if (format === "json") {
+    return (event) => routeSingle(event, formatJSONEvent(event));
+  }
+  return (event) => {
+    if (event.kind === "span") {
+      writeStderrLine(formatConsoleEvent(event));
+      return;
+    }
+    const prefix = `${colors.dim(timeStr(event.time))} ${levelAnsi(event.level)} ${colors.cyan(event.namespace)}`;
+    const args = userArgsOf(event);
+    invokeForLevel(event.level, prefix, event.message, ...args);
+  };
+}
+function writeStderrLine(text) {
+  const p = typeof process !== "undefined" ? process : undefined;
+  if (p && p.stderr && typeof p.stderr.write === "function") {
+    p.stderr.write(text + `
+`);
+    return;
+  }
+  console.info(text);
+}
+function levelAnsi(level) {
+  switch (level) {
+    case "trace":
+      return colors.dim("TRACE");
+    case "debug":
+      return colors.dim("DEBUG");
+    case "info":
+      return colors.blue("INFO");
+    case "warn":
+      return colors.yellow("WARN");
+    case "error":
+      return colors.red("ERROR");
+  }
+}
+function createBrowserConsoleSink(format = "console") {
+  if (format === "json") {
+    return (event) => routeSingle(event, formatJSONEvent(event));
+  }
+  return (event) => {
+    if (event.kind === "span") {
+      const spanTemplate = `%c%s %cSPAN %c%s %c(%sms)`;
+      const args2 = userArgsOf(event);
+      const spanPropsString = args2.length > 0 ? ` ${safeStringify(Object.assign({}, ...args2.filter(isPlainRecord)))}` : "";
+      const { durationLabel } = { durationLabel: String(event.duration) };
+      invokeForLevel("info", spanTemplate + (spanPropsString ? "%s" : ""), cssDim(), timeStr(event.time), cssSpan(), cssNamespace(), event.namespace, cssDim(), durationLabel, ...spanPropsString ? [cssDim(), spanPropsString] : []);
+      return;
+    }
+    const template = `%c%s %c%s %c%s`;
+    const args = userArgsOf(event);
+    invokeForLevel(event.level, template, cssDim(), timeStr(event.time), cssLevel(event.level), levelLabel(event.level), cssNamespace(), event.namespace, event.message, ...args);
+  };
+}
+function isPlainRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function cssDim() {
+  return "color: #888";
+}
+function cssNamespace() {
+  return "color: #0aa; font-weight: bold";
+}
+function cssSpan() {
+  return "color: #a0a; font-weight: bold";
+}
+function cssLevel(level) {
+  switch (level) {
+    case "trace":
+    case "debug":
+      return "color: #888; font-weight: bold";
+    case "info":
+      return "color: #36f; font-weight: bold";
+    case "warn":
+      return "color: #b80; font-weight: bold";
+    case "error":
+      return "color: #c33; font-weight: bold";
+  }
+}
+function invokeForLevel(level, ...args) {
+  switch (level) {
+    case "trace":
+    case "debug":
+      console.debug(...args);
+      return;
+    case "info":
+      console.info(...args);
+      return;
+    case "warn":
+      console.warn(...args);
+      return;
+    case "error":
+      console.error(...args);
+      return;
+  }
+}
+function routeSingle(event, text) {
+  if (event.kind === "span") {
+    console.info(text);
+    return;
+  }
+  switch (event.level) {
+    case "trace":
+    case "debug":
+      console.debug(text);
+      return;
+    case "info":
+      console.info(text);
+      return;
+    case "warn":
+      console.warn(text);
+      return;
+    case "error":
+      console.error(text);
+      return;
+  }
+}
+function createConsoleSink(format = "console") {
+  return isBrowserRuntime() ? createBrowserConsoleSink(format) : createTerminalConsoleSink(format);
+}
+
 // ../loggily/src/pipeline.ts
 var LOG_LEVEL_PRIORITY = {
   trace: 0,
@@ -231,14 +384,6 @@ var LOG_LEVEL_PRIORITY = {
 var _process2 = typeof process !== "undefined" ? process : undefined;
 function getEnv(key) {
   return _process2?.env?.[key];
-}
-function writeStderr(text) {
-  if (_process2?.stderr?.write) {
-    _process2.stderr.write(text + `
-`);
-  } else {
-    console.error(text);
-  }
 }
 function serializeCause(cause, maxDepth = 3) {
   if (maxDepth <= 0 || cause === undefined || cause === null)
@@ -377,30 +522,8 @@ function parseNsFilter(ns) {
     return true;
   };
 }
-function writeToConsole(text, event) {
-  if (event.kind === "span") {
-    writeStderr(text);
-    return;
-  }
-  switch (event.level) {
-    case "trace":
-    case "debug":
-      Function.prototype.bind.call(console.debug, console, text)();
-      break;
-    case "info":
-      Function.prototype.bind.call(console.info, console, text)();
-      break;
-    case "warn":
-      Function.prototype.bind.call(console.warn, console, text)();
-      break;
-    case "error":
-      Function.prototype.bind.call(console.error, console, text)();
-      break;
-  }
-}
-function createConsoleSink(format) {
-  const formatter = format === "json" ? formatJSONEvent : formatConsoleEvent;
-  return (event) => writeToConsole(formatter(event), event);
+function createConsoleSink2(format) {
+  return createConsoleSink(format);
 }
 function createFileSink(path, format) {
   const writer = createFileWriter(path);
@@ -466,7 +589,7 @@ function buildPipeline(elements, parentConfig) {
       outputs.push({
         levelPriority: LOG_LEVEL_PRIORITY[config.level],
         nsFilter: config.ns,
-        write: createConsoleSink(config.format)
+        write: createConsoleSink2(config.format)
       });
       continue;
     }
@@ -771,6 +894,7 @@ function createLoggerImpl(name, props, pipeline) {
   const emitLog = (level, msgOrError, dataOrMsg, extraData) => {
     let message;
     let data;
+    const userArgs = [];
     if (msgOrError instanceof Error) {
       const err = msgOrError;
       const contextTags = _getContextTags?.() ?? {};
@@ -798,6 +922,9 @@ function createLoggerImpl(name, props, pipeline) {
           error_cause: err.cause !== undefined ? serializeCause(err.cause) : undefined
         };
       }
+      userArgs.push(err);
+      if (data && Object.keys(data).length > 0)
+        userArgs.push(data);
     } else {
       message = resolveMessage(msgOrError);
       const contextTags = _getContextTags?.();
@@ -806,6 +933,8 @@ function createLoggerImpl(name, props, pipeline) {
         ...props,
         ...dataOrMsg
       } : Object.keys(props).length > 0 || dataOrMsg ? { ...props, ...dataOrMsg } : undefined;
+      if (data && Object.keys(data).length > 0)
+        userArgs.push(data);
     }
     const event = {
       kind: "log",
@@ -813,7 +942,8 @@ function createLoggerImpl(name, props, pipeline) {
       namespace: name,
       level,
       message,
-      props: data
+      props: data,
+      userArgs
     };
     pipeline.dispatch(event);
   };
@@ -1111,13 +1241,14 @@ function createEnvPipeline() {
     const ns = currentNs();
     if (ns && !ns(event.namespace))
       return;
-    const formatter = currentFormat() === "json" ? formatJSONEvent : formatConsoleEvent;
+    const format = currentFormat();
+    const formatter = format === "json" ? formatJSONEvent : formatConsoleEvent;
     const text = formatter(event);
     const lvl = event.kind === "log" ? event.level : "span";
     for (const w of _writers)
       w(text, lvl);
     if (!_suppressConsole)
-      writeToConsole(text, event);
+      createConsoleSink(format)(event);
     fileSink?.(event);
   };
   return {
@@ -1613,7 +1744,7 @@ var TOOLS_LIST = [
 
 // tools/lib/tribe/hot-reload.ts
 import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync3, watch } from "fs";
+import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync2, watch } from "fs";
 import { dirname as dirname3, resolve as resolve3 } from "path";
 import { spawn as spawn2 } from "child_process";
 var log2 = createLogger("tribe:reload");
@@ -1649,7 +1780,7 @@ function setupHotReload(opts) {
     const hash = createHash2("md5");
     for (const f of getSourceFiles()) {
       try {
-        hash.update(readFileSync3(f));
+        hash.update(readFileSync2(f));
       } catch {}
     }
     return hash.digest("hex").slice(0, 12);
@@ -1708,7 +1839,7 @@ function setupHotReload(opts) {
 }
 
 // tools/lib/tribe/session.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
 import { resolve as resolve4 } from "path";
 var log3 = createLogger("tribe:session");
 function resolveTranscriptPath(claudeSessionId) {
@@ -1726,7 +1857,7 @@ function readTranscriptSlug(transcriptPath) {
     const size = Bun.file(transcriptPath).size;
     if (size === 0)
       return null;
-    const text = new TextDecoder().decode(new Uint8Array(readFileSync4(transcriptPath).buffer.slice(Math.max(0, size - 4096))));
+    const text = new TextDecoder().decode(new Uint8Array(readFileSync3(transcriptPath).buffer.slice(Math.max(0, size - 4096))));
     const lines = text.trimEnd().split(`
 `);
     const lastLine = lines[lines.length - 1];

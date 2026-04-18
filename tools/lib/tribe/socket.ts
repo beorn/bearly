@@ -3,8 +3,8 @@
  * Shared between daemon, proxy, and CLI.
  */
 
-import { existsSync, mkdirSync, unlinkSync, readFileSync } from "node:fs"
-import { resolve, dirname, basename } from "node:path"
+import { existsSync, mkdirSync, unlinkSync } from "node:fs"
+import { resolve, dirname } from "node:path"
 import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
 import { createLogger } from "loggily"
@@ -31,12 +31,6 @@ export function resolveSocketPath(socketArg?: string): string {
   // Always use user-level daemon socket (one daemon per user)
   const xdg = process.env.XDG_RUNTIME_DIR
   return xdg ? resolve(xdg, "tribe.sock") : resolve(process.env.HOME ?? "/tmp", ".local/share/tribe/tribe.sock")
-}
-
-/** Resolve PID file path (derived from socket path — each socket gets its own PID file) */
-export function resolvePidPath(socketPath: string): string {
-  const base = basename(socketPath).replace(/\.sock$/, "")
-  return resolve(dirname(socketPath), `${base}.pid`)
 }
 
 /** Resolve peer socket path for direct proxy-to-proxy connections */
@@ -359,14 +353,50 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
   }) as DaemonClient
 }
 
-/** Read PID from PID file, or null if missing/dead */
-export function readDaemonPid(socketPath: string): number | null {
+/**
+ * Probe the daemon's liveness by connecting to its socket and asking for its PID.
+ *
+ * Replaces the old pidfile-based check: if a client can open + speak to the
+ * socket, the daemon is alive (kernel owns the liveness proof — no on-disk
+ * state to go stale). Returns the daemon's own PID, or null if not reachable.
+ */
+export async function probeDaemonPid(socketPath: string): Promise<number | null> {
+  let client: DaemonClient
   try {
-    const pid = parseInt(readFileSync(resolvePidPath(socketPath), "utf-8").trim(), 10)
-    if (isNaN(pid)) return null
-    process.kill(pid, 0) // Throws if dead
-    return pid
+    client = await connectToDaemon(socketPath)
   } catch {
     return null
   }
+  try {
+    const result = (await client.call("cli_daemon")) as { pid?: number }
+    return typeof result.pid === "number" ? result.pid : null
+  } catch {
+    return null
+  } finally {
+    try {
+      client.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** True iff the socket accepts a TCP-style connection. Cheaper than probeDaemonPid. */
+export function isSocketAlive(socketPath: string): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = createConnection(socketPath)
+    let settled = false
+    const done = (alive: boolean) => {
+      if (settled) return
+      settled = true
+      try {
+        socket.destroy()
+      } catch {
+        /* ignore */
+      }
+      resolvePromise(alive)
+    }
+    socket.once("connect", () => done(true))
+    socket.once("error", () => done(false))
+  })
 }

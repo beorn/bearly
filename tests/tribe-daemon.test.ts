@@ -14,7 +14,8 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
 import {
   resolveSocketPath,
-  resolvePidPath,
+  isSocketAlive,
+  probeDaemonPid,
   makeRequest,
   makeResponse,
   makeError,
@@ -90,14 +91,6 @@ describe("socket utilities", () => {
         if (original !== undefined) process.env.TRIBE_SOCKET = original
         else delete process.env.TRIBE_SOCKET
       }
-    })
-  })
-
-  describe("resolvePidPath", () => {
-    it("derives pid file name from socket file name", () => {
-      expect(resolvePidPath("/tmp/tribe.sock")).toBe("/tmp/tribe.pid")
-      expect(resolvePidPath("/var/run/test/daemon.sock")).toBe("/var/run/test/daemon.pid")
-      expect(resolvePidPath("/tmp/tribe-test-abc123.sock")).toBe("/tmp/tribe-test-abc123.pid")
     })
   })
 
@@ -258,14 +251,12 @@ describe("tribe daemon integration", () => {
     }
     daemon = null
 
-    // Clean up socket and related files
-    for (const path of [socketPath, resolvePidPath(socketPath)]) {
-      if (existsSync(path)) {
-        try {
-          unlinkSync(path)
-        } catch {
-          /* ignore */
-        }
+    // Clean up socket file
+    if (existsSync(socketPath)) {
+      try {
+        unlinkSync(socketPath)
+      } catch {
+        /* ignore */
       }
     }
 
@@ -291,11 +282,16 @@ describe("tribe daemon integration", () => {
       expect(client.socket.destroyed).toBe(false)
     }, 10_000)
 
-    it("creates a PID file", async () => {
-      daemon = await spawnDaemon(socketPath)
+    it("liveness = socket connectability (isSocketAlive + probeDaemonPid)", async () => {
+      // Dead socket: nothing listening
+      expect(await isSocketAlive(socketPath)).toBe(false)
+      expect(await probeDaemonPid(socketPath)).toBeNull()
 
-      const pidPath = resolvePidPath(socketPath)
-      expect(existsSync(pidPath)).toBe(true)
+      // Alive socket: daemon running
+      daemon = await spawnDaemon(socketPath)
+      expect(await isSocketAlive(socketPath)).toBe(true)
+      const pid = await probeDaemonPid(socketPath)
+      expect(pid).toBe(daemon.pid)
     }, 10_000)
 
     it("accepts multiple concurrent connections", async () => {

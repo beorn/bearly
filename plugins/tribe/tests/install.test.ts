@@ -350,14 +350,14 @@ describe("doctorReport", () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test("reports FAIL when settings.json missing", () => {
-    const report = doctorReport(env)
+  test("reports FAIL when settings.json missing", async () => {
+    const report = await doctorReport(env)
     const s = report.checks.find((c) => c.name === "claude-settings")
     expect(s?.level).toBe("fail")
     expect(report.hasFailures).toBe(true)
   })
 
-  test("reports PASS for all hooks when installed correctly", () => {
+  test("reports PASS for all hooks when installed correctly", async () => {
     writeJson(env.claudeSettingsPath, {
       hooks: Object.fromEntries(
         TRIBE_HOOK_EVENTS.map(({ claudeName, tribeArg }) => [
@@ -374,7 +374,7 @@ describe("doctorReport", () => {
     writeJson(resolve(env.cwd, ".mcp.json"), {
       mcpServers: { tribe: { command: "bun", args: [env.loreServerPath] } },
     })
-    const report = doctorReport(env)
+    const report = await doctorReport(env)
     for (const { claudeName } of TRIBE_HOOK_EVENTS) {
       const c = report.checks.find((x) => x.name === `hook-${claudeName}`)
       expect(c?.level).toBe("pass")
@@ -383,7 +383,7 @@ describe("doctorReport", () => {
     expect(mcp?.level).toBe("pass")
   })
 
-  test("reports FAIL when hook points at a missing file", () => {
+  test("reports FAIL when hook points at a missing file", async () => {
     const missing = resolve(root, "deleted/tribe-cli.ts")
     writeJson(env.claudeSettingsPath, {
       hooks: {
@@ -395,14 +395,14 @@ describe("doctorReport", () => {
         ],
       },
     })
-    const report = doctorReport(env)
+    const report = await doctorReport(env)
     const c = report.checks.find((c) => c.name === "hook-SessionStart")
     expect(c?.level).toBe("fail")
     expect(c?.message).toContain(missing)
     expect(report.hasFailures).toBe(true)
   })
 
-  test("reports WARN when .mcp.json is missing", () => {
+  test("reports WARN when .mcp.json is missing", async () => {
     writeJson(env.claudeSettingsPath, {
       hooks: Object.fromEntries(
         TRIBE_HOOK_EVENTS.map(({ claudeName, tribeArg }) => [
@@ -416,14 +416,14 @@ describe("doctorReport", () => {
         ]),
       ),
     })
-    const report = doctorReport(env)
+    const report = await doctorReport(env)
     const mcp = report.checks.find((c) => c.name === "mcp-json")
     expect(mcp?.level).toBe("warn")
   })
 
-  test("formatDoctorReport prints a readable summary", () => {
+  test("formatDoctorReport prints a readable summary", async () => {
     writeJson(env.claudeSettingsPath, { hooks: {} })
-    const report = doctorReport(env)
+    const report = await doctorReport(env)
     const text = formatDoctorReport(report)
     expect(text).toContain("tribe doctor")
     expect(text).toMatch(/pass|warn|fail/i)
