@@ -403,8 +403,8 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         }
 
         // Chief derived from connection order (or explicit claim).
-        const chiefId = deriveChiefId(clients.values())
-        const chiefName = chiefId ? (clients.get(chiefId)?.name ?? "none") : "none"
+        const chiefInfo = deriveChiefInfo(clients.values())
+        const chiefName = chiefInfo?.name ?? "none"
 
         // Return current coordination state for this project
         const coordState = db
