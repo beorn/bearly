@@ -8,7 +8,6 @@ import type { TribeContext } from "./context.ts"
 
 const log = createLogger("tribe:handlers")
 import { validateName, sanitizeMessage } from "./validation.ts"
-import { isLeaseHolder, acquireLease, getLeaseInfo } from "./lease.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
 import { cleanupOldPrunedSessions } from "./session.ts"
 
@@ -27,6 +26,8 @@ export const TRIBE_COORD_METHODS = {
   reload: "tribe.reload",
   retro: "tribe.retro",
   leadership: "tribe.leadership",
+  claimChief: "tribe.claim-chief",
+  releaseChief: "tribe.release-chief",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -42,19 +43,29 @@ type ToolArgs = Record<string, unknown>
 // Exports
 // ---------------------------------------------------------------------------
 
+export type HandlerOpts = {
+  cleanup: () => void
+  userRenamed: boolean
+  setUserRenamed: (v: boolean) => void
+  /** Return the ctx.sessionId of the current chief (derived or explicitly claimed), or null. */
+  getChiefId: () => string | null
+  /** Return the current chief's id + name + whether the role was explicitly claimed. */
+  getChiefInfo: () => { id: string; name: string; claimed: boolean } | null
+  /** Explicitly claim chief for the given session. Idempotent. */
+  claimChief: (sessionId: string, name: string) => void
+  /** Release an explicit chief claim (if this session holds it). Idempotent. */
+  releaseChief: (sessionId: string) => void
+}
+
 export function handleToolCall(
   ctx: TribeContext,
   name: string,
   a: ToolArgs,
-  opts: {
-    cleanup: () => void
-    userRenamed: boolean
-    setUserRenamed: (v: boolean) => void
-  },
+  opts: HandlerOpts,
 ): ToolResult | Promise<ToolResult> {
   switch (name) {
     case TRIBE_COORD_METHODS.send:
-      return handleSend(ctx, a)
+      return handleSend(ctx, a, opts)
     case TRIBE_COORD_METHODS.broadcast:
       return handleBroadcast(ctx, a)
     case TRIBE_COORD_METHODS.members:
@@ -64,7 +75,7 @@ export function handleToolCall(
     case TRIBE_COORD_METHODS.rename:
       return handleRename(ctx, a, opts)
     case TRIBE_COORD_METHODS.join:
-      return handleJoin(ctx, a)
+      return handleJoin(ctx, a, opts)
     case TRIBE_COORD_METHODS.health:
       return handleHealth(ctx)
     case TRIBE_COORD_METHODS.reload:
@@ -72,7 +83,11 @@ export function handleToolCall(
     case TRIBE_COORD_METHODS.retro:
       return handleRetro(ctx, a)
     case TRIBE_COORD_METHODS.leadership:
-      return handleLeadership(ctx)
+      return handleLeadership(ctx, opts)
+    case TRIBE_COORD_METHODS.claimChief:
+      return handleClaimChief(ctx, opts)
+    case TRIBE_COORD_METHODS.releaseChief:
+      return handleReleaseChief(ctx, opts)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -82,25 +97,24 @@ export function handleToolCall(
 // Implementation
 // ---------------------------------------------------------------------------
 
-function handleSend(ctx: TribeContext, a: ToolArgs): ToolResult {
+function handleSend(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
   const msgType = (a.type as string) ?? "notify"
-  // Only lease holders can assign or verdict
-  if ((msgType === "assign" || msgType === "verdict") && !isLeaseHolder(ctx.db, ctx.sessionId)) {
+  // Only the current chief can assign or verdict
+  if ((msgType === "assign" || msgType === "verdict") && opts.getChiefId() !== ctx.sessionId) {
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ error: "Only the current chief lease holder can send assign/verdict messages" }),
+          text: JSON.stringify({ error: "Only the current chief can send assign/verdict messages" }),
         },
       ],
     }
   }
   const sanitized = sanitizeMessage(a.message as string)
-  // Dead-letter fallback for `to: "chief"` when no chief lease holds:
+  // Dead-letter fallback for `to: "chief"` when no chief exists:
   // drain to '*' with a `[no-chief]` prefix so the message still reaches the
-  // tribe rather than vanishing into an unread queue no one polls. See
-  // km-tribe.chief-auto-election Layer 3.
-  const { recipient, content, routedFromChief } = routeChiefFallback(ctx, a.to as string, sanitized)
+  // tribe rather than vanishing into an unread queue no one polls.
+  const { recipient, content, routedFromChief } = routeChiefFallback(opts, a.to as string, sanitized)
   const result = sendMessage(
     ctx,
     recipient,
@@ -125,16 +139,15 @@ function handleSend(ctx: TribeContext, a: ToolArgs): ToolResult {
 }
 
 function routeChiefFallback(
-  ctx: TribeContext,
+  opts: HandlerOpts,
   to: string,
   content: string,
 ): { recipient: string; content: string; routedFromChief: boolean } {
   if (to !== "chief") return { recipient: to, content, routedFromChief: false }
-  const lease = getLeaseInfo(ctx.db)
-  if (lease && lease.lease_until > Date.now()) {
+  if (opts.getChiefId() !== null) {
     return { recipient: to, content, routedFromChief: false }
   }
-  // No live chief — drain to the tribe so somebody sees it.
+  // No chief — drain to the tribe so somebody sees it.
   return { recipient: "*", content: `[no-chief] ${content}`, routedFromChief: true }
 }
 
@@ -280,7 +293,7 @@ function handleRename(
   }
 }
 
-function handleJoin(ctx: TribeContext, a: ToolArgs): ToolResult {
+function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
   const joinName = a.name as string
   const joinRole = (a.role as string) ?? ctx.sessionRole
   const joinDomains = (a.domains as string[]) ?? ctx.domains
@@ -297,20 +310,9 @@ function handleJoin(ctx: TribeContext, a: ToolArgs): ToolResult {
     return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
   }
 
-  // If joining as chief, try to acquire lease
+  // Joining with role=chief is now an explicit claim — derived chief otherwise.
   if (joinRole === "chief") {
-    const leased = acquireLease(ctx.db, ctx.sessionId, joinName)
-    if (!leased.granted) {
-      const info = getLeaseInfo(ctx.db)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: `chief lease held by ${info?.holder_name ?? "unknown"}` }),
-          },
-        ],
-      }
-    }
+    opts.claimChief(ctx.sessionId, joinName)
   }
 
   const prevName = ctx.getName()
@@ -483,30 +485,52 @@ async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> 
   return { content: [{ type: "text", text }] }
 }
 
-function handleLeadership(ctx: TribeContext): ToolResult {
-  const info = getLeaseInfo(ctx.db)
+function handleLeadership(_ctx: TribeContext, opts: HandlerOpts): ToolResult {
+  const info = opts.getChiefInfo()
   if (!info) {
     return {
-      content: [{ type: "text", text: JSON.stringify({ leader: null, message: "No chief lease has been acquired" }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ leader: null, message: "No chief — no eligible sessions connected" }),
+        },
+      ],
     }
   }
-  const expiresIn = Math.max(0, Math.round((info.lease_until - Date.now()) / 1000))
   return {
     content: [
       {
         type: "text",
         text: JSON.stringify(
           {
-            holder_name: info.holder_name,
-            holder_id: info.holder_id,
-            term: info.term,
-            expires_in_seconds: expiresIn,
-            expired: expiresIn === 0,
-            acquired_at: new Date(info.acquired_at).toISOString(),
+            holder_name: info.name,
+            holder_id: info.id,
+            claimed: info.claimed,
+            source: info.claimed ? "explicit-claim" : "derived-from-connection-order",
           },
           null,
           2,
         ),
+      },
+    ],
+  }
+}
+
+function handleClaimChief(ctx: TribeContext, opts: HandlerOpts): ToolResult {
+  opts.claimChief(ctx.sessionId, ctx.getName())
+  return {
+    content: [{ type: "text", text: JSON.stringify({ chief: ctx.getName(), claimed: true }) }],
+  }
+}
+
+function handleReleaseChief(ctx: TribeContext, opts: HandlerOpts): ToolResult {
+  opts.releaseChief(ctx.sessionId)
+  const info = opts.getChiefInfo()
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ released: true, chief: info?.name ?? null }),
       },
     ],
   }

@@ -124,23 +124,6 @@ export function openDatabase(path: string): Database {
 		ts         INTEGER NOT NULL
 	)`)
 
-  db.run(`CREATE TABLE IF NOT EXISTS leadership (
-		role         TEXT PRIMARY KEY DEFAULT 'chief',
-		holder_id    TEXT NOT NULL,
-		holder_name  TEXT NOT NULL,
-		term         INTEGER NOT NULL DEFAULT 1,
-		epoch        INTEGER DEFAULT 1,
-		lease_until  INTEGER NOT NULL,
-		acquired_at  INTEGER NOT NULL
-	)`)
-
-  // Migration: add epoch column if it doesn't exist (for existing DBs)
-  try {
-    db.run("ALTER TABLE leadership ADD COLUMN epoch INTEGER DEFAULT 1")
-  } catch {
-    /* already exists */
-  }
-
   db.run(`CREATE TABLE IF NOT EXISTS coordination (
 		project_id  TEXT NOT NULL,
 		key         TEXT NOT NULL,
