@@ -271,16 +271,12 @@ describe("tribe", () => {
     sendMsg(db, "worker-a", "*", "A wildcard send", "status")
 
     const aSelf = db
-      .prepare(
-        "SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?",
-      )
+      .prepare("SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?")
       .all(0, "worker-a", "worker-a") as Array<{ id: string }>
     expect(aSelf).toHaveLength(0)
 
     const bSees = db
-      .prepare(
-        "SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?",
-      )
+      .prepare("SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?")
       .all(0, "worker-b", "worker-b") as Array<{ id: string }>
     expect(bSees).toHaveLength(1)
   })

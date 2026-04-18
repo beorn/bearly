@@ -72,4 +72,4 @@ Collect responses and present as a table.
 
 - If tribe tools are not available (MCP server not loaded), tell the user to launch with: `claude --dangerously-load-development-channels server:tribe`
 - `/tribe whoami` reads from the MCP server instructions (check if "chief" or "member" appears)
-- The tribe DB is at `~/.local/share/tribe/tribe.db` (user-level default), or `.beads/tribe.db` if a `.beads/` dir exists, or explicit via `--db`/`TRIBE_DB`
+- The tribe DB is at `~/.local/share/tribe/tribe.db` (user-level default). Legacy `.beads/tribe.db` is auto-migrated to the XDG path on first daemon start after upgrade. Override via `--db` flag or `TRIBE_DB` env.

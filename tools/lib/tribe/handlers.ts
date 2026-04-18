@@ -101,7 +101,14 @@ function handleSend(ctx: TribeContext, a: ToolArgs): ToolResult {
   // tribe rather than vanishing into an unread queue no one polls. See
   // km-tribe.chief-auto-election Layer 3.
   const { recipient, content, routedFromChief } = routeChiefFallback(ctx, a.to as string, sanitized)
-  const result = sendMessage(ctx, recipient, content, msgType, a.bead as string | undefined, a.ref as string | undefined)
+  const result = sendMessage(
+    ctx,
+    recipient,
+    content,
+    msgType,
+    a.bead as string | undefined,
+    a.ref as string | undefined,
+  )
   logEvent(ctx, `message.sent.${msgType}`, a.bead as string | undefined, {
     to: a.to,
     message_id: result.id,
@@ -109,7 +116,10 @@ function handleSend(ctx: TribeContext, a: ToolArgs): ToolResult {
   })
   return {
     content: [
-      { type: "text", text: JSON.stringify({ sent: true, id: result.id, routedFromChief: routedFromChief || undefined }) },
+      {
+        type: "text",
+        text: JSON.stringify({ sent: true, id: result.id, routedFromChief: routedFromChief || undefined }),
+      },
     ],
   }
 }

@@ -24,6 +24,12 @@ import {
 } from "./lib/tribe/install.ts"
 import { dispatchHook, type HookEvent } from "./lib/tribe/hook-dispatch.ts"
 import { VALID_AUTOSTART_MODES, type TribeAutostart } from "./lib/tribe/autostart-config.ts"
+import { resolveDbPath } from "./lib/tribe/config.ts"
+
+/** Thin wrapper so `retro` uses the same DB resolution as the daemon. */
+function resolveDbPathFromCli(): string {
+  return resolveDbPath({})
+}
 
 // --- Daemon connection ---
 
@@ -272,19 +278,12 @@ async function cmdHealth(): Promise<void> {
 
 // --- Retro ---
 
-/** Walk up from cwd to find .beads directory */
-function findBeadsDir(): string {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const candidate = resolve(dir, ".beads")
-    if (existsSync(candidate)) return candidate
-    dir = dirname(dir)
-  }
-  return resolve(process.cwd(), ".beads")
-}
-
 function cmdRetro(opts: { since?: string; format: string; db?: string }): void {
-  const dbPath = opts.db ?? resolve(findBeadsDir(), "tribe.db")
+  // Use the shared resolver so retro follows the same `--db > TRIBE_DB > XDG
+  // > legacy migration` priority as the daemon. Before this fix, retro
+  // hardcoded `.beads/tribe.db`, which breaks on fresh installs after the
+  // km-tribe.decouple-db-location migration.
+  const dbPath = opts.db ?? resolveDbPathFromCli()
   if (!existsSync(dbPath)) {
     console.error(`No tribe database found at ${dbPath}`)
     process.exit(1)
