@@ -58,6 +58,34 @@ Agents are not tribe members; they serve the chief and terminate when done.
 
 History: lore started as its own package in April 2026 (renamed from `@bearly/bear`); folded back into `@bearly/tribe` the same month once the concepts stabilized.
 
+## Design principles
+
+Three invariants the tribe system is designed to guarantee. They shape every lifecycle decision — when daemons start, how sessions connect, who holds the chief role — so the user never has to think about the coordination layer.
+
+### 1. Agents auto-connect
+
+Starting a Claude Code session is enough. The tribe MCP loads, the proxy connects to the daemon, and if the daemon isn't running the `SessionStart` hook spawns it on demand. If the daemon restarts mid-session (crash, hot-reload), the proxy reconnects transparently on the next tool call — no manual `tribe restart`, no lost MCP registration. In steady state the user forgets the daemon exists; in degraded state it self-heals.
+
+### 2. There is always a chief
+
+While at least one session is connected, one of them is the chief. No "empty throne," no "lease expired 12 days ago" state. Resolution order:
+
+1. **Claimed chief** — if a session has explicitly claimed the role (`tribe.claim-chief`), they hold it for as long as they're connected.
+2. **Derived chief** — otherwise, the longest-running connected session is chief by definition.
+3. **Release** — `tribe.release-chief` steps down; derivation picks the next in line automatically.
+
+No election protocol, no periodic lease renewal, no auto-promotion after grace window. The chief is a derived property of the connection set plus an optional claim — not an independent state machine that can desync from reality.
+
+### 3. Daemons are spun up and down automatically
+
+Manual daemon lifecycle is not part of normal use. `tribe start`, `tribe stop`, `tribe reload` exist for troubleshooting but should rarely be needed.
+
+- **Spin up**: on first demand (SessionStart hook → `ensureAllDaemonsIfConfigured` → detached spawn). The user's very first Claude Code session of the day brings the tribe up.
+- **Stay up**: the daemon persists across Claude sessions so state, history, and in-flight messaging survive. Cost of staying resident is ~5 MB RAM.
+- **Spin down**: auto-quit after very long idle (30 min default; `--quit-timeout -1` disables). Crash recovery is the next SessionStart hook.
+
+The autostart config (`~/.claude/tribe/config.json` — values `daemon` / `library` / `never`) lets users override if they prefer to manage lifecycle themselves.
+
 ## Install
 
 The recommended way is as a Claude Code plugin from the `bearly` marketplace. This installs tribe globally across every project, so you don't need per-project `.mcp.json` entries.
