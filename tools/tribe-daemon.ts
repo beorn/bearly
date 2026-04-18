@@ -174,10 +174,7 @@ function isChiefEligible(c: ClientSession): boolean {
  *   2. longest-connected eligible client (smallest registeredAt)
  *      — ties broken by name alphabetical for reproducibility
  */
-export function deriveChiefId(
-  candidates: Iterable<ClientSession>,
-  claim: string | null = chiefClaim,
-): string | null {
+export function deriveChiefId(candidates: Iterable<ClientSession>, claim: string | null = chiefClaim): string | null {
   const list = Array.from(candidates).filter(isChiefEligible)
   if (claim !== null) {
     const claimer = list.find((c) => c.ctx.sessionId === claim)
@@ -192,9 +189,7 @@ export function deriveChiefId(
   return sorted[0]!.ctx.sessionId
 }
 
-function deriveChiefInfo(
-  candidates: Iterable<ClientSession>,
-): { id: string; name: string; claimed: boolean } | null {
+function deriveChiefInfo(candidates: Iterable<ClientSession>): { id: string; name: string; claimed: boolean } | null {
   const id = deriveChiefId(candidates)
   if (!id) return null
   const list = Array.from(candidates)
