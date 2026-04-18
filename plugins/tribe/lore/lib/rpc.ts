@@ -10,7 +10,14 @@
 // Protocol
 // ---------------------------------------------------------------------------
 
-export const LORE_PROTOCOL_VERSION = 1
+/**
+ * Protocol version. Bumped to 2 in @bearly/tribe 0.9.0 to signal the
+ * tribe.* MCP-surface rename (daemon-internal method strings unchanged
+ * — those are swept in a later phase). Old method names in LORE_METHODS
+ * below remain as the wire contract; they will be renamed alongside
+ * Phase 3 env-var cleanup.
+ */
+export const LORE_PROTOCOL_VERSION = 2
 
 // ---------------------------------------------------------------------------
 // Method names

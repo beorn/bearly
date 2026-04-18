@@ -42,6 +42,23 @@ import { randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
+import {
+  normalizeToolName,
+  buildDeprecatedAliasTools,
+  TRIBE_TOOL_RENAMES,
+} from "../plugins/tribe/lib/deprecation.ts"
+
+/**
+ * Map of canonical MCP tool names (tribe.*) -> daemon RPC method names
+ * (still the legacy tribe_* form in this release). Daemon-internal method
+ * names are out of scope for Phase 2; they'll be renamed later.
+ */
+const MCP_TO_DAEMON_METHOD: ReadonlyMap<string, string> = new Map(
+  TRIBE_TOOL_RENAMES
+    .filter(([nu]) => nu.startsWith("tribe."))
+    .filter(([, old]) => old.startsWith("tribe_"))
+    .map(([nu, old]) => [nu, old]),
+)
 
 const log = createLogger("tribe:proxy")
 
@@ -219,7 +236,7 @@ timers.setInterval(() => {
 // MCP Server
 // ---------------------------------------------------------------------------
 
-const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe_join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe_sessions or tribe_history afterward — just join silently and continue.`
+const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward — just join silently and continue.`
 
 const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
@@ -228,10 +245,10 @@ You are the chief of a tribe — a coordinator for multiple Claude Code sessions
 ${joinInstruction}
 
 Coordination protocol:
-- Use tribe_sessions() to see who's online and their domains
-- Use tribe_send(to, message, type) to assign work, answer queries, or approve requests
-- Use tribe_broadcast(message) to announce changes that affect everyone
-- Use tribe_health() to check for silent members or conflicts
+- Use tribe.members() to see who's online and their domains
+- Use tribe.send(to, message, type) to assign work, answer queries, or approve requests
+- Use tribe.broadcast(message) to announce changes that affect everyone
+- Use tribe.health() to check for silent members or conflicts
 - When CI alerts arrive, coordinate the fix — assign the responsible session to investigate
 
 Message format rules:
@@ -246,23 +263,23 @@ You are a tribe member — a worker session coordinated by the chief.
 ${joinInstruction}
 
 Coordination protocol:
-- When you START work on a task, broadcast what you're doing: tribe_send(to="*", message="starting: <task>")
-- When you FINISH a task or commit, broadcast: tribe_send(to="*", message="done: <summary>")
-- When you claim a bead, broadcast: tribe_send(to="*", message="claimed: <bead-id> — <title>")
+- When you START work on a task, broadcast what you're doing: tribe.send(to="*", message="starting: <task>")
+- When you FINISH a task or commit, broadcast: tribe.send(to="*", message="done: <summary>")
+- When you claim a bead, broadcast: tribe.send(to="*", message="claimed: <bead-id> — <title>")
 - When you're blocked, broadcast immediately — include what would unblock you
 - Before editing vendor/ or shared files, send a request to chief asking for OK
 - Respond to query messages promptly
 
 Sub-agent protocol:
-- When you spawn sub-agents (Agent tool), broadcast: tribe_send(to="*", message="spawned: <name> for <task>")
-- When a sub-agent completes, broadcast: tribe_send(to="*", message="agent-done: <name> — <result>")
+- When you spawn sub-agents (Agent tool), broadcast: tribe.send(to="*", message="spawned: <name> for <task>")
+- When a sub-agent completes, broadcast: tribe.send(to="*", message="agent-done: <name> — <result>")
 - Sub-agents share your tribe connection — they can't be seen individually in tribe
 
 CI protocol:
 - When you see a CI ALERT for a repo you're working on or know about, respond with a fix hint
-- Example: tribe_send(to="*", message="hint: termless CI needs vt220.js — run npm publish from vendor/vterm/packages/vt220")
+- Example: tribe.send(to="*", message="hint: termless CI needs vt220.js — run npm publish from vendor/vterm/packages/vt220")
 - If a CI alert DMs you directly, investigate and fix the failure before pushing more code
-- After fixing, broadcast: tribe_send(to="*", message="ci-fix: <repo> — <what you fixed>")
+- After fixing, broadcast: tribe.send(to="*", message="ci-fix: <repo> — <what you fixed>")
 
 Message format rules:
 - Keep messages SHORT — 1-3 lines max. No essays.
@@ -272,7 +289,7 @@ Message format rules:
 Don't over-communicate — only broadcast when it changes what someone else should know.`
 
 mcp = new Server(
-  { name: "tribe", version: "0.8.1" },
+  { name: "tribe", version: "0.9.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -297,28 +314,43 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
     nudgeSent = true
     timers.setTimeout(() => {
       sendChannel(
-        `Auto-identify: call tribe_join(name="${myName}") with a short name for your focus area. Omit the role parameter — the daemon auto-assigns it. Do not call tribe_sessions or tribe_history — just join silently and continue.`,
+        `Auto-identify: call tribe.join(name="${myName}") with a short name for your focus area. Omit the role parameter — the daemon auto-assigns it. Do not call tribe.members or tribe.history — just join silently and continue.`,
         { from: "tribe-proxy", type: "system" },
       )
     }, 500)
   }
-  return { tools: TOOLS_LIST }
+  // Publish each tool twice: once under its canonical tribe.* name (remapped
+  // from the legacy tribe_* source list) and once under the deprecated alias.
+  // Deprecation warnings fire on call, not on list.
+  const canonical = TOOLS_LIST.map((t) => {
+    // Find the matching new name for each legacy tribe_* tool.
+    const match = TRIBE_TOOL_RENAMES.find(([, old]) => old === t.name)
+    return match ? { ...t, name: match[0] } : t
+  })
+  return { tools: [...canonical, ...buildDeprecatedAliasTools(canonical)] }
 })
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: toolArgs } = req.params
+  const { name: rawName, arguments: toolArgs } = req.params
   const a = (toolArgs ?? {}) as Record<string, unknown>
+  // Normalize the MCP-surface name (emits one-time deprecation warning for
+  // legacy tribe_* callers). The result is the canonical tribe.* name.
+  const canonicalName = normalizeToolName(rawName)
+  // TODO(Phase 3+): rename the daemon-internal RPC methods to match the
+  // canonical MCP surface. For now, translate back to the daemon's legacy
+  // tribe_* method strings so daemon-internal wire format is unchanged.
+  const daemonMethod = MCP_TO_DAEMON_METHOD.get(canonicalName) ?? canonicalName
 
   try {
-    // Try direct peer messaging for tribe_send
-    if (name === "tribe_send" && a.to && typeof a.to === "string") {
+    // Try direct peer messaging for tribe.send (canonical name)
+    if (canonicalName === "tribe.send" && a.to && typeof a.to === "string") {
       const directResult = await trySendDirect(a)
       if (directResult) return directResult
     }
 
-    const result = await daemon.call(name, a)
+    const result = await daemon.call(daemonMethod, a)
     // Update local name/role after join/rename
-    if (name === "tribe_join" || name === "tribe_rename") {
+    if (canonicalName === "tribe.join" || canonicalName === "tribe.rename") {
       const r = result as { content: Array<{ type: string; text: string }> }
       try {
         const data = JSON.parse(r.content[0]?.text ?? "{}") as Record<string, string>

@@ -1,6 +1,6 @@
 {
   "name": "@bearly/tribe",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Cross-session coordination channel for Claude Code",
   "license": "MIT",
   "repository": {
@@ -12,6 +12,7 @@
     "server.ts",
     "skills",
     "README.md",
+    "CHANGELOG.md",
     ".claude-plugin",
     ".mcp.json"
   ],
