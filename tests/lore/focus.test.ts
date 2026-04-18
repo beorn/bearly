@@ -83,7 +83,11 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
   child.stderr?.on("data", () => {})
   await waitFor(() => existsSync(socketPath))
   const client = await connectToDaemon(socketPath, { callTimeoutMs: 5000 })
-  await client.call(TRIBE_METHODS.hello, { clientName: "t", clientVersion: "0", protocolVersion: LORE_PROTOCOL_VERSION })
+  await client.call(TRIBE_METHODS.hello, {
+    clientName: "t",
+    clientVersion: "0",
+    protocolVersion: LORE_PROTOCOL_VERSION,
+  })
   return {
     child,
     client,

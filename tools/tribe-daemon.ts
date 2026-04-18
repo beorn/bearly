@@ -365,10 +365,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         // Sync client registry after name/role changes
         // (Don't logActivity here — the handler already broadcasts for rename,
         // and for join the session announces itself. Avoids duplicate messages.)
-        if (
-          (method === TRIBE_COORD_METHODS.join || method === TRIBE_COORD_METHODS.rename) &&
-          client
-        ) {
+        if ((method === TRIBE_COORD_METHODS.join || method === TRIBE_COORD_METHODS.rename) && client) {
           client.name = ctx.getName()
           client.role = ctx.getRole()
         }

@@ -9,7 +9,7 @@ Your job is doing assigned work, reporting status, and coordinating shared resou
 | ----------------- | ----------------------------------------- |
 | `tribe.send`      | Send a message to chief or another member |
 | `tribe.broadcast` | Message everyone (rare -- prefer direct)  |
-| `tribe.members`  | See who's online                          |
+| `tribe.members`   | See who's online                          |
 | `tribe.health`    | Check tribe health (usually chief's job)  |
 | `tribe.history`   | View recent message log                   |
 | `tribe.rename`    | Rename this session                       |

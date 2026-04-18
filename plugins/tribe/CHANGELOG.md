@@ -5,6 +5,16 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.11.1 — 2026-04-17
+
+### Fixed
+
+- `tribe install` now emits a **project-relative** MCP server path when the
+  server script lives under cwd (typical when bearly is a git submodule).
+  Previously wrote an absolute path, making `.mcp.json` non-portable across
+  machines. Absolute path is still used when the server is outside cwd
+  (e.g. bearly installed via npm into `node_modules`).
+
 ## 0.11.0 — 2026-04-17
 
 ### Added — autostart config

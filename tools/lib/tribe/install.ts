@@ -18,7 +18,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, resolve } from "node:path"
+import { dirname, relative, resolve } from "node:path"
 import { resolveSocketPath, resolvePidPath, readDaemonPid } from "./socket.ts"
 import {
   DEFAULT_AUTOSTART,
@@ -231,7 +231,12 @@ export function planInstall(env: InstallEnv, opts: { autostart?: TribeAutostart 
         ? { ...(mcpJson.mcpServers as Record<string, unknown>) }
         : {}
     ) as Record<string, { command?: string; args?: string[] }>
-    const desired = { command: "bun", args: [env.loreServerPath] }
+    // Emit a project-relative path if the server lives under cwd (portable
+    // when the project is cloned with bearly as a submodule). Otherwise
+    // absolute (e.g. bearly installed via npm in node_modules).
+    const rel = relative(env.cwd, env.loreServerPath)
+    const serverArg = rel.startsWith("..") ? env.loreServerPath : rel
+    const desired = { command: "bun", args: [serverArg] }
     const existing = servers[env.mcpName]
     if (existing && existing.command === desired.command && sameArgs(existing.args, desired.args)) {
       mcp = { action: "unchanged", name: env.mcpName, command: desired.command, args: desired.args }

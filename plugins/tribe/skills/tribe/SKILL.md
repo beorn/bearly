@@ -11,11 +11,11 @@ Cross-session coordination. Parse the subcommand from ARGUMENTS.
 
 | User Says                      | Action                                                                                                                                                              |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/tribe`                       | `tribe.members()` — show who's online                                                                                                                              |
-| `/tribe status`                | `tribe.members()` + `tribe.health()` — full dashboard                                                                                                              |
+| `/tribe`                       | `tribe.members()` — show who's online                                                                                                                               |
+| `/tribe status`                | `tribe.members()` + `tribe.health()` — full dashboard                                                                                                               |
 | `/tribe health`                | `tribe.health()` — warnings, silent members, unread counts                                                                                                          |
-| `/tribe sessions`              | `tribe.members()` — list active sessions                                                                                                                           |
-| `/tribe sessions --all`        | `tribe.members(all=true)` — include dead sessions                                                                                                                  |
+| `/tribe sessions`              | `tribe.members()` — list active sessions                                                                                                                            |
+| `/tribe sessions --all`        | `tribe.members(all=true)` — include dead sessions                                                                                                                   |
 | `/tribe send <to> <message>`   | `tribe.send(to, message)` — send notify message                                                                                                                     |
 | `/tribe assign <to> <message>` | `tribe.send(to, message, type="assign")` — assign work                                                                                                              |
 | `/tribe query <to> <message>`  | `tribe.send(to, message, type="query")` — ask a question                                                                                                            |

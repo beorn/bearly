@@ -167,7 +167,22 @@ describe("planInstall", () => {
     expect(plan.mcp.action).toBe("add")
     const servers = plan.nextMcp!.mcpServers as Record<string, unknown>
     expect(servers.tty).toBeDefined()
+    // cwd and server are siblings here (project/ vs bearly/) → relative starts
+    // with .., so absolute path is emitted.
     expect(servers.tribe).toEqual({ command: "bun", args: [env.loreServerPath] })
+  })
+
+  test("emits project-relative path when server lives under cwd (km-style submodule)", () => {
+    // Simulate the km layout: the project root contains vendor/bearly/…
+    const kmEnv = makeEnv(root, {
+      cwd: root,
+      loreServerPath: resolve(root, "bearly/plugins/tribe/lore/server.ts"),
+    })
+    writeJson(resolve(kmEnv.cwd, ".mcp.json"), { mcpServers: {} })
+    const plan = planInstall(kmEnv)
+    expect(plan.mcp.action).toBe("add")
+    const servers = plan.nextMcp!.mcpServers as Record<string, unknown>
+    expect(servers.tribe).toEqual({ command: "bun", args: ["bearly/plugins/tribe/lore/server.ts"] })
   })
 
   test("plans autostart: daemon when no config file exists", () => {

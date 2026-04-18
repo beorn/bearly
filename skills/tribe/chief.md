@@ -7,7 +7,7 @@ Your job is routing work, tracking progress, detecting problems, and keeping the
 
 | Tool              | Use                                                         |
 | ----------------- | ----------------------------------------------------------- |
-| `tribe.members`  | See who's online, their roles and domains                   |
+| `tribe.members`   | See who's online, their roles and domains                   |
 | `tribe.send`      | Direct message to a specific member                         |
 | `tribe.broadcast` | Message all members                                         |
 | `tribe.health`    | Check for stale heartbeats, silent members, unread messages |

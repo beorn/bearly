@@ -125,7 +125,6 @@ describe("lore daemon — handshake", () => {
     const s = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
-
 })
 
 describe("lore daemon — session registration", () => {
