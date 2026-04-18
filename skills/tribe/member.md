@@ -7,12 +7,12 @@ Your job is doing assigned work, reporting status, and coordinating shared resou
 
 | Tool              | Use                                       |
 | ----------------- | ----------------------------------------- |
-| `tribe_send`      | Send a message to chief or another member |
-| `tribe_broadcast` | Message everyone (rare -- prefer direct)  |
-| `tribe_sessions`  | See who's online                          |
-| `tribe_health`    | Check tribe health (usually chief's job)  |
-| `tribe_history`   | View recent message log                   |
-| `tribe_rename`    | Rename this session                       |
+| `tribe.send`      | Send a message to chief or another member |
+| `tribe.broadcast` | Message everyone (rare -- prefer direct)  |
+| `tribe.members`  | See who's online                          |
+| `tribe.health`    | Check tribe health (usually chief's job)  |
+| `tribe.history`   | View recent message log                   |
+| `tribe.rename`    | Rename this session                       |
 
 ## Coordination Protocol
 
@@ -22,11 +22,11 @@ Send status to chief at these moments -- not before, not after:
 
 | Event           | Message                                                                                                                                                         |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claimed a bead  | `tribe_send(to="chief", type="status", bead="km-x.y", message="Claimed km-x.y, starting work")`                                                                 |
-| Committed a fix | `tribe_send(to="chief", type="status", bead="km-x.y", message="Committed abc1234: fixed scroll jitter")`                                                        |
-| Blocked         | `tribe_send(to="chief", type="status", bead="km-x.y", message="Blocked: need silvery PR merged before I can integrate. Unblock: merge silvery commit abc1234")` |
-| All work done   | `tribe_send(to="chief", type="status", message="Available -- all assigned beads complete")`                                                                     |
-| Found a new bug | `tribe_send(to="chief", type="notify", bead="km-x.z", message="Found new bug while working on km-x.y, created bead km-x.z")`                                    |
+| Claimed a bead  | `tribe.send(to="chief", type="status", bead="km-x.y", message="Claimed km-x.y, starting work")`                                                                 |
+| Committed a fix | `tribe.send(to="chief", type="status", bead="km-x.y", message="Committed abc1234: fixed scroll jitter")`                                                        |
+| Blocked         | `tribe.send(to="chief", type="status", bead="km-x.y", message="Blocked: need silvery PR merged before I can integrate. Unblock: merge silvery commit abc1234")` |
+| All work done   | `tribe.send(to="chief", type="status", message="Available -- all assigned beads complete")`                                                                     |
+| Found a new bug | `tribe.send(to="chief", type="notify", bead="km-x.z", message="Found new bug while working on km-x.y, created bead km-x.z")`                                    |
 
 ### Before editing shared files
 
@@ -38,7 +38,7 @@ Shared files cause merge conflicts. **Always ask chief before editing:**
 - Root config files (`vitest.config.ts`, `.gitignore`, etc.)
 
 ```
-tribe_send(to="chief", type="request", message="Need to add @silvery/scroll to package.json. OK to edit?")
+tribe.send(to="chief", type="request", message="Need to add @silvery/scroll to package.json. OK to edit?")
 ```
 
 Wait for a `verdict` message before proceeding. If no response within ~2 minutes, ask again.
@@ -54,7 +54,7 @@ Notify chief when you:
 - **Experience slowdowns** -- CPU contention from concurrent test runs, disk I/O, etc.
 
 ```
-tribe_send(to="chief", type="notify", message="Starting multi-file rename: ScrollView -> ScrollTier across vendor/silvery/. Build may break for ~5 min.")
+tribe.send(to="chief", type="notify", message="Starting multi-file rename: ScrollView -> ScrollTier across vendor/silvery/. Build may break for ~5 min.")
 ```
 
 ### Responding to queries
@@ -62,7 +62,7 @@ tribe_send(to="chief", type="notify", message="Starting multi-file rename: Scrol
 When chief (or another member) sends you a `query`, respond promptly:
 
 ```
-tribe_send(to="chief", type="response", message="Working on km-silvery.scroll, ~30 min remaining. No blockers.", ref="<query-message-id>")
+tribe.send(to="chief", type="response", message="Working on km-silvery.scroll, ~30 min remaining. No blockers.", ref="<query-message-id>")
 ```
 
 ## Receiving Assignments
@@ -78,7 +78,7 @@ When you receive an `assign` message:
 If the assignment is outside your domain or you're overloaded, say so:
 
 ```
-tribe_send(to="chief", type="status", message="Can't take km-tui.card-layout -- outside my domain (silvery/flexily). Suggest assigning to tui worker.")
+tribe.send(to="chief", type="status", message="Can't take km-tui.card-layout -- outside my domain (silvery/flexily). Suggest assigning to tui worker.")
 ```
 
 ## Communication Principles

@@ -16,6 +16,8 @@ See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#doma
 
 `@bearly/lore` was folded into `@bearly/tribe` on 2026-04-17 — what was the standalone memory daemon (focus cache, LLM summarizer, per-session hook dedup) now ships inside tribe. The split existed briefly while the concepts stabilized; the unified package is the steady state.
 
+**0.9.0 namespace unification (2026-04-17)** — MCP tools moved to the unified `tribe.*` namespace (`tribe.ask`, `tribe.send`, `tribe.members`, …) and env vars to the `TRIBE_*` prefix. Old `lore.*` / `tribe_*` / `LORE_*` names still work as deprecated aliases through 0.10. See `plugins/tribe/CHANGELOG.md` for the full rename table.
+
 ### Supporting primitives
 
 | Package          | npm               | Role                                                                                     | Entry Point       |

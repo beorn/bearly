@@ -148,13 +148,18 @@ Once installed, use `/tribe` in Claude Code:
 ## CLI
 
 ```bash
-tribe watch           # Live TUI dashboard (sessions, messages, events)
-tribe status          # Show active sessions
-tribe log -f          # Follow live message stream
+tribe watch             # Live TUI dashboard (sessions, messages, events)
+tribe status            # Show active sessions
+tribe log -f            # Follow live message stream
 tribe retro --since 2h  # Retro report for last 2 hours
-tribe start           # Start daemon in foreground
-tribe stop            # Stop daemon
-tribe reload          # Hot-reload daemon code
+tribe start             # Start daemon in foreground
+tribe stop              # Stop daemon
+tribe reload            # Hot-reload daemon code
+tribe install           # Install Claude Code SessionStart/SessionEnd hooks
+tribe hook session-start  # Hook entry point (run by Claude Code)
+tribe hook session-end    # Hook entry point (run by Claude Code)
+tribe uninstall         # Remove installed hooks
+tribe doctor            # Verify daemon + MCP + hooks + env
 ```
 
 ## Message Types
