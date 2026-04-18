@@ -232,6 +232,59 @@ describe("tribe", () => {
     expect(messages).toHaveLength(0)
   })
 
+  // Regression test for km-tribe.broadcast-loopback: the daemon's
+  // pushNewMessages uses a raw SQL query distinct from pollMessages above.
+  // Mirror it verbatim to lock the self-filter into place at the EXACT query
+  // level the daemon runs on.
+  test("daemon pushNewMessages query filters sender from broadcast (verbatim)", () => {
+    registerSession(db, "id-a", "worker-a", "member")
+    registerSession(db, "id-b", "worker-b", "member")
+
+    sendMsg(db, "worker-a", "*", "A broadcasts", "notify")
+    sendMsg(db, "worker-b", "*", "B broadcasts", "notify")
+
+    // Exact daemon query, with client.name = "worker-a" — must exclude A's own.
+    const aSeen = db
+      .prepare(
+        "SELECT id, type, sender, recipient, content FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY ts ASC",
+      )
+      .all(0, "worker-a", "worker-a") as Array<{ sender: string; content: string }>
+    expect(aSeen.map((m) => m.sender)).toEqual(["worker-b"])
+    expect(aSeen.map((m) => m.content)).toEqual(["B broadcasts"])
+
+    const bSeen = db
+      .prepare(
+        "SELECT id, type, sender, recipient, content FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY ts ASC",
+      )
+      .all(0, "worker-b", "worker-b") as Array<{ sender: string; content: string }>
+    expect(bSeen.map((m) => m.sender)).toEqual(["worker-a"])
+  })
+
+  // km-tribe.broadcast-loopback: sender=* fan-out to named recipient still
+  // filters the sender, so `tribe.send(to="*")` (wildcard) matches
+  // `tribe.broadcast` semantics.
+  test("wildcard-send filters sender the same as broadcast", () => {
+    registerSession(db, "id-a", "worker-a", "member")
+    registerSession(db, "id-b", "worker-b", "member")
+
+    // Wildcard send from A — daemon treats recipient="*" identically to broadcast.
+    sendMsg(db, "worker-a", "*", "A wildcard send", "status")
+
+    const aSelf = db
+      .prepare(
+        "SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?",
+      )
+      .all(0, "worker-a", "worker-a") as Array<{ id: string }>
+    expect(aSelf).toHaveLength(0)
+
+    const bSees = db
+      .prepare(
+        "SELECT id FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ?",
+      )
+      .all(0, "worker-b", "worker-b") as Array<{ id: string }>
+    expect(bSees).toHaveLength(1)
+  })
+
   test("cursor advances — no duplicate delivery", () => {
     registerSession(db, "id-chief", "chief", "chief")
     registerSession(db, "id-worker", "worker-a", "member")

@@ -1095,11 +1095,23 @@ describe("findGitLockPaths", () => {
 // ---------------------------------------------------------------------------
 
 describe("formatLockMessage", () => {
-  test("formats message with session name for main repo lock", () => {
+  test("formats message with session name AND pid for main repo lock", () => {
     const lock: GitLockInfo = {
       path: "/repo/.git/index.lock",
       label: "main",
       holder: { pid: 12345, command: "git" },
+    }
+    const msg = formatLockMessage(lock, "km-3", 5)
+    // Both session name and PID: name is what a human remembers, PID is the
+    // handle for `kill`/`ps`. See km-tribe.git-lock-attribution.
+    expect(msg).toBe("git lock: .git/index.lock held by km-3 (PID 12345) for 5s")
+  })
+
+  test("formats message with session name only when PID is unavailable", () => {
+    const lock: GitLockInfo = {
+      path: "/repo/.git/index.lock",
+      label: "main",
+      holder: null,
     }
     const msg = formatLockMessage(lock, "km-3", 5)
     expect(msg).toBe("git lock: .git/index.lock held by km-3 for 5s")
@@ -1132,7 +1144,7 @@ describe("formatLockMessage", () => {
       holder: { pid: 999, command: "git" },
     }
     const msg = formatLockMessage(lock, "km-2", 8)
-    expect(msg).toBe("git lock: .git/modules/silvery/index.lock held by km-2 for 8s")
+    expect(msg).toBe("git lock: .git/modules/silvery/index.lock held by km-2 (PID 999) for 8s")
   })
 })
 
@@ -1144,7 +1156,7 @@ describe("formatStaleLockMessage", () => {
       holder: { pid: 12345, command: "git" },
     }
     const msg = formatStaleLockMessage(lock, "km-3", 45.7)
-    expect(msg).toBe("git lock WARNING: .git/index.lock held >45s by km-3 -- may be stale")
+    expect(msg).toBe("git lock WARNING: .git/index.lock held >45s by km-3 (PID 12345) -- may be stale")
   })
 
   test("formats stale warning with PID fallback", () => {

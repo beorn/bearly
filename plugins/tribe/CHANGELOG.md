@@ -7,6 +7,52 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — chief lease observability (Layer 1)
+
+Health monitor plugin emits a `health:chief:expired` broadcast when the chief
+lease is expired by more than the grace window (5 min) and no session has
+acquired it. Rate-limited to once per hour per daemon so headless periods
+don't flood the channel. Covers the first of three layers in
+`km-tribe.chief-auto-election`. Layer 2 (auto-promotion) and the sweep-level
+work remain open.
+
+### Added — dead-letter routing for `to: "chief"` (Layer 3)
+
+`tribe.send` with `to: "chief"` now falls back to `to: "*"` with a
+`[no-chief]` prefix when no session holds a live chief lease. Previously
+these messages accumulated in the `chief` recipient's queue with no reader
+and grew unbounded (23 orphans found 2026-04-15). Logged events include
+`routedFromChief: true` so retros can distinguish normal broadcasts from
+dead-letters.
+
+### Changed — tribe DB default location (km-tribe.decouple-db-location)
+
+`tribe.db` now defaults to `~/.local/share/tribe/tribe.db` — matching the
+socket path already at `~/.local/share/tribe/tribe.sock`. The legacy
+`.beads/tribe.db` is still honored, but only as a one-time migration source:
+on first startup after upgrade, if the XDG DB doesn't yet exist and a
+legacy `.beads/tribe.db` does, it's moved forward (including `-wal` /
+`-shm` sidecars) and a `.moved` breadcrumb is dropped in the old directory.
+This unblocks retiring `.beads/` in repos that no longer use bd for issue
+tracking.
+
+Priority order: `--db flag > TRIBE_DB env > XDG path > legacy migration`.
+
+### Changed — git lock messages include session name AND PID
+
+`formatLockMessage` and `formatStaleLockMessage` now emit
+`held by <session> (PID <pid>)` when both are known. Session name is what a
+human remembers; PID is the handle for `kill`/`ps`. Fallbacks unchanged:
+`PID <pid>` when no attribution, `unknown` when no holder info either.
+Closes `km-tribe.git-lock-attribution`.
+
+### Fixed — broadcast self-echo regression tests
+
+`km-tribe.broadcast-loopback` was investigated; the daemon's
+`pushNewMessages` query has filtered senders (`AND sender != ?`) since the
+original daemon landed. Added two verbatim-query regression tests so the
+filter can't be removed accidentally.
+
 ### Fixed — autostart now covers the tribe coordination daemon
 
 Before this release, the Claude Code `SessionStart` hook autostart path
@@ -25,7 +71,7 @@ idle auto-quit, any quiet window killed it until a human manually ran
   intervention.
 - `spawnTribeDaemonDetached()` — symmetric spawner to
   `spawnDaemonDetached`. Accepts the same options; logs `[tribe] spawned
-  tribe daemon (pid=N)` so the log stream distinguishes the two daemons.
+tribe daemon (pid=N)` so the log stream distinguishes the two daemons.
 
 Existing `ensureDaemonIfConfigured()` signature is unchanged —
 `lore/server.ts` still uses it lore-only. All existing tests pass

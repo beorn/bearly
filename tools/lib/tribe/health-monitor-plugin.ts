@@ -550,6 +550,14 @@ export const LOCK_ALERT_THRESHOLD_MS = 2_000
 /** Threshold in ms for escalating a lock to a stale warning */
 export const LOCK_STALE_THRESHOLD_MS = 30_000
 
+/** Grace after chief lease expiry before alerting (ms). 5 min absorbs
+ *  transient network/process blips without crying wolf. */
+export const CHIEF_EXPIRED_GRACE_MS = 5 * 60 * 1000
+
+/** Minimum interval between chief-expired alerts (ms). 1hr keeps the
+ *  warnings stream readable when the tribe sits headless for long periods. */
+export const CHIEF_EXPIRED_ALERT_INTERVAL_MS = 60 * 60 * 1000
+
 // ---------------------------------------------------------------------------
 // Alert evaluation
 // ---------------------------------------------------------------------------
@@ -600,7 +608,7 @@ export function createAlertState(): AlertState {
  * Returns short plain-text messages suitable for tribe protocol.
  */
 export function formatLockMessage(lock: GitLockInfo, sessionName: string | null, durationSec: number): string {
-  const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
+  const holder = formatLockHolder(lock, sessionName)
   const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
   return `git lock: ${lockTarget} held by ${holder} for ${durationSec}s`
 }
@@ -609,9 +617,22 @@ export function formatLockMessage(lock: GitLockInfo, sessionName: string | null,
  * Format a stale lock warning message (>30s).
  */
 export function formatStaleLockMessage(lock: GitLockInfo, sessionName: string | null, durationSec: number): string {
-  const holder = sessionName ?? (lock.holder ? `PID ${lock.holder.pid}` : "unknown")
+  const holder = formatLockHolder(lock, sessionName)
   const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
   return `git lock WARNING: ${lockTarget} held >${Math.floor(durationSec)}s by ${holder} -- may be stale`
+}
+
+/**
+ * Format the lock holder — prefer "<session> (PID <pid>)" when both are known,
+ * since the session name is what a human remembers but the PID is still the
+ * useful handle for `kill`/`ps`. Fall back to one or the other, or "unknown".
+ */
+function formatLockHolder(lock: GitLockInfo, sessionName: string | null): string {
+  const pid = lock.holder?.pid
+  if (sessionName && pid !== undefined) return `${sessionName} (PID ${pid})`
+  if (sessionName) return sessionName
+  if (pid !== undefined) return `PID ${pid}`
+  return "unknown"
 }
 
 /**
@@ -1272,6 +1293,31 @@ export function healthMonitorPlugin(): TribePlugin {
               }
             } catch {
               // gh not available — skip silently
+            }
+          }
+          // --- Chief lease expiry (km-tribe.chief-auto-election Layer 1) ---
+          // The lease is the authoritative chief signal — if it expired and
+          // no one has taken over, the tribe has no coordinator. Broadcast a
+          // warning so someone can claim it (or so a future Layer 2 auto-
+          // promoter gets triggered). Rate-limit to 1/hr per daemon.
+          const lease = ctx.getLeaseInfo()
+          const nowMs = Date.now()
+          const chiefExpiredKey = "health:chief:expired"
+          if (lease) {
+            const expiredByMs = nowMs - lease.lease_until
+            if (expiredByMs > CHIEF_EXPIRED_GRACE_MS) {
+              const lastFired = alertState.firedAt.get(chiefExpiredKey) ?? 0
+              if (nowMs - lastFired >= CHIEF_EXPIRED_ALERT_INTERVAL_MS) {
+                const expiredMin = Math.floor(expiredByMs / 60_000)
+                const msg = `Chief lease expired ${expiredMin}min ago (held by ${lease.holder_name}). No one has taken over — tribe is headless.`
+                log.info?.(`alert: ${msg}`)
+                ctx.sendMessage("*", msg, chiefExpiredKey)
+                alertState.firedAt.set(chiefExpiredKey, nowMs)
+              }
+            } else {
+              // Healthy lease — clear the alert memory so a future expiry
+              // fires immediately instead of waiting out the rate-limit.
+              alertState.firedAt.delete(chiefExpiredKey)
             }
           }
         } catch (err) {

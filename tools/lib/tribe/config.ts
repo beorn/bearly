@@ -4,7 +4,7 @@
 
 import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -98,17 +98,79 @@ export function resolveProjectName(cwd?: string): string {
   return basename(dir).toLowerCase()
 }
 
-/** DB location: --db flag > TRIBE_DB env > .beads/tribe.db > ~/.local/share/tribe/tribe.db */
+/**
+ * DB location. Priority:
+ *   1. `--db` flag
+ *   2. `TRIBE_DB` env var
+ *   3. User-global `~/.local/share/tribe/tribe.db` (new default, matches
+ *      the socket at `~/.local/share/tribe/tribe.sock`)
+ *   4. Legacy `.beads/tribe.db` — if present and step 3 doesn't exist, migrate
+ *      it forward by moving the files to the XDG path. This unblocks retiring
+ *      `.beads/` in projects that moved off bd for issue tracking.
+ *
+ * See km-tribe.decouple-db-location. Pre-0.11.2 the priority order was
+ * `--db > TRIBE_DB > .beads/tribe.db > XDG`, which conflated tribe with bd:
+ * a repo couldn't delete `.beads/` without taking tribe down with it.
+ */
 export function resolveDbPath(args: TribeArgs): string {
   if (args.db) return String(args.db)
   if (process.env.TRIBE_DB) return process.env.TRIBE_DB
-  const beadsDir = findBeadsDir()
-  if (beadsDir) return resolve(beadsDir, "tribe.db")
-  // No .beads/ found — use XDG data dir
+
   const xdgData = process.env.XDG_DATA_HOME ?? resolve(process.env.HOME ?? "~", ".local/share")
   const tribeDir = resolve(xdgData, "tribe")
+  const xdgDbPath = resolve(tribeDir, "tribe.db")
+
+  // Migration: if an XDG DB doesn't exist yet but a legacy `.beads/tribe.db`
+  // does, move it forward. This is a one-time copy — subsequent startups find
+  // the XDG path and skip.
+  if (!existsSync(xdgDbPath)) {
+    const beadsDir = findBeadsDir()
+    if (beadsDir) {
+      const legacyDb = resolve(beadsDir, "tribe.db")
+      if (existsSync(legacyDb)) {
+        mkdirSync(tribeDir, { recursive: true })
+        migrateLegacyTribeDb(legacyDb, xdgDbPath)
+        return xdgDbPath
+      }
+    }
+  }
+
   mkdirSync(tribeDir, { recursive: true })
-  return resolve(tribeDir, "tribe.db")
+  return xdgDbPath
+}
+
+/**
+ * Move a legacy `.beads/tribe.db` (+ its WAL/SHM sidecars) to the XDG path.
+ * Best-effort: if rename fails (e.g. cross-device), fall through and let the
+ * caller fall back to creating a fresh DB at the XDG location.
+ */
+function migrateLegacyTribeDb(legacyPath: string, xdgPath: string): void {
+  try {
+    renameSync(legacyPath, xdgPath)
+    // Sidecars may or may not exist — best-effort.
+    for (const suffix of ["-wal", "-shm"]) {
+      const src = `${legacyPath}${suffix}`
+      if (existsSync(src)) {
+        try {
+          renameSync(src, `${xdgPath}${suffix}`)
+        } catch {
+          /* leave it — SQLite will rebuild the sidecar */
+        }
+      }
+    }
+    // Drop a breadcrumb so users discovering the old path understand.
+    try {
+      writeFileSync(
+        `${legacyPath}.moved`,
+        `Moved to ${xdgPath} on ${new Date().toISOString()} — see km-tribe.decouple-db-location.\n`,
+        "utf-8",
+      )
+    } catch {
+      /* best-effort */
+    }
+  } catch {
+    /* cross-device or perms — leave the legacy DB in place; caller opens a fresh XDG DB. */
+  }
 }
 
 /** Auto-detect role: if a valid leader lease or live chief exists, become member; otherwise chief */

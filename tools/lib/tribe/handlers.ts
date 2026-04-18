@@ -96,19 +96,36 @@ function handleSend(ctx: TribeContext, a: ToolArgs): ToolResult {
     }
   }
   const sanitized = sanitizeMessage(a.message as string)
-  const result = sendMessage(
-    ctx,
-    a.to as string,
-    sanitized,
-    msgType,
-    a.bead as string | undefined,
-    a.ref as string | undefined,
-  )
+  // Dead-letter fallback for `to: "chief"` when no chief lease holds:
+  // drain to '*' with a `[no-chief]` prefix so the message still reaches the
+  // tribe rather than vanishing into an unread queue no one polls. See
+  // km-tribe.chief-auto-election Layer 3.
+  const { recipient, content, routedFromChief } = routeChiefFallback(ctx, a.to as string, sanitized)
+  const result = sendMessage(ctx, recipient, content, msgType, a.bead as string | undefined, a.ref as string | undefined)
   logEvent(ctx, `message.sent.${msgType}`, a.bead as string | undefined, {
     to: a.to,
     message_id: result.id,
+    routedFromChief: routedFromChief || undefined,
   })
-  return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
+  return {
+    content: [
+      { type: "text", text: JSON.stringify({ sent: true, id: result.id, routedFromChief: routedFromChief || undefined }) },
+    ],
+  }
+}
+
+function routeChiefFallback(
+  ctx: TribeContext,
+  to: string,
+  content: string,
+): { recipient: string; content: string; routedFromChief: boolean } {
+  if (to !== "chief") return { recipient: to, content, routedFromChief: false }
+  const lease = getLeaseInfo(ctx.db)
+  if (lease && lease.lease_until > Date.now()) {
+    return { recipient: to, content, routedFromChief: false }
+  }
+  // No live chief — drain to the tribe so somebody sees it.
+  return { recipient: "*", content: `[no-chief] ${content}`, routedFromChief: true }
 }
 
 function handleBroadcast(ctx: TribeContext, a: ToolArgs): ToolResult {

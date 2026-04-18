@@ -36,7 +36,7 @@ var __callDispose = (stack, error, hasError) => {
 
 // tools/lib/tribe/config.ts
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { parseArgs } from "util";
 function parseTribeArgs() {
