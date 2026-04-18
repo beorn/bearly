@@ -20,6 +20,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { resolveSocketPath, resolvePidPath, readDaemonPid } from "./socket.ts"
+import {
+  DEFAULT_AUTOSTART,
+  readTribeConfig,
+  resolveConfigPath,
+  writeTribeConfig,
+  type TribeAutostart,
+} from "./autostart-config.ts"
+import { resolveLoreSocketPath } from "../../../plugins/tribe/lore/lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Marker — used to identify tribe-installed hook entries
@@ -53,12 +61,12 @@ export interface InstallEnv {
   loreServerPath: string
   /** Key under `mcpServers` to use (default `tribe`). */
   mcpName: string
+  /** Path to the autostart config file (default `~/.claude/tribe/config.json`). */
+  autostartConfigPath: string
 }
 
 export function defaultInstallEnv(overrides: Partial<InstallEnv> = {}): InstallEnv {
-  const claudeDir = overrides.claudeSettingsPath
-    ? dirname(overrides.claudeSettingsPath)
-    : resolve(homedir(), ".claude")
+  const claudeDir = overrides.claudeSettingsPath ? dirname(overrides.claudeSettingsPath) : resolve(homedir(), ".claude")
   const cliDir = dirname(new URL(import.meta.url).pathname)
   // tools/lib/tribe → tools
   const toolsDir = resolve(cliDir, "..", "..")
@@ -70,6 +78,7 @@ export function defaultInstallEnv(overrides: Partial<InstallEnv> = {}): InstallE
     cwd: process.cwd(),
     loreServerPath: resolve(bearlyRoot, "plugins/tribe/lore/server.ts"),
     mcpName: "tribe",
+    autostartConfigPath: resolveConfigPath(),
     ...overrides,
   }
 }
@@ -117,6 +126,12 @@ export interface McpChange {
   args?: string[]
 }
 
+export interface AutostartChange {
+  action: "add" | "update" | "unchanged"
+  requested: TribeAutostart
+  current: TribeAutostart | null
+}
+
 export interface InstallPlan {
   env: InstallEnv
   settingsExists: boolean
@@ -127,6 +142,8 @@ export interface InstallPlan {
   /** The merged .mcp.json object (null if we're skipping). */
   nextMcp: Record<string, unknown> | null
   mcp: McpChange
+  /** Autostart config change. */
+  autostart: AutostartChange
 }
 
 interface HookEntry {
@@ -157,7 +174,8 @@ function findTribeIndex(matchers: HookMatcher[], tribeArg: string): { mi: number
   return null
 }
 
-export function planInstall(env: InstallEnv): InstallPlan {
+export function planInstall(env: InstallEnv, opts: { autostart?: TribeAutostart } = {}): InstallPlan {
+  const requestedAutostart: TribeAutostart = opts.autostart ?? DEFAULT_AUTOSTART
   const settings = readJsonOrEmpty(env.claudeSettingsPath)
   const settingsExists = existsSync(env.claudeSettingsPath)
 
@@ -208,9 +226,11 @@ export function planInstall(env: InstallEnv): InstallPlan {
     mcp = { action: "skip", name: env.mcpName, reason: "no .mcp.json in cwd" }
   } else {
     const mcpJson = readJsonOrEmpty(mcpPath)
-    const servers = (mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
-      ? { ...(mcpJson.mcpServers as Record<string, unknown>) }
-      : {}) as Record<string, { command?: string; args?: string[] }>
+    const servers = (
+      mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
+        ? { ...(mcpJson.mcpServers as Record<string, unknown>) }
+        : {}
+    ) as Record<string, { command?: string; args?: string[] }>
     const desired = { command: "bun", args: [env.loreServerPath] }
     const existing = servers[env.mcpName]
     if (existing && existing.command === desired.command && sameArgs(existing.args, desired.args)) {
@@ -225,7 +245,30 @@ export function planInstall(env: InstallEnv): InstallPlan {
     nextMcp = { ...mcpJson, mcpServers: servers }
   }
 
-  return { env, settingsExists, mcpPath: existsSync(mcpPath) ? mcpPath : null, hooks: hookChanges, nextSettings, nextMcp, mcp }
+  // Autostart config change
+  const configFileExists = existsSync(env.autostartConfigPath)
+  const currentAutostart: TribeAutostart | null = configFileExists
+    ? readTribeConfig(env.autostartConfigPath).autostart
+    : null
+  let autostartChange: AutostartChange
+  if (currentAutostart === null) {
+    autostartChange = { action: "add", requested: requestedAutostart, current: null }
+  } else if (currentAutostart === requestedAutostart) {
+    autostartChange = { action: "unchanged", requested: requestedAutostart, current: currentAutostart }
+  } else {
+    autostartChange = { action: "update", requested: requestedAutostart, current: currentAutostart }
+  }
+
+  return {
+    env,
+    settingsExists,
+    mcpPath: existsSync(mcpPath) ? mcpPath : null,
+    hooks: hookChanges,
+    nextSettings,
+    nextMcp,
+    mcp,
+    autostart: autostartChange,
+  }
 }
 
 function sameArgs(a?: string[], b?: string[]): boolean {
@@ -239,6 +282,9 @@ export function applyInstall(plan: InstallPlan): void {
   writeJson(plan.env.claudeSettingsPath, plan.nextSettings)
   if (plan.mcpPath && plan.nextMcp) {
     writeJson(plan.mcpPath, plan.nextMcp)
+  }
+  if (plan.autostart.action !== "unchanged") {
+    writeTribeConfig(plan.env.autostartConfigPath, { autostart: plan.autostart.requested })
   }
 }
 
@@ -259,6 +305,15 @@ export function formatInstallPlan(plan: InstallPlan, dryRun: boolean): string {
     lines.push(`  mcp: ${plan.mcpPath}`)
     const tag = plan.mcp.action === "unchanged" ? "  ok" : plan.mcp.action === "add" ? " add" : " upd"
     lines.push(`    [${tag}] mcpServers.${plan.mcp.name}: bun ${(plan.mcp.args ?? []).join(" ")}`)
+  }
+  lines.push(`  autostart: ${plan.env.autostartConfigPath}`)
+  const a = plan.autostart
+  if (a.action === "unchanged") {
+    lines.push(`    [  ok] autostart: ${a.requested}`)
+  } else if (a.action === "add") {
+    lines.push(`    [ add] autostart: ${a.requested}`)
+  } else {
+    lines.push(`    [ upd] autostart: ${a.current} → ${a.requested}`)
   }
   return lines.join("\n")
 }
@@ -308,7 +363,9 @@ export function planUninstall(env: InstallEnv): UninstallPlan {
     }
     if (matchers.length === 0) delete nextHooks[claudeName]
     else nextHooks[claudeName] = matchers
-    hookChanges.push(removed ? { event: claudeName, action: "remove", command: removed } : { event: claudeName, action: "none" })
+    hookChanges.push(
+      removed ? { event: claudeName, action: "remove", command: removed } : { event: claudeName, action: "none" },
+    )
   }
 
   const nextSettings: Record<string, unknown> = { ...settings, hooks: nextHooks }
@@ -318,9 +375,11 @@ export function planUninstall(env: InstallEnv): UninstallPlan {
   let mcp: UninstallPlan["mcp"] = { action: "none" }
   if (existsSync(mcpPath)) {
     const mcpJson = readJsonOrEmpty(mcpPath)
-    const servers = (mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
-      ? { ...(mcpJson.mcpServers as Record<string, { command?: string; args?: string[] }>) }
-      : {}) as Record<string, { command?: string; args?: string[] }>
+    const servers = (
+      mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
+        ? { ...(mcpJson.mcpServers as Record<string, { command?: string; args?: string[] }>) }
+        : {}
+    ) as Record<string, { command?: string; args?: string[] }>
     const loreBasename = "tribe/lore/server.ts"
     const removeKey = (key: string): boolean => {
       const e = servers[key]
@@ -331,7 +390,11 @@ export function planUninstall(env: InstallEnv): UninstallPlan {
         delete servers[key]
         return true
       }
-      if (key === "lore" && Array.isArray(e.args) && e.args.some((a) => typeof a === "string" && a.includes(loreBasename))) {
+      if (
+        key === "lore" &&
+        Array.isArray(e.args) &&
+        e.args.some((a) => typeof a === "string" && a.includes(loreBasename))
+      ) {
         delete servers[key]
         return true
       }
@@ -462,9 +525,11 @@ export function doctorReport(env: InstallEnv): DoctorReport {
     })
   } else {
     const mcpJson = readJsonOrEmpty(mcpPath)
-    const servers = (mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
-      ? (mcpJson.mcpServers as Record<string, { command?: string; args?: string[] }>)
-      : {}) as Record<string, { command?: string; args?: string[] }>
+    const servers = (
+      mcpJson.mcpServers && typeof mcpJson.mcpServers === "object"
+        ? (mcpJson.mcpServers as Record<string, { command?: string; args?: string[] }>)
+        : {}
+    ) as Record<string, { command?: string; args?: string[] }>
     const entry = servers[env.mcpName] ?? servers["lore"]
     const name = servers[env.mcpName] ? env.mcpName : "lore"
     if (!entry) {
@@ -475,7 +540,9 @@ export function doctorReport(env: InstallEnv): DoctorReport {
         hint: "run `tribe install` to add it",
       })
     } else {
-      const serverPath = Array.isArray(entry.args) ? entry.args.find((a) => typeof a === "string" && a.endsWith(".ts")) : undefined
+      const serverPath = Array.isArray(entry.args)
+        ? entry.args.find((a) => typeof a === "string" && a.endsWith(".ts"))
+        : undefined
       if (!serverPath) {
         checks.push({
           name: "mcp-tribe",
@@ -523,6 +590,36 @@ export function doctorReport(env: InstallEnv): DoctorReport {
         hint: "run `tribe start` if you want coordination live",
       })
     }
+  }
+
+  // 4. Autostart mode
+  const configExists = existsSync(env.autostartConfigPath)
+  const mode = configExists ? readTribeConfig(env.autostartConfigPath).autostart : DEFAULT_AUTOSTART
+  const envOverride = process.env.TRIBE_NO_DAEMON === "1"
+  if (envOverride) {
+    checks.push({
+      name: "autostart",
+      level: "pass",
+      message: `library (TRIBE_NO_DAEMON=1 overrides ${mode}${configExists ? "" : " default"})`,
+    })
+  } else if (mode === "daemon") {
+    const loreSocket = resolveLoreSocketPath()
+    const loreAlive = existsSync(loreSocket)
+    if (loreAlive) {
+      checks.push({
+        name: "autostart",
+        level: "pass",
+        message: `daemon (lore daemon alive at ${loreSocket})`,
+      })
+    } else {
+      checks.push({
+        name: "autostart",
+        level: "pass",
+        message: `daemon (lore daemon not running — will spawn on next hook)`,
+      })
+    }
+  } else {
+    checks.push({ name: "autostart", level: "pass", message: `${mode}` })
   }
 
   const hasFailures = checks.some((c) => c.level === "fail")

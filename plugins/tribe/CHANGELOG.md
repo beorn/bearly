@@ -5,6 +5,23 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.11.0 — 2026-04-17
+
+### Added — autostart config
+
+`~/.claude/tribe/config.json` controls daemon lifecycle:
+- `"autostart": "daemon"` (default) — first hook after daemon dies
+  spawns a detached replacement. Daemon already auto-exits when idle
+  (default 30 min via --quit-timeout). Zero ceremony.
+- `"autostart": "library"` — never auto-spawn; hooks use the in-process
+  library path. Same as TRIBE_NO_DAEMON=1 but persistent.
+- `"autostart": "never"` — hooks always go through library, even if a
+  daemon is already running.
+
+`tribe install --autostart <mode>` writes the config.
+`tribe doctor` reports current mode + daemon liveness.
+Env `TRIBE_NO_DAEMON=1` still overrides to library.
+
 ## 0.10.0 — 2026-04-17
 
 ### Removed — all 0.9.0 compat aliases purged (BREAKING)
@@ -42,7 +59,7 @@ legacy name that mapped to a `tribe.*` canonical now returns an error.
 **Modules** (deleted):
 
 - `plugins/tribe/lib/deprecation.ts` (MCP tool rename shim)
-- `plugins/tribe/lore/lib/env.ts` (LORE_* → TRIBE_* resolver)
+- `plugins/tribe/lore/lib/env.ts` (LORE*\* → TRIBE*\* resolver)
 - Exports `LORE_METHODS`, `LEGACY_METHOD_ALIASES`, `TRIBE_LEGACY_METHOD_ALIASES`
 - Tests `deprecation.test.ts`, `env.test.ts`, `protocol-aliases.test.ts`
 
@@ -146,10 +163,10 @@ Resolution is centralised in `plugins/tribe/lore/lib/env.ts`: callers
 invoke `getEnv("TRIBE_*")`, which tries the new name first, falls back
 to the legacy `LORE_*`, and schedules the one-time deprecation warning.
 
-### Changed — daemon-internal protocol under tribe.* (Phase 4)
+### Changed — daemon-internal protocol under tribe.\* (Phase 4)
 
 Unix-socket RPC method names between tribe-cli / recall-hooks / MCP proxy
-and the daemons are renamed to the unified tribe.* namespace. Daemons
+and the daemons are renamed to the unified tribe.\* namespace. Daemons
 still accept the old names (silent alias, no stderr warning — wire
 protocol, not user surface). Old names slated for removal in 0.10.
 

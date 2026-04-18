@@ -17,6 +17,7 @@ import {
   TRIBE_HOOK_MARKER,
   TRIBE_HOOK_EVENTS,
   planInstall,
+  applyInstall,
   planUninstall,
   doctorReport,
   formatInstallPlan,
@@ -24,6 +25,7 @@ import {
   formatDoctorReport,
   type InstallEnv,
 } from "../../../tools/lib/tribe/install.ts"
+import { readTribeConfig } from "../../../tools/lib/tribe/autostart-config.ts"
 
 function makeEnv(dir: string, overrides: Partial<InstallEnv> = {}): InstallEnv {
   return {
@@ -33,6 +35,7 @@ function makeEnv(dir: string, overrides: Partial<InstallEnv> = {}): InstallEnv {
     cwd: resolve(dir, "project"),
     loreServerPath: resolve(dir, "bearly/plugins/tribe/lore/server.ts"),
     mcpName: "tribe",
+    autostartConfigPath: resolve(dir, "claude/tribe/config.json"),
     ...overrides,
   }
 }
@@ -134,9 +137,7 @@ describe("planInstall", () => {
   test("preserves unrelated hook entries", () => {
     writeJson(env.claudeSettingsPath, {
       hooks: {
-        SessionStart: [
-          { matcher: "", hooks: [{ type: "command", command: "/usr/local/bin/user-script.sh" }] },
-        ],
+        SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "/usr/local/bin/user-script.sh" }] }],
         PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/user/dcg" }] }],
       },
       permissions: { allow: ["Bash"] },
@@ -164,9 +165,87 @@ describe("planInstall", () => {
     writeJson(resolve(env.cwd, ".mcp.json"), { mcpServers: { tty: { command: "bun", args: ["foo.ts"] } } })
     const plan = planInstall(env)
     expect(plan.mcp.action).toBe("add")
-    const servers = (plan.nextMcp!.mcpServers as Record<string, unknown>)
+    const servers = plan.nextMcp!.mcpServers as Record<string, unknown>
     expect(servers.tty).toBeDefined()
     expect(servers.tribe).toEqual({ command: "bun", args: [env.loreServerPath] })
+  })
+
+  test("plans autostart: daemon when no config file exists", () => {
+    const plan = planInstall(env, { autostart: "daemon" })
+    expect(plan.autostart.action).toBe("add")
+    expect(plan.autostart.requested).toBe("daemon")
+    expect(plan.autostart.current).toBeNull()
+    const formatted = formatInstallPlan(plan, true)
+    expect(formatted).toMatch(/\[ add\] autostart: daemon/)
+  })
+
+  test("plans autostart: unchanged when existing config matches requested daemon", () => {
+    writeJson(env.autostartConfigPath, { autostart: "daemon" })
+    const plan = planInstall(env, { autostart: "daemon" })
+    expect(plan.autostart.action).toBe("unchanged")
+    expect(plan.autostart.current).toBe("daemon")
+    const formatted = formatInstallPlan(plan, true)
+    expect(formatted).toMatch(/\[  ok\] autostart: daemon/)
+  })
+
+  test("plans autostart: update when existing library and requested daemon", () => {
+    writeJson(env.autostartConfigPath, { autostart: "library" })
+    const plan = planInstall(env, { autostart: "daemon" })
+    expect(plan.autostart.action).toBe("update")
+    expect(plan.autostart.current).toBe("library")
+    expect(plan.autostart.requested).toBe("daemon")
+    const formatted = formatInstallPlan(plan, true)
+    expect(formatted).toMatch(/\[ upd\] autostart: library → daemon/)
+  })
+
+  test("defaults to daemon when opts.autostart is omitted", () => {
+    const plan = planInstall(env)
+    expect(plan.autostart.requested).toBe("daemon")
+  })
+
+  test("applyInstall writes the autostart config file", () => {
+    const plan = planInstall(env, { autostart: "library" })
+    applyInstall(plan)
+    expect(existsSync(env.autostartConfigPath)).toBe(true)
+    const content = JSON.parse(readFileSync(env.autostartConfigPath, "utf-8")) as { autostart: string }
+    expect(content.autostart).toBe("library")
+  })
+
+  test("applyInstall does not rewrite the config when unchanged", () => {
+    writeJson(env.autostartConfigPath, { autostart: "never" })
+    const beforeMtime = readFileSync(env.autostartConfigPath, "utf-8")
+    const plan = planInstall(env, { autostart: "never" })
+    expect(plan.autostart.action).toBe("unchanged")
+    applyInstall(plan)
+    // File content identical — writeTribeConfig wasn't called
+    expect(readFileSync(env.autostartConfigPath, "utf-8")).toBe(beforeMtime)
+  })
+
+  test("readTribeConfig returns default { autostart: 'daemon' } when file missing", () => {
+    const cfg = readTribeConfig(env.autostartConfigPath)
+    expect(cfg.autostart).toBe("daemon")
+  })
+
+  test("readTribeConfig returns default for malformed file", () => {
+    writeJson(env.autostartConfigPath, { autostart: "bogus-mode" })
+    expect(readTribeConfig(env.autostartConfigPath).autostart).toBe("daemon")
+  })
+
+  test("readTribeConfig returns default for non-JSON file", () => {
+    mkdirSync(resolve(env.autostartConfigPath, ".."), { recursive: true })
+    writeFileSync(env.autostartConfigPath, "not json {", "utf-8")
+    expect(readTribeConfig(env.autostartConfigPath).autostart).toBe("daemon")
+  })
+
+  test("CLI rejects invalid --autostart value", async () => {
+    const { spawnSync } = await import("node:child_process")
+    const cli = resolve(__dirname, "../../../tools/tribe-cli.ts")
+    const r = spawnSync(process.execPath, [cli, "install", "--autostart", "bogus", "--dry-run"], {
+      encoding: "utf-8",
+      env: { ...process.env, HOME: root }, // isolate against user ~/.claude
+    })
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain("Invalid --autostart value")
   })
 })
 

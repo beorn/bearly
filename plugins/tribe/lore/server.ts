@@ -32,6 +32,7 @@ import { getCurrentSessionContext } from "../../recall/src/lib/session-context.t
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath } from "./lib/config.ts"
+import { ensureDaemonIfConfigured } from "../../../tools/lib/tribe/autostart.ts"
 import {
   TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -55,16 +56,40 @@ if (process.env.TRIBE_LOG !== "1") setRecallLogging(false)
 const USE_DAEMON = process.env.TRIBE_NO_DAEMON !== "1"
 let daemonClient: LoreClient | null = null
 let daemonDisabled = false // Set after repeated connect failures
+let autostartChecked = false // Run ensureDaemonIfConfigured at most once per MCP server process
 
 async function getDaemon(): Promise<LoreClient | null> {
   if (!USE_DAEMON || daemonDisabled) return null
   if (daemonClient) return daemonClient
+
+  // Autostart check (once per process): consult ~/.claude/tribe/config.json
+  // and spawn a detached daemon if the user opted into autostart and none is
+  // currently running. This is fire-and-forget — we still try to connect
+  // below, and fall back to the library if the spawn hasn't booted yet.
+  if (!autostartChecked) {
+    autostartChecked = true
+    try {
+      const outcome = await ensureDaemonIfConfigured({ budgetMs: 500 })
+      if (outcome.action === "spawned" && process.env.TRIBE_LOG === "1") {
+        process.stderr.write(`[lore] autostart: spawned daemon (pid=${outcome.pid})\n`)
+      }
+      // Give a freshly-spawned daemon a moment to bind its socket so the
+      // connect below succeeds on first try. 1 s is the envelope before we
+      // give up and fall back to the library.
+      if (outcome.action === "spawned") {
+        await new Promise<void>((r) => setTimeout(r, 1000))
+      }
+    } catch {
+      /* autostart must never throw */
+    }
+  }
+
   try {
     const socketPath = resolveLoreSocketPath()
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(TRIBE_METHODS.hello, {
       clientName: "/tribe/lore",
-      clientVersion: "0.10.0",
+      clientVersion: "0.11.0",
       protocolVersion: LORE_PROTOCOL_VERSION,
     })
     daemonClient = client
@@ -448,7 +473,7 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
 // MCP server wiring
 // ============================================================================
 
-const server = new Server({ name: "/tribe", version: "0.10.0" }, { capabilities: { tools: {} } })
+const server = new Server({ name: "/tribe", version: "0.11.0" }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS }

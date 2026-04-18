@@ -23,6 +23,7 @@ import {
   formatDoctorReport,
 } from "./lib/tribe/install.ts"
 import { dispatchHook, type HookEvent } from "./lib/tribe/hook-dispatch.ts"
+import { VALID_AUTOSTART_MODES, type TribeAutostart } from "./lib/tribe/autostart-config.ts"
 
 // --- Daemon connection ---
 
@@ -440,12 +441,26 @@ program
   .option("--dry-run", "Show the plan without writing any files")
   .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
   .option("--mcp-name <name>", "mcpServers key to use (default: tribe)")
-  .action((opts: { dryRun?: boolean; claudeDir?: string; mcpName?: string }) => {
-    const env = defaultInstallEnv({
-      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
-      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
-    })
-    const plan = planInstall(env)
+  .option("--autostart <mode>", "Daemon autostart mode: daemon | library | never (default: daemon)")
+  .action((opts: { dryRun?: boolean; claudeDir?: string; mcpName?: string; autostart?: string }) => {
+    let autostart: TribeAutostart | undefined
+    if (opts.autostart !== undefined) {
+      if (!(VALID_AUTOSTART_MODES as readonly string[]).includes(opts.autostart)) {
+        console.error(
+          `Invalid --autostart value: ${opts.autostart} (must be one of: ${VALID_AUTOSTART_MODES.join(", ")})`,
+        )
+        process.exit(2)
+      }
+      autostart = opts.autostart as TribeAutostart
+    }
+    const overrides: Parameters<typeof defaultInstallEnv>[0] = {}
+    if (opts.claudeDir) {
+      overrides.claudeSettingsPath = resolve(opts.claudeDir, "settings.json")
+      overrides.autostartConfigPath = resolve(opts.claudeDir, "tribe", "config.json")
+    }
+    if (opts.mcpName) overrides.mcpName = opts.mcpName
+    const env = defaultInstallEnv(overrides)
+    const plan = planInstall(env, autostart ? { autostart } : {})
     console.log(formatInstallPlan(plan, !!opts.dryRun))
     if (!opts.dryRun) applyInstall(plan)
   })
@@ -457,10 +472,13 @@ program
   .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
   .option("--mcp-name <name>", "mcpServers key to remove (default: tribe)")
   .action((opts: { dryRun?: boolean; claudeDir?: string; mcpName?: string }) => {
-    const env = defaultInstallEnv({
-      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
-      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
-    })
+    const overrides: Parameters<typeof defaultInstallEnv>[0] = {}
+    if (opts.claudeDir) {
+      overrides.claudeSettingsPath = resolve(opts.claudeDir, "settings.json")
+      overrides.autostartConfigPath = resolve(opts.claudeDir, "tribe", "config.json")
+    }
+    if (opts.mcpName) overrides.mcpName = opts.mcpName
+    const env = defaultInstallEnv(overrides)
     const plan = planUninstall(env)
     console.log(formatUninstallPlan(plan, !!opts.dryRun))
     if (!opts.dryRun) applyUninstall(plan)
@@ -472,10 +490,13 @@ program
   .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
   .option("--mcp-name <name>", "mcpServers key to check (default: tribe)")
   .action((opts: { claudeDir?: string; mcpName?: string }) => {
-    const env = defaultInstallEnv({
-      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
-      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
-    })
+    const overrides: Parameters<typeof defaultInstallEnv>[0] = {}
+    if (opts.claudeDir) {
+      overrides.claudeSettingsPath = resolve(opts.claudeDir, "settings.json")
+      overrides.autostartConfigPath = resolve(opts.claudeDir, "tribe", "config.json")
+    }
+    if (opts.mcpName) overrides.mcpName = opts.mcpName
+    const env = defaultInstallEnv(overrides)
     const report = doctorReport(env)
     console.log(formatDoctorReport(report))
     if (report.hasFailures) process.exit(1)
