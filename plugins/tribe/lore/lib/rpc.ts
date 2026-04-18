@@ -11,33 +11,71 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Protocol version. Bumped to 2 in @bearly/tribe 0.9.0 to signal the
- * tribe.* MCP-surface rename (daemon-internal method strings unchanged
- * — those are swept in a later phase). Old method names in LORE_METHODS
- * below remain as the wire contract; they will be renamed alongside
- * Phase 3 env-var cleanup.
+ * Protocol version.
+ *
+ * - v2 (@bearly/tribe 0.9.0): MCP-surface rename to tribe.* namespace.
+ *   Daemon-internal method strings still used the legacy lore.* / tribe_*
+ *   forms on the wire.
+ * - v3 (@bearly/tribe 0.9.0, Phase 4): daemon-internal RPC methods renamed
+ *   to the unified tribe.* namespace. Daemons accept the legacy names
+ *   as silent aliases for the 0.9 upgrade window; removal in 0.10.
  */
-export const LORE_PROTOCOL_VERSION = 2
+export const LORE_PROTOCOL_VERSION = 3
 
 // ---------------------------------------------------------------------------
 // Method names
+//
+// TRIBE_METHODS is the canonical source of truth for the wire protocol.
+// LORE_METHODS is a deprecated alias kept for backwards compatibility with
+// any external importers; it resolves to the same values (the new
+// `tribe.*` strings), NOT the historical `lore.*` strings.
 // ---------------------------------------------------------------------------
 
-export const LORE_METHODS = {
-  hello: "lore.hello",
-  ask: "lore.ask",
-  currentBrief: "lore.current_brief",
-  planOnly: "lore.plan_only",
-  sessionRegister: "lore.session_register",
-  sessionHeartbeat: "lore.session_heartbeat",
-  sessionsList: "lore.sessions_list",
-  workspaceState: "lore.workspace_state",
-  sessionState: "lore.session_state",
-  injectDelta: "lore.inject_delta",
-  status: "lore.status",
+export const TRIBE_METHODS = {
+  hello: "tribe.hello",
+  ask: "tribe.ask",
+  currentBrief: "tribe.brief",
+  planOnly: "tribe.plan",
+  sessionRegister: "tribe.session_register",
+  sessionHeartbeat: "tribe.session_heartbeat",
+  sessionsList: "tribe.sessions_list",
+  workspaceState: "tribe.workspace",
+  sessionState: "tribe.session",
+  injectDelta: "tribe.inject_delta",
+  status: "tribe.status",
 } as const
 
-export type LoreMethod = (typeof LORE_METHODS)[keyof typeof LORE_METHODS]
+export type TribeMethod = (typeof TRIBE_METHODS)[keyof typeof TRIBE_METHODS]
+
+/**
+ * @deprecated Use `TRIBE_METHODS` instead. Preserved with the SAME string
+ * values as TRIBE_METHODS — both resolve to the new `tribe.*` wire names.
+ * Scheduled for removal in @bearly/tribe 0.10.
+ */
+export const LORE_METHODS = TRIBE_METHODS
+
+/** @deprecated Use `TribeMethod` instead. */
+export type LoreMethod = TribeMethod
+
+/**
+ * Legacy daemon-internal method names (the `lore.*` / `tribe_*` wire strings
+ * that v2 daemons used). These are accepted by v3 daemons as silent aliases
+ * for the 0.9 upgrade window; clients should use TRIBE_METHODS on new code.
+ * Removal target: 0.10.
+ */
+export const LEGACY_METHOD_ALIASES: Readonly<Record<string, string>> = {
+  "lore.hello": TRIBE_METHODS.hello,
+  "lore.ask": TRIBE_METHODS.ask,
+  "lore.current_brief": TRIBE_METHODS.currentBrief,
+  "lore.plan_only": TRIBE_METHODS.planOnly,
+  "lore.session_register": TRIBE_METHODS.sessionRegister,
+  "lore.session_heartbeat": TRIBE_METHODS.sessionHeartbeat,
+  "lore.sessions_list": TRIBE_METHODS.sessionsList,
+  "lore.workspace_state": TRIBE_METHODS.workspaceState,
+  "lore.session_state": TRIBE_METHODS.sessionState,
+  "lore.inject_delta": TRIBE_METHODS.injectDelta,
+  "lore.status": TRIBE_METHODS.status,
+}
 
 // ---------------------------------------------------------------------------
 // lore.hello — handshake + capability exchange

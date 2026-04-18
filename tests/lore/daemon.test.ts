@@ -125,6 +125,23 @@ describe("lore daemon — handshake", () => {
     const s = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)
   })
+
+  it("accepts legacy lore.* method names as silent aliases (Phase 4)", async () => {
+    h = await spawnLoreDaemon()
+    // Hand-typed legacy wire name must dispatch to the same handler as
+    // the canonical tribe.status.
+    const legacy = (await h.client.call("lore.status", {})) as StatusResult
+    expect(legacy.daemonPid).toBe(h.child.pid)
+    expect(legacy.socketPath).toBe(h.socketPath)
+
+    // lore.sessions_list must also work.
+    const list = (await h.client.call("lore.sessions_list", {})) as SessionsListResult
+    expect(Array.isArray(list.sessions)).toBe(true)
+
+    // Canonical tribe.status returns the same result.
+    const canonical = (await h.client.call(LORE_METHODS.status, {})) as StatusResult
+    expect(canonical.daemonPid).toBe(h.child.pid)
+  })
 })
 
 describe("lore daemon — session registration", () => {

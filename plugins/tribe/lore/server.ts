@@ -40,7 +40,7 @@ import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath } from "./lib/config.ts"
 import { getEnv } from "./lib/env.ts"
 import {
-  LORE_METHODS,
+  TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
   type AskResult,
   type CurrentBriefResult,
@@ -70,7 +70,7 @@ async function getDaemon(): Promise<LoreClient | null> {
   try {
     const socketPath = resolveLoreSocketPath()
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
-    await client.call(LORE_METHODS.hello, {
+    await client.call(TRIBE_METHODS.hello, {
       clientName: "/tribe/lore",
       clientVersion: "0.9.0",
       protocolVersion: LORE_PROTOCOL_VERSION,
@@ -214,7 +214,7 @@ async function handleAsk(args: Record<string, unknown>): Promise<string> {
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(LORE_METHODS.ask, askParams)) as AskResult
+      const result = (await daemon.call(TRIBE_METHODS.ask, askParams)) as AskResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
       if (getEnv("TRIBE_LOG") === "1") {
@@ -262,7 +262,7 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
   if (daemon) {
     try {
       const result = (await daemon.call(
-        LORE_METHODS.currentBrief,
+        TRIBE_METHODS.currentBrief,
         sessionIdOverride ? { sessionIdOverride } : {},
       )) as CurrentBriefResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
@@ -308,7 +308,7 @@ async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(LORE_METHODS.planOnly, { query })) as PlanOnlyResult
+      const result = (await daemon.call(TRIBE_METHODS.planOnly, { query })) as PlanOnlyResult
       return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
     } catch (err) {
       if (getEnv("TRIBE_LOG") === "1") {
@@ -364,7 +364,7 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
     )
   }
   try {
-    const result = (await daemon.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const result = (await daemon.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
     return JSON.stringify({ ...result, mode: "daemon" }, null, 2)
   } catch (err) {
     return JSON.stringify(
@@ -390,7 +390,7 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
   const daemon = await getDaemon()
   if (daemon) {
     try {
-      const result = (await daemon.call(LORE_METHODS.injectDelta, {
+      const result = (await daemon.call(TRIBE_METHODS.injectDelta, {
         prompt,
         sessionId,
         limit,
@@ -436,7 +436,7 @@ async function handleSessionState(args: Record<string, unknown>): Promise<string
     )
   }
   try {
-    const result = (await daemon.call(LORE_METHODS.sessionState, { sessionId })) as SessionStateResult
+    const result = (await daemon.call(TRIBE_METHODS.sessionState, { sessionId })) as SessionStateResult
     return JSON.stringify({ ...result, detected: true, mode: "daemon" }, null, 2)
   } catch (err) {
     return JSON.stringify(

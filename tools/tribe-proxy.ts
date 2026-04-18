@@ -42,22 +42,21 @@ import { randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
-import {
-  normalizeToolName,
-  buildDeprecatedAliasTools,
-  TRIBE_TOOL_RENAMES,
-} from "../plugins/tribe/lib/deprecation.ts"
+import { normalizeToolName, buildDeprecatedAliasTools, TRIBE_TOOL_RENAMES } from "../plugins/tribe/lib/deprecation.ts"
 
 /**
- * Map of canonical MCP tool names (tribe.*) -> daemon RPC method names
- * (still the legacy tribe_* form in this release). Daemon-internal method
- * names are out of scope for Phase 2; they'll be renamed later.
+ * MCP tool name -> daemon RPC method. Post-Phase 4, the daemon speaks the
+ * canonical tribe.* namespace natively, so this is an identity forward for
+ * all tribe.* tools (daemon accepts legacy tribe_* aliases internally too,
+ * but the proxy always sends the new names).
+ *
+ * The TRIBE_TOOL_RENAMES filter preserves the structure for documentation
+ * symmetry with Phase 2 and makes future additions trivial.
  */
 const MCP_TO_DAEMON_METHOD: ReadonlyMap<string, string> = new Map(
-  TRIBE_TOOL_RENAMES
-    .filter(([nu]) => nu.startsWith("tribe."))
+  TRIBE_TOOL_RENAMES.filter(([nu]) => nu.startsWith("tribe."))
     .filter(([, old]) => old.startsWith("tribe_"))
-    .map(([nu, old]) => [nu, old]),
+    .map(([nu]) => [nu, nu]),
 )
 
 const log = createLogger("tribe:proxy")
@@ -336,9 +335,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // Normalize the MCP-surface name (emits one-time deprecation warning for
   // legacy tribe_* callers). The result is the canonical tribe.* name.
   const canonicalName = normalizeToolName(rawName)
-  // TODO(Phase 3+): rename the daemon-internal RPC methods to match the
-  // canonical MCP surface. For now, translate back to the daemon's legacy
-  // tribe_* method strings so daemon-internal wire format is unchanged.
+  // Post-Phase 4: the daemon speaks tribe.* natively; this is an identity
+  // forward for all canonical names.
   const daemonMethod = MCP_TO_DAEMON_METHOD.get(canonicalName) ?? canonicalName
 
   try {
@@ -469,7 +467,7 @@ import { watch as fsWatch } from "node:fs"
       lastSlug = slug
       autoRenamed = true
       daemon
-        .call("tribe_rename", { new_name: slug })
+        .call("tribe.rename", { new_name: slug })
         .then((result) => {
           const r = result as { content: Array<{ type: string; text: string }> }
           try {
@@ -508,7 +506,7 @@ function tryAutoRenameOnClaim(content: string): void {
   if (scope === myName) return
   autoRenamed = true
   daemon
-    .call("tribe_rename", { new_name: scope })
+    .call("tribe.rename", { new_name: scope })
     .then((result) => {
       const r = result as { content: Array<{ type: string; text: string }> }
       try {

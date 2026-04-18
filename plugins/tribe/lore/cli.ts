@@ -14,7 +14,7 @@ import { parseArgs } from "node:util"
 import { connectToDaemon, connectOrStart, readLoreDaemonPid, type LoreClient } from "./lib/socket.ts"
 import { resolveLoreSocketPath, resolveLorePidPath } from "./lib/config.ts"
 import {
-  LORE_METHODS,
+  TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
   type StatusResult,
   type SessionsListResult,
@@ -31,7 +31,7 @@ async function withClient<T>(fn: (c: LoreClient) => Promise<T>, opts?: { noStart
     ? await connectToDaemon(socketPath, { callTimeoutMs: 2000 })
     : await connectOrStart(socketPath, { callTimeoutMs: 10_000 })
   try {
-    await client.call(LORE_METHODS.hello, {
+    await client.call(TRIBE_METHODS.hello, {
       clientName: CLIENT_NAME,
       clientVersion: CLIENT_VERSION,
       protocolVersion: LORE_PROTOCOL_VERSION,
@@ -52,8 +52,8 @@ function formatMs(ms: number): string {
 async function cmdStatus(): Promise<void> {
   try {
     await withClient(async (c) => {
-      const s = (await c.call(LORE_METHODS.status, {})) as StatusResult
-      const sessions = (await c.call(LORE_METHODS.sessionsList, {})) as SessionsListResult
+      const s = (await c.call(TRIBE_METHODS.status, {})) as StatusResult
+      const sessions = (await c.call(TRIBE_METHODS.sessionsList, {})) as SessionsListResult
       const uptime = Date.now() - s.startedAt
       process.stdout.write(
         [
@@ -73,7 +73,7 @@ async function cmdStatus(): Promise<void> {
 
 async function cmdSessions(): Promise<void> {
   await withClient(async (c) => {
-    const { sessions } = (await c.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const { sessions } = (await c.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
     if (sessions.length === 0) {
       process.stdout.write("no sessions registered\n")
       return
@@ -96,7 +96,7 @@ async function cmdSessions(): Promise<void> {
 
 async function cmdWorkspace(): Promise<void> {
   await withClient(async (c) => {
-    const state = (await c.call(LORE_METHODS.workspaceState, {})) as WorkspaceStateResult
+    const state = (await c.call(TRIBE_METHODS.workspaceState, {})) as WorkspaceStateResult
     process.stdout.write(JSON.stringify(state, null, 2) + "\n")
   })
 }
@@ -107,7 +107,7 @@ async function cmdAsk(query: string): Promise<void> {
     process.exit(2)
   }
   await withClient(async (c) => {
-    const result = (await c.call(LORE_METHODS.ask, { query })) as AskResult
+    const result = (await c.call(TRIBE_METHODS.ask, { query })) as AskResult
     process.stdout.write(JSON.stringify(result, null, 2) + "\n")
   })
 }

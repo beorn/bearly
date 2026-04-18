@@ -1,6 +1,6 @@
 /**
  * Shared recall-and-format pipeline used by both injection paths:
- *   1. Lore daemon's `lore.inject_delta` (in-memory Map-backed SeenStore)
+ *   1. Lore daemon's `tribe.inject_delta` (in-memory Map-backed SeenStore)
  *   2. Library `hookRecall` fallback (tmpfile-backed SeenStore)
  *
  * Both paths filter trivial prompts, run an FTS recall, dedup already-shown

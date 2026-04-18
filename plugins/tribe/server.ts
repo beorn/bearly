@@ -1908,7 +1908,7 @@ function tryAutoRenameOnClaim(content) {
   if (scope === myName)
     return;
   autoRenamed = true;
-  daemon.call("tribe_rename", { new_name: scope }).then((result) => {
+  daemon.call("tribe.rename", { new_name: scope }).then((result) => {
     const r = result;
     try {
       const data = JSON.parse(r.content[0]?.text ?? "{}");
@@ -1919,7 +1919,7 @@ function tryAutoRenameOnClaim(content) {
 }
 let __stack = [];
 try {
-  var MCP_TO_DAEMON_METHOD = new Map(TRIBE_TOOL_RENAMES.filter(([nu]) => nu.startsWith("tribe.")).filter(([, old]) => old.startsWith("tribe_")).map(([nu, old]) => [nu, old]));
+  var MCP_TO_DAEMON_METHOD = new Map(TRIBE_TOOL_RENAMES.filter(([nu]) => nu.startsWith("tribe.")).filter(([, old]) => old.startsWith("tribe_")).map(([nu]) => [nu, nu]));
   var log4 = createLogger("tribe:proxy");
   var proxyAc = new AbortController;
   var timers = createTimers(proxyAc.signal);
@@ -2100,7 +2100,7 @@ Don't over-communicate \u2014 only broadcast when it changes what someone else s
           return;
         lastSlug = slug;
         autoRenamed = true;
-        daemon.call("tribe_rename", { new_name: slug }).then((result) => {
+        daemon.call("tribe.rename", { new_name: slug }).then((result) => {
           const r = result;
           try {
             const data = JSON.parse(r.content[0]?.text ?? "{}");

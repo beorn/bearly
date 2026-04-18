@@ -13,24 +13,24 @@ Every MCP tool now lives under the single `tribe.*` namespace. The previous
 `lore.*` and `tribe_*` names are retained as deprecated aliases for one
 release cycle and **will be removed in 0.10**.
 
-| Old name               | New name              |
-| ---------------------- | --------------------- |
-| `lore.ask`             | `tribe.ask`           |
-| `lore.current_brief`   | `tribe.brief`         |
-| `lore.plan_only`       | `tribe.plan`          |
-| `lore.session_state`   | `tribe.session`       |
-| `lore.workspace_state` | `tribe.workspace`     |
-| `lore.inject_delta`    | `tribe.inject_delta`  |
-| `tribe_send`           | `tribe.send`          |
-| `tribe_broadcast`      | `tribe.broadcast`     |
-| `tribe_sessions`       | `tribe.members`       |
-| `tribe_history`        | `tribe.history`       |
-| `tribe_rename`         | `tribe.rename`        |
-| `tribe_health`         | `tribe.health`        |
-| `tribe_join`           | `tribe.join`          |
-| `tribe_reload`         | `tribe.reload`        |
-| `tribe_retro`          | `tribe.retro`         |
-| `tribe_leadership`     | `tribe.leadership`    |
+| Old name               | New name             |
+| ---------------------- | -------------------- |
+| `lore.ask`             | `tribe.ask`          |
+| `lore.current_brief`   | `tribe.brief`        |
+| `lore.plan_only`       | `tribe.plan`         |
+| `lore.session_state`   | `tribe.session`      |
+| `lore.workspace_state` | `tribe.workspace`    |
+| `lore.inject_delta`    | `tribe.inject_delta` |
+| `tribe_send`           | `tribe.send`         |
+| `tribe_broadcast`      | `tribe.broadcast`    |
+| `tribe_sessions`       | `tribe.members`      |
+| `tribe_history`        | `tribe.history`      |
+| `tribe_rename`         | `tribe.rename`       |
+| `tribe_health`         | `tribe.health`       |
+| `tribe_join`           | `tribe.join`         |
+| `tribe_reload`         | `tribe.reload`       |
+| `tribe_retro`          | `tribe.retro`        |
+| `tribe_leadership`     | `tribe.leadership`   |
 
 ### Deprecation policy
 
@@ -69,15 +69,15 @@ release cycle and **will be removed in 0.10**.
 resolve but emit a single aggregated stderr deprecation line on the next
 microtask after the first read. Removal target: **0.10**.
 
-| Old                     | New                     |
-| ----------------------- | ----------------------- |
-| `LORE_NO_DAEMON`        | `TRIBE_NO_DAEMON`       |
-| `LORE_LOG`              | `TRIBE_LOG`             |
-| `LORE_SOCKET`           | `TRIBE_LORE_SOCKET`     |
-| `LORE_DB`               | `TRIBE_LORE_DB`         |
+| Old                     | New                      |
+| ----------------------- | ------------------------ |
+| `LORE_NO_DAEMON`        | `TRIBE_NO_DAEMON`        |
+| `LORE_LOG`              | `TRIBE_LOG`              |
+| `LORE_SOCKET`           | `TRIBE_LORE_SOCKET`      |
+| `LORE_DB`               | `TRIBE_LORE_DB`          |
 | `LORE_SUMMARIZER_MODEL` | `TRIBE_SUMMARIZER_MODEL` |
-| `LORE_FOCUS_POLL_MS`    | `TRIBE_FOCUS_POLL_MS`   |
-| `LORE_SUMMARY_POLL_MS`  | `TRIBE_SUMMARY_POLL_MS` |
+| `LORE_FOCUS_POLL_MS`    | `TRIBE_FOCUS_POLL_MS`    |
+| `LORE_SUMMARY_POLL_MS`  | `TRIBE_SUMMARY_POLL_MS`  |
 
 `TRIBE_LORE_SOCKET` / `TRIBE_LORE_DB` (not `TRIBE_SOCKET` / `TRIBE_DB`)
 because the plain forms are already used by the tribe **coordination**
@@ -88,6 +88,41 @@ daemon (different socket and DB from the lore workspace daemon).
 Resolution is centralised in `plugins/tribe/lore/lib/env.ts`: callers
 invoke `getEnv("TRIBE_*")`, which tries the new name first, falls back
 to the legacy `LORE_*`, and schedules the one-time deprecation warning.
+
+### Changed — daemon-internal protocol under tribe.* (Phase 4)
+
+Unix-socket RPC method names between tribe-cli / recall-hooks / MCP proxy
+and the daemons are renamed to the unified tribe.* namespace. Daemons
+still accept the old names (silent alias, no stderr warning — wire
+protocol, not user surface). Old names slated for removal in 0.10.
+
+- Lore daemon methods:
+  lore.hello → tribe.hello
+  lore.ask → tribe.ask
+  lore.current_brief → tribe.brief
+  lore.plan_only → tribe.plan
+  lore.session_register → tribe.session_register
+  lore.session_heartbeat → tribe.session_heartbeat
+  lore.sessions_list → tribe.sessions_list
+  lore.workspace_state → tribe.workspace
+  lore.session_state → tribe.session
+  lore.inject_delta → tribe.inject_delta
+  lore.status → tribe.status
+  LORE_PROTOCOL_VERSION bumped 2 → 3.
+
+- Tribe coordination daemon methods:
+  tribe_send → tribe.send
+  tribe_broadcast → tribe.broadcast
+  tribe_sessions → tribe.members
+  tribe_history → tribe.history
+  tribe_rename → tribe.rename
+  tribe_health → tribe.health
+  tribe_join → tribe.join
+  tribe_reload → tribe.reload
+  tribe_retro → tribe.retro
+  tribe_leadership → tribe.leadership
+
+LORE_METHODS re-exports to the new values with a @deprecated tag.
 
 ## 0.8.1
 

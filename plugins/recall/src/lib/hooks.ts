@@ -12,7 +12,7 @@ import { getDb, closeDb, getIndexMeta } from "../history/db"
 import { summarizeUnprocessedDays } from "./summarize-daily"
 import { withDaemonCall } from "../../../tribe/lore/lib/socket.ts"
 import { resolveLoreSocketPath } from "../../../tribe/lore/lib/config.ts"
-import { LORE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../tribe/lore/lib/rpc.ts"
+import { TRIBE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../tribe/lore/lib/rpc.ts"
 import { getEnv as getTribeEnv } from "../../../tribe/lore/lib/env.ts"
 
 // ============================================================================
@@ -226,12 +226,12 @@ async function registerWithLoreDaemon(input: {
   const outcome = await withDaemonCall(
     { socketPath: resolveLoreSocketPath(), deadlineMs: 1500, callTimeoutMs: 1000 },
     async (client) => {
-      await client.call(LORE_METHODS.hello, {
+      await client.call(TRIBE_METHODS.hello, {
         clientName: "recall-hook",
         clientVersion: "0.1.0",
         protocolVersion: LORE_PROTOCOL_VERSION,
       })
-      await client.call(LORE_METHODS.sessionRegister, input)
+      await client.call(TRIBE_METHODS.sessionRegister, input)
     },
   )
   switch (outcome.kind) {
@@ -247,7 +247,7 @@ async function registerWithLoreDaemon(input: {
 }
 
 // ============================================================================
-// Daemon path for UserPromptSubmit — lore.inject_delta
+// Daemon path for UserPromptSubmit — tribe.inject_delta
 // ============================================================================
 
 type InjectDeltaOutcome =
@@ -256,7 +256,7 @@ type InjectDeltaOutcome =
   | { kind: "error"; message: string }
 
 /**
- * Call lore.inject_delta on the daemon. Short budget — if the daemon can't
+ * Call tribe.inject_delta on the daemon. Short budget — if the daemon can't
  * answer in time we return `error` so the caller can fall back to the
  * library hookRecall path without blocking the user's prompt.
  */
@@ -264,12 +264,12 @@ async function tryInjectDeltaViaDaemon(prompt: string, sessionId?: string): Prom
   const outcome = await withDaemonCall(
     { socketPath: resolveLoreSocketPath(), deadlineMs: 2500, callTimeoutMs: 2000 },
     async (client): Promise<InjectDeltaOutcome> => {
-      await client.call(LORE_METHODS.hello, {
+      await client.call(TRIBE_METHODS.hello, {
         clientName: "recall-hook",
         clientVersion: "0.1.0",
         protocolVersion: LORE_PROTOCOL_VERSION,
       })
-      const result = (await client.call(LORE_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
+      const result = (await client.call(TRIBE_METHODS.injectDelta, { prompt, sessionId })) as InjectDeltaResult
       if (result.skipped) {
         return { kind: "skipped", reason: result.reason ?? "unknown" }
       }

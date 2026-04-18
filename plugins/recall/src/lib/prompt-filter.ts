@@ -1,7 +1,7 @@
 /**
  * Shared prompt-filtering and snippet-cleaning primitives used by the
  * UserPromptSubmit hook path (library `hookRecall`) and the in-daemon
- * injection path (`lore.inject_delta`). Both filter the same classes of
+ * injection path (`tribe.inject_delta`). Both filter the same classes of
  * trivial prompts and format recall snippets identically, so these helpers
  * are the single source of truth.
  */

@@ -31,7 +31,8 @@ import { resolveLoreSocketPath, resolveLorePidPath, resolveLoreDbPath, ensurePar
 import { getEnv } from "./lib/env.ts"
 import { openLoreDatabase, createLoreRepo, sessionRowToInfo, type LoreRepo, type SessionRow } from "./lib/database.ts"
 import {
-  LORE_METHODS,
+  TRIBE_METHODS,
+  LEGACY_METHOD_ALIASES,
   LORE_ERRORS,
   LORE_PROTOCOL_VERSION,
   type HelloParams,
@@ -436,28 +437,35 @@ async function dispatch(conn: ClientConn, req: JsonRpcRequest): Promise<string> 
   markActive()
   try {
     const params = (req.params ?? {}) as Record<string, unknown>
-    switch (req.method) {
-      case LORE_METHODS.hello:
+    // Silently normalize legacy lore.* method names to the canonical tribe.*
+    // form. Wire protocol — no stderr warning. Upgrade window only; the
+    // legacy aliases are slated for removal in 0.10.
+    const method = LEGACY_METHOD_ALIASES[req.method] ?? req.method
+    if (method !== req.method) {
+      log.debug?.(`legacy RPC method '${req.method}' dispatched as '${method}'`)
+    }
+    switch (method) {
+      case TRIBE_METHODS.hello:
         return makeResponse(req.id, await handleHello(conn, params as unknown as HelloParams))
-      case LORE_METHODS.ask:
+      case TRIBE_METHODS.ask:
         return makeResponse(req.id, await handleAsk(conn, params as unknown as AskParams))
-      case LORE_METHODS.currentBrief:
+      case TRIBE_METHODS.currentBrief:
         return makeResponse(req.id, await handleCurrentBrief(conn, params as unknown as CurrentBriefParams))
-      case LORE_METHODS.planOnly:
+      case TRIBE_METHODS.planOnly:
         return makeResponse(req.id, await handlePlanOnly(conn, params as unknown as PlanOnlyParams))
-      case LORE_METHODS.sessionRegister:
+      case TRIBE_METHODS.sessionRegister:
         return makeResponse(req.id, handleSessionRegister(conn, params as unknown as SessionRegisterParams))
-      case LORE_METHODS.sessionHeartbeat:
+      case TRIBE_METHODS.sessionHeartbeat:
         return makeResponse(req.id, handleSessionHeartbeat(conn, params as unknown as SessionHeartbeatParams))
-      case LORE_METHODS.sessionsList:
+      case TRIBE_METHODS.sessionsList:
         return makeResponse(req.id, handleSessionsList())
-      case LORE_METHODS.workspaceState:
+      case TRIBE_METHODS.workspaceState:
         return makeResponse(req.id, handleWorkspaceState())
-      case LORE_METHODS.sessionState:
+      case TRIBE_METHODS.sessionState:
         return makeResponse(req.id, handleSessionState(params as unknown as SessionStateParams))
-      case LORE_METHODS.injectDelta:
+      case TRIBE_METHODS.injectDelta:
         return makeResponse(req.id, await handleInjectDelta(conn, params as unknown as InjectDeltaParams))
-      case LORE_METHODS.status:
+      case TRIBE_METHODS.status:
         return makeResponse(req.id, handleStatus())
       default:
         return makeError(req.id, LORE_ERRORS.unknownMethod, `Unknown method: ${req.method}`)

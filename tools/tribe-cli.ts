@@ -228,7 +228,7 @@ function fmtMsg(m: Msg): void {
 }
 
 async function cmdSend(to: string, message: string): Promise<void> {
-  await callDaemon("tribe_send", { to, message, type: "notify" })
+  await callDaemon("tribe.send", { to, message, type: "notify" })
   console.log(`Sent message to ${to}`)
 }
 
