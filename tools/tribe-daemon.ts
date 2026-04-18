@@ -41,11 +41,7 @@ import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
 import { acquireLease, getLeaseInfo } from "./lib/tribe/lease.ts"
-import {
-  tryAutoPromote,
-  type PromotionCandidate,
-  CHIEF_PROMOTION_GRACE_MS,
-} from "./lib/tribe/chief-promotion.ts"
+import { tryAutoPromote, type PromotionCandidate, CHIEF_PROMOTION_GRACE_MS } from "./lib/tribe/chief-promotion.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
