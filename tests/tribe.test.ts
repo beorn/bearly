@@ -27,9 +27,6 @@ function createTribeDb(path: string): Database {
 		cwd TEXT, started_at INTEGER NOT NULL, heartbeat INTEGER NOT NULL,
 		pruned_at INTEGER
 	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS aliases (
-		old_name TEXT PRIMARY KEY, session_id TEXT NOT NULL, renamed_at INTEGER NOT NULL
-	)`)
   db.run(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY, type TEXT NOT NULL, sender TEXT NOT NULL,
 		recipient TEXT NOT NULL, content TEXT NOT NULL, bead_id TEXT,
@@ -37,10 +34,6 @@ function createTribeDb(path: string): Database {
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS cursors (
 		session_id TEXT PRIMARY KEY, last_read_ts INTEGER NOT NULL
-	)`)
-  db.run(`CREATE TABLE IF NOT EXISTS events (
-		id TEXT PRIMARY KEY, type TEXT NOT NULL, session TEXT,
-		bead_id TEXT, data TEXT, ts INTEGER NOT NULL
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS reads (
 		message_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -107,8 +100,7 @@ function pollMessages(
 		SELECT * FROM messages
 		WHERE ts >= ?
 		AND id NOT IN (SELECT message_id FROM reads WHERE session_id = ?)
-		AND (recipient = ? OR recipient = '*'
-		     OR recipient IN (SELECT old_name FROM aliases WHERE session_id = ?))
+		AND (recipient = ? OR recipient = '*')
 		AND sender != ?
 		ORDER BY
 			CASE type
@@ -123,7 +115,7 @@ function pollMessages(
 			END,
 			ts ASC
 	`)
-    .all(cursor?.last_read_ts ?? 0, sessionId, sessionName, sessionId, sessionName) as Array<{
+    .all(cursor?.last_read_ts ?? 0, sessionId, sessionName, sessionName) as Array<{
     id: string
     type: string
     sender: string
@@ -300,37 +292,27 @@ describe("tribe", () => {
     expect(third[0]!.content).toBe("Second message")
   })
 
-  test("rename: messages to old name still arrive", () => {
+  test("rename: messages to old name are not received (renames are in-place)", () => {
     registerSession(db, "id-worker", "worker-1", "member")
     registerSession(db, "id-chief", "chief", "chief")
 
-    // Rename worker-1 → silvery-worker
-    db.run("INSERT INTO aliases (old_name, session_id, renamed_at) VALUES (?, ?, ?)", [
-      "worker-1",
-      "id-worker",
-      Date.now(),
-    ])
+    // Rename worker-1 → silvery-worker (in-place update; old name is not preserved)
     db.run("UPDATE sessions SET name = ? WHERE id = ?", ["silvery-worker", "id-worker"])
 
     // Chief sends to old name (doesn't know about rename yet)
     sendMsg(db, "chief", "worker-1", "Are you still there?", "query")
 
-    // Worker polls with new name — should still receive via alias
+    // Worker polls with new name — old-name mail is NOT routed to the new name.
+    // Callers must discover the new name (via health/members) and re-send.
     const messages = pollMessages(db, "id-worker", "silvery-worker")
-    expect(messages).toHaveLength(1)
-    expect(messages[0]!.content).toBe("Are you still there?")
+    expect(messages).toHaveLength(0)
   })
 
-  test("rename: messages to new name also arrive", () => {
+  test("rename: messages to new name arrive", () => {
     registerSession(db, "id-worker", "worker-1", "member")
     registerSession(db, "id-chief", "chief", "chief")
 
-    // Rename
-    db.run("INSERT INTO aliases (old_name, session_id, renamed_at) VALUES (?, ?, ?)", [
-      "worker-1",
-      "id-worker",
-      Date.now(),
-    ])
+    // Rename in place
     db.run("UPDATE sessions SET name = ? WHERE id = ?", ["silvery-worker", "id-worker"])
 
     // Chief sends to new name
@@ -401,34 +383,30 @@ describe("tribe", () => {
     expect(dead.map((s) => s.name)).toContain("dead-member")
   })
 
-  test("events are logged", () => {
+  test("events are logged as messages with type 'event.*' and recipient 'log'", () => {
     const now = Date.now()
-    db.run("INSERT INTO events (id, type, session, bead_id, data, ts) VALUES (?, ?, ?, ?, ?, ?)", [
-      randomUUID(),
-      "session.joined",
-      "worker-a",
-      null,
-      '{"name":"worker-a"}',
-      now,
-    ])
-    db.run("INSERT INTO events (id, type, session, bead_id, data, ts) VALUES (?, ?, ?, ?, ?, ?)", [
-      randomUUID(),
-      "bead.claimed",
-      "worker-a",
-      "km-tui.fix",
-      '{"latency_ms":500}',
-      now + 100,
-    ])
+    db.run(
+      "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [randomUUID(), "event.session.joined", "worker-a", "log", '{"name":"worker-a"}', null, null, now],
+    )
+    db.run(
+      "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [randomUUID(), "event.bead.claimed", "worker-a", "log", '{"latency_ms":500}', "km-tui.fix", null, now + 100],
+    )
 
-    const events = db.prepare("SELECT type, session, bead_id FROM events ORDER BY ts").all() as Array<{
+    const events = db
+      .prepare(
+        "SELECT type, sender, bead_id FROM messages WHERE type LIKE 'event.%' AND recipient = 'log' ORDER BY ts",
+      )
+      .all() as Array<{
       type: string
-      session: string
+      sender: string
       bead_id: string | null
     }>
 
     expect(events).toHaveLength(2)
-    expect(events[0]!.type).toBe("session.joined")
-    expect(events[1]!.type).toBe("bead.claimed")
+    expect(events[0]!.type).toBe("event.session.joined")
+    expect(events[1]!.type).toBe("event.bead.claimed")
     expect(events[1]!.bead_id).toBe("km-tui.fix")
   })
 

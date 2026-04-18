@@ -3,7 +3,6 @@
  */
 
 import { randomUUID } from "node:crypto"
-import type { TribeStatements } from "./database.ts"
 import type { TribeContext } from "./context.ts"
 
 // ---------------------------------------------------------------------------
@@ -32,13 +31,20 @@ export function sendMessage(
   return { id }
 }
 
+/**
+ * Log an event as a message with type `event.<type>` and recipient `log`.
+ * The `log` recipient is a sentinel — never delivered to any session, but
+ * queryable via `SELECT * FROM messages WHERE type LIKE 'event.%'`.
+ */
 export function logEvent(ctx: TribeContext, type: string, bead_id?: string, data?: Record<string, unknown>): void {
-  ctx.stmts.insertEvent.run({
+  ctx.stmts.insertMessage.run({
     $id: randomUUID(),
-    $type: type,
-    $session: ctx.getName(),
+    $type: `event.${type}`,
+    $sender: ctx.getName(),
+    $recipient: "log",
+    $content: data ? JSON.stringify(data) : "",
     $bead_id: bead_id ?? null,
-    $data: data ? JSON.stringify(data) : null,
+    $ref: null,
     $ts: Date.now(),
   })
 }

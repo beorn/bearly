@@ -160,7 +160,11 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   const windowStart = sinceMs ? now - sinceMs : getEarliestTimestamp(db)
   const windowEnd = now
 
-  const messages = db.prepare("SELECT * FROM messages WHERE ts >= ? ORDER BY ts ASC").all(windowStart) as Message[]
+  // Regular messages only — event.* rows live in the same table but are handled
+  // separately in the timeline section below.
+  const messages = db
+    .prepare("SELECT * FROM messages WHERE ts >= ? AND type NOT LIKE 'event.%' ORDER BY ts ASC")
+    .all(windowStart) as Message[]
   const sessions = db
     .prepare("SELECT * FROM sessions WHERE started_at <= ? AND heartbeat >= ?")
     .all(windowEnd, windowStart) as Session[]
@@ -221,25 +225,29 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
       }
   }
 
-  // Timeline: events + notable messages
+  // Timeline: events + notable messages. Events now live in `messages` with
+  // type `event.<orig-type>`, sender = session name, content = JSON data.
   const timeline: Array<{ time: string; event: string; ts: number }> = []
-  const events = db.prepare("SELECT * FROM events WHERE ts >= ? ORDER BY ts ASC").all(windowStart) as Array<{
+  const events = db
+    .prepare("SELECT type, sender, content, ts FROM messages WHERE type LIKE 'event.%' AND ts >= ? ORDER BY ts ASC")
+    .all(windowStart) as Array<{
     type: string
-    session: string
-    data: string | null
+    sender: string
+    content: string
     ts: number
   }>
 
   const eventFormatters: Record<string, (ev: (typeof events)[0], data: Record<string, string>) => string | null> = {
-    "session.joined": (ev, data) => `${ev.session} joined (${data.role ?? "member"})`,
-    "session.left": (ev) => `${ev.session} left`,
+    "session.joined": (ev, data) => `${ev.sender} joined (${data.role ?? "member"})`,
+    "session.left": (ev) => `${ev.sender} left`,
     "session.renamed": (_, data) => `${data.old_name} renamed to ${data.new_name}`,
-    "message.broadcast": (ev) => `${ev.session} broadcast a message`,
+    "message.broadcast": (ev) => `${ev.sender} broadcast a message`,
   }
   for (const ev of events) {
-    const fmt = eventFormatters[ev.type]
+    const origType = ev.type.slice("event.".length)
+    const fmt = eventFormatters[origType]
     if (fmt) {
-      const text = fmt(ev, (ev.data ? JSON.parse(ev.data) : {}) as Record<string, string>)
+      const text = fmt(ev, (ev.content ? JSON.parse(ev.content) : {}) as Record<string, string>)
       if (text) timeline.push({ time: formatTime(ev.ts), event: text, ts: ev.ts })
     }
   }

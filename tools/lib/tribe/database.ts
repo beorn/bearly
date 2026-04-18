@@ -60,12 +60,6 @@ export function openDatabase(path: string): Database {
     /* already exists */
   }
 
-  db.run(`CREATE TABLE IF NOT EXISTS aliases (
-		old_name   TEXT PRIMARY KEY,
-		session_id TEXT NOT NULL,
-		renamed_at INTEGER NOT NULL
-	)`)
-
   db.run(`CREATE TABLE IF NOT EXISTS messages (
 		id         TEXT PRIMARY KEY,
 		type       TEXT NOT NULL,
@@ -95,15 +89,6 @@ export function openDatabase(path: string): Database {
 		session_id TEXT NOT NULL,
 		read_at    INTEGER NOT NULL,
 		PRIMARY KEY (message_id, session_id)
-	)`)
-
-  db.run(`CREATE TABLE IF NOT EXISTS events (
-		id       TEXT PRIMARY KEY,
-		type     TEXT NOT NULL,
-		session  TEXT,
-		bead_id  TEXT,
-		data     TEXT,
-		ts       INTEGER NOT NULL
 	)`)
 
   db.run(`CREATE TABLE IF NOT EXISTS retros (
@@ -142,13 +127,34 @@ export function openDatabase(path: string): Database {
 		meta        TEXT
 	)`)
 
+  // Migration: collapse legacy `events` table into `messages`. Each event row
+  // becomes a message with type "event.<orig-type>", sender=<session>, recipient="log".
+  // The "log" recipient is a sentinel — never delivered to anyone, but queryable.
+  // Idempotent: skipped if the table doesn't exist on fresh installs.
+  try {
+    db.run(`
+      INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
+      SELECT id, 'event.' || type, COALESCE(session, 'unknown'), 'log',
+             COALESCE(data, ''), bead_id, NULL, ts
+      FROM events
+    `)
+    db.run("DROP TABLE events")
+  } catch {
+    /* events table doesn't exist — fresh install or already migrated */
+  }
+
+  // Migration: drop the aliases table. Renames now just update sessions.name
+  // in place; the old name is not preserved.
+  try {
+    db.run("DROP TABLE IF EXISTS aliases")
+  } catch {
+    /* already gone */
+  }
+
   // Create indexes if they don't exist
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_aliases_session ON aliases(session_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_bead ON events(bead_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_type_ts ON messages(type, ts)")
 
   // Indexes for common query patterns
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
@@ -187,7 +193,6 @@ export function createStatements(db: Database) {
 		AND (
 			recipient = $name
 			OR recipient = '*'
-			OR recipient IN (SELECT old_name FROM aliases WHERE session_id = $session_id)
 		)
 		ORDER BY
 			CASE type
@@ -220,11 +225,6 @@ export function createStatements(db: Database) {
 		VALUES ($id, $type, $sender, $recipient, $content, $bead_id, $ref, $ts)
 	`),
 
-    insertEvent: db.prepare(`
-		INSERT INTO events (id, type, session, bead_id, data, ts)
-		VALUES ($id, $type, $session, $bead_id, $data, $ts)
-	`),
-
     liveSessions: db.prepare(`
 		SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
 		FROM sessions
@@ -238,6 +238,7 @@ export function createStatements(db: Database) {
     messageHistory: db.prepare(`
 		SELECT * FROM messages
 		WHERE (sender = $name OR recipient = $name OR recipient = '*')
+		AND type NOT LIKE 'event.%'
 		ORDER BY ts DESC
 		LIMIT $limit
 	`),
@@ -245,11 +246,6 @@ export function createStatements(db: Database) {
     checkNameTaken: db.prepare(
       "SELECT id FROM sessions WHERE name = $name AND id != $session_id AND pruned_at IS NULL",
     ),
-
-    insertAlias: db.prepare(`
-		INSERT OR REPLACE INTO aliases (old_name, session_id, renamed_at)
-		VALUES ($old_name, $session_id, $now)
-	`),
 
     renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
 

@@ -2,7 +2,6 @@
  * Tribe session — registration, cursor recovery, transcript naming, cleanup, heartbeat.
  */
 
-import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { createLogger } from "loggily"
@@ -60,13 +59,10 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
     })
   }
 
-  ctx.stmts.insertEvent.run({
-    $id: randomUUID(),
-    $type: "session.joined",
-    $session: ctx.getName(),
-    $bead_id: null,
-    $data: JSON.stringify({ name: ctx.getName(), role: ctx.sessionRole, domains: ctx.domains }),
-    $ts: Date.now(),
+  logEvent(ctx, "session.joined", undefined, {
+    name: ctx.getName(),
+    role: ctx.sessionRole,
+    domains: ctx.domains,
   })
 
   // Initialize cursor if needed
@@ -183,7 +179,6 @@ export function tryInitialRename(ctx: TribeContext, transcriptPath: string | nul
   if (existing) return
 
   const oldName = ctx.getName()
-  ctx.stmts.insertAlias.run({ $old_name: oldName, $session_id: ctx.sessionId, $now: Date.now() })
   ctx.stmts.renameSession.run({ $new_name: slug, $session_id: ctx.sessionId })
   ctx.setName(slug)
   sendMessage(ctx, "*", `Member "${oldName}" is now "${slug}"`, "notify")
@@ -204,31 +199,21 @@ export function cleanupOldPrunedSessions(ctx: TribeContext): void {
   }
 }
 
-/** Delete old data based on TTL: reads/messages/events after 7 days, aliases after 30 days */
+/** Delete old data based on TTL: reads/messages/event_log after 7 days */
 export function cleanupOldData(ctx: TribeContext): void {
   const SHORT_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
-  const LONG_TTL = 30 * 24 * 60 * 60 * 1000 // 30 days
   const now_ms = Date.now()
 
   const readsDel = ctx.db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
-  const eventsDel = ctx.db.prepare("DELETE FROM events WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
   const eventLogDel = ctx.db.prepare("DELETE FROM event_log WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
   const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
-  const aliasesDel = ctx.db
-    .prepare("DELETE FROM aliases WHERE renamed_at < $cutoff")
-    .run({ $cutoff: now_ms - LONG_TTL })
   // Clean dedup keys older than 1 day (they only need to survive the poll race window)
   ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 })
 
-  const total =
-    (readsDel.changes ?? 0) +
-    (eventsDel.changes ?? 0) +
-    (eventLogDel.changes ?? 0) +
-    (msgsDel.changes ?? 0) +
-    (aliasesDel.changes ?? 0)
+  const total = (readsDel.changes ?? 0) + (eventLogDel.changes ?? 0) + (msgsDel.changes ?? 0)
   if (total > 0) {
     log.info?.(
-      `cleanup: ${readsDel.changes} reads, ${eventsDel.changes} events, ${eventLogDel.changes} event_log, ${msgsDel.changes} msgs, ${aliasesDel.changes} aliases deleted`,
+      `cleanup: ${readsDel.changes} reads, ${eventLogDel.changes} event_log, ${msgsDel.changes} msgs deleted`,
     )
   }
 }
