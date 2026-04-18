@@ -5,6 +5,32 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed — autostart now covers the tribe coordination daemon
+
+Before this release, the Claude Code `SessionStart` hook autostart path
+(`ensureDaemonIfConfigured`) resolved only the lore socket. The tribe
+coordination daemon had no autostart wiring — combined with its 30-second
+idle auto-quit, any quiet window killed it until a human manually ran
+`tribe start`. Sessions lost inter-session messaging silently.
+
+- `ensureTribeDaemonIfConfigured()` — new sibling of
+  `ensureDaemonIfConfigured` that targets the tribe socket and spawns
+  `tools/tribe-daemon.ts`.
+- `ensureAllDaemonsIfConfigured()` — parallel orchestrator that probes
+  and spawns both daemons under a single 300 ms budget.
+- Hook dispatch (`hook-dispatch.ts`) now calls the all-daemon path so
+  every `SessionStart` brings up both lore and tribe without user
+  intervention.
+- `spawnTribeDaemonDetached()` — symmetric spawner to
+  `spawnDaemonDetached`. Accepts the same options; logs `[tribe] spawned
+  tribe daemon (pid=N)` so the log stream distinguishes the two daemons.
+
+Existing `ensureDaemonIfConfigured()` signature is unchanged —
+`lore/server.ts` still uses it lore-only. All existing tests pass
+unmodified; five new tests cover the tribe and all-daemon paths.
+
 ## 0.11.1 — 2026-04-17
 
 ### Fixed
@@ -20,6 +46,7 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 ### Added — autostart config
 
 `~/.claude/tribe/config.json` controls daemon lifecycle:
+
 - `"autostart": "daemon"` (default) — first hook after daemon dies
   spawns a detached replacement. Daemon already auto-exits when idle
   (default 30 min via --quit-timeout). Zero ceremony.

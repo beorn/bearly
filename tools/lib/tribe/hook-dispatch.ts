@@ -17,13 +17,13 @@
  * JSON). We must not swallow errors or rewrite output — just dispatch.
  *
  * Before forwarding, we consult the autostart config and (if configured)
- * ensure a lore daemon is running. The spawn is detached + unref'd so it
- * never blocks the hook; an overall 300 ms budget is enforced to guarantee
- * Claude Code never waits on us.
+ * ensure both the lore and tribe daemons are running. Spawns are detached +
+ * unref'd so they never block the hook; the overall 300 ms budget is shared
+ * between both probes to guarantee Claude Code never waits on us.
  */
 
 import { cmdSessionStart, cmdSessionEnd, cmdHook } from "../../../plugins/recall/src/lib/hooks.ts"
-import { ensureDaemonIfConfigured } from "./autostart.ts"
+import { ensureAllDaemonsIfConfigured } from "./autostart.ts"
 
 export type HookEvent = "session-start" | "prompt" | "session-end" | "pre-compact"
 
@@ -31,7 +31,7 @@ export async function dispatchHook(event: HookEvent): Promise<void> {
   // Fire-and-check autostart before the real handler runs. Errors are
   // swallowed internally — hooks must never crash here.
   try {
-    await ensureDaemonIfConfigured()
+    await ensureAllDaemonsIfConfigured()
   } catch {
     /* never block the hook on autostart failure */
   }

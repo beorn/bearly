@@ -21,6 +21,7 @@ import { spawn } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { resolveAutostart, type TribeAutostart } from "./autostart-config.ts"
 import { resolveLoreSocketPath } from "../../../plugins/tribe/lore/lib/config.ts"
+import { resolveSocketPath as resolveTribeSocketPath } from "./socket.ts"
 
 // ---------------------------------------------------------------------------
 // Daemon liveness probe
@@ -90,6 +91,14 @@ export function resolveDaemonScriptPath(): string {
   return resolve(bearlyRoot, "plugins/tribe/lore/daemon.ts")
 }
 
+/** Location of the tribe coordination daemon script (relative to this file). */
+export function resolveTribeDaemonScriptPath(): string {
+  // tools/lib/tribe/autostart.ts → tools/tribe-daemon.ts
+  const thisDir = dirname(new URL(import.meta.url).pathname)
+  const bearlyRoot = resolve(thisDir, "..", "..", "..")
+  return resolve(bearlyRoot, "tools/tribe-daemon.ts")
+}
+
 export type SpawnResult = { ok: true; pid: number } | { ok: false; error: string }
 
 /**
@@ -102,10 +111,17 @@ export type SpawnResult = { ok: true; pid: number } | { ok: false; error: string
  * later hooks find a live daemon. This is the whole point of "zero ceremony".
  */
 export function spawnDaemonDetached(
-  opts: { socketPath?: string; bunPath?: string; scriptPath?: string; log?: (msg: string) => void } = {},
+  opts: {
+    socketPath?: string
+    bunPath?: string
+    scriptPath?: string
+    label?: string
+    log?: (msg: string) => void
+  } = {},
 ): SpawnResult {
   const scriptPath = opts.scriptPath ?? resolveDaemonScriptPath()
   const bunPath = opts.bunPath ?? process.execPath
+  const label = opts.label ?? "lore"
   const args = [scriptPath]
   if (opts.socketPath) args.push("--socket", opts.socketPath)
 
@@ -121,14 +137,29 @@ export function spawnDaemonDetached(
       return { ok: false, error: "spawn returned no pid" }
     }
     const logFn = opts.log ?? defaultLog
-    logFn(`[tribe] spawned lore daemon (pid=${pid})`)
+    logFn(`[tribe] spawned ${label} daemon (pid=${pid})`)
     return { ok: true, pid }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     const logFn = opts.log ?? defaultLog
-    logFn(`[tribe] daemon spawn failed: ${msg}`)
+    logFn(`[tribe] ${label} daemon spawn failed: ${msg}`)
     return { ok: false, error: msg }
   }
+}
+
+/**
+ * Spawn the tribe coordination daemon (detached, unref'd). Same contract as
+ * `spawnDaemonDetached` — fire-and-forget, never throws, logs one line on the
+ * way out. Label is "tribe" so the log distinguishes it from the lore spawn.
+ */
+export function spawnTribeDaemonDetached(
+  opts: { socketPath?: string; bunPath?: string; log?: (msg: string) => void } = {},
+): SpawnResult {
+  return spawnDaemonDetached({
+    ...opts,
+    scriptPath: resolveTribeDaemonScriptPath(),
+    label: "tribe",
+  })
 }
 
 function defaultLog(msg: string): void {
@@ -206,4 +237,42 @@ export async function ensureDaemonIfConfigured(deps: EnsureDaemonDeps = {}): Pro
   const result = spawnFn({ socketPath })
   if (result.ok) return { action: "spawned", pid: result.pid }
   return { action: "spawn-failed", error: result.error }
+}
+
+/**
+ * Ensure the tribe coordination daemon is alive — mirror of
+ * `ensureDaemonIfConfigured`, wired to the tribe socket and the tribe-daemon
+ * script. Shares the autostart mode (daemon | library | never) with lore.
+ *
+ * Defaults:
+ *   - socket path:  `resolveSocketPath()` from `lib/tribe/socket.ts`
+ *   - spawn script: `tools/tribe-daemon.ts`
+ *
+ * All deps are overridable for tests. Never throws.
+ */
+export async function ensureTribeDaemonIfConfigured(deps: EnsureDaemonDeps = {}): Promise<EnsureDaemonOutcome> {
+  return ensureDaemonIfConfigured({
+    ...deps,
+    resolveSocketPath: deps.resolveSocketPath ?? resolveTribeSocketPath,
+    spawn: deps.spawn ?? ((o: { socketPath: string }) => spawnTribeDaemonDetached({ ...o, log: deps.log })),
+  })
+}
+
+/**
+ * Ensure both the lore and tribe daemons are alive. Runs probes in parallel —
+ * the two daemons are independent processes with independent sockets and pid
+ * files. Returns a pair of outcomes so callers can log or telemetry-emit both.
+ *
+ * This is what Claude Code hooks call (via hook-dispatch) so a single
+ * SessionStart brings the whole coordination layer up: lore for memory, tribe
+ * for inter-session messaging.
+ *
+ * Shares the overall budget (default 300 ms) — both paths race against the
+ * same deadline. Never throws.
+ */
+export async function ensureAllDaemonsIfConfigured(
+  deps: EnsureDaemonDeps = {},
+): Promise<{ lore: EnsureDaemonOutcome; tribe: EnsureDaemonOutcome }> {
+  const [lore, tribe] = await Promise.all([ensureDaemonIfConfigured(deps), ensureTribeDaemonIfConfigured(deps)])
+  return { lore, tribe }
 }

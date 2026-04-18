@@ -15,7 +15,15 @@ import {
   readTribeConfig,
   writeTribeConfig,
 } from "../../../tools/lib/tribe/autostart-config.ts"
-import { ensureDaemonIfConfigured, isDaemonAlive, type SpawnResult } from "../../../tools/lib/tribe/autostart.ts"
+import {
+  ensureAllDaemonsIfConfigured,
+  ensureDaemonIfConfigured,
+  ensureTribeDaemonIfConfigured,
+  isDaemonAlive,
+  resolveDaemonScriptPath,
+  resolveTribeDaemonScriptPath,
+  type SpawnResult,
+} from "../../../tools/lib/tribe/autostart.ts"
 
 function makeTmp(): string {
   return mkdtempSync(resolve(tmpdir(), "tribe-autostart-test-"))
@@ -219,5 +227,98 @@ describe("ensureDaemonIfConfigured", () => {
     })
     // Treats thrown probe as "dead", proceeds to spawn
     expect(outcome.action).toBe("spawned")
+  })
+})
+
+describe("ensureTribeDaemonIfConfigured", () => {
+  test("spawns tribe daemon when dead", async () => {
+    let spawned = 0
+    const outcome = await ensureTribeDaemonIfConfigured({
+      resolveMode: () => "daemon",
+      resolveSocketPath: () => "/tmp/tribe-test.sock",
+      probe: async () => false,
+      spawn: ({ socketPath }) => {
+        spawned++
+        expect(socketPath).toBe("/tmp/tribe-test.sock")
+        return { ok: true, pid: 54321 } satisfies SpawnResult
+      },
+    })
+    expect(outcome.action).toBe("spawned")
+    if (outcome.action === "spawned") expect(outcome.pid).toBe(54321)
+    expect(spawned).toBe(1)
+  })
+
+  test("library mode is a no-op", async () => {
+    let spawned = 0
+    const outcome = await ensureTribeDaemonIfConfigured({
+      resolveMode: () => "library",
+      spawn: () => {
+        spawned++
+        return { ok: true, pid: 1 }
+      },
+    })
+    expect(outcome.action).toBe("noop")
+    expect(spawned).toBe(0)
+  })
+})
+
+describe("resolveDaemonScriptPath variants", () => {
+  test("lore and tribe resolve to different scripts", () => {
+    const lore = resolveDaemonScriptPath()
+    const tribe = resolveTribeDaemonScriptPath()
+    expect(lore).not.toBe(tribe)
+    expect(lore.endsWith("plugins/tribe/lore/daemon.ts")).toBe(true)
+    expect(tribe.endsWith("tools/tribe-daemon.ts")).toBe(true)
+  })
+})
+
+describe("ensureAllDaemonsIfConfigured", () => {
+  test("spawns both daemons when both dead", async () => {
+    const spawnedSockets: string[] = []
+    const result = await ensureAllDaemonsIfConfigured({
+      resolveMode: () => "daemon",
+      probe: async () => false,
+      spawn: ({ socketPath }) => {
+        spawnedSockets.push(socketPath)
+        return { ok: true, pid: spawnedSockets.length } satisfies SpawnResult
+      },
+    })
+    // Both probes reported dead — both spawn calls fired.
+    // Defaults apply: lore → lore socket, tribe → tribe socket (two different paths).
+    expect(result.lore.action).toBe("spawned")
+    expect(result.tribe.action).toBe("spawned")
+    expect(spawnedSockets).toHaveLength(2)
+    expect(spawnedSockets[0]).not.toBe(spawnedSockets[1])
+  })
+
+  test("library mode short-circuits both", async () => {
+    let spawned = 0
+    const result = await ensureAllDaemonsIfConfigured({
+      resolveMode: () => "library",
+      spawn: () => {
+        spawned++
+        return { ok: true, pid: 1 }
+      },
+    })
+    expect(result.lore.action).toBe("noop")
+    expect(result.tribe.action).toBe("noop")
+    expect(spawned).toBe(0)
+  })
+
+  test("does not spawn when both alive", async () => {
+    let spawned = 0
+    const result = await ensureAllDaemonsIfConfigured({
+      resolveMode: () => "daemon",
+      probe: async () => true,
+      spawn: () => {
+        spawned++
+        return { ok: true, pid: 1 }
+      },
+    })
+    expect(result.lore.action).toBe("noop")
+    expect(result.tribe.action).toBe("noop")
+    if (result.lore.action === "noop") expect(result.lore.reason).toBe("already-alive")
+    if (result.tribe.action === "noop") expect(result.tribe.reason).toBe("already-alive")
+    expect(spawned).toBe(0)
   })
 })
