@@ -120,7 +120,7 @@ function spawnBackgroundIncrementalIndex(reason: string): void {
  *     "hooks": {
  *       "SessionStart": [{
  *         "matcher": "",
- *         "hooks": [{"type": "command", "command": "bun recall session-start"}]
+ *         "hooks": [{"type": "command", "command": "tribe hook session-start"}]
  *       }]
  *     }
  *   }
@@ -189,7 +189,7 @@ export async function cmdSessionStart(): Promise<void> {
  *     "hooks": {
  *       "SessionEnd": [{
  *         "matcher": "",
- *         "hooks": [{"type": "command", "command": "bun recall session-end"}]
+ *         "hooks": [{"type": "command", "command": "tribe hook session-end"}]
  *       }]
  *     }
  *   }
