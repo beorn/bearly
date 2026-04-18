@@ -90,6 +90,7 @@ export interface HookResult {
   reason?: import("../lib/prompt-filter.ts").InjectSkipReason
   hookOutput?: {
     hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit"
       additionalContext: string
     }
   }
@@ -108,7 +109,9 @@ export async function hookRecall(prompt: string): Promise<HookResult> {
   if (core.skipped) return { skipped: true, reason: core.reason }
   return {
     skipped: false,
-    hookOutput: { hookSpecificOutput: { additionalContext: core.additionalContext } },
+    hookOutput: {
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: core.additionalContext },
+    },
   }
 }
 

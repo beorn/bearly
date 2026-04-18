@@ -364,7 +364,10 @@ export async function cmdHook(): Promise<void> {
         )
         console.log(
           JSON.stringify({
-            hookSpecificOutput: { additionalContext: daemonOutput.additionalContext },
+            hookSpecificOutput: {
+              hookEventName: "UserPromptSubmit",
+              additionalContext: daemonOutput.additionalContext,
+            },
           }),
         )
         process.exit(0)
