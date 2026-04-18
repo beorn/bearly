@@ -11,6 +11,18 @@ import { Database } from "bun:sqlite"
 import { Command, int } from "@silvery/commander"
 import { resolveSocketPath, connectToDaemon, readDaemonPid } from "./lib/tribe/socket.ts"
 import { generateRetro, formatMarkdown, parseDuration } from "./lib/tribe/retro.ts"
+import {
+  defaultInstallEnv,
+  planInstall,
+  applyInstall,
+  formatInstallPlan,
+  planUninstall,
+  applyUninstall,
+  formatUninstallPlan,
+  doctorReport,
+  formatDoctorReport,
+} from "./lib/tribe/install.ts"
+import { dispatchHook, type HookEvent } from "./lib/tribe/hook-dispatch.ts"
 
 // --- Daemon connection ---
 
@@ -419,5 +431,88 @@ program
   .command("watch")
   .description("Live TUI dashboard — sessions + event stream")
   .action(() => cmdWatch())
+
+// ── install / uninstall / doctor — Claude Code setup ────────────────────
+
+program
+  .command("install")
+  .description("Install tribe hooks in ~/.claude/settings.json and mcpServers.tribe in the project's .mcp.json")
+  .option("--dry-run", "Show the plan without writing any files")
+  .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
+  .option("--mcp-name <name>", "mcpServers key to use (default: tribe)")
+  .action((opts: { dryRun?: boolean; claudeDir?: string; mcpName?: string }) => {
+    const env = defaultInstallEnv({
+      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
+      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
+    })
+    const plan = planInstall(env)
+    console.log(formatInstallPlan(plan, !!opts.dryRun))
+    if (!opts.dryRun) applyInstall(plan)
+  })
+
+program
+  .command("uninstall")
+  .description("Remove tribe hooks and mcpServers.tribe entries")
+  .option("--dry-run", "Show the plan without writing any files")
+  .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
+  .option("--mcp-name <name>", "mcpServers key to remove (default: tribe)")
+  .action((opts: { dryRun?: boolean; claudeDir?: string; mcpName?: string }) => {
+    const env = defaultInstallEnv({
+      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
+      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
+    })
+    const plan = planUninstall(env)
+    console.log(formatUninstallPlan(plan, !!opts.dryRun))
+    if (!opts.dryRun) applyUninstall(plan)
+  })
+
+program
+  .command("doctor")
+  .description("Diagnose the tribe setup — hooks, MCP, daemon, stale sockets")
+  .option("--claude-dir <path>", "Override ~/.claude directory (for testing)")
+  .option("--mcp-name <name>", "mcpServers key to check (default: tribe)")
+  .action((opts: { claudeDir?: string; mcpName?: string }) => {
+    const env = defaultInstallEnv({
+      ...(opts.claudeDir ? { claudeSettingsPath: resolve(opts.claudeDir, "settings.json") } : {}),
+      ...(opts.mcpName ? { mcpName: opts.mcpName } : {}),
+    })
+    const report = doctorReport(env)
+    console.log(formatDoctorReport(report))
+    if (report.hasFailures) process.exit(1)
+  })
+
+// ── hook — Claude Code hook dispatch ────────────────────────────────────
+
+const hookCmd = program
+  .command("hook")
+  .description("Dispatch a Claude Code hook event (internal — called by ~/.claude/settings.json)")
+
+hookCmd
+  .command("session-start", { hidden: false })
+  .description("SessionStart hook — writes sentinel, registers with lore daemon")
+  .action(async () => {
+    await dispatchHook("session-start")
+  })
+
+hookCmd
+  .command("prompt", { hidden: false })
+  .description("UserPromptSubmit hook — injects delta context")
+  .action(async () => {
+    await dispatchHook("prompt")
+  })
+
+hookCmd
+  .command("session-end", { hidden: false })
+  .description("SessionEnd hook — spawns background incremental FTS index")
+  .action(async () => {
+    await dispatchHook("session-end")
+  })
+
+hookCmd
+  .command("pre-compact", { hidden: false })
+  .description("PreCompact hook — checkpoint context before compaction")
+  .action(async () => {
+    await dispatchHook("pre-compact")
+  })
 
 program.parse()
