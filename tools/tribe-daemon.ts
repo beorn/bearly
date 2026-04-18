@@ -41,6 +41,11 @@ import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
 import { acquireLease, getLeaseInfo } from "./lib/tribe/lease.ts"
+import {
+  tryAutoPromote,
+  type PromotionCandidate,
+  CHIEF_PROMOTION_GRACE_MS,
+} from "./lib/tribe/chief-promotion.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
@@ -678,6 +683,67 @@ const heartbeatInterval = timers.setInterval(() => sendHeartbeat(daemonCtx), 10_
 const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
 cleanupOldPrunedSessions(daemonCtx)
 cleanupOldData(daemonCtx)
+
+// Chief auto-promotion (km-tribe.chief-auto-election Layer 2).
+// Every minute, check if the lease has been expired past the grace window
+// and no active session holds it. If so, promote the longest-running
+// eligible member on their behalf. Layer 1 (health plugin alert) fires
+// inside the grace window; Layer 2 resolves the state after.
+const chiefPromotionInterval = timers.setInterval(() => {
+  // Build candidate list from the live client registry (in-memory — fresher
+  // than the sessions table and already filtered by connection state).
+  const candidates: PromotionCandidate[] = []
+  const now = Date.now()
+  for (const client of clients.values()) {
+    if (client.name === "daemon") continue
+    if (client.name.startsWith("watch-")) continue
+    if (client.name.startsWith("pending-")) continue
+    // Use registeredAt as started_at proxy — it's when this connection
+    // joined; the longest-connected session is the best promotion pick.
+    candidates.push({
+      id: client.id,
+      name: client.name,
+      pid: client.pid,
+      started_at: client.registeredAt,
+      heartbeat: now, // live connections are always heartbeating
+    })
+  }
+
+  const decision = tryAutoPromote(db, candidates, daemonCtx, now)
+  if (decision.action === "promote") {
+    log(
+      `auto-promoted ${decision.candidate.name} (${decision.candidate.pid}) to chief; previous ${decision.previousHolderName} lease expired ${Math.floor(decision.expiredByMs / 60_000)}min ago`,
+    )
+    logActivity("chief:auto-promoted", `${decision.candidate.name} → chief (auto)`)
+    pushNewMessages()
+  }
+}, 60_000)
+// Fire once shortly after boot so a daemon inheriting a long-expired lease
+// doesn't wait a full minute before healing. Skipped in hot-reload because
+// the old process would have handled it already.
+timers.setTimeout(() => {
+  const now = Date.now()
+  const lease = getLeaseInfo(db)
+  if (!lease) return
+  if (now - lease.lease_until < CHIEF_PROMOTION_GRACE_MS) return
+  const candidates: PromotionCandidate[] = []
+  for (const client of clients.values()) {
+    if (client.name === "daemon" || client.name.startsWith("watch-") || client.name.startsWith("pending-")) continue
+    candidates.push({
+      id: client.id,
+      name: client.name,
+      pid: client.pid,
+      started_at: client.registeredAt,
+      heartbeat: now,
+    })
+  }
+  const decision = tryAutoPromote(db, candidates, daemonCtx, now)
+  if (decision.action === "promote") {
+    log(`auto-promoted at boot: ${decision.candidate.name}`)
+    logActivity("chief:auto-promoted", `${decision.candidate.name} → chief (auto, at boot)`)
+    pushNewMessages()
+  }
+}, 10_000)
 
 // ---------------------------------------------------------------------------
 // Socket server

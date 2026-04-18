@@ -7,6 +7,37 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — chief auto-promotion (Layer 2)
+
+Closes the tribe's self-healing gap. When the chief lease has been expired
+past the 5 min grace window and an eligible member is alive, the daemon
+now promotes the longest-running active member on their behalf — acquires
+the lease and broadcasts a `chief:auto-promoted` event to `*`.
+
+Composes with the earlier layers:
+
+- Layer 1 (observability): `health:chief:expired` alert fires once grace
+  window closes — before promotion.
+- Layer 2 (self-heal, this release): daemon picks the longest-running
+  candidate, calls `acquireLease` for them, broadcasts promotion.
+- Layer 3 (dead-letter): `tribe.send` to `"chief"` routes to `*` with a
+  `[no-chief]` prefix while no live lease holds.
+
+Implementation in `tools/lib/tribe/chief-promotion.ts` as a pure decision
+function (`pickPromotionCandidate`) + side-effect wrapper (`tryAutoPromote`).
+Tie-breaking: longest-running by `started_at`, then alphabetical name for
+reproducibility. `watch-*` and `pending-*` sessions are excluded. Race
+condition (another caller grabs the lease between pick and commit) is
+detected via `acquireLease`'s `granted: false` and returns a no-op
+decision.
+
+Daemon runs the check every 60 seconds plus a one-shot boot check at
+10 seconds so a freshly-restarted daemon doesn't wait a full minute
+before healing.
+
+12 tests (9 pure decision + 3 integration). Closes
+`km-tribe.chief-auto-election`.
+
 ### Added — chief lease observability (Layer 1)
 
 Health monitor plugin emits a `health:chief:expired` broadcast when the chief
