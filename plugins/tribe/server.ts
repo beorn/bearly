@@ -109,7 +109,7 @@ import { resolve as resolve2, dirname as dirname2, basename as basename2 } from 
 import { createConnection } from "net";
 import { spawn } from "child_process";
 
-// ../loggily/src/colors.ts
+// ../../../../../vendor/loggily/src/colors.ts
 var _process = typeof process !== "undefined" ? process : undefined;
 var enabled = _process?.env?.["FORCE_COLOR"] !== undefined && _process?.env?.["FORCE_COLOR"] !== "0" ? true : _process?.env?.["NO_COLOR"] !== undefined ? false : _process?.stdout?.isTTY ?? false;
 function wrap(open, close) {
@@ -126,7 +126,7 @@ var colors = {
   cyan: wrap("\x1B[36m", "\x1B[39m")
 };
 
-// ../loggily/src/file-writer.ts
+// ../../../../../vendor/loggily/src/file-writer.ts
 import { openSync, writeSync, closeSync } from "fs";
 function createFileWriter(filePath, options = {}) {
   const bufferSize = options.bufferSize ?? 4096;
@@ -181,7 +181,7 @@ function createFileWriter(filePath, options = {}) {
   };
 }
 
-// ../loggily/src/tracing.ts
+// ../../../../../vendor/loggily/src/tracing.ts
 var currentIdFormat = "simple";
 function setIdFormat(format) {
   currentIdFormat = format;
@@ -219,7 +219,7 @@ function shouldSample() {
   return Math.random() < sampleRate;
 }
 
-// ../loggily/src/pipeline.ts
+// ../../../../../vendor/loggily/src/pipeline.ts
 var LOG_LEVEL_PRIORITY = {
   trace: 0,
   debug: 1,
@@ -627,7 +627,7 @@ function readEnvTrace() {
   };
 }
 
-// ../loggily/src/metrics.ts
+// ../../../../../vendor/loggily/src/metrics.ts
 function percentile(sorted, p) {
   if (sorted.length === 0)
     return 0;
@@ -732,7 +732,7 @@ function withMetrics(collector) {
   };
 }
 
-// ../loggily/src/core.ts
+// ../../../../../vendor/loggily/src/core.ts
 var _getContextTags = null;
 var _getContextParent = null;
 var _enterContext = null;
@@ -1146,7 +1146,7 @@ function withConfigMetrics() {
   };
 }
 var createLogger = pipe(baseCreateLogger, withEnvDefaults(), withSpans(), withConfigMetrics());
-// ../loggily/src/index.ts
+// ../../../../../vendor/loggily/src/index.ts
 _setLogFileWriterFactory(createFileWriter);
 
 // tools/lib/tribe/timers.ts
@@ -1587,7 +1587,23 @@ var TOOLS_LIST = [
   },
   {
     name: "tribe.leadership",
-    description: "Show the current chief lease holder, term number, and time until expiry",
+    description: "Show the current chief (derived from connection order, or explicitly claimed)",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "tribe.claim-chief",
+    description: "Claim the chief role explicitly. Idempotent. Overrides the default connection-order derivation until released (or this session disconnects).",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "tribe.release-chief",
+    description: "Release an explicit chief claim, letting the role fall back to connection-order derivation. Idempotent \u2014 no-op if this session did not hold an explicit claim.",
     inputSchema: {
       type: "object",
       properties: {}

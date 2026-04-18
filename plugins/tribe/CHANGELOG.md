@@ -7,6 +7,35 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — chief is now derived from connection order
+
+Replaced the lease-based chief election (timed DB lease, heartbeat renewal,
+auto-promotion timer) with a derived model: the longest-connected eligible
+client is the chief, ties broken by name alphabetical. When the current
+chief disconnects, the next-longest-connected client automatically takes
+over — no grace window, no headless state, no "tribe has no chief"
+warnings.
+
+Two new MCP tools let a session override the derivation when needed:
+
+- `tribe.claim-chief` — pin the role to this session (idempotent). Useful
+  when a human deliberately takes coordination responsibility.
+- `tribe.release-chief` — release the claim, falling back to derivation.
+  The claim is also cleared automatically when the claimer disconnects.
+
+`tribe.leadership` now returns `{ holder_name, holder_id, claimed, source }`
+where `source` is `"explicit-claim"` or `"derived-from-connection-order"`.
+
+Deleted: `tools/lib/tribe/lease.ts`, `tools/lib/tribe/chief-promotion.ts`,
+the `leadership` DB table + `epoch` migration, the chief-expired alert
+block in the health monitor, `getLeaseInfo` in `PluginContext`, and the
+daemon's chief-auto-promotion setInterval + boot setTimeout (~300 LOC net
+deletion). Phase 1 of `km-tribe.plateau`.
+
+Note: live deployments will still have a vestigial `leadership` table in
+their SQLite — the daemon no longer reads or writes it, and `openDatabase`
+no longer tries to create it. The stale table is harmless.
+
 ### Added — chief auto-promotion (Layer 2)
 
 Closes the tribe's self-healing gap. When the chief lease has been expired

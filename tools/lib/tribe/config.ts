@@ -173,19 +173,12 @@ function migrateLegacyTribeDb(legacyPath: string, xdgPath: string): void {
   }
 }
 
-/** Auto-detect role: if a valid leader lease or live chief exists, become member; otherwise chief */
+/** Auto-detect role: if a live chief exists in the sessions table, become member; otherwise chief.
+ *  Chief is derived from connection order at runtime (see tribe-daemon `deriveChiefId`), so this
+ *  role flag is only an initial hint — the daemon reconciles the actual chief from the client set. */
 export function detectRole(db: Database, args: TribeArgs): TribeRole {
   if (args.role) return args.role as TribeRole
-  // Check leader lease first (authoritative — survives heartbeat gaps)
-  try {
-    const lease = db
-      .prepare("SELECT holder_name FROM leadership WHERE role = 'chief' AND lease_until > $now")
-      .get({ $now: Date.now() }) as { holder_name: string } | null
-    if (lease) return "member"
-  } catch {
-    // leadership table may not exist yet (first run) — fall through to heartbeat check
-  }
-  // Fallback: check for live chief by heartbeat
+  // Check for live chief by heartbeat
   const threshold = Date.now() - 30_000
   const liveChief = db
     .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
