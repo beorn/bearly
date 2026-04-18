@@ -40,8 +40,6 @@ import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
-import { acquireLease, getLeaseInfo } from "./lib/tribe/lease.ts"
-import { tryAutoPromote, type PromotionCandidate, CHIEF_PROMOTION_GRACE_MS } from "./lib/tribe/chief-promotion.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
@@ -149,8 +147,86 @@ type ClientSession = {
 const clients = new Map<string, ClientSession>() // connId → session
 const socketToClient = new Map<NetSocket, string>() // socket → connId
 
+// ---------------------------------------------------------------------------
+// Chief derivation — derived from connection order unless explicitly claimed.
+//
+// Plateau model (no leases, no DB state): the chief is the longest-connected
+// eligible client. A client can optionally call tribe.claim-chief to pin the
+// role to themselves; tribe.release-chief (or disconnecting) unpins and falls
+// back to derivation. `daemon`, `watch-*`, and `pending-*` sessions are never
+// eligible — they're neutral observers or half-connected.
+// ---------------------------------------------------------------------------
+
+let chiefClaim: string | null = null // sessionId of the explicit claimer, if any
+
+function isChiefEligible(c: ClientSession): boolean {
+  if (c.name === "daemon") return false
+  if (c.name.startsWith("watch-")) return false
+  if (c.name.startsWith("pending-")) return false
+  return true
+}
+
+/**
+ * Return the ctx.sessionId of the current chief, or null if nobody is eligible.
+ *
+ * Precedence:
+ *   1. chiefClaim (if its session is still connected and eligible)
+ *   2. longest-connected eligible client (smallest registeredAt)
+ *      — ties broken by name alphabetical for reproducibility
+ */
+export function deriveChiefId(
+  candidates: Iterable<ClientSession>,
+  claim: string | null = chiefClaim,
+): string | null {
+  const list = Array.from(candidates).filter(isChiefEligible)
+  if (claim !== null) {
+    const claimer = list.find((c) => c.ctx.sessionId === claim)
+    if (claimer) return claimer.ctx.sessionId
+    // claim stale (session disconnected) — fall through to derivation
+  }
+  if (list.length === 0) return null
+  const sorted = [...list].sort((a, b) => {
+    if (a.registeredAt !== b.registeredAt) return a.registeredAt - b.registeredAt
+    return a.name.localeCompare(b.name)
+  })
+  return sorted[0]!.ctx.sessionId
+}
+
+function deriveChiefInfo(
+  candidates: Iterable<ClientSession>,
+): { id: string; name: string; claimed: boolean } | null {
+  const id = deriveChiefId(candidates)
+  if (!id) return null
+  const list = Array.from(candidates)
+  const client = list.find((c) => c.ctx.sessionId === id)
+  if (!client) return null
+  return { id, name: client.name, claimed: chiefClaim === id }
+}
+
+function claimChiefFor(sessionId: string, name: string): void {
+  chiefClaim = sessionId
+  logActivity("chief:claimed", `${name} claimed chief`)
+}
+
+function releaseChiefFor(sessionId: string): void {
+  if (chiefClaim !== sessionId) return
+  chiefClaim = null
+  // Find current client name for the release broadcast
+  const c = Array.from(clients.values()).find((x) => x.ctx.sessionId === sessionId)
+  const who = c?.name ?? "unknown"
+  logActivity("chief:released", `${who} released chief`)
+}
+
 /** No-op handler opts for daemon-side tool calls (no MCP session to clean up) */
-const DAEMON_HANDLER_OPTS = { cleanup: () => {}, userRenamed: false, setUserRenamed: () => {} } as const
+const DAEMON_HANDLER_OPTS = {
+  cleanup: () => {},
+  userRenamed: false,
+  setUserRenamed: () => {},
+  getChiefId: () => deriveChiefId(clients.values()),
+  getChiefInfo: () => deriveChiefInfo(clients.values()),
+  claimChief: claimChiefFor,
+  releaseChief: releaseChiefFor,
+} as const
 
 function broadcastNotification(method: string, params?: Record<string, unknown>, exclude?: string): void {
   const msg = makeNotification(method, params)
@@ -289,9 +365,6 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         })
 
         registerSession(clientCtx, projectId)
-        if (role === "chief") {
-          acquireLease(db, clientCtx.sessionId, name)
-        }
 
         const client: ClientSession = {
           socket: clients.get(connId)!.socket,
@@ -329,7 +402,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}${suffix}`)
         }
 
-        const chief = Array.from(clients.values()).find((c) => c.role === "chief" && c.id !== connId)
+        // Chief derived from connection order (or explicit claim).
+        const chiefInfo = deriveChiefInfo(clients.values())
+        const chiefName = chiefInfo?.name ?? "none"
 
         // Return current coordination state for this project
         const coordState = db
@@ -340,7 +415,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           sessionId: clientCtx.sessionId,
           name,
           role,
-          chief: chief?.name ?? "none",
+          chief: chiefName,
           protocolVersion: TRIBE_PROTOCOL_VERSION,
           coordinationState: coordState,
           daemon: { pid: process.pid, uptime: Math.floor((Date.now() - startedAt) / 1000) },
@@ -357,7 +432,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       case TRIBE_COORD_METHODS.health:
       case TRIBE_COORD_METHODS.reload:
       case TRIBE_COORD_METHODS.retro:
-      case TRIBE_COORD_METHODS.leadership: {
+      case TRIBE_COORD_METHODS.leadership:
+      case TRIBE_COORD_METHODS.claimChief:
+      case TRIBE_COORD_METHODS.releaseChief: {
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
 
@@ -426,16 +503,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       }
 
       case "cli_health": {
-        const health = await handleToolCall(
-          daemonCtx,
-          TRIBE_COORD_METHODS.health,
-          {},
-          {
-            cleanup: () => {},
-            userRenamed: false,
-            setUserRenamed: () => {},
-          },
-        )
+        const health = await handleToolCall(daemonCtx, TRIBE_COORD_METHODS.health, {}, DAEMON_HANDLER_OPTS)
         // Include machine health metrics from health-monitor plugin
         const { getHealthSnapshot } = await import("./lib/tribe/health-monitor-plugin.ts")
         let machine: unknown = null
@@ -618,13 +686,7 @@ const pluginCtx: PluginContext = {
     pushNewMessages()
   },
   hasChief() {
-    for (const [, c] of clients) {
-      if (c.role === "chief") return true
-    }
-    return false
-  },
-  getLeaseInfo() {
-    return getLeaseInfo(db)
+    return deriveChiefId(clients.values()) !== null
   },
   hasRecentMessage(contentPrefix) {
     const since = Date.now() - 300_000
@@ -680,66 +742,10 @@ const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 
 cleanupOldPrunedSessions(daemonCtx)
 cleanupOldData(daemonCtx)
 
-// Chief auto-promotion (km-tribe.chief-auto-election Layer 2).
-// Every minute, check if the lease has been expired past the grace window
-// and no active session holds it. If so, promote the longest-running
-// eligible member on their behalf. Layer 1 (health plugin alert) fires
-// inside the grace window; Layer 2 resolves the state after.
-const chiefPromotionInterval = timers.setInterval(() => {
-  // Build candidate list from the live client registry (in-memory — fresher
-  // than the sessions table and already filtered by connection state).
-  const candidates: PromotionCandidate[] = []
-  const now = Date.now()
-  for (const client of clients.values()) {
-    if (client.name === "daemon") continue
-    if (client.name.startsWith("watch-")) continue
-    if (client.name.startsWith("pending-")) continue
-    // Use registeredAt as started_at proxy — it's when this connection
-    // joined; the longest-connected session is the best promotion pick.
-    candidates.push({
-      id: client.id,
-      name: client.name,
-      pid: client.pid,
-      started_at: client.registeredAt,
-      heartbeat: now, // live connections are always heartbeating
-    })
-  }
-
-  const decision = tryAutoPromote(db, candidates, daemonCtx, now)
-  if (decision.action === "promote") {
-    log(
-      `auto-promoted ${decision.candidate.name} (${decision.candidate.pid}) to chief; previous ${decision.previousHolderName} lease expired ${Math.floor(decision.expiredByMs / 60_000)}min ago`,
-    )
-    logActivity("chief:auto-promoted", `${decision.candidate.name} → chief (auto)`)
-    pushNewMessages()
-  }
-}, 60_000)
-// Fire once shortly after boot so a daemon inheriting a long-expired lease
-// doesn't wait a full minute before healing. Skipped in hot-reload because
-// the old process would have handled it already.
-timers.setTimeout(() => {
-  const now = Date.now()
-  const lease = getLeaseInfo(db)
-  if (!lease) return
-  if (now - lease.lease_until < CHIEF_PROMOTION_GRACE_MS) return
-  const candidates: PromotionCandidate[] = []
-  for (const client of clients.values()) {
-    if (client.name === "daemon" || client.name.startsWith("watch-") || client.name.startsWith("pending-")) continue
-    candidates.push({
-      id: client.id,
-      name: client.name,
-      pid: client.pid,
-      started_at: client.registeredAt,
-      heartbeat: now,
-    })
-  }
-  const decision = tryAutoPromote(db, candidates, daemonCtx, now)
-  if (decision.action === "promote") {
-    log(`auto-promoted at boot: ${decision.candidate.name}`)
-    logActivity("chief:auto-promoted", `${decision.candidate.name} → chief (auto, at boot)`)
-    pushNewMessages()
-  }
-}, 10_000)
+// Chief is derived from connection order (see `deriveChiefId`). No promotion
+// timers, no lease renewal — the chief changes automatically when the
+// longest-connected client disconnects. An explicit `tribe.claim-chief`
+// overrides this until the claimer disconnects or calls `tribe.release-chief`.
 
 // ---------------------------------------------------------------------------
 // Socket server
@@ -819,6 +825,13 @@ function handleConnection(socket: NetSocket): void {
     clients.delete(connId)
     socketToClient.delete(socket)
     lastDelivered.delete(connId)
+
+    // If the disconnecting client had the explicit chief claim, clear it so
+    // the derivation takes over (longest-remaining-connected becomes chief).
+    if (client && chiefClaim === client.ctx.sessionId) {
+      chiefClaim = null
+      logActivity("chief:released", `${client.name} released chief (disconnect)`)
+    }
 
     // Start idle countdown if no clients left
     if (clients.size === 0) markIdle()

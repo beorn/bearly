@@ -9,7 +9,6 @@ import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
 
 const log = createLogger("tribe:session")
-import { acquireLease } from "./lease.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
 
 // ---------------------------------------------------------------------------
@@ -255,9 +254,4 @@ export function sendHeartbeat(ctx: TribeContext): void {
     return
   }
   ctx.stmts.heartbeat.run({ $id: ctx.sessionId, $now: Date.now() })
-
-  // Renew leader lease if chief
-  if (ctx.sessionRole === "chief") {
-    acquireLease(ctx.db, ctx.sessionId, ctx.getName())
-  }
 }

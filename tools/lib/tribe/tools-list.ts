@@ -145,7 +145,25 @@ export const TOOLS_LIST = [
   },
   {
     name: "tribe.leadership",
-    description: "Show the current chief lease holder, term number, and time until expiry",
+    description: "Show the current chief (derived from connection order, or explicitly claimed)",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "tribe.claim-chief",
+    description:
+      "Claim the chief role explicitly. Idempotent. Overrides the default connection-order derivation until released (or this session disconnects).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "tribe.release-chief",
+    description:
+      "Release an explicit chief claim, letting the role fall back to connection-order derivation. Idempotent — no-op if this session did not hold an explicit claim.",
     inputSchema: {
       type: "object" as const,
       properties: {},
