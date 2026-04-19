@@ -27,45 +27,33 @@ export function openDatabase(path: string): Database {
 		updated_at INTEGER NOT NULL
 	)`)
 
-  // Migration: add columns if they don't exist (for existing DBs)
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN project_id TEXT")
-  } catch {
-    /* already exists */
+  // Migrations table — tracks schema version so we can evolve the DB without
+  // relying on try/catch soup. Each row in MIGRATIONS is run exactly once,
+  // in order, for databases whose version < migration.version. Fresh installs
+  // skip all migrations because the CREATE TABLE statements above already
+  // reflect the latest schema.
+  db.run("CREATE TABLE IF NOT EXISTS _schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+  const versionRow = db.prepare("SELECT value FROM _schema_meta WHERE key = 'version'").get() as {
+    value: string
+  } | null
+  const currentVersion = versionRow ? Number(versionRow.value) : 0
+
+  for (const migration of MIGRATIONS) {
+    if (migration.version <= currentVersion) continue
+    migration.up(db)
   }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN claude_session_name TEXT")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_ts INTEGER")
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE sessions ADD COLUMN last_delivered_seq INTEGER DEFAULT 0")
-  } catch {
-    /* already exists */
-  }
-  // Phase 2 of km-tribe.plateau: rename heartbeat → updated_at, drop pruned_at.
-  // Sessions are no longer tri-state (live / pruned / dead). The clients Map
-  // in the daemon is the authoritative signal for liveness; DB rows are
-  // retained only for cursor recovery across reconnects.
-  try {
-    db.run("ALTER TABLE sessions RENAME COLUMN heartbeat TO updated_at")
-  } catch {
-    /* already renamed or fresh schema */
-  }
-  try {
-    db.run("ALTER TABLE sessions DROP COLUMN pruned_at")
-  } catch {
-    /* already dropped or never existed */
+  if (MIGRATIONS.length > 0 && MIGRATIONS[MIGRATIONS.length - 1]!.version > currentVersion) {
+    const latest = MIGRATIONS[MIGRATIONS.length - 1]!.version
+    db.run(
+      "INSERT INTO _schema_meta (key, value) VALUES ('version', $v) ON CONFLICT(key) DO UPDATE SET value = $v",
+      { $v: String(latest) } as never,
+    )
+  } else if (versionRow === null && MIGRATIONS.length > 0) {
+    // Fresh install — stamp the current version so future migrations start from here.
+    const latest = MIGRATIONS[MIGRATIONS.length - 1]!.version
+    db.run("INSERT OR IGNORE INTO _schema_meta (key, value) VALUES ('version', $v)", {
+      $v: String(latest),
+    } as never)
   }
 
   db.run(`CREATE TABLE IF NOT EXISTS messages (
@@ -135,44 +123,11 @@ export function openDatabase(path: string): Database {
 		meta        TEXT
 	)`)
 
-  // Migration: collapse legacy `events` table into `messages`. Each event row
-  // becomes a message with type "event.<orig-type>", sender=<session>, recipient="log".
-  // The "log" recipient is a sentinel — never delivered to anyone, but queryable.
-  // Idempotent: skipped if the table doesn't exist on fresh installs.
-  try {
-    db.run(`
-      INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
-      SELECT id, 'event.' || type, COALESCE(session, 'unknown'), 'log',
-             COALESCE(data, ''), bead_id, NULL, ts
-      FROM events
-    `)
-    db.run("DROP TABLE events")
-  } catch {
-    /* events table doesn't exist — fresh install or already migrated */
-  }
-
-  // Migration: drop the aliases table. Renames now just update sessions.name
-  // in place; the old name is not preserved.
-  try {
-    db.run("DROP TABLE IF EXISTS aliases")
-  } catch {
-    /* already gone */
-  }
-
   // Create indexes if they don't exist
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_type_ts ON messages(type, ts)")
-
-  // Indexes for common query patterns
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
-  // Phase 2 of km-tribe.plateau: idx_sessions_pruned is gone (pruned_at dropped).
-  // idx_sessions_updated orders cursor-recovery queries (ORDER BY updated_at DESC).
-  try {
-    db.run("DROP INDEX IF EXISTS idx_sessions_pruned")
-  } catch {
-    /* ignore */
-  }
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
@@ -181,6 +136,98 @@ export function openDatabase(path: string): Database {
 
   return db
 }
+
+// ---------------------------------------------------------------------------
+// Migrations — ordered, versioned, idempotent. `openDatabase` runs everything
+// with `version > _schema_meta.version` (stored as a string in that table);
+// fresh installs skip the list because the CREATE TABLE statements already
+// reflect the latest schema. Add new migrations at the end with the next
+// integer; never reorder existing ones.
+// ---------------------------------------------------------------------------
+
+type Migration = { version: number; name: string; up(db: Database): void }
+
+const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: "add-sessions-optional-columns",
+    up(db) {
+      for (const col of [
+        "project_id TEXT",
+        "claude_session_id TEXT",
+        "claude_session_name TEXT",
+        "last_delivered_ts INTEGER",
+        "last_delivered_seq INTEGER DEFAULT 0",
+      ]) {
+        try {
+          db.run(`ALTER TABLE sessions ADD COLUMN ${col}`)
+        } catch {
+          /* column already exists — seen when upgrading from a DB that ran the old try/catch soup */
+        }
+      }
+    },
+  },
+  {
+    version: 2,
+    name: "rename-heartbeat-to-updated-at-drop-pruned-at",
+    up(db) {
+      // Phase 2 of km-tribe.plateau: liveness is in-memory (clients Map),
+      // not a periodic DB timer.
+      try {
+        db.run("ALTER TABLE sessions RENAME COLUMN heartbeat TO updated_at")
+      } catch {
+        /* already renamed */
+      }
+      try {
+        db.run("ALTER TABLE sessions DROP COLUMN pruned_at")
+      } catch {
+        /* already dropped */
+      }
+      try {
+        db.run("DROP INDEX IF EXISTS idx_sessions_pruned")
+      } catch {
+        /* ignore */
+      }
+    },
+  },
+  {
+    version: 3,
+    name: "collapse-events-into-messages",
+    up(db) {
+      // Phase 4 of km-tribe.plateau: each event row becomes a message with
+      // type "event.<orig-type>", sender=<session>, recipient="log".
+      try {
+        db.run(`
+          INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
+          SELECT id, 'event.' || type, COALESCE(session, 'unknown'), 'log',
+                 COALESCE(data, ''), bead_id, NULL, ts
+          FROM events
+        `)
+        db.run("DROP TABLE events")
+      } catch {
+        /* fresh install or already migrated */
+      }
+    },
+  },
+  {
+    version: 4,
+    name: "drop-aliases",
+    up(db) {
+      // Phase 4 of km-tribe.plateau: renames update sessions.name in place.
+      db.run("DROP TABLE IF EXISTS aliases")
+    },
+  },
+  {
+    version: 5,
+    name: "drop-leadership-vestige",
+    up(db) {
+      // Phase 1 of km-tribe.plateau: chief is derived from connection order.
+      // Old deployments still have a vestigial leadership row — drop it so no
+      // ghost state can confuse a future schema read.
+      db.run("DROP TABLE IF EXISTS leadership")
+    },
+  },
+]
 
 // ---------------------------------------------------------------------------
 // Prepared statements
