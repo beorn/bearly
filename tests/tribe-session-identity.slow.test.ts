@@ -134,149 +134,133 @@ describe("tribe session identity (identity token adoption)", () => {
   // Test A — adoption across restart: same token → same sessionId/name/role
   // =========================================================================
 
-  it(
-    "A: reconnecting proxy with same identity token adopts prior sessionId, name, and role",
-    async () => {
-      daemon = await spawnDaemon(socketPath, dbPath)
+  it("A: reconnecting proxy with same identity token adopts prior sessionId, name, and role", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
 
-      const token = "abc123def4567890"
+    const token = "abc123def4567890"
 
-      // Client 1 registers explicitly; captures sessionId.
-      const c1 = await connect()
-      const reg1 = (await c1.call("register", {
-        identityToken: token,
-        name: "alice",
-        role: "member",
-      })) as Record<string, unknown>
-      const s1 = String(reg1.sessionId)
-      expect(typeof s1).toBe("string")
-      expect(reg1.name).toBe("alice")
-      expect(reg1.role).toBe("member")
+    // Client 1 registers explicitly; captures sessionId.
+    const c1 = await connect()
+    const reg1 = (await c1.call("register", {
+      identityToken: token,
+      name: "alice",
+      role: "member",
+    })) as Record<string, unknown>
+    const s1 = String(reg1.sessionId)
+    expect(typeof s1).toBe("string")
+    expect(reg1.name).toBe("alice")
+    expect(reg1.role).toBe("member")
 
-      // Disconnect client 1 and let the daemon process the close.
-      c1.close()
-      const idx = clients.indexOf(c1)
-      if (idx !== -1) clients.splice(idx, 1)
-      await new Promise((r) => setTimeout(r, 250))
+    // Disconnect client 1 and let the daemon process the close.
+    c1.close()
+    const idx = clients.indexOf(c1)
+    if (idx !== -1) clients.splice(idx, 1)
+    await new Promise((r) => setTimeout(r, 250))
 
-      // Client 2 registers with only the token (no name, no role).
-      // The daemon should adopt the prior row: same sessionId, name=alice, role=member.
-      const c2 = await connect()
-      const reg2 = (await c2.call("register", { identityToken: token })) as Record<string, unknown>
-      expect(reg2.sessionId).toBe(s1)
-      expect(reg2.name).toBe("alice")
-      expect(reg2.role).toBe("member")
-    },
-    20_000,
-  )
+    // Client 2 registers with only the token (no name, no role).
+    // The daemon should adopt the prior row: same sessionId, name=alice, role=member.
+    const c2 = await connect()
+    const reg2 = (await c2.call("register", { identityToken: token })) as Record<string, unknown>
+    expect(reg2.sessionId).toBe(s1)
+    expect(reg2.name).toBe("alice")
+    expect(reg2.role).toBe("member")
+  }, 20_000)
 
   // =========================================================================
   // Test B — active session blocks adoption
   // =========================================================================
 
-  it(
-    "B: when a session with the same identity token is still connected, a new proxy gets a fresh sessionId",
-    async () => {
-      daemon = await spawnDaemon(socketPath, dbPath)
+  it("B: when a session with the same identity token is still connected, a new proxy gets a fresh sessionId", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
 
-      const token = "activeblockxxxxx"
+    const token = "activeblockxxxxx"
 
-      const c1 = await connect()
-      const reg1 = (await c1.call("register", {
-        identityToken: token,
-        name: "alice",
-        role: "member",
-      })) as Record<string, unknown>
-      const s1 = String(reg1.sessionId)
+    const c1 = await connect()
+    const reg1 = (await c1.call("register", {
+      identityToken: token,
+      name: "alice",
+      role: "member",
+    })) as Record<string, unknown>
+    const s1 = String(reg1.sessionId)
 
-      // c1 stays connected.
-      const c2 = await connect()
-      const reg2 = (await c2.call("register", { identityToken: token })) as Record<string, unknown>
-      expect(reg2.sessionId).not.toBe(s1)
-      // The name should still be derived (project / deduplicated) — not silently
-      // the same as c1's "alice". The daemon's deduplicateName gives it a suffix.
-      expect(reg2.name).not.toBe("alice")
-    },
-    20_000,
-  )
+    // c1 stays connected.
+    const c2 = await connect()
+    const reg2 = (await c2.call("register", { identityToken: token })) as Record<string, unknown>
+    expect(reg2.sessionId).not.toBe(s1)
+    // The name should still be derived (project / deduplicated) — not silently
+    // the same as c1's "alice". The daemon's deduplicateName gives it a suffix.
+    expect(reg2.name).not.toBe("alice")
+  }, 20_000)
 
   // =========================================================================
   // Test C — cursor recovery via identity token
   // =========================================================================
 
-  it(
-    "C: identity-token reconnect recovers the message cursor so history is preserved",
-    async () => {
-      daemon = await spawnDaemon(socketPath, dbPath)
+  it("C: identity-token reconnect recovers the message cursor so history is preserved", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
 
-      const tokenBob = "cursortokenbobxx"
+    const tokenBob = "cursortokenbobxx"
 
-      // Alice joins (no token — she's just a message source).
-      const alice = await connect()
-      await alice.call("register", { name: "alice", role: "member" })
+    // Alice joins (no token — she's just a message source).
+    const alice = await connect()
+    await alice.call("register", { name: "alice", role: "member" })
 
-      // Bob joins with token, then disconnects.
-      const bob1 = await connect()
-      const regBob1 = (await bob1.call("register", {
-        identityToken: tokenBob,
-        name: "bob",
-        role: "member",
-      })) as Record<string, unknown>
-      const sBob = String(regBob1.sessionId)
+    // Bob joins with token, then disconnects.
+    const bob1 = await connect()
+    const regBob1 = (await bob1.call("register", {
+      identityToken: tokenBob,
+      name: "bob",
+      role: "member",
+    })) as Record<string, unknown>
+    const sBob = String(regBob1.sessionId)
 
-      // Alice broadcasts 5 messages.
-      for (let i = 0; i < 5; i++) {
-        await alice.call("tribe.broadcast", { message: `msg-${i}` })
-      }
+    // Alice broadcasts 5 messages.
+    for (let i = 0; i < 5; i++) {
+      await alice.call("tribe.broadcast", { message: `msg-${i}` })
+    }
 
-      // Bob disconnects.
-      bob1.close()
-      const bIdx = clients.indexOf(bob1)
-      if (bIdx !== -1) clients.splice(bIdx, 1)
-      await new Promise((r) => setTimeout(r, 250))
+    // Bob disconnects.
+    bob1.close()
+    const bIdx = clients.indexOf(bob1)
+    if (bIdx !== -1) clients.splice(bIdx, 1)
+    await new Promise((r) => setTimeout(r, 250))
 
-      // Bob reconnects with the same token — sessionId adopted, cursor recovered.
-      const bob2 = await connect()
-      const regBob2 = (await bob2.call("register", { identityToken: tokenBob })) as Record<string, unknown>
-      expect(regBob2.sessionId).toBe(sBob)
-      expect(regBob2.name).toBe("bob")
+    // Bob reconnects with the same token — sessionId adopted, cursor recovered.
+    const bob2 = await connect()
+    const regBob2 = (await bob2.call("register", { identityToken: tokenBob })) as Record<string, unknown>
+    expect(regBob2.sessionId).toBe(sBob)
+    expect(regBob2.name).toBe("bob")
 
-      // tribe.history for "bob" should include all 5 broadcasts (recipient='*').
-      const history = parseToolText(await bob2.call("tribe.history", { limit: 50 }))
-      const messages = (Array.isArray(history) ? history : (history.messages ?? history)) as Array<{
-        content?: string
-      }>
-      expect(Array.isArray(messages)).toBe(true)
-      const found = (n: number) => messages.some((m) => m.content === `msg-${n}`)
-      for (let i = 0; i < 5; i++) {
-        expect(found(i), `msg-${i} missing from history: ${JSON.stringify(messages).slice(0, 500)}`).toBe(true)
-      }
-    },
-    25_000,
-  )
+    // tribe.history for "bob" should include all 5 broadcasts (recipient='*').
+    const history = parseToolText(await bob2.call("tribe.history", { limit: 50 }))
+    const messages = (Array.isArray(history) ? history : (history.messages ?? history)) as Array<{
+      content?: string
+    }>
+    expect(Array.isArray(messages)).toBe(true)
+    const found = (n: number) => messages.some((m) => m.content === `msg-${n}`)
+    for (let i = 0; i < 5; i++) {
+      expect(found(i), `msg-${i} missing from history: ${JSON.stringify(messages).slice(0, 500)}`).toBe(true)
+    }
+  }, 25_000)
 
   // =========================================================================
   // Test D — no token = today's behavior (fresh sessionId)
   // =========================================================================
 
-  it(
-    "D: without an identity token, each register gets a fresh sessionId",
-    async () => {
-      daemon = await spawnDaemon(socketPath, dbPath)
+  it("D: without an identity token, each register gets a fresh sessionId", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
 
-      const c1 = await connect()
-      const reg1 = (await c1.call("register", { name: "alice", role: "member" })) as Record<string, unknown>
-      const s1 = String(reg1.sessionId)
+    const c1 = await connect()
+    const reg1 = (await c1.call("register", { name: "alice", role: "member" })) as Record<string, unknown>
+    const s1 = String(reg1.sessionId)
 
-      c1.close()
-      const idx = clients.indexOf(c1)
-      if (idx !== -1) clients.splice(idx, 1)
-      await new Promise((r) => setTimeout(r, 250))
+    c1.close()
+    const idx = clients.indexOf(c1)
+    if (idx !== -1) clients.splice(idx, 1)
+    await new Promise((r) => setTimeout(r, 250))
 
-      const c2 = await connect()
-      const reg2 = (await c2.call("register", { name: "alice2", role: "member" })) as Record<string, unknown>
-      expect(reg2.sessionId).not.toBe(s1)
-    },
-    20_000,
-  )
+    const c2 = await connect()
+    const reg2 = (await c2.call("register", { name: "alice2", role: "member" })) as Record<string, unknown>
+    expect(reg2.sessionId).not.toBe(s1)
+  }, 20_000)
 })
