@@ -7,6 +7,31 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — persistent push cursor (km-tribe.message-durability)
+
+Phase 1.6 of the plateau. The daemon's per-connection push cursor is now
+persisted to `sessions.last_delivered_ts` / `last_delivered_seq` on every
+successful `pushToClient`, and seeded back into the in-memory map on register
+(either from the adopted identity row via Phase 1.5, or from a skip-to-latest
+bootstrap for brand-new sessions). This closes the gap explicitly called out
+by `tests/tribe-self-heal.slow.test.ts`: messages already pushed before a
+SIGKILL are no longer re-delivered on reconnect, and messages queued while a
+session is offline still arrive when it comes back.
+
+- `pushNewMessages` now keys off `rowid` (strictly monotonic) instead of `ts`
+  (can collide within a millisecond) — this also fixed a latent bug where two
+  broadcasts emitted in the same tick could cause the middle one to be
+  silently skipped.
+- `logActivity` no longer pushes directly and bumps the cursor to its own
+  rowid — it writes the activity and calls `pushNewMessages()` to drain
+  everything the cursor hasn't seen yet, keeping the cursor monotonic.
+- `createStatements` exposes `updateLastDelivered` + `getLastDelivered`
+  (the column was added in migration v1, now actually written to).
+
+Integration coverage: `tests/tribe-durability.slow.test.ts` (Test E — no
+duplicate delivery after restart; Test F — messages queued during downtime
+delivered on reconnect).
+
 ### Added — identity token adoption (km-tribe.session-identity)
 
 Phase 1.5 of the plateau. Sessions now keep a stable identity across Claude
