@@ -56,8 +56,9 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install deps
-        run: bun install --frozen-lockfile
+      - name: Install package deps
+        run: bun install
+        working-directory: ${{ steps.parse.outputs.dir }}
 
       - name: Build package
         run: bun run build
