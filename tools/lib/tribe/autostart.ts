@@ -229,8 +229,7 @@ export async function ensureTribeDaemonIfConfigured(deps: EnsureDaemonDeps = {})
 
   if (Date.now() >= deadline) return { action: "timed-out" }
 
-  const spawnFn =
-    deps.spawn ?? ((o: { socketPath: string }) => spawnTribeDaemonDetached({ ...o, log: deps.log }))
+  const spawnFn = deps.spawn ?? ((o: { socketPath: string }) => spawnTribeDaemonDetached({ ...o, log: deps.log }))
   const result = spawnFn({ socketPath })
   if (result.ok) return { action: "spawned", pid: result.pid }
   return { action: "spawn-failed", error: result.error }
