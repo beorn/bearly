@@ -148,7 +148,7 @@ async function spawnDaemon(socketPath: string, dbPath: string): Promise<ChildPro
 }
 
 async function killDaemon(proc: ChildProcess | null): Promise<void> {
-  if (!proc || proc.exitCode !== null) return
+  if (proc?.exitCode !== null) return
   try {
     proc.kill("SIGKILL")
   } catch {

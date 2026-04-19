@@ -432,7 +432,12 @@ describe("tribe self-heal (kill-and-recover)", () => {
         clients: Array<{ id: string; name: string; role: string; pid: number; registeredAt: number }>
         chief: { id: string; name: string; claimed: boolean } | null
         chiefClaim: string | null
-        cursors: Array<{ id: string; name: string; last_delivered_ts: number | null; last_delivered_seq: number | null }>
+        cursors: Array<{
+          id: string
+          name: string
+          last_delivered_ts: number | null
+          last_delivered_seq: number | null
+        }>
       }
       expect(Array.isArray(snap.clients)).toBe(true)
       const clientNames = snap.clients.map((c) => c.name).sort()

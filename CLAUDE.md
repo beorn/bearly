@@ -105,6 +105,7 @@ git push origin main --follow-tags
 The workflow parses the tag, verifies `package.json` version matches (fails fast on drift), builds with tsc, and runs `npm publish --access public --provenance`.
 
 **Local fallback** for emergencies:
+
 ```bash
 cd packages/<pkg> && bun run build && npm publish --access public --provenance
 ```

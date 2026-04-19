@@ -24,8 +24,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # create GitHub release
-      id-token: write   # npm provenance (OIDC)
+      contents: write # create GitHub release
+      id-token: write # npm provenance (OIDC)
     steps:
       - uses: actions/checkout@v4
 

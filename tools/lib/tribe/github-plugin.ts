@@ -330,106 +330,65 @@ export const githubPlugin: TribePluginApi = {
   },
 
   start(api: TribeClientApi) {
-      const token = getGitHubToken()
-      if (!token) return
+    const token = getGitHubToken()
+    if (!token) return
 
-      const githubHeaders = {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bearly-github-plugin/0.1.0",
-      }
+    const githubHeaders = {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "bearly-github-plugin/0.1.0",
+    }
 
-      const pollIntervalSec = parseInt(process.env.GITHUB_POLL_INTERVAL ?? "60", 10) || 60
-      const eventTypes = (process.env.GITHUB_EVENTS ?? "push,workflow_run,pull_request,issues")
-        .split(",")
-        .filter(Boolean)
-      const workflowNotify = (process.env.GITHUB_WORKFLOW_NOTIFY ?? "failure") as "all" | "failure" | "success"
+    const pollIntervalSec = parseInt(process.env.GITHUB_POLL_INTERVAL ?? "60", 10) || 60
+    const eventTypes = (process.env.GITHUB_EVENTS ?? "push,workflow_run,pull_request,issues").split(",").filter(Boolean)
+    const workflowNotify = (process.env.GITHUB_WORKFLOW_NOTIFY ?? "failure") as "all" | "failure" | "success"
 
-      const cursorPath = resolveCursorPath()
-      const cursorState = loadCursor(cursorPath)
+    const cursorPath = resolveCursorPath()
+    const cursorState = loadCursor(cursorPath)
 
-      // Dedup sets — prevent duplicate delivery across reloads
-      const seenEventIds = new Set<string>()
-      const seenWorkflowUrls = new Set<string>()
+    // Dedup sets — prevent duplicate delivery across reloads
+    const seenEventIds = new Set<string>()
+    const seenWorkflowUrls = new Set<string>()
 
-      // CI state tracking per repo — consecutive failures trigger escalation
-      const ciState = new Map<string, { consecutiveFailures: number }>()
+    // CI state tracking per repo — consecutive failures trigger escalation
+    const ciState = new Map<string, { consecutiveFailures: number }>()
 
-      // Track recent pushes: repo → { session, timestamp } for CI correlation
-      const recentPushers = new Map<string, { actor: string; timestamp: number }>()
+    // Track recent pushes: repo → { session, timestamp } for CI correlation
+    const recentPushers = new Map<string, { actor: string; timestamp: number }>()
 
-      // Start with local repo for fast startup, then discover all user repos via API
-      const repos = new Set<string>()
-      const local = detectLocalRepo()
-      if (local) repos.add(local)
-      log.info?.(`local repo: ${local ?? "none"}`)
+    // Start with local repo for fast startup, then discover all user repos via API
+    const repos = new Set<string>()
+    const local = detectLocalRepo()
+    if (local) repos.add(local)
+    log.info?.(`local repo: ${local ?? "none"}`)
 
-      // Async: fetch all user repos and merge
-      void fetchUserRepos(githubHeaders)
-        .then((userRepos) => {
-          for (const r of userRepos) repos.add(r)
-          const all = Array.from(repos).sort()
-          log.info?.(`monitoring ${all.length} repos: ${all.join(", ")}`)
-        })
-        .catch((err) => {
-          log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
-        })
+    // Async: fetch all user repos and merge
+    void fetchUserRepos(githubHeaders)
+      .then((userRepos) => {
+        for (const r of userRepos) repos.add(r)
+        const all = Array.from(repos).sort()
+        log.info?.(`monitoring ${all.length} repos: ${all.join(", ")}`)
+      })
+      .catch((err) => {
+        log.error?.(`failed to fetch user repos: ${err instanceof Error ? err.message : err}`)
+      })
 
-      log.info?.(`event types: ${eventTypes.join(", ")}, workflow notify: ${workflowNotify}`)
-      log.info?.(`cursor: ${cursorPath}`)
+    log.info?.(`event types: ${eventTypes.join(", ")}, workflow notify: ${workflowNotify}`)
+    log.info?.(`cursor: ${cursorPath}`)
 
-      // --- Event polling ---
+    // --- Event polling ---
 
-      async function pollEvents(): Promise<void> {
-        const errors: string[] = []
-        for (const r of repos) {
-          try {
-            const events = await fetchRepoEvents(r, githubHeaders)
-            const repoCursor = cursorState.repos[r]
-            const lastSeenId = repoCursor?.lastEventId
+    async function pollEvents(): Promise<void> {
+      const errors: string[] = []
+      for (const r of repos) {
+        try {
+          const events = await fetchRepoEvents(r, githubHeaders)
+          const repoCursor = cursorState.repos[r]
+          const lastSeenId = repoCursor?.lastEventId
 
-            // First poll or no cursor: set cursor without delivering
-            if (!lastSeenId) {
-              if (events.length > 0) {
-                cursorState.repos[r] = {
-                  lastEventId: events[0]!.id,
-                  lastPollAt: new Date().toISOString(),
-                }
-                saveCursor(cursorPath, cursorState)
-              }
-              continue
-            }
-
-            // Collect new events (stop at cursor)
-            const newEvents: GitHubEvent[] = []
-            for (const event of events) {
-              if (event.id === lastSeenId) break
-              newEvents.push(event)
-            }
-
-            // Cap at 3 events per repo per poll to avoid flooding on cursor miss
-            const capped = newEvents.slice(0, 3)
-            for (const event of capped.reverse()) {
-              if (seenEventIds.has(event.id)) continue
-              seenEventIds.add(event.id)
-              if (seenEventIds.size > 500) seenEventIds.clear()
-
-              const formatted = formatEvent(event, eventTypes)
-              if (!formatted) continue
-
-              // Skip push events for the local repo — git plugin already broadcasts commits
-              if (formatted.type === "push" && r === local) continue
-
-              api.broadcast(`${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
-
-              // Track who pushed to each repo for CI correlation
-              if (formatted.type === "push") {
-                recentPushers.set(r, { actor: event.actor.login, timestamp: Date.now() })
-              }
-            }
-
-            // Update cursor
+          // First poll or no cursor: set cursor without delivering
+          if (!lastSeenId) {
             if (events.length > 0) {
               cursorState.repos[r] = {
                 lastEventId: events[0]!.id,
@@ -437,131 +396,170 @@ export const githubPlugin: TribePluginApi = {
               }
               saveCursor(cursorPath, cursorState)
             }
-          } catch (err) {
-            errors.push(r)
-            log.debug?.(`error polling ${r}: ${err instanceof Error ? err.message : err}`)
+            continue
           }
-        }
-        // Batch report: one summary instead of N individual errors
-        if (errors.length > 0) {
-          log.warn?.(`github events: ${errors.length}/${repos.length} repos failed (network issue)`)
-        }
-      }
 
-      // --- Workflow run polling ---
+          // Collect new events (stop at cursor)
+          const newEvents: GitHubEvent[] = []
+          for (const event of events) {
+            if (event.id === lastSeenId) break
+            newEvents.push(event)
+          }
 
-      async function pollWorkflows(): Promise<void> {
-        const errors: string[] = []
-        for (const r of repos) {
-          if (!eventTypes.includes("workflow_run")) continue
-          try {
-            const runs = await fetchWorkflowRuns(r, githubHeaders, "completed")
+          // Cap at 3 events per repo per poll to avoid flooding on cursor miss
+          const capped = newEvents.slice(0, 3)
+          for (const event of capped.reverse()) {
+            if (seenEventIds.has(event.id)) continue
+            seenEventIds.add(event.id)
+            if (seenEventIds.size > 500) seenEventIds.clear()
 
-            // Process all completed runs for CI state tracking, but only broadcast per workflowNotify
-            const cutoff = Date.now() - 5 * 60 * 1000
-            const recent = runs.filter((run) => run.conclusion !== null && new Date(run.updated_at).getTime() > cutoff)
+            const formatted = formatEvent(event, eventTypes)
+            if (!formatted) continue
 
-            for (const run of recent.slice(0, 5)) {
-              if (seenWorkflowUrls.has(run.html_url)) continue
-              seenWorkflowUrls.add(run.html_url)
-              if (seenWorkflowUrls.size > 1000) seenWorkflowUrls.clear()
+            // Skip push events for the local repo — git plugin already broadcasts commits
+            if (formatted.type === "push" && r === local) continue
 
-              // Broadcast based on workflowNotify filter
-              const shouldNotify = workflowNotify === "all" || run.conclusion === workflowNotify
-              if (shouldNotify) {
-                const status =
-                  run.conclusion === "success"
-                    ? "PASSED"
-                    : run.conclusion === "failure"
-                      ? "FAILED"
-                      : String(run.conclusion).toUpperCase()
-                const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
-                const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
-                api.broadcast(`${line} ${run.html_url}`, `github:workflow`)
-              }
+            api.broadcast(`${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
 
-              // Track CI state per repo for escalation (always, regardless of notify filter)
-              const key = `${r}:${run.name}`
-              const state = ciState.get(key) ?? { consecutiveFailures: 0 }
-              if (run.conclusion === "failure") {
-                state.consecutiveFailures++
-                ciState.set(key, state)
-
-                if (state.consecutiveFailures === 3) {
-                  const pusher = recentPushers.get(r)
-                  const pusherInfo = pusher ? ` Last push by ${pusher.actor}.` : ""
-                  api.broadcast(
-                    `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`,
-                    "github:ci-alert",
-                  )
-
-                  // DM sessions that might be responsible — match by repo name in session names
-                  const repoShort = r.split("/")[1] ?? r
-                  for (const name of api.getSessionNames()) {
-                    if (name.includes(repoShort) || name.includes(repoShort.replace(".dev", ""))) {
-                      api.send(
-                        name,
-                        `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`,
-                        "github:ci-alert",
-                      )
-                    }
-                  }
-                } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
-                  api.broadcast(
-                    `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`,
-                    "github:ci-alert",
-                  )
-                }
-              } else if (run.conclusion === "success") {
-                if (state.consecutiveFailures >= 3) {
-                  api.broadcast(
-                    `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`,
-                    "github:ci-recovered",
-                  )
-                }
-                state.consecutiveFailures = 0
-                ciState.set(key, state)
-              }
+            // Track who pushed to each repo for CI correlation
+            if (formatted.type === "push") {
+              recentPushers.set(r, { actor: event.actor.login, timestamp: Date.now() })
             }
-          } catch (err) {
-            errors.push(r)
-            log.debug?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
           }
-        }
-        if (errors.length > 0) {
-          log.warn?.(`github workflows: ${errors.length}/${repos.length} repos failed (network issue)`)
+
+          // Update cursor
+          if (events.length > 0) {
+            cursorState.repos[r] = {
+              lastEventId: events[0]!.id,
+              lastPollAt: new Date().toISOString(),
+            }
+            saveCursor(cursorPath, cursorState)
+          }
+        } catch (err) {
+          errors.push(r)
+          log.debug?.(`error polling ${r}: ${err instanceof Error ? err.message : err}`)
         }
       }
-
-      const ac = new AbortController()
-      const timers = createTimers(ac.signal)
-
-      // Rate limit status logging
-      timers.setInterval(
-        () => {
-          log.info?.(
-            `rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag`,
-          )
-        },
-        5 * 60 * 1000,
-      )
-
-      // Initial poll
-      void pollEvents()
-
-      // Regular polling
-      timers.setInterval(() => void pollEvents(), pollIntervalSec * 1000)
-
-      // Workflow polling (every 60s, separate endpoint)
-      timers.setInterval(() => void pollWorkflows(), 60_000)
-      // Initial workflow poll after short delay
-      timers.setTimeout(() => void pollWorkflows(), 5_000)
-
-      // Cleanup
-      return () => {
-        ac.abort()
-        saveCursor(cursorPath, cursorState)
+      // Batch report: one summary instead of N individual errors
+      if (errors.length > 0) {
+        log.warn?.(`github events: ${errors.length}/${repos.size} repos failed (network issue)`)
       }
+    }
+
+    // --- Workflow run polling ---
+
+    async function pollWorkflows(): Promise<void> {
+      const errors: string[] = []
+      for (const r of repos) {
+        if (!eventTypes.includes("workflow_run")) continue
+        try {
+          const runs = await fetchWorkflowRuns(r, githubHeaders, "completed")
+
+          // Process all completed runs for CI state tracking, but only broadcast per workflowNotify
+          const cutoff = Date.now() - 5 * 60 * 1000
+          const recent = runs.filter((run) => run.conclusion !== null && new Date(run.updated_at).getTime() > cutoff)
+
+          for (const run of recent.slice(0, 5)) {
+            if (seenWorkflowUrls.has(run.html_url)) continue
+            seenWorkflowUrls.add(run.html_url)
+            if (seenWorkflowUrls.size > 1000) seenWorkflowUrls.clear()
+
+            // Broadcast based on workflowNotify filter
+            const shouldNotify = workflowNotify === "all" || run.conclusion === workflowNotify
+            if (shouldNotify) {
+              const status =
+                run.conclusion === "success"
+                  ? "PASSED"
+                  : run.conclusion === "failure"
+                    ? "FAILED"
+                    : String(run.conclusion).toUpperCase()
+              const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
+              const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
+              api.broadcast(`${line} ${run.html_url}`, `github:workflow`)
+            }
+
+            // Track CI state per repo for escalation (always, regardless of notify filter)
+            const key = `${r}:${run.name}`
+            const state = ciState.get(key) ?? { consecutiveFailures: 0 }
+            if (run.conclusion === "failure") {
+              state.consecutiveFailures++
+              ciState.set(key, state)
+
+              if (state.consecutiveFailures === 3) {
+                const pusher = recentPushers.get(r)
+                const pusherInfo = pusher ? ` Last push by ${pusher.actor}.` : ""
+                api.broadcast(
+                  `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`,
+                  "github:ci-alert",
+                )
+
+                // DM sessions that might be responsible — match by repo name in session names
+                const repoShort = r.split("/")[1] ?? r
+                for (const name of api.getSessionNames()) {
+                  if (name.includes(repoShort) || name.includes(repoShort.replace(".dev", ""))) {
+                    api.send(
+                      name,
+                      `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`,
+                      "github:ci-alert",
+                    )
+                  }
+                }
+              } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
+                api.broadcast(
+                  `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`,
+                  "github:ci-alert",
+                )
+              }
+            } else if (run.conclusion === "success") {
+              if (state.consecutiveFailures >= 3) {
+                api.broadcast(
+                  `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`,
+                  "github:ci-recovered",
+                )
+              }
+              state.consecutiveFailures = 0
+              ciState.set(key, state)
+            }
+          }
+        } catch (err) {
+          errors.push(r)
+          log.debug?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+      if (errors.length > 0) {
+        log.warn?.(`github workflows: ${errors.length}/${repos.size} repos failed (network issue)`)
+      }
+    }
+
+    const ac = new AbortController()
+    const timers = createTimers(ac.signal)
+
+    // Rate limit status logging
+    timers.setInterval(
+      () => {
+        log.info?.(
+          `rate limit: ${rateLimitRemaining}/${rateLimitTotal} remaining. Calls: ${apiCallsMade} made, ${apiCallsSaved} saved by ETag`,
+        )
+      },
+      5 * 60 * 1000,
+    )
+
+    // Initial poll
+    void pollEvents()
+
+    // Regular polling
+    timers.setInterval(() => void pollEvents(), pollIntervalSec * 1000)
+
+    // Workflow polling (every 60s, separate endpoint)
+    timers.setInterval(() => void pollWorkflows(), 60_000)
+    // Initial workflow poll after short delay
+    timers.setTimeout(() => void pollWorkflows(), 5_000)
+
+    // Cleanup
+    return () => {
+      ac.abort()
+      saveCursor(cursorPath, cursorState)
+    }
   },
 
   instructions() {

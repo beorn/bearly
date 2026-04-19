@@ -132,191 +132,186 @@ export const accountlyPlugin: TribePluginApi = {
   },
 
   start(api: TribeClientApi) {
-      const ac = new AbortController()
-      const timers = createTimers(ac.signal)
-      const thresholds = getThresholds()
-      const warnedUnavailable = new Set<string>()
-      let lastSwitchTime = 0
-      let lastErrorMessage = ""
-      let lastErrorLoggedAt = 0
-      const SWITCH_COOLDOWN = 300_000 // 5 min
-      let backoffUntil = 0 // 429 backoff timestamp
-      let consecutive429s = 0
-      let lastStatusKey = "" // track state changes to avoid repeat broadcasts
+    const ac = new AbortController()
+    const timers = createTimers(ac.signal)
+    const thresholds = getThresholds()
+    const warnedUnavailable = new Set<string>()
+    let lastSwitchTime = 0
+    let lastErrorMessage = ""
+    let lastErrorLoggedAt = 0
+    const SWITCH_COOLDOWN = 300_000 // 5 min
+    let backoffUntil = 0 // 429 backoff timestamp
+    let consecutive429s = 0
+    let lastStatusKey = "" // track state changes to avoid repeat broadcasts
 
-      const check = async () => {
-        let nextInterval = 300_000 // default: 5 min
+    const check = async () => {
+      let nextInterval = 300_000 // default: 5 min
 
-        // Respect 429 backoff
-        if (Date.now() < backoffUntil) {
-          const remaining = Math.ceil((backoffUntil - Date.now()) / 1000)
-          log.info?.(`429 backoff: ${remaining}s remaining`)
-          return Math.min(backoffUntil - Date.now() + 5_000, 600_000)
+      // Respect 429 backoff
+      if (Date.now() < backoffUntil) {
+        const remaining = Math.ceil((backoffUntil - Date.now()) / 1000)
+        log.info?.(`429 backoff: ${remaining}s remaining`)
+        return Math.min(backoffUntil - Date.now() + 5_000, 600_000)
+      }
+
+      try {
+        const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
+        if (!existsSync(cliPath)) {
+          if (api.claimDedup("accountly:cli-missing")) {
+            api.broadcast("accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
+          }
+          return nextInterval
         }
 
+        // Check quotas via accountly CLI
+        const proc = Bun.spawn(["bun", cliPath, "status", "--json"], {
+          cwd: process.cwd(),
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
+        await proc.exited
+
+        if (proc.exitCode !== 0) {
+          log.warn?.(`accountly status failed (exit ${proc.exitCode}): ${stderr.trim().slice(0, 200)}`)
+          return nextInterval
+        }
+
+        let status: AccountlyStatus
         try {
-          const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
-          if (!existsSync(cliPath)) {
-            if (api.claimDedup("accountly:cli-missing")) {
-              api.broadcast("accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
-            }
-            return nextInterval
-          }
+          status = JSON.parse(stdout) as AccountlyStatus
+        } catch {
+          log.warn?.(`accountly status: invalid JSON output`)
+          return nextInterval
+        }
 
-          // Check quotas via accountly CLI
-          const proc = Bun.spawn(["bun", cliPath, "status", "--json"], {
-            cwd: process.cwd(),
-            stdout: "pipe",
-            stderr: "pipe",
-          })
-          const [stdout, stderr] = await Promise.all([
-            new Response(proc.stdout).text(),
-            new Response(proc.stderr).text(),
-          ])
-          await proc.exited
+        // Defensive null-check: accountly CLI output has been seen with a
+        // missing or non-array `quotas` field (e.g., error envelopes, partial
+        // init). Before this guard every call was crashing with
+        // "TypeError: status.quotas.filter is not a function" and spamming
+        // the daemon warnings channel every HEALTH_POLL_INTERVAL seconds.
+        // See km-tribe.reliability-sweep-0415.
+        if (!Array.isArray(status.quotas)) {
+          log.debug?.(`accountly status missing quotas array — skipping cycle`)
+          return nextInterval
+        }
 
-          if (proc.exitCode !== 0) {
-            log.warn?.(`accountly status failed (exit ${proc.exitCode}): ${stderr.trim().slice(0, 200)}`)
-            return nextInterval
-          }
+        // Broadcast status only on state change (active account, healthy count, or utilization band)
+        const oauthAccounts = status.quotas.filter((q) => q.provider === "claude-oauth")
+        const healthy = oauthAccounts.filter((q) => !q.error).length
+        const maxUtil = getActiveMaxUtilization(status)
+        const utilBand = Math.floor(maxUtil / 10) * 10 // group by 10% bands
+        const statusKey = `${status.active}:${healthy}/${oauthAccounts.length}:${utilBand}`
+        if (statusKey !== lastStatusKey && api.claimDedup(`accountly:status:${statusKey}`)) {
+          lastStatusKey = statusKey
+          api.broadcast(
+            `accountly: ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
+            "health:account:status",
+          )
+        }
 
-          let status: AccountlyStatus
-          try {
-            status = JSON.parse(stdout) as AccountlyStatus
-          } catch {
-            log.warn?.(`accountly status: invalid JSON output`)
-            return nextInterval
-          }
-
-          // Defensive null-check: accountly CLI output has been seen with a
-          // missing or non-array `quotas` field (e.g., error envelopes, partial
-          // init). Before this guard every call was crashing with
-          // "TypeError: status.quotas.filter is not a function" and spamming
-          // the daemon warnings channel every HEALTH_POLL_INTERVAL seconds.
-          // See km-tribe.reliability-sweep-0415.
-          if (!Array.isArray(status.quotas)) {
-            log.debug?.(`accountly status missing quotas array — skipping cycle`)
-            return nextInterval
-          }
-
-          // Broadcast status only on state change (active account, healthy count, or utilization band)
-          const oauthAccounts = status.quotas.filter((q) => q.provider === "claude-oauth")
-          const healthy = oauthAccounts.filter((q) => !q.error).length
-          const maxUtil = getActiveMaxUtilization(status)
-          const utilBand = Math.floor(maxUtil / 10) * 10 // group by 10% bands
-          const statusKey = `${status.active}:${healthy}/${oauthAccounts.length}:${utilBand}`
-          if (statusKey !== lastStatusKey && api.claimDedup(`accountly:status:${statusKey}`)) {
-            lastStatusKey = statusKey
+        // Detect 429 rate-limiting on the usage API
+        const all429 = status.quotas.filter((q) => q.provider === "claude-oauth").every((q) => q.error?.includes("429"))
+        if (all429 && status.quotas.some((q) => q.provider === "claude-oauth")) {
+          consecutive429s++
+          // Exponential backoff: 2min, 4min, 8min, max 10min
+          const backoffMs = Math.min(120_000 * Math.pow(2, consecutive429s - 1), 600_000)
+          backoffUntil = Date.now() + backoffMs
+          log.debug?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
+          if (consecutive429s === 1) {
             api.broadcast(
-              `accountly: ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
-              "health:account:status",
-            )
-          }
-
-          // Detect 429 rate-limiting on the usage API
-          const all429 = status.quotas
-            .filter((q) => q.provider === "claude-oauth")
-            .every((q) => q.error?.includes("429"))
-          if (all429 && status.quotas.some((q) => q.provider === "claude-oauth")) {
-            consecutive429s++
-            // Exponential backoff: 2min, 4min, 8min, max 10min
-            const backoffMs = Math.min(120_000 * Math.pow(2, consecutive429s - 1), 600_000)
-            backoffUntil = Date.now() + backoffMs
-            log.debug?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
-            if (consecutive429s === 1) {
-              api.broadcast(
-                `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`,
-                "health:account:error",
-              )
-            }
-            return backoffMs
-          }
-          consecutive429s = 0
-
-          // Adaptive interval based on current utilization
-          nextInterval = computePollInterval(maxUtil)
-
-          // Warn about unavailable accounts (skip 429 errors — those are transient)
-          const unavailable = findUnavailable(status).filter((u) => !u.error.includes("429"))
-          for (const { name, error } of unavailable) {
-            if (!warnedUnavailable.has(name)) {
-              warnedUnavailable.add(name)
-              if (api.claimDedup(`accountly:unavailable:${name}`)) {
-                api.send(
-                  "chief",
-                  `Account "${name}" needs attention: ${error}. Run: /login then bun accountly import`,
-                  "health:account:unavailable",
-                )
-              }
-            }
-          }
-          // Clear warnings for recovered accounts
-          for (const warned of warnedUnavailable) {
-            if (!unavailable.some((u) => u.name === warned)) {
-              warnedUnavailable.delete(warned)
-            }
-          }
-
-          // Check if auto-switch needed
-          const decision = shouldSwitch(status, thresholds)
-          if (!decision.switch) return nextInterval
-
-          // Cooldown check
-          if (Date.now() - lastSwitchTime < SWITCH_COOLDOWN) {
-            log.info?.(`switch needed but cooldown active: ${decision.reason}`)
-            return nextInterval
-          }
-
-          log.info?.(`auto-switching: ${decision.reason}`)
-          const autoProc = Bun.spawn(["bun", cliPath, "auto"], {
-            cwd: process.cwd(),
-            stdout: "pipe",
-            stderr: "pipe",
-          })
-          const [autoOut, autoErr] = await Promise.all([
-            new Response(autoProc.stdout).text(),
-            new Response(autoProc.stderr).text(),
-          ])
-          await autoProc.exited
-
-          if (autoProc.exitCode === 0) {
-            lastSwitchTime = Date.now()
-            api.broadcast(`Auto-switched account — ${decision.reason}`, "health:account:switched")
-          } else {
-            api.send(
-              "chief",
-              `Switch needed (${decision.reason}) but failed: ${(autoErr || autoOut).trim().slice(0, 200)}`,
+              `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`,
               "health:account:error",
             )
           }
-        } catch (err) {
-          // Rate-limit: only log once per unique error message per 10 minutes.
-          // Previously this fired every poll (~5 min), flooding the warnings
-          // channel with the same TypeError. See km-tribe.reliability-sweep-0415.
-          const msg = err instanceof Error ? err.message : String(err)
-          const now = Date.now()
-          if (msg !== lastErrorMessage || now - lastErrorLoggedAt > 10 * 60_000) {
-            log.warn?.(`accountly plugin error: ${msg}`)
-            lastErrorMessage = msg
-            lastErrorLoggedAt = now
+          return backoffMs
+        }
+        consecutive429s = 0
+
+        // Adaptive interval based on current utilization
+        nextInterval = computePollInterval(maxUtil)
+
+        // Warn about unavailable accounts (skip 429 errors — those are transient)
+        const unavailable = findUnavailable(status).filter((u) => !u.error.includes("429"))
+        for (const { name, error } of unavailable) {
+          if (!warnedUnavailable.has(name)) {
+            warnedUnavailable.add(name)
+            if (api.claimDedup(`accountly:unavailable:${name}`)) {
+              api.send(
+                "chief",
+                `Account "${name}" needs attention: ${error}. Run: /login then bun accountly import`,
+                "health:account:unavailable",
+              )
+            }
+          }
+        }
+        // Clear warnings for recovered accounts
+        for (const warned of warnedUnavailable) {
+          if (!unavailable.some((u) => u.name === warned)) {
+            warnedUnavailable.delete(warned)
           }
         }
 
-        return nextInterval
+        // Check if auto-switch needed
+        const decision = shouldSwitch(status, thresholds)
+        if (!decision.switch) return nextInterval
+
+        // Cooldown check
+        if (Date.now() - lastSwitchTime < SWITCH_COOLDOWN) {
+          log.info?.(`switch needed but cooldown active: ${decision.reason}`)
+          return nextInterval
+        }
+
+        log.info?.(`auto-switching: ${decision.reason}`)
+        const autoProc = Bun.spawn(["bun", cliPath, "auto"], {
+          cwd: process.cwd(),
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        const [autoOut, autoErr] = await Promise.all([
+          new Response(autoProc.stdout).text(),
+          new Response(autoProc.stderr).text(),
+        ])
+        await autoProc.exited
+
+        if (autoProc.exitCode === 0) {
+          lastSwitchTime = Date.now()
+          api.broadcast(`Auto-switched account — ${decision.reason}`, "health:account:switched")
+        } else {
+          api.send(
+            "chief",
+            `Switch needed (${decision.reason}) but failed: ${(autoErr || autoOut).trim().slice(0, 200)}`,
+            "health:account:error",
+          )
+        }
+      } catch (err) {
+        // Rate-limit: only log once per unique error message per 10 minutes.
+        // Previously this fired every poll (~5 min), flooding the warnings
+        // channel with the same TypeError. See km-tribe.reliability-sweep-0415.
+        const msg = err instanceof Error ? err.message : String(err)
+        const now = Date.now()
+        if (msg !== lastErrorMessage || now - lastErrorLoggedAt > 10 * 60_000) {
+          log.warn?.(`accountly plugin error: ${msg}`)
+          lastErrorMessage = msg
+          lastErrorLoggedAt = now
+        }
       }
 
-      // Recursive setTimeout for adaptive polling
-      const schedule = () => {
-        timers.setTimeout(async () => {
-          const interval = await check()
-          schedule.interval = interval
-          schedule()
-        }, schedule.interval)
-      }
-      schedule.interval = 120_000 // initial check after 2 min (gentler startup)
-      schedule()
+      return nextInterval
+    }
 
-      return () => ac.abort()
+    // Recursive setTimeout for adaptive polling
+    const schedule = () => {
+      timers.setTimeout(async () => {
+        const interval = await check()
+        schedule.interval = interval
+        schedule()
+      }, schedule.interval)
+    }
+    schedule.interval = 120_000 // initial check after 2 min (gentler startup)
+    schedule()
+
+    return () => ac.abort()
   },
 
   instructions() {

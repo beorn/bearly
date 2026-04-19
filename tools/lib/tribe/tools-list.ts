@@ -146,8 +146,7 @@ export const TOOLS_LIST = [
   },
   {
     name: "tribe.chief",
-    description:
-      "Show the current chief — derived from connection order, or explicitly claimed via tribe.claim-chief.",
+    description: "Show the current chief — derived from connection order, or explicitly claimed via tribe.claim-chief.",
     inputSchema: {
       type: "object" as const,
       properties: {},

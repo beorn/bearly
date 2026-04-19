@@ -93,11 +93,7 @@ export const beadsPlugin: TribePluginApi = {
             if (!prevState) {
               // New bead
               if (api.claimDedup(`new:${entry.id}`)) {
-                api.broadcast(
-                  `New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`,
-                  "bead:new",
-                  entry.id,
-                )
+                api.broadcast(`New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id)
               }
             } else if (currentState.startsWith("claimed:")) {
               if (api.claimDedup(`claimed:${entry.id}`)) {

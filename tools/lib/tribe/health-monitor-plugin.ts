@@ -1111,193 +1111,193 @@ export const healthMonitorPlugin: TribePluginApi = {
   },
 
   start(api: TribeClientApi) {
-      const pollIntervalSec = parseInt(process.env.HEALTH_POLL_INTERVAL ?? "10", 10) || 10
-      const thresholds = defaultThresholds()
-      const alertState = createAlertState()
+    const pollIntervalSec = parseInt(process.env.HEALTH_POLL_INTERVAL ?? "10", 10) || 10
+    const thresholds = defaultThresholds()
+    const alertState = createAlertState()
 
-      const ac = new AbortController()
-      const timers = createTimers(ac.signal)
+    const ac = new AbortController()
+    const timers = createTimers(ac.signal)
 
-      let ghRateSampleCount = 0
-      let ioSampleCount = 0
+    let ghRateSampleCount = 0
+    let ioSampleCount = 0
 
-      log.info?.(
-        `starting: poll=${pollIntervalSec}s, cpu warn=${thresholds.cpuWarningMultiplier}x crit=${thresholds.cpuCriticalMultiplier}x, mem warn=${thresholds.memWarningPercent}% crit=${thresholds.memCriticalPercent}%`,
-      )
+    log.info?.(
+      `starting: poll=${pollIntervalSec}s, cpu warn=${thresholds.cpuWarningMultiplier}x crit=${thresholds.cpuCriticalMultiplier}x, mem warn=${thresholds.memWarningPercent}% crit=${thresholds.memCriticalPercent}%`,
+    )
 
-      async function sample(): Promise<void> {
-        try {
-          const { metrics, pidToParent } = await collectFullMetrics()
-          const alerts = evaluateAlerts(metrics, thresholds, alertState)
-          const sessions = api.getActiveSessions()
+    async function sample(): Promise<void> {
+      try {
+        const { metrics, pidToParent } = await collectFullMetrics()
+        const alerts = evaluateAlerts(metrics, thresholds, alertState)
+        const sessions = api.getActiveSessions()
 
-          for (const alert of alerts) {
-            // Group offenders by session
-            const sessionLoad = new Map<string, { total: number; procs: string[] }>()
-            for (const p of alert.topOffenders) {
-              const session = attributeToSession(p.pid, pidToParent, sessions)
-              const key = session ?? "unattributed"
-              const entry = sessionLoad.get(key) ?? { total: 0, procs: [] }
-              entry.total += p.cpu
-              entry.procs.push(`${p.cpu}% ${p.command.slice(0, 30)}`)
-              sessionLoad.set(key, entry)
+        for (const alert of alerts) {
+          // Group offenders by session
+          const sessionLoad = new Map<string, { total: number; procs: string[] }>()
+          for (const p of alert.topOffenders) {
+            const session = attributeToSession(p.pid, pidToParent, sessions)
+            const key = session ?? "unattributed"
+            const entry = sessionLoad.get(key) ?? { total: 0, procs: [] }
+            entry.total += p.cpu
+            entry.procs.push(`${p.cpu}% ${p.command.slice(0, 30)}`)
+            sessionLoad.set(key, entry)
+          }
+
+          // Format: "km-3: 45% bun vitest | unattributed: 8% mds_stores"
+          const parts: string[] = []
+          for (const [name, load] of sessionLoad) {
+            parts.push(`${name}: ${load.procs.join(", ")}`)
+          }
+          const attribution = parts.length > 0 ? `. ${parts.join(" | ")}` : ""
+          const msg = `${alert.message}${attribution}`
+          log.info?.(`alert: ${msg}`)
+
+          // Route: DM each responsible session
+          const attributedSessions = new Set<string>()
+          for (const [name] of sessionLoad) {
+            if (name !== "unattributed") {
+              attributedSessions.add(name)
+              api.send(name, msg, `health:${alert.type}:${alert.severity}`)
             }
+          }
 
-            // Format: "km-3: 45% bun vitest | unattributed: 8% mds_stores"
-            const parts: string[] = []
-            for (const [name, load] of sessionLoad) {
-              parts.push(`${name}: ${load.procs.join(", ")}`)
-            }
-            const attribution = parts.length > 0 ? `. ${parts.join(" | ")}` : ""
-            const msg = `${alert.message}${attribution}`
-            log.info?.(`alert: ${msg}`)
-
-            // Route: DM each responsible session
-            const attributedSessions = new Set<string>()
-            for (const [name] of sessionLoad) {
-              if (name !== "unattributed") {
-                attributedSessions.add(name)
-                api.send(name, msg, `health:${alert.type}:${alert.severity}`)
-              }
-            }
-
-            // Critical: also broadcast to everyone
-            if (alert.severity === "critical") {
-              api.broadcast(msg, `health:${alert.type}:${alert.severity}`)
-            } else if (attributedSessions.size === 0 && api.hasChief()) {
-              // Warning with no attributed sessions (e.g. disk, worktree): send to chief
+          // Critical: also broadcast to everyone
+          if (alert.severity === "critical") {
+            api.broadcast(msg, `health:${alert.type}:${alert.severity}`)
+          } else if (attributedSessions.size === 0 && api.hasChief()) {
+            // Warning with no attributed sessions (e.g. disk, worktree): send to chief
+            api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
+          } else {
+            // Warning: send to chief if unattributed processes exist
+            if (sessionLoad.has("unattributed") && api.hasChief()) {
               api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
-            } else {
-              // Warning: send to chief if unattributed processes exist
-              if (sessionLoad.has("unattributed") && api.hasChief()) {
-                api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
-              }
             }
           }
-
-          // --- Process reaper ---
-          await checkReaper(metrics.cpu.topProcesses, pidToParent, sessions, thresholds, alertState, api)
-
-          // --- Git lock detection (main repo + submodules) ---
-          const gitDir = `${process.cwd()}/.git`
-          const locks = await detectGitLocks(gitDir)
-          const now = Date.now()
-          const activeLockPaths = new Set<string>()
-
-          for (const lock of locks) {
-            activeLockPaths.add(lock.path)
-
-            // Track when we first saw this lock
-            if (!alertState.lockFirstSeen.has(lock.path)) {
-              alertState.lockFirstSeen.set(lock.path, now)
-            }
-            const firstSeen = alertState.lockFirstSeen.get(lock.path)!
-            const durationMs = now - firstSeen
-            const durationSec = Math.round(durationMs / 1000)
-
-            // Attribute to a session if possible
-            const sessionName = lock.holder ? attributeToSession(lock.holder.pid, pidToParent, sessions) : null
-
-            // First detection: broadcast lock info (suppress transient locks <2s)
-            const lockKey = `git-lock:${lock.path}`
-            if (!alertState.firedAlerts.has(lockKey) && durationMs >= LOCK_ALERT_THRESHOLD_MS) {
-              alertState.gitLockDetected = true
-              alertState.firedAlerts.add(lockKey)
-              const lockMsg = formatLockMessage(lock, sessionName, durationSec)
-              log.info?.(`alert: ${lockMsg}`)
-
-              // DM responsible session
-              if (sessionName) {
-                api.send(sessionName, lockMsg, "health:git-lock:warning")
-              }
-              // Broadcast to tribe
-              api.broadcast(lockMsg, "health:git-lock:warning")
-            }
-
-            // Stale lock escalation: >30s
-            if (durationMs > LOCK_STALE_THRESHOLD_MS && !alertState.lockStaleWarned.has(lock.path)) {
-              alertState.lockStaleWarned.add(lock.path)
-              const staleMsg = formatStaleLockMessage(lock, sessionName, durationMs / 1000)
-              log.info?.(`alert: ${staleMsg}`)
-              api.broadcast(staleMsg, "health:git-lock:warning")
-            }
-          }
-
-          // Clean up tracking for released locks
-          for (const [path] of alertState.lockFirstSeen) {
-            if (!activeLockPaths.has(path)) {
-              alertState.lockFirstSeen.delete(path)
-              alertState.lockStaleWarned.delete(path)
-              alertState.firedAlerts.delete(`git-lock:${path}`)
-            }
-          }
-          if (locks.length === 0 && alertState.gitLockDetected) {
-            alertState.gitLockDetected = false
-          }
-
-          // --- Disk I/O saturation (every 3rd sample — ~30s) ---
-          ioSampleCount++
-          if (ioSampleCount % 3 === 0) {
-            try {
-              const ioProc = Bun.spawn(["iostat", "-d", "-c", "2", "-w", "1"], { stdout: "pipe", stderr: "ignore" })
-              const ioOutput = await new Response(ioProc.stdout).text()
-              const io = parseIostatOutput(ioOutput)
-              if (io && io.readWriteMBps > thresholds.diskIoWarningMBps) {
-                alertState.ioAboveWarning++
-                if (alertState.ioAboveWarning >= 2 && !alertState.firedAlerts.has("disk-io:warning")) {
-                  alertState.firedAlerts.add("disk-io:warning")
-                  const msg = `Disk I/O warning: ${io.readWriteMBps.toFixed(0)} MB/s sustained (threshold: ${thresholds.diskIoWarningMBps} MB/s). Multiple agents may be running tests simultaneously.`
-                  log.info?.(`alert: ${msg}`)
-                  api.broadcast(msg, "health:disk-io:warning")
-                }
-              } else {
-                alertState.ioAboveWarning = 0
-                alertState.firedAlerts.delete("disk-io:warning")
-              }
-            } catch {
-              // iostat not available — skip silently
-            }
-          }
-
-          // --- GitHub API rate limit (every 5th sample — ~50s) ---
-          ghRateSampleCount++
-          if (ghRateSampleCount % 5 === 0) {
-            try {
-              const ghProc = Bun.spawn(["gh", "api", "rate_limit"], { stdout: "pipe", stderr: "ignore" })
-              const ghOutput = await new Response(ghProc.stdout).text()
-              const rateLimit = parseGhRateLimit(ghOutput)
-              if (rateLimit) {
-                const usagePercent = ((rateLimit.limit - rateLimit.remaining) / rateLimit.limit) * 100
-                const remainingPercent = 100 - usagePercent
-                if (
-                  remainingPercent < thresholds.ghRateLimitWarning &&
-                  !alertState.firedAlerts.has("gh-rate-limit:warning")
-                ) {
-                  alertState.firedAlerts.add("gh-rate-limit:warning")
-                  const resetIn = Math.max(0, Math.round((rateLimit.resetAt * 1000 - Date.now()) / 60000))
-                  const msg = `GitHub API rate limit warning: ${rateLimit.remaining}/${rateLimit.limit} remaining (${Math.round(remainingPercent)}%). Resets in ${resetIn}min.`
-                  log.info?.(`alert: ${msg}`)
-                  api.broadcast(msg, "health:gh-rate-limit:warning")
-                } else if (remainingPercent >= thresholds.ghRateLimitWarning) {
-                  alertState.firedAlerts.delete("gh-rate-limit:warning")
-                }
-              }
-            } catch {
-              // gh not available — skip silently
-            }
-          }
-        } catch (err) {
-          log.error?.(`sample failed: ${err instanceof Error ? err.message : err}`)
         }
+
+        // --- Process reaper ---
+        await checkReaper(metrics.cpu.topProcesses, pidToParent, sessions, thresholds, alertState, api)
+
+        // --- Git lock detection (main repo + submodules) ---
+        const gitDir = `${process.cwd()}/.git`
+        const locks = await detectGitLocks(gitDir)
+        const now = Date.now()
+        const activeLockPaths = new Set<string>()
+
+        for (const lock of locks) {
+          activeLockPaths.add(lock.path)
+
+          // Track when we first saw this lock
+          if (!alertState.lockFirstSeen.has(lock.path)) {
+            alertState.lockFirstSeen.set(lock.path, now)
+          }
+          const firstSeen = alertState.lockFirstSeen.get(lock.path)!
+          const durationMs = now - firstSeen
+          const durationSec = Math.round(durationMs / 1000)
+
+          // Attribute to a session if possible
+          const sessionName = lock.holder ? attributeToSession(lock.holder.pid, pidToParent, sessions) : null
+
+          // First detection: broadcast lock info (suppress transient locks <2s)
+          const lockKey = `git-lock:${lock.path}`
+          if (!alertState.firedAlerts.has(lockKey) && durationMs >= LOCK_ALERT_THRESHOLD_MS) {
+            alertState.gitLockDetected = true
+            alertState.firedAlerts.add(lockKey)
+            const lockMsg = formatLockMessage(lock, sessionName, durationSec)
+            log.info?.(`alert: ${lockMsg}`)
+
+            // DM responsible session
+            if (sessionName) {
+              api.send(sessionName, lockMsg, "health:git-lock:warning")
+            }
+            // Broadcast to tribe
+            api.broadcast(lockMsg, "health:git-lock:warning")
+          }
+
+          // Stale lock escalation: >30s
+          if (durationMs > LOCK_STALE_THRESHOLD_MS && !alertState.lockStaleWarned.has(lock.path)) {
+            alertState.lockStaleWarned.add(lock.path)
+            const staleMsg = formatStaleLockMessage(lock, sessionName, durationMs / 1000)
+            log.info?.(`alert: ${staleMsg}`)
+            api.broadcast(staleMsg, "health:git-lock:warning")
+          }
+        }
+
+        // Clean up tracking for released locks
+        for (const [path] of alertState.lockFirstSeen) {
+          if (!activeLockPaths.has(path)) {
+            alertState.lockFirstSeen.delete(path)
+            alertState.lockStaleWarned.delete(path)
+            alertState.firedAlerts.delete(`git-lock:${path}`)
+          }
+        }
+        if (locks.length === 0 && alertState.gitLockDetected) {
+          alertState.gitLockDetected = false
+        }
+
+        // --- Disk I/O saturation (every 3rd sample — ~30s) ---
+        ioSampleCount++
+        if (ioSampleCount % 3 === 0) {
+          try {
+            const ioProc = Bun.spawn(["iostat", "-d", "-c", "2", "-w", "1"], { stdout: "pipe", stderr: "ignore" })
+            const ioOutput = await new Response(ioProc.stdout).text()
+            const io = parseIostatOutput(ioOutput)
+            if (io && io.readWriteMBps > thresholds.diskIoWarningMBps) {
+              alertState.ioAboveWarning++
+              if (alertState.ioAboveWarning >= 2 && !alertState.firedAlerts.has("disk-io:warning")) {
+                alertState.firedAlerts.add("disk-io:warning")
+                const msg = `Disk I/O warning: ${io.readWriteMBps.toFixed(0)} MB/s sustained (threshold: ${thresholds.diskIoWarningMBps} MB/s). Multiple agents may be running tests simultaneously.`
+                log.info?.(`alert: ${msg}`)
+                api.broadcast(msg, "health:disk-io:warning")
+              }
+            } else {
+              alertState.ioAboveWarning = 0
+              alertState.firedAlerts.delete("disk-io:warning")
+            }
+          } catch {
+            // iostat not available — skip silently
+          }
+        }
+
+        // --- GitHub API rate limit (every 5th sample — ~50s) ---
+        ghRateSampleCount++
+        if (ghRateSampleCount % 5 === 0) {
+          try {
+            const ghProc = Bun.spawn(["gh", "api", "rate_limit"], { stdout: "pipe", stderr: "ignore" })
+            const ghOutput = await new Response(ghProc.stdout).text()
+            const rateLimit = parseGhRateLimit(ghOutput)
+            if (rateLimit) {
+              const usagePercent = ((rateLimit.limit - rateLimit.remaining) / rateLimit.limit) * 100
+              const remainingPercent = 100 - usagePercent
+              if (
+                remainingPercent < thresholds.ghRateLimitWarning &&
+                !alertState.firedAlerts.has("gh-rate-limit:warning")
+              ) {
+                alertState.firedAlerts.add("gh-rate-limit:warning")
+                const resetIn = Math.max(0, Math.round((rateLimit.resetAt * 1000 - Date.now()) / 60000))
+                const msg = `GitHub API rate limit warning: ${rateLimit.remaining}/${rateLimit.limit} remaining (${Math.round(remainingPercent)}%). Resets in ${resetIn}min.`
+                log.info?.(`alert: ${msg}`)
+                api.broadcast(msg, "health:gh-rate-limit:warning")
+              } else if (remainingPercent >= thresholds.ghRateLimitWarning) {
+                alertState.firedAlerts.delete("gh-rate-limit:warning")
+              }
+            }
+          } catch {
+            // gh not available — skip silently
+          }
+        }
+      } catch (err) {
+        log.error?.(`sample failed: ${err instanceof Error ? err.message : err}`)
       }
+    }
 
-      // Initial sample after a short delay (let daemon finish startup)
-      timers.setTimeout(() => void sample(), 2_000)
+    // Initial sample after a short delay (let daemon finish startup)
+    timers.setTimeout(() => void sample(), 2_000)
 
-      // Regular sampling
-      timers.setInterval(() => void sample(), pollIntervalSec * 1000)
+    // Regular sampling
+    timers.setInterval(() => void sample(), pollIntervalSec * 1000)
 
-      return () => ac.abort()
+    return () => ac.abort()
   },
 
   instructions() {

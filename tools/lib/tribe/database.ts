@@ -256,9 +256,9 @@ const MIGRATIONS: readonly Migration[] = [
       // runs below — we guard by checking sqlite_master so the ALTER is only
       // issued against a pre-existing table. Fresh installs get the `kind`
       // column from the CREATE TABLE itself.
-      const hasMessages = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
-        .get() as { name: string } | null
+      const hasMessages = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get() as {
+        name: string
+      } | null
       if (!hasMessages) return
       const cols = new Set(
         (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
