@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { deriveChiefId } from "../tools/tribe-daemon.ts"
+import { deriveChiefId } from "../tools/lib/tribe/chief.ts"
 
 // ---------------------------------------------------------------------------
 // Minimal ClientSession fixture — deriveChiefId only reads a few fields, so

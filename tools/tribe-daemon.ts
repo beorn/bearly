@@ -155,46 +155,9 @@ const socketToClient = new Map<NetSocket, string>() // socket → connId
 // eligible — they're neutral observers or half-connected.
 // ---------------------------------------------------------------------------
 
+import { deriveChiefId, deriveChiefInfo, isChiefEligible } from "./lib/tribe/chief.ts"
+
 let chiefClaim: string | null = null // sessionId of the explicit claimer, if any
-
-function isChiefEligible(c: ClientSession): boolean {
-  if (c.name === "daemon") return false
-  if (c.name.startsWith("watch-")) return false
-  if (c.name.startsWith("pending-")) return false
-  return true
-}
-
-/**
- * Return the ctx.sessionId of the current chief, or null if nobody is eligible.
- *
- * Precedence:
- *   1. chiefClaim (if its session is still connected and eligible)
- *   2. longest-connected eligible client (smallest registeredAt)
- *      — ties broken by name alphabetical for reproducibility
- */
-export function deriveChiefId(candidates: Iterable<ClientSession>, claim: string | null = chiefClaim): string | null {
-  const list = Array.from(candidates).filter(isChiefEligible)
-  if (claim !== null) {
-    const claimer = list.find((c) => c.ctx.sessionId === claim)
-    if (claimer) return claimer.ctx.sessionId
-    // claim stale (session disconnected) — fall through to derivation
-  }
-  if (list.length === 0) return null
-  const sorted = [...list].sort((a, b) => {
-    if (a.registeredAt !== b.registeredAt) return a.registeredAt - b.registeredAt
-    return a.name.localeCompare(b.name)
-  })
-  return sorted[0]!.ctx.sessionId
-}
-
-function deriveChiefInfo(candidates: Iterable<ClientSession>): { id: string; name: string; claimed: boolean } | null {
-  const id = deriveChiefId(candidates)
-  if (!id) return null
-  const list = Array.from(candidates)
-  const client = list.find((c) => c.ctx.sessionId === id)
-  if (!client) return null
-  return { id, name: client.name, claimed: chiefClaim === id }
-}
 
 function claimChiefFor(sessionId: string, name: string): void {
   chiefClaim = sessionId
@@ -238,8 +201,8 @@ const DAEMON_HANDLER_OPTS = {
   cleanup: () => {},
   userRenamed: false,
   setUserRenamed: () => {},
-  getChiefId: () => deriveChiefId(clients.values()),
-  getChiefInfo: () => deriveChiefInfo(clients.values()),
+  getChiefId: () => deriveChiefId(clients.values(), chiefClaim),
+  getChiefInfo: () => deriveChiefInfo(clients.values(), chiefClaim),
   claimChief: claimChiefFor,
   releaseChief: releaseChiefFor,
   getActiveSessionIds,
@@ -421,7 +384,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         }
 
         // Chief derived from connection order (or explicit claim).
-        const chiefInfo = deriveChiefInfo(clients.values())
+        const chiefInfo = deriveChiefInfo(clients.values(), chiefClaim)
         const chiefName = chiefInfo?.name ?? "none"
 
         // Return current coordination state for this project
@@ -697,7 +660,7 @@ const pluginCtx: PluginContext = {
     pushNewMessages()
   },
   hasChief() {
-    return deriveChiefId(clients.values()) !== null
+    return deriveChiefId(clients.values(), chiefClaim) !== null
   },
   hasRecentMessage(contentPrefix) {
     const since = Date.now() - 300_000
