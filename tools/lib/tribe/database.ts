@@ -61,6 +61,7 @@ export function openDatabase(path: string): Database {
 		type       TEXT NOT NULL,
 		sender     TEXT NOT NULL,
 		recipient  TEXT NOT NULL,
+		kind       TEXT NOT NULL DEFAULT 'direct',
 		content    TEXT NOT NULL,
 		bead_id    TEXT,
 		ref        TEXT,
@@ -248,6 +249,37 @@ const MIGRATIONS: readonly Migration[] = [
       db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
     },
   },
+  {
+    version: 7,
+    name: "add-messages-kind-replace-log-sentinel",
+    up(db) {
+      // km-tribe.polish-sweep item 3: replace the `recipient='log'` string
+      // sentinel with a typed `kind` column. Recipients go back to being real
+      // names (session id or '*'); delivery filters on `kind='event'` to skip
+      // journal rows.
+      //
+      // Fresh installs reach this point before the CREATE TABLE for messages
+      // runs below — we guard by checking sqlite_master so the ALTER is only
+      // issued against a pre-existing table. Fresh installs get the `kind`
+      // column from the CREATE TABLE itself.
+      const hasMessages = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        .get() as { name: string } | null
+      if (!hasMessages) return
+      const cols = new Set(
+        (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
+      )
+      if (!cols.has("kind")) {
+        db.run("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'direct'")
+      }
+      // Backfill: event rows (recipient='log') become kind='event' with recipient='*'.
+      db.run("UPDATE messages SET kind = 'event' WHERE recipient = 'log'")
+      db.run("UPDATE messages SET recipient = '*' WHERE recipient = 'log'")
+      // Broadcasts to '*' that aren't events get tagged as kind='broadcast'
+      // so the typed column is maximally informative after migration.
+      db.run("UPDATE messages SET kind = 'broadcast' WHERE recipient = '*' AND kind = 'direct'")
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -302,8 +334,8 @@ export function createStatements(db: Database) {
 	`),
 
     insertMessage: db.prepare(`
-		INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts)
-		VALUES ($id, $type, $sender, $recipient, $content, $bead_id, $ref, $ts)
+		INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts)
+		VALUES ($id, $type, $sender, $recipient, $kind, $content, $bead_id, $ref, $ts)
 	`),
 
     allSessions: db.prepare(
@@ -313,7 +345,7 @@ export function createStatements(db: Database) {
     messageHistory: db.prepare(`
 		SELECT * FROM messages
 		WHERE (sender = $name OR recipient = $name OR recipient = '*')
-		AND type NOT LIKE 'event.%'
+		AND kind != 'event'
 		ORDER BY ts DESC
 		LIMIT $limit
 	`),

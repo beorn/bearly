@@ -7,6 +7,57 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — typed `kind` column replaces `recipient='log'` sentinel (km-tribe.polish-sweep item 3)
+
+`messages` now carries a typed `kind` column — one of `direct`, `broadcast`,
+or `event` — in addition to the existing `recipient` column. The former
+string sentinel `recipient = 'log'` (which meant "never deliver, but keep
+in the journal for retro/debug") has been removed entirely. Recipients are
+now always real names: a session id for direct messages or `'*'` for
+broadcasts and event rows; the delivery filter consults `kind` to decide
+whether a row is journal-only.
+
+Why: a stringly-typed sentinel overloaded the recipient field with two
+orthogonal meanings ("who is this for" vs "is this deliverable") and
+forced delivery code to special-case a magic string. The typed column
+separates the concerns cleanly.
+
+Schema changes (`tools/lib/tribe/database.ts`):
+
+- CREATE TABLE `messages` gains `kind TEXT NOT NULL DEFAULT 'direct'` for
+  fresh installs.
+- Migration v7 adds the column to existing databases (guarded with
+  sqlite_master lookup so fresh installs reach the CREATE TABLE path
+  unimpeded), then backfills: every `recipient='log'` row becomes
+  `kind='event'` with `recipient='*'`; every remaining `recipient='*'`
+  broadcast row is tagged `kind='broadcast'`.
+- `insertMessage` prepared statement writes `$kind`.
+- `messageHistory` filters `kind != 'event'` (replaces the legacy
+  `type NOT LIKE 'event.%'` hack).
+
+Messaging changes (`tools/lib/tribe/messaging.ts`):
+
+- New exported type `MessageKind = "direct" | "broadcast" | "event"`.
+- `sendMessage` gains an optional `kind` parameter (default `"direct"`,
+  auto-upgraded to `"broadcast"` when recipient is `'*'`).
+- `logEvent` sets `recipient='*'` + `kind='event'` (was `recipient='log'`).
+  Journal-only semantics are preserved — the delivery filter skips
+  `kind='event'` before fanning out.
+
+Daemon changes (`tools/tribe-daemon.ts`):
+
+- `broadcastToConnected` drops the `recipient === 'log'` special case
+  and instead returns early when `info.kind === 'event'`.
+- `logActivity`, `tribeClientApi.send/broadcast`, and `broadcastLog`
+  forward the appropriate `kind` to `sendMessage`.
+
+Retro (`tools/lib/tribe/retro.ts`):
+
+- Query split switched from `type NOT LIKE 'event.%'` /
+  `type LIKE 'event.%'` to `kind != 'event'` / `kind = 'event'`. Timeline
+  event extraction is unchanged because `type` still carries the
+  `event.<name>` prefix for formatting.
+
 ### Changed — typed `role` enum replaces name-prefix eligibility (km-tribe.polish-sweep item 2)
 
 `TribeRole` is now the closed union `"daemon" | "chief" | "member" | "watch" | "pending"`

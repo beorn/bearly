@@ -263,9 +263,12 @@ const DAEMON_HANDLER_OPTS = {
     })),
     chief: deriveChiefInfo(clients.values(), chiefClaim),
     chiefClaim,
-    cursors: db
-      .prepare("SELECT id, name, last_delivered_ts, last_delivered_seq FROM sessions")
-      .all() as Array<{ id: string; name: string; last_delivered_ts: number | null; last_delivered_seq: number | null }>,
+    cursors: db.prepare("SELECT id, name, last_delivered_ts, last_delivered_seq FROM sessions").all() as Array<{
+      id: string
+      name: string
+      last_delivered_ts: number | null
+      last_delivered_seq: number | null
+    }>,
   }),
 } as const
 
@@ -285,7 +288,7 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
  *  Writes to DB; the messaging layer's fanout hook delivers to connected clients
  *  synchronously (see broadcastToConnected). No polling tick involved. */
 function logActivity(type: string, content: string): void {
-  sendMessage(daemonCtx, "*", content, type)
+  sendMessage(daemonCtx, "*", content, type, undefined, undefined, "broadcast")
 }
 
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
@@ -331,11 +334,17 @@ function broadcastToConnected(info: {
   ts: number
   rowid: number
   type: string
+  kind: "direct" | "broadcast" | "event"
   sender: string
   recipient: string
   content: string
   bead_id: string | null
 }): void {
+  // Journal-only rows (kind='event') stay durable in SQLite but are never
+  // delivered to any connected client. This replaced the former
+  // `recipient='log'` string sentinel (km-tribe.polish-sweep item 3).
+  if (info.kind === "event") return
+
   const params: Record<string, unknown> = {
     from: info.sender,
     type: info.type,
@@ -352,10 +361,8 @@ function broadcastToConnected(info: {
     if (!isWatch) {
       if (info.recipient !== "*" && info.recipient !== client.name) continue
     }
-    // Skip half-registered clients (role=pending placeholder), and the
-    // sentinel 'log' recipient used by logEvent (never delivered).
+    // Skip half-registered clients (role=pending placeholder).
     if (client.role === "pending") continue
-    if (info.recipient === "log") continue
 
     try {
       client.socket.write(notification)
@@ -450,9 +457,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           // role=pending/watch leftovers (they'd route poorly on reconnect).
           const prev = claudeSessionId
             ? (db
-                .prepare(
-                  "SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1",
-                )
+                .prepare("SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
                 .get(claudeSessionId) as { name: string; role: string } | null)
             : null
           if (prev && !prev.name.startsWith("member-") && prev.role !== "pending" && prev.role !== "watch") {
@@ -872,10 +877,11 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 const tribeClientApi: TribeClientApi = {
   send(recipient, content, type, beadId) {
     // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
-    sendMessage(daemonCtx, recipient, content, type, beadId)
+    // Kind is inferred: '*' → 'broadcast', anything else → 'direct'.
+    sendMessage(daemonCtx, recipient, content, type, beadId, undefined, recipient === "*" ? "broadcast" : "direct")
   },
   broadcast(content, type, beadId) {
-    sendMessage(daemonCtx, "*", content, type, beadId)
+    sendMessage(daemonCtx, "*", content, type, beadId, undefined, "broadcast")
   },
   claimDedup(key) {
     // Single writer — no need for BEGIN IMMEDIATE in daemon mode
@@ -904,7 +910,7 @@ const tribeClientApi: TribeClientApi = {
 // Wire up log broadcasting now that tribeClientApi is ready
 broadcastLog = (msg, type) => {
   // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
-  sendMessage(daemonCtx, "*", msg, type)
+  sendMessage(daemonCtx, "*", msg, type, undefined, undefined, "broadcast")
 }
 
 const plugins = process.env.TRIBE_NO_PLUGINS

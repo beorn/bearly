@@ -26,7 +26,7 @@ Cross-session coordination. Parse the subcommand from ARGUMENTS.
 | `/tribe whoami`                | Show this session's name, role, and domains                                                                                                                         |
 | `/tribe db <sql>`              | `sqlite3 <tribe-db-path> "<sql>"` — raw query                                                                                                                       |
 | `/tribe log`                   | `sqlite3 <tribe-db-path> "SELECT sender, recipient, type, substr(content,1,80), datetime(ts/1000,'unixepoch','localtime') FROM messages ORDER BY ts DESC LIMIT 20"` |
-| `/tribe events`                | `sqlite3 <tribe-db-path> "SELECT type, sender, datetime(ts/1000,'unixepoch','localtime') FROM messages WHERE type LIKE 'event.%' ORDER BY ts DESC LIMIT 20"`        |
+| `/tribe events`                | `sqlite3 <tribe-db-path> "SELECT type, sender, datetime(ts/1000,'unixepoch','localtime') FROM messages WHERE kind = 'event' ORDER BY ts DESC LIMIT 20"`             |
 | `/tribe sync`                  | Broadcast asking all members to ensure their work is tracked (see below)                                                                                            |
 | `/tribe rollcall`              | Broadcast asking all members to report name, status, and current work                                                                                               |
 

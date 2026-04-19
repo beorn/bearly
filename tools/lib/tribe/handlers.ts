@@ -422,7 +422,7 @@ function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
 
   const stats = {
     messages: (ctx.db.prepare("SELECT COUNT(*) as n FROM messages").get() as any)?.n ?? 0,
-    events: (ctx.db.prepare("SELECT COUNT(*) as n FROM messages WHERE type LIKE 'event.%'").get() as any)?.n ?? 0,
+    events: (ctx.db.prepare("SELECT COUNT(*) as n FROM messages WHERE kind = 'event'").get() as any)?.n ?? 0,
     reads: (ctx.db.prepare("SELECT COUNT(*) as n FROM reads").get() as any)?.n ?? 0,
   }
 

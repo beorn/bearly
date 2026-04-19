@@ -160,10 +160,10 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   const windowStart = sinceMs ? now - sinceMs : getEarliestTimestamp(db)
   const windowEnd = now
 
-  // Regular messages only — event.* rows live in the same table but are handled
-  // separately in the timeline section below.
+  // Regular messages only — event rows live in the same table (kind='event')
+  // but are handled separately in the timeline section below.
   const messages = db
-    .prepare("SELECT * FROM messages WHERE ts >= ? AND type NOT LIKE 'event.%' ORDER BY ts ASC")
+    .prepare("SELECT * FROM messages WHERE ts >= ? AND kind != 'event' ORDER BY ts ASC")
     .all(windowStart) as Message[]
   const sessions = db
     .prepare("SELECT * FROM sessions WHERE started_at <= ? AND updated_at >= ?")
@@ -229,7 +229,7 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
   // type `event.<orig-type>`, sender = session name, content = JSON data.
   const timeline: Array<{ time: string; event: string; ts: number }> = []
   const events = db
-    .prepare("SELECT type, sender, content, ts FROM messages WHERE type LIKE 'event.%' AND ts >= ? ORDER BY ts ASC")
+    .prepare("SELECT type, sender, content, ts FROM messages WHERE kind = 'event' AND ts >= ? ORDER BY ts ASC")
     .all(windowStart) as Array<{
     type: string
     sender: string

@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite"
 import type { TribeStatements } from "./database.ts"
 import type { TribeRole } from "./config.ts"
+import type { MessageKind } from "./messaging.ts"
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -22,6 +23,9 @@ export type MessageInsertedInfo = {
   ts: number
   rowid: number
   type: string
+  /** Typed message class — `direct` / `broadcast` / `event`. `event` rows are
+   *  journal-only and must NOT be delivered to any client. */
+  kind: MessageKind
   sender: string
   recipient: string
   content: string

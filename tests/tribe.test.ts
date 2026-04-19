@@ -32,7 +32,8 @@ function createTribeDb(path: string): Database {
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY, type TEXT NOT NULL, sender TEXT NOT NULL,
-		recipient TEXT NOT NULL, content TEXT NOT NULL, bead_id TEXT,
+		recipient TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'direct',
+		content TEXT NOT NULL, bead_id TEXT,
 		ref TEXT, ts INTEGER NOT NULL, read_at INTEGER
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS cursors (
@@ -380,19 +381,29 @@ describe("tribe", () => {
     expect(row!.updated_at).toBeLessThanOrEqual(Date.now() + 10)
   })
 
-  test("events are logged as messages with type 'event.*' and recipient 'log'", () => {
+  test("events are logged as messages with kind='event' (typed replacement for recipient='log' sentinel)", () => {
     const now = Date.now()
     db.run(
-      "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [randomUUID(), "event.session.joined", "worker-a", "log", '{"name":"worker-a"}', null, null, now],
+      "INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [randomUUID(), "event.session.joined", "worker-a", "*", "event", '{"name":"worker-a"}', null, null, now],
     )
     db.run(
-      "INSERT INTO messages (id, type, sender, recipient, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [randomUUID(), "event.bead.claimed", "worker-a", "log", '{"latency_ms":500}', "km-tui.fix", null, now + 100],
+      "INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        randomUUID(),
+        "event.bead.claimed",
+        "worker-a",
+        "*",
+        "event",
+        '{"latency_ms":500}',
+        "km-tui.fix",
+        null,
+        now + 100,
+      ],
     )
 
     const events = db
-      .prepare("SELECT type, sender, bead_id FROM messages WHERE type LIKE 'event.%' AND recipient = 'log' ORDER BY ts")
+      .prepare("SELECT type, sender, bead_id FROM messages WHERE kind = 'event' ORDER BY ts")
       .all() as Array<{
       type: string
       sender: string
