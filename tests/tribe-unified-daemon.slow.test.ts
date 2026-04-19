@@ -137,7 +137,7 @@ describe("unified daemon — lore RPC surface on the tribe socket", () => {
   })
 
   async function connect(): Promise<DaemonClient> {
-    const c = await connectToDaemon(socketPath, { callTimeoutMs: 10_000 })
+    const c = await connectToDaemon(socketPath)
     clients.push(c)
     return c
   }

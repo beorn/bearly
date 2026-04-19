@@ -1,11 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Lore — MCP server (subpackage of /tribe) bridging Claude Code to the lore daemon.
+ * Lore — MCP server (subpackage of /tribe) bridging Claude Code to the
+ * unified tribe daemon.
  *
- * Phase 2 of the lore workspace-daemon plan. Each MCP tool call is forwarded
- * to `lore-daemon` over a Unix socket via JSON-RPC, keeping the recall
- * library warm in the daemon process. If the daemon is unreachable we fall
- * through to an in-process library call (preserves Phase 1 behaviour).
+ * As of Phase 5b (km-bear.unified-daemon), this file is a thin proxy: each
+ * MCP tool call is forwarded to the tribe daemon over its Unix socket via
+ * JSON-RPC. The tribe daemon now hosts both the coordination RPC surface
+ * (tribe.send/broadcast/members) and the lore RPC surface (tribe.ask/brief/
+ * session/workspace/inject_delta), so the lore MCP no longer manages its
+ * own daemon process. If the unified daemon is unreachable we fall through
+ * to an in-process library call.
  *
  * Tools:
  *   lore.ask    — wraps recallAgent()
@@ -16,7 +20,8 @@
  * Env:
  *   TRIBE_NO_DAEMON=1       — skip the daemon entirely (library-only mode)
  *   TRIBE_LOG=1             — enable recall library logging (else silenced)
- *   TRIBE_LORE_SOCKET       — override socket path (default $XDG_RUNTIME_DIR/lore.sock)
+ *   TRIBE_SOCKET            — override tribe daemon socket path (default
+ *                             $XDG_RUNTIME_DIR/tribe.sock)
  *
  * Usage (registered in .mcp.json):
  *   { "command": "bun", "args": ["vendor/bearly/plugins/tribe/lore/server.ts"] }
@@ -31,8 +36,8 @@ import { buildQueryContext } from "../../recall/src/lib/context.ts"
 import { getCurrentSessionContext } from "../../recall/src/lib/session-context.ts"
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
-import { resolveLoreSocketPath } from "./lib/config.ts"
-import { ensureDaemonIfConfigured } from "../../../tools/lib/tribe/autostart.ts"
+import { resolveSocketPath as resolveTribeSocketPath } from "../../../tools/lib/tribe/socket.ts"
+import { ensureTribeDaemonIfConfigured } from "../../../tools/lib/tribe/autostart.ts"
 import {
   TRIBE_METHODS,
   LORE_PROTOCOL_VERSION,
@@ -63,15 +68,19 @@ async function getDaemon(): Promise<LoreClient | null> {
   if (daemonClient) return daemonClient
 
   // Autostart check (once per process): consult ~/.claude/tribe/config.json
-  // and spawn a detached daemon if the user opted into autostart and none is
-  // currently running. This is fire-and-forget — we still try to connect
-  // below, and fall back to the library if the spawn hasn't booted yet.
+  // and spawn a detached tribe daemon if the user opted into autostart and
+  // none is currently running. This is fire-and-forget — we still try to
+  // connect below, and fall back to the library if the spawn hasn't booted yet.
+  //
+  // Phase 5b (km-bear.unified-daemon): lore MCP is now a thin proxy to the
+  // unified tribe daemon. The standalone lore daemon is no longer autostarted
+  // from here — the tribe daemon owns the lore RPC surface too.
   if (!autostartChecked) {
     autostartChecked = true
     try {
-      const outcome = await ensureDaemonIfConfigured({ budgetMs: 500 })
+      const outcome = await ensureTribeDaemonIfConfigured({ budgetMs: 500 })
       if (outcome.action === "spawned" && process.env.TRIBE_LOG === "1") {
-        process.stderr.write(`[lore] autostart: spawned daemon (pid=${outcome.pid})\n`)
+        process.stderr.write(`[lore] autostart: spawned unified tribe daemon (pid=${outcome.pid})\n`)
       }
       // Give a freshly-spawned daemon a moment to bind its socket so the
       // connect below succeeds on first try. 1 s is the envelope before we
@@ -85,7 +94,10 @@ async function getDaemon(): Promise<LoreClient | null> {
   }
 
   try {
-    const socketPath = resolveLoreSocketPath()
+    // Connect to the unified tribe daemon's socket (not the old lore socket).
+    // Both dialects — coord (tribe.send/broadcast/...) and lore (tribe.ask/
+    // brief/...) — now share one socket.
+    const socketPath = resolveTribeSocketPath()
     const client = await createReconnectingClient({ socketPath, maxAttempts: 5 })
     await client.call(TRIBE_METHODS.hello, {
       clientName: "/tribe/lore",
