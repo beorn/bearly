@@ -7,6 +7,31 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — identity token adoption (km-tribe.session-identity)
+
+Phase 1.5 of the plateau. Sessions now keep a stable identity across Claude
+Code restarts: the proxy hashes `(claude_session_id, project_path, role_hint)`
+to a 16-char hex token and sends it on `register`. The daemon, on seeing that
+token match a prior, currently-disconnected session, adopts its `sessionId`,
+`name`, `role`, and the cursor position — so reopening later re-delivers the
+correct identity instead of falling back to `member-<pid>` and replaying from
+latest.
+
+- Schema migration v6 adds `sessions.identity_token` + index.
+- `registerSession` gains a `Strategy 0` cursor-recovery path that wins over
+  the existing `claude_session_id` / PID / skip-to-latest strategies when the
+  token is known.
+- `tribe.join` accepts `identity_token` too (adopts name/role from the prior
+  row when the caller omits them), so re-joining via the MCP tool preserves
+  the same identity.
+- An already-connected session with the same token blocks adoption — the new
+  proxy gets a fresh sessionId with a deduplicated name.
+- `identityToken` falls back to hashing just `project_path|role_hint` when
+  `CLAUDE_SESSION_ID` is null (weaker but safe — no cross-project leakage).
+
+Integration coverage: `tests/tribe-session-identity.slow.test.ts` (4 tests
+— adoption, active-blocks-adoption, cursor recovery, no-token behavior).
+
 ### Added — self-heal invariants integration test
 
 `tests/tribe-self-heal.slow.test.ts` exercises the three "Design principles"

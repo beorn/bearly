@@ -1878,7 +1878,7 @@ import { createServer } from "net";
 import { existsSync as existsSync5, unlinkSync as unlinkSync2, mkdirSync as mkdirSync3, chmodSync } from "fs";
 import { dirname as dirname4 } from "path";
 import { spawn as spawn3 } from "child_process";
-import { randomUUID } from "crypto";
+import { createHash as createHash3, randomUUID } from "crypto";
 function sendChannel(content, meta) {
   if (!mcp)
     return;
@@ -2034,6 +2034,7 @@ try {
   var peerServer = null;
   var mcp;
   peerServer = startPeerServer();
+  var identityToken = createHash3("sha256").update(`${CLAUDE_SESSION_ID ?? ""}|${process.cwd()}|${args.role ?? "member"}`).digest("hex").slice(0, 16);
   var registerParams = {
     ...args.name ? { name: args.name } : {},
     ...args.role ? { role: args.role } : {},
@@ -2045,7 +2046,8 @@ try {
     peerSocket: PEER_SOCKET_PATH,
     pid: process.pid,
     claudeSessionId: CLAUDE_SESSION_ID,
-    claudeSessionName: CLAUDE_SESSION_NAME
+    claudeSessionName: CLAUDE_SESSION_NAME,
+    identityToken
   };
   var daemon = await createReconnectingClient({
     socketPath: SOCKET_PATH,
@@ -2138,7 +2140,8 @@ Don't over-communicate \u2014 only broadcast when it changes what someone else s
         if (directResult)
           return directResult;
       }
-      const result = await daemon.call(name, a);
+      const payload = name === "tribe.join" ? { ...a, identity_token: identityToken } : a;
+      const result = await daemon.call(name, payload);
       if (name === "tribe.join" || name === "tribe.rename") {
         const r = result;
         try {
