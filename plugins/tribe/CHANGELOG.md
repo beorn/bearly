@@ -7,6 +7,54 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — plugin boundary extracted from daemon core (km-tribe.plugin-extraction)
+
+The five observer plugins (git, beads, github, health-monitor, accountly) now
+sit behind a narrow `TribePluginApi` / `TribeClientApi` contract instead of
+the wide `PluginContext` they previously received. The daemon core no longer
+knows any plugin's internals — `TRIBE_NO_PLUGINS=1` boots a fully-functional
+coordination server with zero plugin-aware code paths.
+
+New surface (`tools/lib/tribe/plugin-api.ts`):
+
+- `TribePluginApi` — `{ name, available(), start(api), instructions?() }`.
+- `TribeClientApi` — `send`, `broadcast`, `claimDedup`, `hasRecentMessage`,
+  plus optional roster snapshots (`getActiveSessions`, `getSessionNames`,
+  `hasChief`) for alert targeting. No database, no clients map, no session
+  UUID, no hot-reload trigger — only what a future out-of-process plugin
+  would have access to over the socket.
+
+Daemon changes (`tools/tribe-daemon.ts`):
+
+- Constructs a single `tribeClientApi: TribeClientApi` and passes it to every
+  plugin. The former `pluginCtx: PluginContext` object + its 10-method
+  surface are gone.
+- `loadPlugins` now returns `{ active, stop }` with per-plugin handles.
+  `cli_status.resources` continues to surface the active plugin list.
+
+Plugin changes:
+
+- `gitPlugin`, `beadsPlugin`, `githubPlugin`, `healthMonitorPlugin`,
+  `accountlyPlugin` are now plain `const` exports implementing
+  `TribePluginApi`. Factories are gone; per-instance state lives inside
+  `start()` closures (unchanged).
+- `git-plugin.ts` and `beads-plugin.ts` moved out of the former
+  `plugins.ts` into dedicated files.
+- `plugins.ts` is deleted. `plugin-loader.ts` (new) holds `loadPlugins`.
+- `beadsPlugin` no longer tries to classify existing beads as
+  "claimed by me" — observer plugins don't own sessions, so the check was
+  always wrong.
+- `gitPlugin` no longer calls `triggerReload` — the daemon's source
+  watcher (`onSourceChange`) already reloads on code changes.
+
+Migration for callers: none — the wire protocol, tool names, and message
+shapes are byte-identical. Only the internal plugin contract changed.
+
+Tests: `tests/tribe-plugin-boundary.test.ts` covers the new contract at two
+layers — `loadPlugins` unit tests + a fake-plugin → real-daemon integration
+test that asserts a startup `api.broadcast` lands in `tribe.history` under
+the plugin's name.
+
 ### Changed — event-driven fanout replaces 1s polling push (km-tribe.event-bus)
 
 Message delivery is now synchronous — the daemon fans out to connected sockets
