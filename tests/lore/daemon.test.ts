@@ -24,7 +24,11 @@ import {
   type InjectDeltaResult,
 } from "../../plugins/tribe/lore/lib/rpc.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/tribe/lore/daemon.ts")
+// km-bear.unified-daemon Phase 5c: the standalone lore daemon was deleted.
+// These tests now spawn the unified tribe daemon, which hosts the same
+// lore RPC surface on its socket. Behaviour is identical from the caller's
+// perspective — the wire protocol, method names, and DB schema are unchanged.
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/tribe-daemon.ts")
 
 function tmpPath(suffix: string): string {
   return `/tmp/lore-test-${randomUUID().slice(0, 8)}.${suffix}`
@@ -49,13 +53,31 @@ type DaemonHarness = {
 
 async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness> {
   const socketPath = tmpPath("sock")
-  const dbPath = tmpPath("db")
+  const loreDbPath = tmpPath("db")
+  const tribeDbPath = tmpPath("tribe.db")
   const child = spawn(
     process.execPath,
-    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "5", ...extraArgs],
+    [
+      DAEMON_SCRIPT,
+      "--socket",
+      socketPath,
+      "--db",
+      tribeDbPath,
+      "--lore-db",
+      loreDbPath,
+      "--quit-timeout",
+      "5",
+      ...extraArgs,
+    ],
     {
       stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, LORE_NO_DAEMON: "0" },
+      env: {
+        ...process.env,
+        LORE_NO_DAEMON: "0",
+        // Self-contained — no plugins (git/beads/github/health/accountly) firing.
+        TRIBE_NO_PLUGINS: "1",
+        TRIBE_NO_SUPPRESS: "1",
+      },
     },
   )
   child.stderr?.on("data", () => {
@@ -71,7 +93,7 @@ async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
   return {
     child,
     socketPath,
-    dbPath,
+    dbPath: loreDbPath,
     client,
     async teardown() {
       client.close()
@@ -85,7 +107,16 @@ async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
           }, 2000)
         })
       }
-      for (const p of [socketPath, socketPath.replace(/\.sock$/, ".pid"), dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      for (const p of [
+        socketPath,
+        socketPath.replace(/\.sock$/, ".pid"),
+        loreDbPath,
+        `${loreDbPath}-wal`,
+        `${loreDbPath}-shm`,
+        tribeDbPath,
+        `${tribeDbPath}-wal`,
+        `${tribeDbPath}-shm`,
+      ]) {
         try {
           if (existsSync(p)) unlinkSync(p)
         } catch {
@@ -120,7 +151,9 @@ describe("lore daemon — handshake", () => {
 
   it("rejects unknown methods without crashing", async () => {
     h = await spawnLoreDaemon()
-    await expect(h.client.call("lore.does_not_exist", {})).rejects.toThrow(/unknown method/i)
+    // Unified tribe daemon returns "Method not found: ..." for unknown methods,
+    // regardless of whether the name matches the coord or lore wire protocol.
+    await expect(h.client.call("lore.does_not_exist", {})).rejects.toThrow(/(method not found|unknown method)/i)
     // Daemon still alive
     const s = (await h.client.call(TRIBE_METHODS.status, {})) as StatusResult
     expect(s.daemonPid).toBe(h.child.pid)

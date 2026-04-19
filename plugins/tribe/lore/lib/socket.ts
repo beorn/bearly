@@ -212,9 +212,13 @@ export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOp
   const socketDir = dirname(socketPath)
   if (!existsSync(socketDir)) mkdirSync(socketDir, { recursive: true })
 
-  const script = opts?.daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../lore-daemon.ts")
+  // km-bear.unified-daemon Phase 5c: the standalone lore daemon is gone.
+  // Auto-start now spawns the unified tribe daemon at tools/tribe-daemon.ts
+  // (resolves to `../../../../tools/tribe-daemon.ts` relative to this file).
+  const script =
+    opts?.daemonScript ?? resolve(dirname(new URL(import.meta.url).pathname), "../../../../tools/tribe-daemon.ts")
   const daemonArgs = ["--socket", socketPath]
-  if (opts?.dbPath) daemonArgs.push("--db", opts.dbPath)
+  if (opts?.dbPath) daemonArgs.push("--lore-db", opts.dbPath)
   const child = spawn(process.execPath, [script, ...daemonArgs], {
     detached: true,
     stdio: "ignore",

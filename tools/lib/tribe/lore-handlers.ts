@@ -21,7 +21,13 @@
  */
 
 import { createLogger } from "loggily"
-import { createLoreRepo, openLoreDatabase, sessionRowToInfo, type LoreRepo, type SessionRow } from "../../../plugins/tribe/lore/lib/database.ts"
+import {
+  createLoreRepo,
+  openLoreDatabase,
+  sessionRowToInfo,
+  type LoreRepo,
+  type SessionRow,
+} from "../../../plugins/tribe/lore/lib/database.ts"
 import {
   TRIBE_METHODS,
   LORE_ERRORS,
@@ -47,7 +53,11 @@ import {
   type StatusResult,
   type WorkspaceStateResult,
 } from "../../../plugins/tribe/lore/lib/rpc.ts"
-import { resolveSummarizerMode, summarizeTail, type SummarizerMode } from "../../../plugins/tribe/lore/lib/summarizer.ts"
+import {
+  resolveSummarizerMode,
+  summarizeTail,
+  type SummarizerMode,
+} from "../../../plugins/tribe/lore/lib/summarizer.ts"
 import { recallAgent } from "../../../plugins/recall/src/lib/agent.ts"
 import { planQuery, planVariants } from "../../../plugins/recall/src/lib/plan.ts"
 import { buildQueryContext } from "../../../plugins/recall/src/lib/context.ts"
@@ -280,9 +290,7 @@ export function createLoreHandlers(opts: LoreHandlerOpts): LoreHandlers {
       lastSeen: row.last_seen,
       lastActivityTs: focus?.last_activity_ts ?? null,
       ageMs:
-        focus?.last_activity_ts !== null && focus?.last_activity_ts !== undefined
-          ? now - focus.last_activity_ts
-          : null,
+        focus?.last_activity_ts !== null && focus?.last_activity_ts !== undefined ? now - focus.last_activity_ts : null,
       exchangeCount: focus?.exchange_count ?? 0,
       mentionedPaths: focus?.mentioned_paths ?? [],
       mentionedBeads: focus?.mentioned_beads ?? [],
@@ -363,13 +371,13 @@ export function createLoreHandlers(opts: LoreHandlerOpts): LoreHandlers {
   async function dispatch(conn: LoreConnState, method: string, params: Record<string, unknown>): Promise<unknown> {
     switch (method) {
       case TRIBE_METHODS.hello:
-        return await handleHello(conn, params as unknown as HelloParams)
+        return handleHello(conn, params as unknown as HelloParams)
       case TRIBE_METHODS.ask:
-        return await handleAsk(conn, params as unknown as AskParams)
+        return handleAsk(conn, params as unknown as AskParams)
       case TRIBE_METHODS.currentBrief:
-        return await handleCurrentBrief(conn, params as unknown as CurrentBriefParams)
+        return handleCurrentBrief(conn, params as unknown as CurrentBriefParams)
       case TRIBE_METHODS.planOnly:
-        return await handlePlanOnly(conn, params as unknown as PlanOnlyParams)
+        return handlePlanOnly(conn, params as unknown as PlanOnlyParams)
       case TRIBE_METHODS.sessionRegister:
         return handleSessionRegister(conn, params as unknown as SessionRegisterParams)
       case TRIBE_METHODS.sessionHeartbeat:
@@ -381,7 +389,7 @@ export function createLoreHandlers(opts: LoreHandlerOpts): LoreHandlers {
       case TRIBE_METHODS.sessionState:
         return handleSessionState(params as unknown as SessionStateParams)
       case TRIBE_METHODS.injectDelta:
-        return await handleInjectDelta(conn, params as unknown as InjectDeltaParams)
+        return handleInjectDelta(conn, params as unknown as InjectDeltaParams)
       case TRIBE_METHODS.status:
         return handleStatus()
       default: {
@@ -458,9 +466,7 @@ export function createLoreHandlers(opts: LoreHandlerOpts): LoreHandlers {
           summaryCost: summary.cost,
           summaryUpdatedAt: Date.now(),
         })
-        log.debug?.(
-          `summary refreshed pid=${row.claude_pid} model=${summary.model} cost=$${summary.cost.toFixed(5)}`,
-        )
+        log.debug?.(`summary refreshed pid=${row.claude_pid} model=${summary.model} cost=$${summary.cost.toFixed(5)}`)
       } catch (err) {
         log.debug?.(`summary refresh failed for pid=${row.claude_pid}: ${err instanceof Error ? err.message : err}`)
       }

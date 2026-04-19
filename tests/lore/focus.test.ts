@@ -19,7 +19,8 @@ import {
 } from "../../plugins/tribe/lore/lib/rpc.ts"
 import { extractSessionFocus } from "../../plugins/recall/src/lib/session-context.ts"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../plugins/tribe/lore/daemon.ts")
+// km-bear.unified-daemon Phase 5c: lore handlers are hosted by the tribe daemon.
+const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../../tools/tribe-daemon.ts")
 
 function tmpPath(suffix: string): string {
   return `/tmp/lore-focus-test-${randomUUID().slice(0, 8)}.${suffix}`
@@ -64,7 +65,8 @@ type Harness = {
 
 async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
   const socketPath = tmpPath("sock")
-  const dbPath = tmpPath("db")
+  const loreDbPath = tmpPath("db")
+  const tribeDbPath = tmpPath("tribe.db")
   const child = spawn(
     process.execPath,
     [
@@ -72,13 +74,23 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
       "--socket",
       socketPath,
       "--db",
-      dbPath,
+      tribeDbPath,
+      "--lore-db",
+      loreDbPath,
       "--quit-timeout",
       "10",
       "--focus-poll-ms",
       String(focusPollMs),
     ],
-    { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, LORE_NO_DAEMON: "0" } },
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        LORE_NO_DAEMON: "0",
+        TRIBE_NO_PLUGINS: "1",
+        TRIBE_NO_SUPPRESS: "1",
+      },
+    },
   )
   child.stderr?.on("data", () => {})
   await waitFor(() => existsSync(socketPath))
@@ -92,7 +104,7 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
     child,
     client,
     socketPath,
-    dbPath,
+    dbPath: loreDbPath,
     async teardown() {
       client.close()
       if (!child.killed) {
@@ -105,7 +117,16 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
           }, 2000)
         })
       }
-      for (const p of [socketPath, socketPath.replace(/\.sock$/, ".pid"), dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      for (const p of [
+        socketPath,
+        socketPath.replace(/\.sock$/, ".pid"),
+        loreDbPath,
+        `${loreDbPath}-wal`,
+        `${loreDbPath}-shm`,
+        tribeDbPath,
+        `${tribeDbPath}-wal`,
+        `${tribeDbPath}-shm`,
+      ]) {
         try {
           if (existsSync(p)) unlinkSync(p)
         } catch {

@@ -263,17 +263,22 @@ describe("ensureTribeDaemonIfConfigured", () => {
 })
 
 describe("resolveDaemonScriptPath variants", () => {
-  test("lore and tribe resolve to different scripts", () => {
+  // km-bear.unified-daemon Phase 5c: the standalone lore daemon was deleted.
+  // Both names now resolve to tools/tribe-daemon.ts — the legacy alias is
+  // kept only so external importers don't break.
+  test("both names resolve to the unified tribe-daemon script", () => {
     const lore = resolveDaemonScriptPath()
     const tribe = resolveTribeDaemonScriptPath()
-    expect(lore).not.toBe(tribe)
-    expect(lore.endsWith("plugins/tribe/lore/daemon.ts")).toBe(true)
+    expect(lore).toBe(tribe)
     expect(tribe.endsWith("tools/tribe-daemon.ts")).toBe(true)
   })
 })
 
 describe("ensureAllDaemonsIfConfigured", () => {
-  test("spawns both daemons when both dead", async () => {
+  // Phase 5c: there's only one daemon now. The "all" variant still returns
+  // `{ lore, tribe }` for back-compat, but both fields carry the same
+  // outcome — a single spawn call covers both surfaces.
+  test("spawns the unified daemon once when dead; same outcome under both keys", async () => {
     const spawnedSockets: string[] = []
     const result = await ensureAllDaemonsIfConfigured({
       resolveMode: () => "daemon",
@@ -283,12 +288,10 @@ describe("ensureAllDaemonsIfConfigured", () => {
         return { ok: true, pid: spawnedSockets.length } satisfies SpawnResult
       },
     })
-    // Both probes reported dead — both spawn calls fired.
-    // Defaults apply: lore → lore socket, tribe → tribe socket (two different paths).
     expect(result.lore.action).toBe("spawned")
     expect(result.tribe.action).toBe("spawned")
-    expect(spawnedSockets).toHaveLength(2)
-    expect(spawnedSockets[0]).not.toBe(spawnedSockets[1])
+    expect(spawnedSockets).toHaveLength(1)
+    expect(result.lore).toStrictEqual(result.tribe)
   })
 
   test("library mode short-circuits both", async () => {
@@ -305,7 +308,7 @@ describe("ensureAllDaemonsIfConfigured", () => {
     expect(spawned).toBe(0)
   })
 
-  test("does not spawn when both alive", async () => {
+  test("does not spawn when the unified daemon is alive", async () => {
     let spawned = 0
     const result = await ensureAllDaemonsIfConfigured({
       resolveMode: () => "daemon",

@@ -53,17 +53,7 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 8000, int
 async function spawnDaemon(socketPath: string, dbPath: string, loreDbPath: string): Promise<ChildProcess> {
   const child = spawn(
     process.execPath,
-    [
-      DAEMON_SCRIPT,
-      "--socket",
-      socketPath,
-      "--db",
-      dbPath,
-      "--lore-db",
-      loreDbPath,
-      "--quit-timeout",
-      "-1",
-    ],
+    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--lore-db", loreDbPath, "--quit-timeout", "-1"],
     {
       stdio: ["ignore", "ignore", "pipe"],
       env: {
@@ -81,7 +71,7 @@ async function spawnDaemon(socketPath: string, dbPath: string, loreDbPath: strin
 }
 
 async function killDaemon(proc: ChildProcess | null): Promise<void> {
-  if (!proc || proc.exitCode !== null) return
+  if (proc?.exitCode !== null) return
   try {
     proc.kill("SIGKILL")
   } catch {
