@@ -7,6 +7,27 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — event-driven fanout replaces 1s polling push (km-tribe.event-bus)
+
+Message delivery is now synchronous — the daemon fans out to connected sockets
+the instant `sendMessage` commits the row, via a new `ctx.onMessageInserted`
+hook. The former 1-second `pushInterval` / `pushNewMessages()` / per-connection
+`lastDelivered` Map are deleted; the only durable delivery cursor is now
+`sessions.last_delivered_seq`, which every successful socket write updates.
+
+Consequences:
+
+- Delivery latency drops from ~1000ms (worst-case polling tick) to <10ms
+  (one prepared-statement write + one `socket.write`). Covered by
+  `tests/tribe-durability.slow.test.ts` Test G (asserts <100ms).
+- Reconnect replay reads from the persisted cursor, not an in-memory Map.
+  A daemon crash with a connected session no longer risks re-pushing.
+  Covered by Test H (5 messages delivered live, daemon SIGKILL, reconnect
+  with same identity token delivers zero duplicates).
+- The 1s tick in the daemon still fires, but only to run `checkLiveness()`
+  (stale `pending-*` expiry + idle auto-quit countdown). Renamed from
+  `pushInterval` to `livenessInterval` to reflect its single remaining job.
+
 ### Changed — `tribe.leadership` renamed to `tribe.chief` (km-tribe.polish-sweep)
 
 The MCP tool is now `tribe.chief`. The old name `tribe.leadership` reflected
