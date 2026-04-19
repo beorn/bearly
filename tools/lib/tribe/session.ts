@@ -91,97 +91,13 @@ export function registerSession(
     domains: ctx.domains,
   })
 
-  // Initialize cursor if needed
-  const cursor = ctx.stmts.getCursor.get({ $session_id: ctx.sessionId }) as {
-    last_read_ts: number
-    last_seq: number | null
-  } | null
-  if (!cursor) {
-    // On reconnect: recover cursor from prior session to avoid re-delivering old messages.
-    // Try strategies in order: identity_token (most specific), claude_session_id,
-    // PID, then skip-to-latest.
-    let initialTs = 0
-    let initialSeq = 0
-    // Strategy 0: identity-token match (stable across Claude Code restarts)
-    if (identityToken) {
-      const prior = ctx.db
-        .prepare(
-          "SELECT id, name, role, last_delivered_ts, last_delivered_seq FROM sessions WHERE identity_token = $tok AND id != $id ORDER BY updated_at DESC LIMIT 1",
-        )
-        .get({ $tok: identityToken, $id: ctx.sessionId }) as {
-        id: string
-        name: string
-        role: string
-        last_delivered_ts: number | null
-        last_delivered_seq: number | null
-      } | null
-      if (prior?.last_delivered_seq) {
-        initialTs = prior.last_delivered_ts ?? 0
-        initialSeq = prior.last_delivered_seq
-        log.info?.(`recovered cursor from prior session (identity_token): seq=${initialSeq}`)
-      }
-    }
-    // Strategy 1: match by claude_session_id (works when env var propagates)
-    if (initialSeq === 0 && ctx.claudeSessionId) {
-      const prior = ctx.db
-        .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",
-        )
-        .get({ $csid: ctx.claudeSessionId, $id: ctx.sessionId }) as {
-        last_delivered_ts: number
-        last_delivered_seq: number | null
-      } | null
-      if (prior?.last_delivered_ts) {
-        initialTs = prior.last_delivered_ts
-        initialSeq = prior.last_delivered_seq ?? 0
-        log.info?.(`recovered cursor from prior session (claude_session_id): seq=${initialSeq}`)
-      }
-    }
-    // Strategy 2: match by PID (works for /mcp reconnect — same PID, new MCP process)
-    if (initialSeq === 0) {
-      const priorByPid = ctx.db
-        .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY updated_at DESC LIMIT 1",
-        )
-        .get({ $pid: process.pid, $id: ctx.sessionId }) as {
-        last_delivered_ts: number
-        last_delivered_seq: number | null
-      } | null
-      if (priorByPid?.last_delivered_seq) {
-        initialTs = priorByPid.last_delivered_ts ?? 0
-        initialSeq = priorByPid.last_delivered_seq
-        log.info?.(`recovered cursor from prior session (PID match): seq=${initialSeq}`)
-      }
-    }
-    // Strategy 3: if no prior session found, skip to current latest (avoid replaying entire history)
-    if (initialSeq === 0) {
-      const latest = ctx.db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
-        max_seq: number | null
-      } | null
-      if (latest?.max_seq) {
-        initialSeq = latest.max_seq
-        initialTs = Date.now()
-        log.info?.(`no prior cursor found, skipping to latest: seq=${initialSeq}`)
-      }
-    }
-    // Backward compat: if no seq available, bootstrap from current max rowid
-    if (initialSeq === 0 && initialTs > 0) {
-      const maxRow = ctx.db
-        .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-        .get({ $ts: initialTs }) as { max_rowid: number | null } | null
-      initialSeq = maxRow?.max_rowid ?? 0
-      log.info?.(`migrated ts cursor to seq=${initialSeq}`)
-    }
-    ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: initialTs, $seq: initialSeq })
-  } else if (!cursor.last_seq) {
-    // Backward compat: existing cursor without last_seq — migrate from last_read_ts
-    const maxRow = ctx.db
-      .prepare("SELECT MAX(rowid) as max_rowid FROM messages WHERE ts <= $ts")
-      .get({ $ts: cursor.last_read_ts }) as { max_rowid: number | null } | null
-    const migratedSeq = maxRow?.max_rowid ?? 0
-    ctx.stmts.upsertCursor.run({ $session_id: ctx.sessionId, $ts: cursor.last_read_ts, $seq: migratedSeq })
-    log.info?.(`migrated existing cursor to seq=${migratedSeq}`)
-  }
+  // km-tribe.delivery-correctness P1.3: the old cursor-init block seeded a
+  // per-session entry in the now-dropped `cursors` table with multi-strategy
+  // recovery (identity_token → claude_session_id → pid → skip-to-latest).
+  // Nothing in the post-event-bus code path reads from `cursors`. The daemon
+  // seeds `sessions.last_delivered_seq` directly in replayOrBootstrap, using
+  // identity_token adoption for stable-identity recovery — this redundant
+  // block went away with the table.
 }
 
 // ---------------------------------------------------------------------------
@@ -236,21 +152,20 @@ export function tryInitialRename(ctx: TribeContext, transcriptPath: string | nul
 // Cleanup
 // ---------------------------------------------------------------------------
 
-/** Delete old data based on TTL: reads/messages after 7 days.
- *  `event_log` was merged into `messages WHERE kind='event'` by migration v8
- *  (km-tribe.polish-sweep item 9), so the single `DELETE FROM messages`
- *  statement now reclaims both direct/broadcast traffic and journal events. */
+/** Delete old messages based on TTL (7 days). `event_log` was merged into
+ *  `messages WHERE kind='event'` by migration v8, so the single
+ *  `DELETE FROM messages` statement reclaims both direct/broadcast traffic
+ *  and journal events. The `reads` table was dropped by migration v9
+ *  (km-tribe.delivery-correctness P1.3). */
 export function cleanupOldData(ctx: TribeContext): void {
   const SHORT_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
   const now_ms = Date.now()
 
-  const readsDel = ctx.db.prepare("DELETE FROM reads WHERE read_at < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
   const msgsDel = ctx.db.prepare("DELETE FROM messages WHERE ts < $cutoff").run({ $cutoff: now_ms - SHORT_TTL })
   // Clean dedup keys older than 1 day (they only need to survive the poll race window)
   ctx.stmts.cleanupDedup.run({ $cutoff: now_ms - 24 * 60 * 60 * 1000 })
 
-  const total = (readsDel.changes ?? 0) + (msgsDel.changes ?? 0)
-  if (total > 0) {
-    log.info?.(`cleanup: ${readsDel.changes} reads, ${msgsDel.changes} msgs deleted`)
+  if ((msgsDel.changes ?? 0) > 0) {
+    log.info?.(`cleanup: ${msgsDel.changes} msgs deleted`)
   }
 }

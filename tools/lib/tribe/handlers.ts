@@ -406,15 +406,19 @@ function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
     }
   })
 
-  // Unread message count per recipient (direct messages only)
+  // Unread direct-message count per recipient — undelivered means the
+  // recipient's cursor (sessions.last_delivered_seq) hasn't reached the
+  // message's rowid yet. Broadcasts ('*') and event journal rows are
+  // excluded. If no session row exists for a recipient name (pre-register
+  // or retention has pruned it), all their directs count as unread.
   const unread = ctx.db
     .prepare(`
 			SELECT m.recipient, COUNT(*) as count FROM messages m
 			WHERE m.recipient != '*'
-			AND NOT EXISTS (
-				SELECT 1 FROM reads r
-				JOIN sessions s ON r.session_id = s.id
-				WHERE r.message_id = m.id AND s.name = m.recipient
+			AND m.kind = 'direct'
+			AND m.rowid > COALESCE(
+				(SELECT s.last_delivered_seq FROM sessions s WHERE s.name = m.recipient),
+				0
 			)
 			GROUP BY m.recipient
 		`)
@@ -423,7 +427,6 @@ function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
   const stats = {
     messages: (ctx.db.prepare("SELECT COUNT(*) as n FROM messages").get() as any)?.n ?? 0,
     events: (ctx.db.prepare("SELECT COUNT(*) as n FROM messages WHERE kind = 'event'").get() as any)?.n ?? 0,
-    reads: (ctx.db.prepare("SELECT COUNT(*) as n FROM reads").get() as any)?.n ?? 0,
   }
 
   const result: Record<string, unknown> = { members, unread, stats, checked_at: new Date().toISOString() }

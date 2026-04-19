@@ -68,25 +68,10 @@ export function openDatabase(path: string): Database {
 		ts         INTEGER NOT NULL
 	)`)
 
-  db.run(`CREATE TABLE IF NOT EXISTS cursors (
-		session_id   TEXT PRIMARY KEY,
-		last_read_ts INTEGER NOT NULL,
-		last_seq     INTEGER DEFAULT 0
-	)`)
-
-  // Migration: add last_seq column for rowid-based cursor (replaces timestamp-based)
-  try {
-    db.run("ALTER TABLE cursors ADD COLUMN last_seq INTEGER DEFAULT 0")
-  } catch {
-    /* already exists */
-  }
-
-  db.run(`CREATE TABLE IF NOT EXISTS reads (
-		message_id TEXT NOT NULL,
-		session_id TEXT NOT NULL,
-		read_at    INTEGER NOT NULL,
-		PRIMARY KEY (message_id, session_id)
-	)`)
+  // `cursors` and `reads` tables removed by migration v9 — the event-bus
+  // (km-tribe.event-bus) made them vestigial: per-session delivery state now
+  // lives on `sessions.last_delivered_seq`, and read-receipts were never
+  // written by the post-event-bus code path. Fresh installs never create them.
 
   db.run(`CREATE TABLE IF NOT EXISTS retros (
 		id          TEXT PRIMARY KEY,
@@ -124,7 +109,6 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_type_ts ON messages(type, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_kind_ts ON messages(kind, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
@@ -318,6 +302,20 @@ const MIGRATIONS: readonly Migration[] = [
       db.run("DROP TABLE event_log")
     },
   },
+  {
+    version: 9,
+    name: "drop-cursors-and-reads",
+    up(db) {
+      // km-tribe.delivery-correctness P1.3: the event-bus (km-tribe.event-bus)
+      // moved per-session delivery state onto `sessions.last_delivered_seq`,
+      // making the `cursors` table redundant. `reads` had no post-event-bus
+      // writer — markRead was never called on the live path. Drop both plus
+      // their indexes.
+      db.run("DROP INDEX IF EXISTS idx_reads_session")
+      db.run("DROP TABLE IF EXISTS cursors")
+      db.run("DROP TABLE IF EXISTS reads")
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -335,40 +333,6 @@ export function createStatements(db: Database) {
 			name = $name, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, project_id = $project_id, claude_session_id = $claude_session_id,
 			claude_session_name = $claude_session_name, identity_token = $identity_token, started_at = $now, updated_at = $now
-	`),
-
-    pollMessages: db.prepare(`
-		SELECT rowid, * FROM messages
-		WHERE rowid > $last_seq
-		AND id NOT IN (SELECT message_id FROM reads WHERE session_id = $session_id)
-		AND (
-			recipient = $name
-			OR recipient = '*'
-		)
-		ORDER BY
-			CASE type
-				WHEN 'assign' THEN 0
-				WHEN 'request' THEN 1
-				WHEN 'verdict' THEN 2
-				WHEN 'query' THEN 3
-				WHEN 'response' THEN 4
-				WHEN 'status' THEN 5
-				WHEN 'notify' THEN 6
-				ELSE 7
-			END,
-			rowid ASC
-	`),
-
-    markRead: db.prepare(
-      "INSERT OR IGNORE INTO reads (message_id, session_id, read_at) VALUES ($message_id, $session_id, $now)",
-    ),
-
-    getCursor: db.prepare("SELECT last_read_ts, last_seq FROM cursors WHERE session_id = $session_id"),
-
-    upsertCursor: db.prepare(`
-		INSERT INTO cursors (session_id, last_read_ts, last_seq)
-		VALUES ($session_id, $ts, $seq)
-		ON CONFLICT(session_id) DO UPDATE SET last_read_ts = $ts, last_seq = $seq
 	`),
 
     insertMessage: db.prepare(`
