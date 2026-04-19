@@ -1,6 +1,6 @@
 {
   "name": "alien-trees",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tree-scoped reactive aggregates (ancestors/descendants · some/count/reduce) for the alien-signals ecosystem",
   "keywords": [
     "alien-signals",
