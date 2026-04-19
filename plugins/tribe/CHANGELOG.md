@@ -7,6 +7,29 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — `register` handler composed from small functions (km-tribe.polish-sweep item 6)
+
+The daemon's `case "register":` block dropped from ~220 LOC doing ten things
+to ~90 LOC of orchestration. Behaviour is unchanged — this is pure
+extraction, verified by the existing self-heal / session-identity /
+durability slow suites.
+
+New locally-scoped helpers in `tools/tribe-daemon.ts`:
+
+- `adoptIdentity(token, isActive)` — looks up a prior session by
+  `identity_token` and returns it only when not currently connected.
+- `resolveName(p, adopted, claudeSessionName, claudeSessionId, role)` —
+  runs the five-step name-priority ladder (explicit > Claude > adopted >
+  claude_session_id recovery > role/project fallback).
+- `applyClient(connId, fields)` — builds the `ClientSession`, replaces
+  the placeholder in the clients map, and flags the daemon as active.
+- `replayOrBootstrap(connId, client, adopted)` — replays backlog for
+  adopted identities, or jumps the durability cursor to `MAX(rowid)`
+  for brand-new sessions.
+- `announceJoin(client)` — emits the "X joined" activity line (with
+  sub-agent attribution) unless the post-start suppress window is
+  still open.
+
 ### Changed — typed `kind` column replaces `recipient='log'` sentinel (km-tribe.polish-sweep item 3)
 
 `messages` now carries a typed `kind` column — one of `direct`, `broadcast`,

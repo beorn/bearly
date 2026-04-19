@@ -405,6 +405,188 @@ function deduplicateName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Register handler — composed from small, locally-scoped helpers so the
+// top-level `case "register":` body stays readable. Each helper takes only
+// the dependencies it needs and returns a plain value; no side effects on
+// globals except where explicitly labelled.
+// ---------------------------------------------------------------------------
+
+type PriorSession = { id: string; name: string; role: string }
+
+/**
+ * If the proxy supplied an identity token matching a prior, currently-
+ * disconnected row, return that row so the caller can adopt its sessionId +
+ * name + role. Returns null when there's no match or the prior session is
+ * still actively connected. See km-tribe.session-identity.
+ */
+function adoptIdentity(identityToken: string | null, isActive: (sessionId: string) => boolean): PriorSession | null {
+  if (!identityToken) return null
+  const prior = db
+    .prepare("SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1")
+    .get(identityToken) as PriorSession | null
+  if (!prior) return null
+  if (isActive(prior.id)) return null
+  return prior
+}
+
+/**
+ * Resolve the session name from (in order): explicit `p.name`, Claude
+ * session name, the adopted-identity name, a prior row keyed by
+ * `claude_session_id`, or a role/project fallback.
+ */
+function resolveName(
+  p: Record<string, unknown>,
+  adopted: PriorSession | null,
+  claudeSessionName: string | null,
+  claudeSessionId: string | null,
+  role: TribeRole,
+): string {
+  if (p.name) return String(p.name)
+  if (claudeSessionName) return claudeSessionName
+  if (adopted?.name) return adopted.name
+
+  // Recover from a prior row with the same Claude session ID. Skip
+  // auto-generated `member-<pid>` names (useless to reuse) and role=pending/
+  // watch leftovers (they'd route poorly on reconnect).
+  const prev = claudeSessionId
+    ? (db
+        .prepare("SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
+        .get(claudeSessionId) as { name: string; role: string } | null)
+    : null
+  if (prev && !prev.name.startsWith("member-") && prev.role !== "pending" && prev.role !== "watch") {
+    return prev.name
+  }
+
+  const projectName = String(
+    p.projectName ??
+      String(p.project ?? process.cwd())
+        .split("/")
+        .pop() ??
+      "unknown",
+  )
+  return role === "chief" ? "chief" : projectName
+}
+
+/**
+ * Apply a newly-registered client to the daemon's in-memory state: builds
+ * the ClientSession, replaces the placeholder entry, and flags the daemon
+ * as active. Returns the installed client record.
+ */
+function applyClient(
+  connId: string,
+  fields: {
+    name: string
+    role: TribeRole
+    domains: string[]
+    project: string
+    projectName: string
+    projectId: string
+    pid: number
+    claudeSessionId: string | null
+    peerSocket: string | null
+    ctx: TribeContext
+  },
+): ClientSession {
+  const existing = clients.get(connId)!
+  const client: ClientSession = {
+    socket: existing.socket,
+    id: connId,
+    name: fields.name,
+    role: fields.role,
+    domains: fields.domains,
+    project: fields.project,
+    projectName: fields.projectName,
+    projectId: fields.projectId,
+    pid: fields.pid,
+    claudeSessionId: fields.claudeSessionId,
+    peerSocket: fields.peerSocket,
+    conn: relPath(SOCKET_PATH),
+    ctx: fields.ctx,
+    registeredAt: Date.now(),
+    // Preserve any lore state already set on the placeholder (tribe.hello
+    // can arrive before register on the lore wire path).
+    lore: existing.lore,
+  }
+  clients.set(connId, client)
+  markActive()
+  return client
+}
+
+/**
+ * Advance the durability cursor and, for adopted identities, replay any
+ * messages written after the persisted cursor. Brand-new sessions skip to
+ * the current MAX(rowid) so a fresh join doesn't receive the entire project
+ * history. See km-tribe.message-durability.
+ */
+function replayOrBootstrap(connId: string, client: ClientSession, adopted: PriorSession | null): void {
+  const priorCursor = stmts.getLastDelivered.get({ $id: client.ctx.sessionId }) as {
+    last_delivered_ts: number | null
+    last_delivered_seq: number | null
+  } | null
+
+  if (adopted) {
+    const sinceSeq = priorCursor?.last_delivered_seq ?? 0
+    // Watch sessions see everything; regular sessions see their name + broadcasts.
+    const isWatch = client.role === "watch"
+    const replayQuery = isWatch
+      ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 200"
+      : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 200"
+    const replayParams = isWatch ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
+    const backlog = db.prepare(replayQuery).all(...replayParams) as Array<{
+      rowid: number
+      id: string
+      type: string
+      sender: string
+      recipient: string
+      content: string
+      bead_id: string | null
+      ts: number
+    }>
+    for (const msg of backlog) {
+      pushToClient(connId, "channel", {
+        from: msg.sender,
+        type: msg.type,
+        content: msg.content,
+        bead_id: msg.bead_id,
+        message_id: msg.id,
+      })
+      persistDeliveredCursor(client.ctx.sessionId, msg.ts, msg.rowid)
+    }
+    return
+  }
+
+  // Brand-new session — skip to current latest so the backlog isn't replayed.
+  const latest = db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
+    max_seq: number | null
+  } | null
+  const bootstrapSeq = latest?.max_seq ?? 0
+  persistDeliveredCursor(client.ctx.sessionId, Date.now(), bootstrapSeq)
+}
+
+/**
+ * Emit the "X joined" broadcast unless we're inside the post-start suppress
+ * window (hot-reload reconnection burst). Also tags sub-agent joins with
+ * their parent session name when another connection shares the same
+ * Claude session id.
+ */
+function announceJoin(client: ClientSession): void {
+  if (Date.now() - startedAt <= SUPPRESS_WINDOW_MS) return
+
+  let parentName: string | null = null
+  if (client.claudeSessionId) {
+    for (const [cid, c] of clients) {
+      if (cid !== client.id && c.claudeSessionId === client.claudeSessionId) {
+        parentName = c.name
+        break
+      }
+    }
+  }
+  const shortProject = client.project.replace(process.env.HOME ?? "", "~")
+  const suffix = parentName ? ` (sub-agent of ${parentName})` : ""
+  logActivity("session", `${client.name} joined (${client.role}) pid=${client.pid} ${shortProject}${suffix}`)
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC handler
 // ---------------------------------------------------------------------------
 
@@ -415,76 +597,32 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
   try {
     switch (method) {
       case "register": {
-        const clientPid = Number(p.pid ?? 0)
         const claudeSessionName = (p.claudeSessionName as string) ?? null
         const claudeSessionId = (p.claudeSessionId as string) ?? null
         const identityToken = (p.identityToken as string) ?? null
+
         let role = detectRole(db, { role: p.role as string | undefined })
         // Clients cannot register themselves as "daemon" or "pending" — both are
         // daemon-internal roles. Downgrade to "member" so a confused client
         // still gets a usable (but non-privileged) session.
         if (role === "daemon" || role === "pending") role = "member"
 
-        // Identity adoption: if the proxy supplied an identity token that
-        // matches a prior, currently-disconnected row, adopt its sessionId +
-        // name + role. This is what makes "reopening later" restore the same
-        // identity (see km-tribe.session-identity).
-        let adoptedSession: { id: string; name: string; role: string } | null = null
-        if (identityToken) {
-          const prior = db
-            .prepare("SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1")
-            .get(identityToken) as { id: string; name: string; role: string } | null
-          if (prior) {
-            const isActive = Array.from(clients.values()).some((c) => c.ctx.sessionId === prior.id)
-            if (!isActive) {
-              adoptedSession = prior
-            }
-          }
-        }
+        const adopted = adoptIdentity(identityToken, (sid) =>
+          Array.from(clients.values()).some((c) => c.ctx.sessionId === sid),
+        )
 
-        // Name priority: explicit > Claude session name > adopted (identity token)
-        //   > recovered from DB (claude_session_id) > role-based > pid-based
-        let name: string
-        if (p.name) {
-          name = String(p.name)
-        } else if (claudeSessionName) {
-          name = claudeSessionName
-        } else if (adoptedSession?.name) {
-          name = adoptedSession.name
-        } else {
-          // Try recovering name from previous session with same Claude session ID.
-          // Skip auto-generated "member-<pid>" names (useless to reuse) and any
-          // role=pending/watch leftovers (they'd route poorly on reconnect).
-          const prev = claudeSessionId
-            ? (db
-                .prepare("SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
-                .get(claudeSessionId) as { name: string; role: string } | null)
-            : null
-          if (prev && !prev.name.startsWith("member-") && prev.role !== "pending" && prev.role !== "watch") {
-            name = prev.name
-          } else {
-            const projectName = String(
-              p.projectName ??
-                String(p.project ?? process.cwd())
-                  .split("/")
-                  .pop() ??
-                "unknown",
-            )
-            name = role === "chief" ? "chief" : projectName
-          }
-        }
         // Adopt role from prior session if caller didn't supply one explicitly.
         // Guard against stored rows with stale/unexpected role values — an
         // invalid or daemon-internal role ("daemon"/"pending") falls back to
         // the auto-detected role.
-        if (!p.role && adoptedSession?.role) {
-          const adopted = adoptedSession.role
-          if (adopted === "chief" || adopted === "member" || adopted === "watch") {
-            role = adopted
+        if (!p.role && adopted?.role) {
+          const adoptedRole = adopted.role
+          if (adoptedRole === "chief" || adoptedRole === "member" || adoptedRole === "watch") {
+            role = adoptedRole
           }
         }
-        name = deduplicateName(name)
 
+        const name = deduplicateName(resolveName(p, adopted, claudeSessionName, claudeSessionId, role))
         const domains = (p.domains as string[]) ?? []
         const project = String(p.project ?? process.cwd())
         const projectName = String(p.projectName ?? project.split("/").pop() ?? "unknown")
@@ -503,7 +641,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const clientCtx = createTribeContext({
           db,
           stmts,
-          sessionId: adoptedSession?.id ?? randomUUID(),
+          sessionId: adopted?.id ?? randomUUID(),
           sessionRole: role,
           initialName: name,
           domains,
@@ -516,10 +654,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)
 
-        const existing = clients.get(connId)!
-        const client: ClientSession = {
-          socket: existing.socket,
-          id: connId,
+        const client = applyClient(connId, {
           name,
           role,
           domains,
@@ -529,88 +664,11 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           pid,
           claudeSessionId,
           peerSocket,
-          conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
-          registeredAt: Date.now(),
-          // Preserve any lore state already set on the placeholder (tribe.hello
-          // can arrive before register on the lore wire path).
-          lore: existing.lore,
-        }
-        clients.set(connId, client)
-        markActive()
+        })
 
-        // Durability cursor (km-tribe.message-durability) — lives exclusively
-        // in sessions.last_delivered_{ts,seq} now that the 1s push loop is
-        // gone (km-tribe.event-bus). Two paths:
-        //
-        //   1. Adopted prior identity — replay every message written after the
-        //      persisted cursor. Covers both "daemon restart while connected"
-        //      (cursor equals latest → zero replay) and "client disconnected,
-        //      messages queued, now reconnecting" (cursor lags → deliver the
-        //      gap).
-        //
-        //   2. Brand-new session — skip to current MAX(rowid) so a fresh join
-        //      doesn't receive the entire project history. Persist the
-        //      bootstrap immediately so a subsequent crash stays silent.
-        const priorCursor = stmts.getLastDelivered.get({ $id: clientCtx.sessionId }) as {
-          last_delivered_ts: number | null
-          last_delivered_seq: number | null
-        } | null
-
-        if (adoptedSession) {
-          const sinceSeq = priorCursor?.last_delivered_seq ?? 0
-          // Watch sessions see everything; regular sessions see their name + broadcasts.
-          const isWatch = role === "watch"
-          const replayQuery = isWatch
-            ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 200"
-            : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 200"
-          const replayParams = isWatch ? [sinceSeq, name] : [sinceSeq, name, name]
-          const backlog = db.prepare(replayQuery).all(...replayParams) as Array<{
-            rowid: number
-            id: string
-            type: string
-            sender: string
-            recipient: string
-            content: string
-            bead_id: string | null
-            ts: number
-          }>
-          for (const msg of backlog) {
-            pushToClient(connId, "channel", {
-              from: msg.sender,
-              type: msg.type,
-              content: msg.content,
-              bead_id: msg.bead_id,
-              message_id: msg.id,
-            })
-            persistDeliveredCursor(clientCtx.sessionId, msg.ts, msg.rowid)
-          }
-        } else {
-          // Brand-new session — skip to current latest so the backlog isn't replayed.
-          const latest = db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
-            max_seq: number | null
-          } | null
-          const bootstrapSeq = latest?.max_seq ?? 0
-          const nowTs = Date.now()
-          persistDeliveredCursor(clientCtx.sessionId, nowTs, bootstrapSeq)
-        }
-
-        const shortProject = project.replace(process.env.HOME ?? "", "~")
-        // Suppress join broadcasts during initial window after daemon start (reconnection burst after hot-reload)
-        if (Date.now() - startedAt > SUPPRESS_WINDOW_MS) {
-          // Detect sub-agents: if another session shares the same claudeSessionId, this is a sub-agent
-          let parentName: string | null = null
-          if (claudeSessionId) {
-            for (const [cid, c] of clients) {
-              if (cid !== connId && c.claudeSessionId === claudeSessionId) {
-                parentName = c.name
-                break
-              }
-            }
-          }
-          const suffix = parentName ? ` (sub-agent of ${parentName})` : ""
-          logActivity("session", `${name} joined (${role}) pid=${pid} ${shortProject}${suffix}`)
-        }
+        replayOrBootstrap(connId, client, adopted)
+        announceJoin(client)
 
         // Chief derived from connection order (or explicit claim).
         const chiefInfo = deriveChiefInfo(clients.values(), chiefClaim)
