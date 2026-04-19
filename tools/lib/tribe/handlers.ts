@@ -277,7 +277,7 @@ function handleRename(
     return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${newName}" is already taken` }) }] }
   }
   const oldName = ctx.getName()
-  ctx.stmts.renameSession.run({ $new_name: newName, $session_id: ctx.sessionId })
+  ctx.stmts.renameSession.run({ $new_name: newName, $session_id: ctx.sessionId, $now: Date.now() })
   ctx.setName(newName)
   opts.setUserRenamed(true) // Explicit rename — name is now sticky, won't be overridden
   // Broadcast the rename
