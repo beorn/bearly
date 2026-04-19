@@ -7,6 +7,41 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — `event_log` merged into `messages WHERE kind='event'` (km-tribe.polish-sweep item 9)
+
+The `event_log` table has been removed. Event rows now live exclusively in
+`messages` with `kind='event'` (established by item 3). After item 3,
+`logEvent()` already wrote every event into `messages`, which meant the
+secondary `event_log` write was a dead duplicate — the only reader
+(`cleanupOldData`'s TTL sweep) has been rewritten to delete from `messages`
+directly.
+
+Schema changes (`tools/lib/tribe/database.ts`):
+
+- Migration v8 runs after v7. It backfills any orphan `event_log` rows
+  (those not already represented in `messages` with the matching
+  `(ts, 'event.'+type)`) into the messages journal, then drops the
+  `event_log` table and its two indexes (`idx_event_log_project_ts`,
+  `idx_event_log_type`).
+- Fresh installs skip the `CREATE TABLE event_log` entirely; the table
+  never appears in new databases.
+- New index `idx_messages_kind_ts(kind, ts)` supports the
+  `WHERE kind='event'` and `kind != 'event'` queries used by retro and
+  the handlers stats summary.
+
+Daemon changes (`tools/tribe-daemon.ts`):
+
+- `log_event` RPC no longer double-writes. It calls `logEvent()` (which
+  lands a `kind='event'` row in `messages`) and optionally emits a
+  watch-visibility broadcast. The `INSERT INTO event_log ...` statement
+  is gone.
+
+Cleanup (`tools/lib/tribe/session.ts`):
+
+- `cleanupOldData` drops its `DELETE FROM event_log` pass. The single
+  `DELETE FROM messages WHERE ts < cutoff` reclaims both the delivery
+  journal and the event log.
+
 ### Changed — `register` handler composed from small functions (km-tribe.polish-sweep item 6)
 
 The daemon's `case "register":` block dropped from ~220 LOC doing ten things

@@ -115,26 +115,20 @@ export function openDatabase(path: string): Database {
 		PRIMARY KEY (project_id, key)
 	)`)
 
-  db.run(`CREATE TABLE IF NOT EXISTS event_log (
-		id          INTEGER PRIMARY KEY,
-		ts          INTEGER NOT NULL,
-		session_id  TEXT,
-		project_id  TEXT,
-		type        TEXT,
-		meta        TEXT
-	)`)
+  // `event_log` was merged into `messages WHERE kind='event'` by migration v8
+  // (km-tribe.polish-sweep item 9). Fresh installs get only the messages table;
+  // existing databases retain their event_log rows via the v8 backfill.
 
   // Create indexes if they don't exist
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_recipient_ts ON messages(recipient, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_type_ts ON messages(type, ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_kind_ts ON messages(kind, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_event_log_project_ts ON event_log(project_id, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(type)")
 
   return db
 }
@@ -278,6 +272,50 @@ const MIGRATIONS: readonly Migration[] = [
       // Broadcasts to '*' that aren't events get tagged as kind='broadcast'
       // so the typed column is maximally informative after migration.
       db.run("UPDATE messages SET kind = 'broadcast' WHERE recipient = '*' AND kind = 'direct'")
+    },
+  },
+  {
+    version: 8,
+    name: "merge-event-log-into-messages",
+    up(db) {
+      // km-tribe.polish-sweep item 9: `event_log` is redundant with
+      // `messages WHERE kind='event'` (after v7) — logEvent() already writes
+      // every event into `messages` on the current code path. The dual write
+      // served observability in an earlier era; now the single source of truth
+      // is `messages`. Backfill any orphan rows (events that never made it
+      // into `messages`), then drop the table and its indexes.
+      const hasEventLog = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='event_log'")
+        .get() as { name: string } | null
+      if (!hasEventLog) return
+      // Backfill: any event_log row whose (ts, type) isn't represented as a
+      // messages event row becomes one. We match conservatively on (ts, type)
+      // — collisions are astronomically unlikely, and an accidental duplicate
+      // is far less harmful than a silent data loss.
+      db.run(`
+        INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts)
+        SELECT
+          lower(hex(randomblob(16))),
+          'event.' || COALESCE(el.type, 'unknown'),
+          COALESCE(s.name, 'unknown'),
+          '*',
+          'event',
+          COALESCE(el.meta, ''),
+          NULL,
+          NULL,
+          el.ts
+        FROM event_log el
+        LEFT JOIN sessions s ON s.id = el.session_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM messages m
+          WHERE m.kind = 'event'
+            AND m.ts = el.ts
+            AND m.type = 'event.' || COALESCE(el.type, 'unknown')
+        )
+      `)
+      db.run("DROP INDEX IF EXISTS idx_event_log_project_ts")
+      db.run("DROP INDEX IF EXISTS idx_event_log_type")
+      db.run("DROP TABLE event_log")
     },
   },
 ]

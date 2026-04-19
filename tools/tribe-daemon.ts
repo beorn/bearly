@@ -810,24 +810,18 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         })
       }
 
-      // Log event — fire-and-forget from proxies for observability
+      // Log event — fire-and-forget from proxies for observability.
+      // Events land in `messages WHERE kind='event'` as the single source of
+      // truth (km-tribe.polish-sweep item 9 folded the former `event_log`
+      // dual-write into this journal).
       case "log_event": {
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
-        // Write to legacy events table
         logEvent(
           ctx,
           String(p.type ?? "unknown"),
           p.bead_id as string | undefined,
           p.meta as Record<string, unknown> | undefined,
-        )
-        // Also write to new event_log table (observability, with project_id)
-        db.prepare("INSERT INTO event_log (ts, session_id, project_id, type, meta) VALUES (?, ?, ?, ?, ?)").run(
-          Date.now(),
-          client?.ctx?.sessionId ?? null,
-          String(p.project_id ?? client?.projectId ?? ""),
-          String(p.type ?? ""),
-          p.meta ? JSON.stringify(p.meta) : null,
         )
         // If content is provided, also broadcast via logActivity for watch visibility
         if (p.content) logActivity(String(p.type ?? "event"), String(p.content))
