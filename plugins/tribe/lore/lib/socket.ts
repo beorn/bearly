@@ -6,13 +6,12 @@
  * No peer-to-peer sockets here — lore is a pure client/daemon model.
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
+import { existsSync, mkdirSync, unlinkSync } from "node:fs"
 import { createConnection, type Socket } from "node:net"
 import { spawn } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
-import { resolveLorePidPath } from "./config.ts"
 
 const log = createLogger("lore:socket")
 
@@ -313,21 +312,6 @@ export async function createReconnectingClient(opts: ReconnectingClientOpts): Pr
       return (current as Record<string | symbol, unknown>)[prop]
     },
   }) as LoreClient
-}
-
-// ---------------------------------------------------------------------------
-// PID file
-// ---------------------------------------------------------------------------
-
-export function readLoreDaemonPid(socketPath: string): number | null {
-  try {
-    const pid = parseInt(readFileSync(resolveLorePidPath(socketPath), "utf-8").trim(), 10)
-    if (isNaN(pid)) return null
-    process.kill(pid, 0)
-    return pid
-  } catch {
-    return null
-  }
 }
 
 // ---------------------------------------------------------------------------

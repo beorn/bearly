@@ -1,9 +1,11 @@
 /**
- * Lore configuration — path resolution for socket, PID, and DB.
+ * Lore configuration — path resolution for socket and DB. Pidfile plumbing
+ * was deleted in Phase 5 of km-tribe.plateau — the unified tribe daemon owns
+ * liveness via socket connectability (mirror of Phase 3 for tribe proper).
  */
 
 import { existsSync, mkdirSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -18,12 +20,6 @@ export function resolveLoreSocketPath(socketArg?: string): string {
   if (xdg) return resolve(xdg, "lore.sock")
   const home = process.env.HOME ?? "/tmp"
   return resolve(home, ".local/share/lore/lore.sock")
-}
-
-/** Resolve PID file path (derived from socket path) */
-export function resolveLorePidPath(socketPath: string): string {
-  const base = basename(socketPath).replace(/\.sock$/, "")
-  return resolve(dirname(socketPath), `${base}.pid`)
 }
 
 /** DB location: arg > TRIBE_LORE_DB env > ~/.local/share/lore/lore.db */
