@@ -444,9 +444,11 @@ describe("tribe", () => {
 
   test("rejoin: re-register with updated metadata bumps updated_at", () => {
     registerSession(db, "id-1", "worker-a", "member", ["silvery"])
-    const initial = (db.prepare("SELECT updated_at FROM sessions WHERE id = ?").get("id-1") as {
-      updated_at: number
-    }).updated_at
+    const initial = (
+      db.prepare("SELECT updated_at FROM sessions WHERE id = ?").get("id-1") as {
+        updated_at: number
+      }
+    ).updated_at
 
     // Rejoin happens through upsertSession — simulate it.
     const now = initial + 1000
@@ -530,9 +532,10 @@ describe("registerSession (real impl)", () => {
       expect(ctxB.getName()).not.toBe("worker")
       expect(ctxB.getName().startsWith("worker-")).toBe(true)
 
-      const rows = db
-        .prepare("SELECT id, name FROM sessions ORDER BY name")
-        .all() as Array<{ id: string; name: string }>
+      const rows = db.prepare("SELECT id, name FROM sessions ORDER BY name").all() as Array<{
+        id: string
+        name: string
+      }>
       expect(rows.map((r) => r.name).sort()).toEqual([ctxB.getName(), "worker"].sort())
       expect(rows.find((r) => r.name === "worker")!.id).toBe(ctxA.sessionId)
     } finally {

@@ -299,9 +299,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           // Try recovering name from previous session with same Claude session ID
           const prev = claudeSessionId
             ? (db
-                .prepare(
-                  "SELECT name FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1",
-                )
+                .prepare("SELECT name FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
                 .get(claudeSessionId) as { name: string } | null)
             : null
           if (prev && !prev.name.startsWith("member-") && !prev.name.startsWith("pending-")) {
