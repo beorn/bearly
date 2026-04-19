@@ -178,12 +178,13 @@ function migrateLegacyTribeDb(legacyPath: string, xdgPath: string): void {
  *  role flag is only an initial hint — the daemon reconciles the actual chief from the client set. */
 export function detectRole(db: Database, args: TribeArgs): TribeRole {
   if (args.role) return args.role as TribeRole
-  // Check for live chief by heartbeat
-  const threshold = Date.now() - 30_000
-  const liveChief = db
-    .prepare("SELECT name FROM sessions WHERE role = 'chief' AND heartbeat > ? AND pruned_at IS NULL")
-    .get(threshold)
-  return liveChief ? "member" : "chief"
+  // Phase 2 of km-tribe.plateau: there's no heartbeat timer any more, so a
+  // DB-only query can't tell "currently connected" from "stale row". The
+  // daemon reconciles the actual chief at runtime (see `deriveChiefId`);
+  // this hint is best-effort — if any row claims chief role, default to
+  // member so we don't stomp. The daemon will fix us up on register.
+  const anyChief = db.prepare("SELECT name FROM sessions WHERE role = 'chief' LIMIT 1").get()
+  return anyChief ? "member" : "chief"
 }
 
 /** Auto-generate name: chief gets "chief", members get "member-<N>" */
@@ -192,7 +193,7 @@ export function detectName(db: Database, role: TribeRole, args: TribeArgs): stri
   if (role === "chief") return "chief"
   // Use PID-based name to avoid race conditions (max+1 can collide)
   const pidName = `member-${process.pid}`
-  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
+  const taken = db.prepare("SELECT id FROM sessions WHERE name = ?").get(pidName)
   if (!taken) return pidName
   // PID collision (unlikely) — fall back to random suffix
   return `member-${process.pid}-${Math.random().toString(36).slice(2, 5)}`

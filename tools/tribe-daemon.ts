@@ -38,7 +38,7 @@ import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
-import { cleanupOldPrunedSessions, cleanupOldData, registerSession, sendHeartbeat } from "./lib/tribe/session.ts"
+import { cleanupOldData, registerSession } from "./lib/tribe/session.ts"
 import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
@@ -210,6 +210,29 @@ function releaseChiefFor(sessionId: string): void {
   logActivity("chief:released", `${who} released chief`)
 }
 
+/** Return ctx.sessionIds of every currently-connected eligible client. */
+function getActiveSessionIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const c of clients.values()) {
+    if (!isChiefEligible(c)) continue
+    ids.add(c.ctx.sessionId)
+  }
+  return ids
+}
+
+function getActiveSessionInfo() {
+  return Array.from(clients.values())
+    .filter(isChiefEligible)
+    .map((c) => ({
+      id: c.ctx.sessionId,
+      name: c.name,
+      pid: c.pid,
+      role: c.role,
+      claudeSessionId: c.claudeSessionId,
+      registeredAt: c.registeredAt,
+    }))
+}
+
 /** No-op handler opts for daemon-side tool calls (no MCP session to clean up) */
 const DAEMON_HANDLER_OPTS = {
   cleanup: () => {},
@@ -219,6 +242,8 @@ const DAEMON_HANDLER_OPTS = {
   getChiefInfo: () => deriveChiefInfo(clients.values()),
   claimChief: claimChiefFor,
   releaseChief: releaseChiefFor,
+  getActiveSessionIds,
+  getActiveSessionInfo,
 } as const
 
 function broadcastNotification(method: string, params?: Record<string, unknown>, exclude?: string): void {
@@ -271,7 +296,7 @@ function relPath(p: string): string {
 /** Generate a unique member-<pid> name, with random suffix if taken */
 function generateMemberName(pid: number, connId: string): string {
   const pidName = `member-${pid || connId.slice(0, 6)}`
-  const taken = db.prepare("SELECT id FROM sessions WHERE name = ? AND pruned_at IS NULL").get(pidName)
+  const taken = db.prepare("SELECT id FROM sessions WHERE name = ?").get(pidName)
   return taken ? `member-${pid}-${Math.random().toString(36).slice(2, 5)}` : pidName
 }
 
@@ -312,7 +337,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           const prev = claudeSessionId
             ? (db
                 .prepare(
-                  "SELECT name FROM sessions WHERE claude_session_id = ? AND pruned_at IS NULL ORDER BY heartbeat DESC LIMIT 1",
+                  "SELECT name FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1",
                 )
                 .get(claudeSessionId) as { name: string } | null)
             : null
@@ -357,7 +382,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           claudeSessionName,
         })
 
-        registerSession(clientCtx, projectId)
+        registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid))
 
         const client: ClientSession = {
           socket: clients.get(connId)!.socket,
@@ -611,13 +636,6 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         return makeResponse(id, { subscribed: true })
       }
 
-      // Client heartbeat — keeps session alive in DB
-      case "heartbeat": {
-        const hbClient = clients.get(connId)
-        if (hbClient?.ctx) sendHeartbeat(hbClient.ctx)
-        return makeResponse(id, { ok: true })
-      }
-
       default:
         return makeError(id, -32601, `Method not found: ${method}`)
     }
@@ -727,12 +745,8 @@ const pushInterval = timers.setInterval(() => {
   checkLiveness()
 }, 1000)
 
-// Heartbeat for daemon's own session record
-const heartbeatInterval = timers.setInterval(() => sendHeartbeat(daemonCtx), 10_000)
-
 // Data cleanup every 6 hours
 const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
-cleanupOldPrunedSessions(daemonCtx)
 cleanupOldData(daemonCtx)
 
 // Chief is derived from connection order (see `deriveChiefId`). No promotion
@@ -793,22 +807,17 @@ function handleConnection(socket: NetSocket): void {
       log(`Client disconnected: ${client.name}`)
       logActivity("session", `${client.name} left`)
 
-      // Prune the session in DB
-      try {
-        const ts = Date.now()
-        db.prepare(
-          "UPDATE sessions SET pruned_at = ?, name = name || '-pruned-' || ? WHERE id = ? AND pruned_at IS NULL",
-        ).run(ts, ts, client.ctx.sessionId)
-      } catch {
-        /* best effort */
-      }
+      // Phase 2 of km-tribe.plateau: no DB bookkeeping on disconnect. The
+      // session row survives (cursor recovery queries it on reconnect), and
+      // liveness is determined by clients Map membership — `clients.delete`
+      // below is the authoritative "this session is gone" signal.
 
-      // Clean up unread direct messages targeted at the pruned session.
+      // Clean up unread direct messages targeted at the disconnected session.
       // Broadcasts (recipient = '*') are kept. Messages FROM this session are kept (useful history).
       try {
         const del = db.prepare("DELETE FROM messages WHERE recipient = ?").run(client.name)
         if (del.changes > 0) {
-          log(`Cleaned up ${del.changes} direct message(s) for pruned session ${client.name}`)
+          log(`Cleaned up ${del.changes} direct message(s) for disconnected session ${client.name}`)
         }
       } catch {
         /* best effort */
@@ -1053,7 +1062,7 @@ log(`Watching source files for auto-reload`)
 function shutdown(): void {
   log("Shutting down...")
   stopPlugins()
-  ac.abort() // Clears all managed timers (push, heartbeat, cleanup, quit, debounce)
+  ac.abort() // Clears all managed timers (push, cleanup, quit, debounce)
   for (const w of watchers) w.close()
 
   // Close all client connections

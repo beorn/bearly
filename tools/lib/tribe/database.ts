@@ -24,8 +24,7 @@ export function openDatabase(path: string): Database {
 		claude_session_id TEXT,
 		claude_session_name TEXT,
 		started_at INTEGER NOT NULL,
-		heartbeat  INTEGER NOT NULL,
-		pruned_at  INTEGER
+		updated_at INTEGER NOT NULL
 	)`)
 
   // Migration: add columns if they don't exist (for existing DBs)
@@ -45,11 +44,6 @@ export function openDatabase(path: string): Database {
     /* already exists */
   }
   try {
-    db.run("ALTER TABLE sessions ADD COLUMN pruned_at INTEGER")
-  } catch {
-    /* already exists */
-  }
-  try {
     db.run("ALTER TABLE sessions ADD COLUMN last_delivered_ts INTEGER")
   } catch {
     /* already exists */
@@ -58,6 +52,20 @@ export function openDatabase(path: string): Database {
     db.run("ALTER TABLE sessions ADD COLUMN last_delivered_seq INTEGER DEFAULT 0")
   } catch {
     /* already exists */
+  }
+  // Phase 2 of km-tribe.plateau: rename heartbeat → updated_at, drop pruned_at.
+  // Sessions are no longer tri-state (live / pruned / dead). The clients Map
+  // in the daemon is the authoritative signal for liveness; DB rows are
+  // retained only for cursor recovery across reconnects.
+  try {
+    db.run("ALTER TABLE sessions RENAME COLUMN heartbeat TO updated_at")
+  } catch {
+    /* already renamed or fresh schema */
+  }
+  try {
+    db.run("ALTER TABLE sessions DROP COLUMN pruned_at")
+  } catch {
+    /* already dropped or never existed */
   }
 
   db.run(`CREATE TABLE IF NOT EXISTS messages (
@@ -158,7 +166,14 @@ export function openDatabase(path: string): Database {
 
   // Indexes for common query patterns
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_pruned ON sessions(pruned_at, heartbeat)")
+  // Phase 2 of km-tribe.plateau: idx_sessions_pruned is gone (pruned_at dropped).
+  // idx_sessions_updated orders cursor-recovery queries (ORDER BY updated_at DESC).
+  try {
+    db.run("DROP INDEX IF EXISTS idx_sessions_pruned")
+  } catch {
+    /* ignore */
+  }
+  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_event_log_project_ts ON event_log(project_id, ts)")
@@ -176,15 +191,13 @@ export type TribeStatements = ReturnType<typeof createStatements>
 export function createStatements(db: Database) {
   return {
     upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $now, $now, NULL)
+		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at)
+		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $now, $now)
 		ON CONFLICT(id) DO UPDATE SET
 			name = $name, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, project_id = $project_id, claude_session_id = $claude_session_id,
-			claude_session_name = $claude_session_name, started_at = $now, heartbeat = $now, pruned_at = NULL
+			claude_session_name = $claude_session_name, started_at = $now, updated_at = $now
 	`),
-
-    heartbeat: db.prepare("UPDATE sessions SET heartbeat = $now, pruned_at = NULL WHERE id = $id"),
 
     pollMessages: db.prepare(`
 		SELECT rowid, * FROM messages
@@ -225,14 +238,8 @@ export function createStatements(db: Database) {
 		VALUES ($id, $type, $sender, $recipient, $content, $bead_id, $ref, $ts)
 	`),
 
-    liveSessions: db.prepare(`
-		SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at
-		FROM sessions
-		WHERE heartbeat > $threshold AND pruned_at IS NULL
-	`),
-
     allSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions",
+      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at FROM sessions",
     ),
 
     messageHistory: db.prepare(`
@@ -243,16 +250,12 @@ export function createStatements(db: Database) {
 		LIMIT $limit
 	`),
 
-    checkNameTaken: db.prepare(
-      "SELECT id FROM sessions WHERE name = $name AND id != $session_id AND pruned_at IS NULL",
-    ),
+    checkNameTaken: db.prepare("SELECT id FROM sessions WHERE name = $name AND id != $session_id"),
 
-    renameSession: db.prepare("UPDATE sessions SET name = $new_name WHERE id = $session_id"),
-
-    pruneSession: db.prepare("UPDATE sessions SET pruned_at = $now, name = $pruned_name WHERE id = $id"),
+    renameSession: db.prepare("UPDATE sessions SET name = $new_name, updated_at = $now WHERE id = $session_id"),
 
     updateSessionMeta: db.prepare(`
-		UPDATE sessions SET name = $name, role = $role, domains = $domains, heartbeat = $now, pruned_at = NULL
+		UPDATE sessions SET name = $name, role = $role, domains = $domains, updated_at = $now
 		WHERE id = $id
 	`),
 
@@ -267,15 +270,9 @@ export function createStatements(db: Database) {
     cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),
 
     updateLastDelivered: db.prepare(
-      "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq WHERE id = $id",
+      "UPDATE sessions SET last_delivered_ts = $ts, last_delivered_seq = $seq, updated_at = $ts WHERE id = $id",
     ),
 
     getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
-
-    activeSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, heartbeat, pruned_at FROM sessions WHERE pruned_at IS NULL",
-    ),
-
-    deleteOldPrunedSessions: db.prepare("DELETE FROM sessions WHERE pruned_at IS NOT NULL AND pruned_at < $cutoff"),
   }
 }

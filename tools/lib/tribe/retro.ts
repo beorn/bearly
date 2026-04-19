@@ -61,7 +61,7 @@ interface Session {
   role: string
   domains: string
   started_at: number
-  heartbeat: number
+  updated_at: number
 }
 
 interface MemberMetrics {
@@ -166,7 +166,7 @@ export function generateRetro(db: Database, sinceMs?: number): RetroReport {
     .prepare("SELECT * FROM messages WHERE ts >= ? AND type NOT LIKE 'event.%' ORDER BY ts ASC")
     .all(windowStart) as Message[]
   const sessions = db
-    .prepare("SELECT * FROM sessions WHERE started_at <= ? AND heartbeat >= ?")
+    .prepare("SELECT * FROM sessions WHERE started_at <= ? AND updated_at >= ?")
     .all(windowEnd, windowStart) as Session[]
 
   // Include sessions that sent messages but might have expired

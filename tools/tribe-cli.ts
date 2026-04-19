@@ -376,13 +376,13 @@ const program = new Command("tribe")
 
 program
   .command("status")
-  .description("Show active sessions with uptime and heartbeat")
+  .description("Show active sessions with uptime and last-seen")
   .action(() => void cmdStatus())
 
 program
   .command("sessions")
   .description("List sessions")
-  .option("-a, --all", "Include dead/pruned sessions")
+  .option("-a, --all", "Include historical (disconnected) sessions")
   .action((opts) => void cmdSessions(!!opts.all))
 
 program

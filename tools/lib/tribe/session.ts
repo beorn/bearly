@@ -1,5 +1,5 @@
 /**
- * Tribe session — registration, cursor recovery, transcript naming, cleanup, heartbeat.
+ * Tribe session — registration, cursor recovery, transcript naming, cleanup.
  */
 
 import { existsSync, readFileSync } from "node:fs"
@@ -14,17 +14,40 @@ import { sendMessage, logEvent } from "./messaging.ts"
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerSession(ctx: TribeContext, projectId?: string): void {
+/**
+ * Register a session in the DB.
+ *
+ * The `isActive` callback tells the registrar whether a pre-existing row that
+ * holds the desired name belongs to a currently-connected session. If the
+ * holder is no longer active (its socket is gone from the daemon's `clients`
+ * Map), we overwrite its row — there is no point in preserving a dead row's
+ * name. If the holder IS active, we fall back to a random suffix so two
+ * living sessions never share a name.
+ *
+ * This replaces the old heartbeat-based eviction: before Phase 2 of
+ * km-tribe.plateau we evicted rows with `heartbeat < cutoff`; now that
+ * liveness lives in the daemon's Map (not a DB timer), the Map is the only
+ * source of truth.
+ */
+export function registerSession(
+  ctx: TribeContext,
+  projectId?: string,
+  isActive?: (sessionId: string) => boolean,
+): void {
   const desiredName = ctx.getName()
   const now = Date.now()
 
-  // Evict stale sessions holding our desired name (e.g., after daemon reload)
-  const STALE_MS = 30_000 // 30s — heartbeat interval is 10s, so 3 missed = dead
-  const evicted = ctx.db
-    .prepare("DELETE FROM sessions WHERE name = $name AND id != $id AND heartbeat < $cutoff")
-    .run({ $name: desiredName, $id: ctx.sessionId, $cutoff: now - STALE_MS })
-  if (evicted.changes > 0) {
-    log.debug?.(`evicted stale session holding name "${desiredName}"`)
+  // If another row holds our desired name, and its session is NOT currently
+  // connected, drop the stale row so we can claim the name cleanly.
+  const holder = ctx.db
+    .prepare("SELECT id FROM sessions WHERE name = $name AND id != $id")
+    .get({ $name: desiredName, $id: ctx.sessionId }) as { id: string } | null
+  if (holder) {
+    const holderActive = isActive ? isActive(holder.id) : false
+    if (!holderActive) {
+      ctx.db.prepare("DELETE FROM sessions WHERE id = $id").run({ $id: holder.id })
+      log.debug?.(`evicted stale session row holding name "${desiredName}"`)
+    }
   }
 
   try {
@@ -41,9 +64,9 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
       $now: now,
     })
   } catch {
-    // Name still taken by a live session — add random suffix
+    // Name still taken (race or active holder) — add random suffix
     const fallbackName = `${desiredName}-${Math.random().toString(36).slice(2, 5)}`
-    log.debug?.(`name "${desiredName}" taken by live session, using "${fallbackName}"`)
+    log.debug?.(`name "${desiredName}" taken by active session, using "${fallbackName}"`)
     ctx.setName(fallbackName)
     ctx.stmts.upsertSession.run({
       $id: ctx.sessionId,
@@ -95,7 +118,7 @@ export function registerSession(ctx: TribeContext, projectId?: string): void {
     if (initialSeq === 0) {
       const priorByPid = ctx.db
         .prepare(
-          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY heartbeat DESC LIMIT 1",
+          "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE pid = $pid AND id != $id AND last_delivered_seq IS NOT NULL AND last_delivered_seq > 0 ORDER BY updated_at DESC LIMIT 1",
         )
         .get({ $pid: process.pid, $id: ctx.sessionId }) as {
         last_delivered_ts: number
@@ -179,7 +202,7 @@ export function tryInitialRename(ctx: TribeContext, transcriptPath: string | nul
   if (existing) return
 
   const oldName = ctx.getName()
-  ctx.stmts.renameSession.run({ $new_name: slug, $session_id: ctx.sessionId })
+  ctx.stmts.renameSession.run({ $new_name: slug, $session_id: ctx.sessionId, $now: Date.now() })
   ctx.setName(slug)
   sendMessage(ctx, "*", `Member "${oldName}" is now "${slug}"`, "notify")
   logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: slug, source: "initial-slug" })
@@ -189,15 +212,6 @@ export function tryInitialRename(ctx: TribeContext, transcriptPath: string | nul
 // ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
-
-/** Delete sessions pruned more than 24 hours ago */
-export function cleanupOldPrunedSessions(ctx: TribeContext): void {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000
-  const result = ctx.stmts.deleteOldPrunedSessions.run({ $cutoff: cutoff })
-  if (result.changes > 0) {
-    log.info?.(`cleaned up ${result.changes} old pruned session(s)`)
-  }
-}
 
 /** Delete old data based on TTL: reads/messages/event_log after 7 days */
 export function cleanupOldData(ctx: TribeContext): void {
@@ -212,31 +226,6 @@ export function cleanupOldData(ctx: TribeContext): void {
 
   const total = (readsDel.changes ?? 0) + (eventLogDel.changes ?? 0) + (msgsDel.changes ?? 0)
   if (total > 0) {
-    log.info?.(
-      `cleanup: ${readsDel.changes} reads, ${eventLogDel.changes} event_log, ${msgsDel.changes} msgs deleted`,
-    )
+    log.info?.(`cleanup: ${readsDel.changes} reads, ${eventLogDel.changes} event_log, ${msgsDel.changes} msgs deleted`)
   }
-}
-
-// ---------------------------------------------------------------------------
-// Heartbeat
-// ---------------------------------------------------------------------------
-
-export function sendHeartbeat(ctx: TribeContext): void {
-  // Check if we were pruned — if so, log a rejoin event
-  const session = ctx.db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get(ctx.sessionId) as {
-    pruned_at: number | null
-  } | null
-  if (session?.pruned_at) {
-    logEvent(ctx, "session.rejoined", undefined, {
-      name: ctx.getName(),
-      role: ctx.sessionRole,
-      domains: ctx.domains,
-    })
-    log.info?.(`${ctx.getName()} rejoined tribe (was pruned)`)
-    // Re-register to restore name (pruning renames to free the original name)
-    registerSession(ctx)
-    return
-  }
-  ctx.stmts.heartbeat.run({ $id: ctx.sessionId, $now: Date.now() })
 }

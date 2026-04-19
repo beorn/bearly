@@ -9,7 +9,6 @@ import type { TribeContext } from "./context.ts"
 const log = createLogger("tribe:handlers")
 import { validateName, sanitizeMessage } from "./validation.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
-import { cleanupOldPrunedSessions } from "./session.ts"
 
 // ---------------------------------------------------------------------------
 // Canonical tribe-coordination daemon RPC method names.
@@ -43,6 +42,15 @@ type ToolArgs = Record<string, unknown>
 // Exports
 // ---------------------------------------------------------------------------
 
+export type ActiveSessionInfo = {
+  id: string
+  name: string
+  pid: number
+  role: string
+  claudeSessionId: string | null
+  registeredAt: number
+}
+
 export type HandlerOpts = {
   cleanup: () => void
   userRenamed: boolean
@@ -55,6 +63,14 @@ export type HandlerOpts = {
   claimChief: (sessionId: string, name: string) => void
   /** Release an explicit chief claim (if this session holds it). Idempotent. */
   releaseChief: (sessionId: string) => void
+  /**
+   * Return ctx.sessionId of every currently-connected eligible session — used
+   * to compute `alive` on DB-sourced session rows without a heartbeat timer.
+   * Excludes daemon / watch-* / pending-*.
+   */
+  getActiveSessionIds: () => Set<string>
+  /** Realtime snapshot of connected sessions (daemon clients Map). */
+  getActiveSessionInfo: () => ActiveSessionInfo[]
 }
 
 export function handleToolCall(
@@ -69,7 +85,7 @@ export function handleToolCall(
     case TRIBE_COORD_METHODS.broadcast:
       return handleBroadcast(ctx, a)
     case TRIBE_COORD_METHODS.members:
-      return handleSessions(ctx, a)
+      return handleSessions(ctx, a, opts)
     case TRIBE_COORD_METHODS.history:
       return handleHistory(ctx, a)
     case TRIBE_COORD_METHODS.rename:
@@ -77,7 +93,7 @@ export function handleToolCall(
     case TRIBE_COORD_METHODS.join:
       return handleJoin(ctx, a, opts)
     case TRIBE_COORD_METHODS.health:
-      return handleHealth(ctx)
+      return handleHealth(ctx, opts)
     case TRIBE_COORD_METHODS.reload:
       return handleReload(ctx, a, opts.cleanup)
     case TRIBE_COORD_METHODS.retro:
@@ -158,8 +174,11 @@ function handleBroadcast(ctx: TribeContext, a: ToolArgs): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify({ sent: true, id: result.id }) }] }
 }
 
-function handleSessions(ctx: TribeContext, a: ToolArgs): ToolResult {
-  const threshold = Date.now() - 30_000
+function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
+  // Liveness is determined by the daemon's in-memory clients Map — there is
+  // no DB-level tri-state (live / pruned / dead). DB rows persist only for
+  // cursor recovery across reconnects.
+  const activeIds = opts.getActiveSessionIds()
   const rows = ctx.stmts.allSessions.all() as Array<{
     id: string
     name: string
@@ -170,51 +189,23 @@ function handleSessions(ctx: TribeContext, a: ToolArgs): ToolResult {
     claude_session_id: string | null
     claude_session_name: string | null
     started_at: number
-    heartbeat: number
-    pruned_at: number | null
+    updated_at: number
   }>
 
-  // Auto-prune: check PID liveness and soft-prune dead sessions
-  const dead: string[] = []
-  for (const r of rows) {
-    if (r.pid === process.pid) continue // don't kill ourselves
-    if (r.pruned_at) continue // already pruned
-    try {
-      process.kill(r.pid, 0) // signal 0 = check if process exists
-    } catch {
-      dead.push(r.name)
-      const pruneTs = Date.now()
-      ctx.stmts.pruneSession.run({ $id: r.id, $now: pruneTs, $pruned_name: `${r.name}-pruned-${pruneTs}` })
-    }
-  }
-
-  // Re-query after pruning
-  const liveRows = a.all ? ctx.stmts.allSessions.all() : ctx.stmts.liveSessions.all({ $threshold: threshold })
+  // By default return only currently-connected sessions. `a.all` exposes the
+  // full DB (useful for diagnostics and tribe retro).
+  const visibleRows = a.all ? rows : rows.filter((r) => activeIds.has(r.id))
 
   // Build parent map: first session per claudeSessionId is the parent, rest are sub-agents
   const parentMap = new Map<string, string>()
-  for (const r of liveRows as Array<{ claude_session_id: string | null; name: string; pruned_at: number | null }>) {
-    if (r.pruned_at || !r.claude_session_id) continue
+  for (const r of visibleRows) {
+    if (!r.claude_session_id) continue
     if (!parentMap.has(r.claude_session_id)) {
       parentMap.set(r.claude_session_id, r.name)
     }
   }
 
-  const sessions = (
-    liveRows as Array<{
-      id: string
-      name: string
-      role: string
-      domains: string
-      pid: number
-      cwd: string
-      claude_session_id: string | null
-      claude_session_name: string | null
-      started_at: number
-      heartbeat: number
-      pruned_at: number | null
-    }>
-  ).map((r) => {
+  const sessions = visibleRows.map((r) => {
     const parent = r.claude_session_id ? parentMap.get(r.claude_session_id) : undefined
     return {
       name: r.name,
@@ -224,16 +215,13 @@ function handleSessions(ctx: TribeContext, a: ToolArgs): ToolResult {
       cwd: r.cwd,
       claude_session_id: r.claude_session_id,
       claude_session_name: r.claude_session_name,
-      alive: r.heartbeat > threshold && !r.pruned_at,
-      pruned: !!r.pruned_at,
+      alive: activeIds.has(r.id),
       uptime_min: Math.round((Date.now() - r.started_at) / 60_000),
-      last_heartbeat_sec: Math.round((Date.now() - r.heartbeat) / 1000),
+      last_seen_sec: Math.round((Date.now() - r.updated_at) / 1000),
       parent: parent && parent !== r.name ? parent : undefined,
     }
   })
-  const result: Record<string, unknown> = { sessions }
-  if (dead.length > 0) result.pruned = dead
-  return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }
+  return { content: [{ type: "text", text: JSON.stringify({ sessions }, null, 2) }] }
 }
 
 function handleHistory(ctx: TribeContext, a: ToolArgs): ToolResult {
@@ -345,43 +333,26 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
   }
 }
 
-function handleHealth(ctx: TribeContext): ToolResult {
-  const threshold = Date.now() - 30_000
+function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
   const silentThreshold = Date.now() - 300_000 // 5 minutes
 
-  // Only check non-pruned sessions
-  const activeSessions = ctx.stmts.activeSessions.all() as Array<{
+  // Liveness comes from the daemon's in-memory clients Map. Dead sessions
+  // are simply absent from activeSessionInfo — no DB pruning required.
+  const activeInfo = opts.getActiveSessionInfo()
+  const byId = new Map(activeInfo.map((s) => [s.id, s]))
+  const rows = ctx.stmts.allSessions.all() as Array<{
     id: string
     name: string
     role: string
     domains: string
     pid: number
     started_at: number
-    heartbeat: number
-    pruned_at: number | null
+    updated_at: number
   }>
-
-  // Auto-prune: check PID liveness and soft-prune dead sessions
-  const pruned: string[] = []
-  for (const s of activeSessions) {
-    if (s.pid === process.pid) continue
-    try {
-      process.kill(s.pid, 0)
-    } catch {
-      pruned.push(s.name)
-      const pruneTs = Date.now()
-      ctx.stmts.pruneSession.run({ $id: s.id, $now: pruneTs, $pruned_name: `${s.name}-pruned-${pruneTs}` })
-    }
-  }
-
-  // Clean up sessions pruned more than 24 hours ago
-  cleanupOldPrunedSessions(ctx)
-
-  // Re-query active sessions after pruning
-  const liveSessions = ctx.stmts.activeSessions.all() as typeof activeSessions
+  const liveSessions = rows.filter((r) => byId.has(r.id))
 
   const members = liveSessions.map((s) => {
-    const alive = s.heartbeat > threshold
+    const alive = true // by definition — only connected sessions reported
     // Find last message from this member
     const lastMsg = ctx.db
       .prepare("SELECT ts FROM messages WHERE sender = $name ORDER BY ts DESC LIMIT 1")
@@ -389,11 +360,10 @@ function handleHealth(ctx: TribeContext): ToolResult {
 
     const lastMsgAge = lastMsg ? Date.now() - lastMsg.ts : null
     const warnings: string[] = []
-    if (!alive) warnings.push("heartbeat timeout — session may be dead")
     if (alive && lastMsgAge && lastMsgAge > silentThreshold) {
       warnings.push(`no message in ${Math.round(lastMsgAge / 60_000)} min`)
     }
-    if (!alive && !lastMsg) warnings.push("never sent a message")
+    if (!lastMsg) warnings.push("never sent a message")
 
     return {
       name: s.name,
@@ -426,7 +396,6 @@ function handleHealth(ctx: TribeContext): ToolResult {
   }
 
   const result: Record<string, unknown> = { members, unread, stats, checked_at: new Date().toISOString() }
-  if (pruned.length > 0) result.pruned = pruned
   return {
     content: [
       {
