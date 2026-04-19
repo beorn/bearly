@@ -9,6 +9,17 @@ import type { TribeContext } from "./context.ts"
 // Exports
 // ---------------------------------------------------------------------------
 
+/**
+ * Insert a message row and (optionally) fan out to connected sockets.
+ *
+ * The daemon wires its fan-out hook through `ctx.onMessageInserted` so that
+ * handlers in this file don't need to know about sockets. Standalone callers
+ * (tests, migrations) don't set the hook — the row still lands in SQLite,
+ * which is the durability baseline.
+ *
+ * `rowid` is returned so the daemon can advance per-recipient
+ * `sessions.last_delivered_seq` after a successful write().
+ */
 export function sendMessage(
   ctx: TribeContext,
   recipient: string,
@@ -16,9 +27,10 @@ export function sendMessage(
   type = "notify",
   bead_id?: string,
   ref?: string,
-): { id: string } {
+): { id: string; ts: number; rowid: number } {
   const id = randomUUID()
-  ctx.stmts.insertMessage.run({
+  const ts = Date.now()
+  const result = ctx.stmts.insertMessage.run({
     $id: id,
     $type: type,
     $sender: ctx.getName(),
@@ -26,9 +38,20 @@ export function sendMessage(
     $content: content,
     $bead_id: bead_id ?? null,
     $ref: ref ?? null,
-    $ts: Date.now(),
+    $ts: ts,
   })
-  return { id }
+  const rowid = Number(result.lastInsertRowid)
+  ctx.onMessageInserted?.({
+    id,
+    ts,
+    rowid,
+    type,
+    sender: ctx.getName(),
+    recipient,
+    content,
+    bead_id: bead_id ?? null,
+  })
+  return { id, ts, rowid }
 }
 
 /**

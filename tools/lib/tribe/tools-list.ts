@@ -144,8 +144,18 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe.leadership",
-    description: "Show the current chief (derived from connection order, or explicitly claimed)",
+    name: "tribe.chief",
+    description:
+      "Show the current chief — derived from connection order, or explicitly claimed via tribe.claim-chief.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "tribe.debug",
+    description:
+      "Dump daemon internals for troubleshooting — clients, chief derivation, chief claim, per-session cursors.",
     inputSchema: {
       type: "object" as const,
       properties: {},

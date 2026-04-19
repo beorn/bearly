@@ -10,6 +10,24 @@ import type { TribeRole } from "./config.ts"
 // Exports
 // ---------------------------------------------------------------------------
 
+/**
+ * Message-inserted hook — invoked synchronously inside `sendMessage` after
+ * the row is committed. The daemon installs this to fan out to every
+ * currently-connected socket whose name matches the recipient (or any name
+ * for `recipient = "*"`). Absent (undefined) for standalone callers like
+ * tests, which only need the durable row.
+ */
+export type MessageInsertedInfo = {
+  id: string
+  ts: number
+  rowid: number
+  type: string
+  sender: string
+  recipient: string
+  content: string
+  bead_id: string | null
+}
+
 export type TribeContext = {
   db: Database
   stmts: TribeStatements
@@ -22,6 +40,7 @@ export type TribeContext = {
   setName(name: string): void
   getRole(): TribeRole
   setRole(role: TribeRole): void
+  onMessageInserted?: (info: MessageInsertedInfo) => void
 }
 
 export function createTribeContext(opts: {
@@ -33,6 +52,7 @@ export function createTribeContext(opts: {
   domains: string[]
   claudeSessionId: string | null
   claudeSessionName: string | null
+  onMessageInserted?: (info: MessageInsertedInfo) => void
 }): TribeContext {
   let currentName = opts.initialName
   let currentRole = opts.sessionRole
@@ -57,5 +77,6 @@ export function createTribeContext(opts: {
     setRole: (r: TribeRole) => {
       currentRole = r
     },
+    onMessageInserted: opts.onMessageInserted,
   }
 }

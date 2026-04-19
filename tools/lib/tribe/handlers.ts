@@ -24,9 +24,10 @@ export const TRIBE_COORD_METHODS = {
   join: "tribe.join",
   reload: "tribe.reload",
   retro: "tribe.retro",
-  leadership: "tribe.leadership",
+  chief: "tribe.chief",
   claimChief: "tribe.claim-chief",
   releaseChief: "tribe.release-chief",
+  debug: "tribe.debug",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -71,6 +72,10 @@ export type HandlerOpts = {
   getActiveSessionIds: () => Set<string>
   /** Realtime snapshot of connected sessions (daemon clients Map). */
   getActiveSessionInfo: () => ActiveSessionInfo[]
+  /** Optional: dump daemon internals for `tribe.debug`. Daemon-only (tests using
+   *  handlers directly can omit this — `tribe.debug` then returns a minimal
+   *  snapshot synthesized from the other accessors). */
+  getDebugState?: () => Record<string, unknown>
 }
 
 export function handleToolCall(
@@ -98,12 +103,14 @@ export function handleToolCall(
       return handleReload(ctx, a, opts.cleanup)
     case TRIBE_COORD_METHODS.retro:
       return handleRetro(ctx, a)
-    case TRIBE_COORD_METHODS.leadership:
-      return handleLeadership(ctx, opts)
+    case TRIBE_COORD_METHODS.chief:
+      return handleChief(ctx, opts)
     case TRIBE_COORD_METHODS.claimChief:
       return handleClaimChief(ctx, opts)
     case TRIBE_COORD_METHODS.releaseChief:
       return handleReleaseChief(ctx, opts)
+    case TRIBE_COORD_METHODS.debug:
+      return handleDebug(ctx, a, opts)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -473,14 +480,14 @@ async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> 
   return { content: [{ type: "text", text }] }
 }
 
-function handleLeadership(_ctx: TribeContext, opts: HandlerOpts): ToolResult {
+function handleChief(_ctx: TribeContext, opts: HandlerOpts): ToolResult {
   const info = opts.getChiefInfo()
   if (!info) {
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ leader: null, message: "No chief — no eligible sessions connected" }),
+          text: JSON.stringify({ chief: null, message: "No chief — no eligible sessions connected" }),
         },
       ],
     }
@@ -522,4 +529,20 @@ function handleReleaseChief(ctx: TribeContext, opts: HandlerOpts): ToolResult {
       },
     ],
   }
+}
+
+function handleDebug(_ctx: TribeContext, _a: ToolArgs, opts: HandlerOpts): ToolResult {
+  // Prefer the daemon-provided dump when available (richest snapshot: clients
+  // Map, chief claim, per-session cursors). Otherwise synthesize a minimal
+  // view from the generic accessors so in-process tests still get meaningful
+  // output without wiring getDebugState.
+  const state = opts.getDebugState
+    ? opts.getDebugState()
+    : {
+        clients: opts.getActiveSessionInfo(),
+        chief: opts.getChiefInfo(),
+        chiefClaim: null,
+        cursors: [],
+      }
+  return { content: [{ type: "text", text: JSON.stringify(state) }] }
 }

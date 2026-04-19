@@ -123,6 +123,8 @@ const daemonCtx = createTribeContext({
   domains: [],
   claudeSessionId: null,
   claudeSessionName: null,
+  // Fanout hook — installed below once broadcastToConnected is defined.
+  // (set via `daemonCtx.onMessageInserted = ...` after the function body.)
 })
 
 log(`Starting tribe daemon`)
@@ -247,6 +249,20 @@ const DAEMON_HANDLER_OPTS = {
   releaseChief: releaseChiefFor,
   getActiveSessionIds,
   getActiveSessionInfo,
+  getDebugState: () => ({
+    clients: Array.from(clients.values()).map((c) => ({
+      id: c.ctx.sessionId,
+      name: c.name,
+      role: c.role,
+      pid: c.pid,
+      registeredAt: c.registeredAt,
+    })),
+    chief: deriveChiefInfo(clients.values(), chiefClaim),
+    chiefClaim,
+    cursors: db
+      .prepare("SELECT id, name, last_delivered_ts, last_delivered_seq FROM sessions")
+      .all() as Array<{ id: string; name: string; last_delivered_ts: number | null; last_delivered_seq: number | null }>,
+  }),
 } as const
 
 function broadcastNotification(method: string, params?: Record<string, unknown>, exclude?: string): void {
@@ -262,37 +278,10 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
 }
 
 /** Single entry point for all observable activities.
- *  Writes to DB and pushes directly to all connected clients for immediate delivery. */
+ *  Writes to DB; the messaging layer's fanout hook delivers to connected clients
+ *  synchronously (see broadcastToConnected). No polling tick involved. */
 function logActivity(type: string, content: string): void {
   sendMessage(daemonCtx, "*", content, type)
-  // Drain the backlog so connected clients see the activity immediately —
-  // and so the durability cursor advances monotonically through every
-  // un-delivered rowid, not just this one. (The pre-durability code pushed
-  // the just-written message directly and bumped the cursor to it, which
-  // could silently skip any message inserted between the prior cursor and
-  // this activity. km-tribe.message-durability.)
-  pushNewMessages()
-}
-
-/**
- * Advance the per-connection delivery cursor in-memory AND persist it to the
- * session row so the cursor survives daemon restart. See km-tribe.message-durability.
- *
- * Idempotent: only advances if (ts, seq) is strictly newer than the current
- * cursor. The DB write is keyed by sessionId (stable across reconnect), not
- * connId (ephemeral), which is why Phase 1.5's identity-token adoption is
- * a hard prerequisite for this to work.
- */
-function advanceDelivered(connId: string, sessionId: string, ts: number, seq: number): void {
-  const prev = lastDelivered.get(connId)
-  if (prev && prev.ts >= ts && prev.seq >= seq) return
-  lastDelivered.set(connId, { ts, seq })
-  try {
-    stmts.updateLastDelivered.run({ $id: sessionId, $ts: ts, $seq: seq })
-  } catch {
-    // Session row may not exist yet if an activity fires between register() and
-    // the upsert — the in-memory advance is still correct.
-  }
 }
 
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
@@ -304,6 +293,78 @@ function pushToClient(connId: string, method: string, params?: Record<string, un
     // Dead client
   }
 }
+
+/**
+ * Persist `sessions.last_delivered_{ts,seq}` for a recipient session. Called
+ * after a successful socket write so the cursor survives daemon restart
+ * (km-tribe.message-durability). Idempotent — the statement is an unconditional
+ * UPDATE keyed by session id; SQLite is a no-op when the row is absent (which
+ * happens for the daemon's own pseudo-session and for watch-*).
+ */
+function persistDeliveredCursor(sessionId: string, ts: number, seq: number): void {
+  try {
+    stmts.updateLastDelivered.run({ $id: sessionId, $ts: ts, $seq: seq })
+  } catch {
+    /* best effort — session row may not exist yet (daemon-self, watch-*) */
+  }
+}
+
+/**
+ * Synchronous fanout — called from the messaging layer the instant a message
+ * row is committed. Replaces the former 1s polling push (km-tribe.event-bus).
+ *
+ * Delivery rules (mirror the old pushNewMessages SQL):
+ *   - `watch-*` sessions see every message *except* their own.
+ *   - Regular sessions see messages whose recipient matches their name or '*',
+ *     minus their own.
+ *
+ * Each successful `socket.write` advances the recipient's persisted cursor so
+ * a subsequent daemon restart doesn't re-push (Test E) and so a disconnected
+ * session can pick up from where we stopped (Test F).
+ */
+function broadcastToConnected(info: {
+  id: string
+  ts: number
+  rowid: number
+  type: string
+  sender: string
+  recipient: string
+  content: string
+  bead_id: string | null
+}): void {
+  const params: Record<string, unknown> = {
+    from: info.sender,
+    type: info.type,
+    content: info.content,
+    bead_id: info.bead_id,
+    message_id: info.id,
+  }
+  const notification = makeNotification("channel", params)
+
+  for (const [connId, client] of clients) {
+    // Don't echo a message back to its own sender.
+    if (client.name === info.sender) continue
+    const isWatch = client.name.startsWith("watch-")
+    if (!isWatch) {
+      if (info.recipient !== "*" && info.recipient !== client.name) continue
+    }
+    // Skip half-registered clients (placeholder name), and the sentinel 'log'
+    // recipient used by logEvent (never delivered).
+    if (client.name.startsWith("pending-")) continue
+    if (info.recipient === "log") continue
+
+    try {
+      client.socket.write(notification)
+      persistDeliveredCursor(client.ctx.sessionId, info.ts, info.rowid)
+    } catch {
+      // Dead client — cleanup happens on socket close.
+    }
+  }
+}
+
+// Install fanout on the daemon's own ctx — logActivity() and the health-monitor
+// / plugin writers all flow through daemonCtx.
+daemonCtx.onMessageInserted = broadcastToConnected
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -425,6 +486,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           domains,
           claudeSessionId,
           claudeSessionName,
+          // Fanout hook — every message written through this ctx reaches
+          // connected sockets synchronously (km-tribe.event-bus).
+          onMessageInserted: broadcastToConnected,
         })
 
         registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)
@@ -452,24 +516,52 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         clients.set(connId, client)
         markActive()
 
-        // Seed the durability cursor so we don't re-push messages the prior
-        // daemon already delivered (km-tribe.message-durability). Three cases:
-        //   1. Identity-token adoption (Phase 1.5) OR prior session on same
-        //      sessionId — use the persisted last_delivered_seq (even if 0:
-        //      a session that never received anything but had messages queued
-        //      during downtime must still see them on reconnect).
-        //   2. Brand-new session — start at the current max rowid so we don't
-        //      replay the entire message history on first connect.
+        // Durability cursor (km-tribe.message-durability) — lives exclusively
+        // in sessions.last_delivered_{ts,seq} now that the 1s push loop is
+        // gone (km-tribe.event-bus). Two paths:
+        //
+        //   1. Adopted prior identity — replay every message written after the
+        //      persisted cursor. Covers both "daemon restart while connected"
+        //      (cursor equals latest → zero replay) and "client disconnected,
+        //      messages queued, now reconnecting" (cursor lags → deliver the
+        //      gap).
+        //
+        //   2. Brand-new session — skip to current MAX(rowid) so a fresh join
+        //      doesn't receive the entire project history. Persist the
+        //      bootstrap immediately so a subsequent crash stays silent.
         const priorCursor = stmts.getLastDelivered.get({ $id: clientCtx.sessionId }) as {
           last_delivered_ts: number | null
           last_delivered_seq: number | null
         } | null
+
         if (adoptedSession) {
-          // Adopted prior identity — honour its persisted cursor verbatim.
-          lastDelivered.set(connId, {
-            ts: priorCursor?.last_delivered_ts ?? 0,
-            seq: priorCursor?.last_delivered_seq ?? 0,
-          })
+          const sinceSeq = priorCursor?.last_delivered_seq ?? 0
+          // Watch sessions see everything; regular sessions see their name + broadcasts.
+          const isWatch = name.startsWith("watch-")
+          const replayQuery = isWatch
+            ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 200"
+            : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 200"
+          const replayParams = isWatch ? [sinceSeq, name] : [sinceSeq, name, name]
+          const backlog = db.prepare(replayQuery).all(...replayParams) as Array<{
+            rowid: number
+            id: string
+            type: string
+            sender: string
+            recipient: string
+            content: string
+            bead_id: string | null
+            ts: number
+          }>
+          for (const msg of backlog) {
+            pushToClient(connId, "channel", {
+              from: msg.sender,
+              type: msg.type,
+              content: msg.content,
+              bead_id: msg.bead_id,
+              message_id: msg.id,
+            })
+            persistDeliveredCursor(clientCtx.sessionId, msg.ts, msg.rowid)
+          }
         } else {
           // Brand-new session — skip to current latest so the backlog isn't replayed.
           const latest = db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
@@ -477,17 +569,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           } | null
           const bootstrapSeq = latest?.max_seq ?? 0
           const nowTs = Date.now()
-          lastDelivered.set(connId, { ts: nowTs, seq: bootstrapSeq })
-          // Persist the bootstrap so a subsequent crash doesn't replay history.
-          try {
-            stmts.updateLastDelivered.run({
-              $id: clientCtx.sessionId,
-              $ts: nowTs,
-              $seq: bootstrapSeq,
-            })
-          } catch {
-            /* best effort */
-          }
+          persistDeliveredCursor(clientCtx.sessionId, nowTs, bootstrapSeq)
         }
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
@@ -537,9 +619,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       case TRIBE_COORD_METHODS.health:
       case TRIBE_COORD_METHODS.reload:
       case TRIBE_COORD_METHODS.retro:
-      case TRIBE_COORD_METHODS.leadership:
+      case TRIBE_COORD_METHODS.chief:
       case TRIBE_COORD_METHODS.claimChief:
-      case TRIBE_COORD_METHODS.releaseChief: {
+      case TRIBE_COORD_METHODS.releaseChief:
+      case TRIBE_COORD_METHODS.debug: {
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
 
@@ -553,9 +636,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           client.role = ctx.getRole()
         }
 
-        // After handling, push any new messages to recipients
-        // (The handler writes to DB; we need to check for new messages and push)
-        pushNewMessages()
+        // Fanout happens synchronously inside sendMessage via the
+        // ctx.onMessageInserted hook installed on clientCtx at register time
+        // (km-tribe.event-bus). No polling drain needed.
 
         return makeResponse(id, result)
       }
@@ -754,64 +837,13 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 }
 
 // ---------------------------------------------------------------------------
-// Message push — check DB for new messages and push to clients
-// ---------------------------------------------------------------------------
-
-// Durability cursor (km-tribe.message-durability): tracks the last message
-// successfully pushed to each connection. Persisted to sessions.last_delivered_ts /
-// last_delivered_seq via advanceDelivered() so a daemon crash doesn't cause
-// either re-pushing the full backlog or skipping in-flight messages on reconnect.
-const lastDelivered = new Map<string, { ts: number; seq: number }>() // connId → cursor
-
-function pushNewMessages(): void {
-  for (const [connId, client] of clients) {
-    const cursor = lastDelivered.get(connId)
-    // rowid is strictly monotonic (unlike ts, which can collide within a
-    // millisecond); use it for the "what's new" filter. On first push after
-    // register the cursor.seq is 0 (new session) or the recovered value
-    // (identity-token adoption + DB seed above).
-    const sinceSeq = cursor?.seq ?? 0
-    try {
-      // Watch sessions see ALL messages; regular sessions see only theirs + broadcasts
-      const query = client.name.startsWith("watch-")
-        ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 50"
-        : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 50"
-      const params = client.name.startsWith("watch-") ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
-      const messages = db.prepare(query).all(...params) as Array<{
-        rowid: number
-        id: string
-        type: string
-        sender: string
-        recipient: string
-        content: string
-        bead_id: string | null
-        ts: number
-      }>
-
-      for (const msg of messages) {
-        pushToClient(connId, "channel", {
-          from: msg.sender,
-          type: msg.type,
-          content: msg.content,
-          bead_id: msg.bead_id,
-          message_id: msg.id,
-        })
-        advanceDelivered(connId, client.ctx.sessionId, msg.ts, msg.rowid)
-      }
-    } catch {
-      // DB error — skip this cycle
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Plugins (git poller, beads watcher)
 // ---------------------------------------------------------------------------
 
 const pluginCtx: PluginContext = {
   sendMessage(to, content, type, beadId) {
+    // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
     sendMessage(daemonCtx, to, content, type, beadId)
-    pushNewMessages()
   },
   hasChief() {
     return deriveChiefId(clients.values(), chiefClaim) !== null
@@ -846,8 +878,8 @@ const pluginCtx: PluginContext = {
 
 // Wire up log broadcasting now that pluginCtx is ready
 broadcastLog = (msg, type) => {
+  // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
   sendMessage(daemonCtx, "*", msg, type)
-  pushNewMessages()
 }
 
 const plugins = process.env.TRIBE_NO_PLUGINS
@@ -856,9 +888,10 @@ const plugins = process.env.TRIBE_NO_PLUGINS
 const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
 const stopPlugins = loadPlugins(plugins, pluginCtx)
 
-// 1-second tick: push plugin-generated messages + check idle liveness
-const pushInterval = timers.setInterval(() => {
-  pushNewMessages()
+// 1-second tick: idle-liveness only. Messages are delivered synchronously via
+// the ctx.onMessageInserted fanout hook (km-tribe.event-bus), so there's no
+// polling drain in this tick anymore.
+const livenessInterval = timers.setInterval(() => {
   checkLiveness()
 }, 1000)
 
@@ -944,7 +977,8 @@ function handleConnection(socket: NetSocket): void {
 
     clients.delete(connId)
     socketToClient.delete(socket)
-    lastDelivered.delete(connId)
+    // No per-connection cursor state to clean up — the durability cursor lives
+    // in sessions.last_delivered_seq (km-tribe.event-bus).
     if (loreHandlers && client) loreHandlers.dropConn(client.lore.sessionId)
 
     // If the disconnecting client had the explicit chief claim, clear it so
@@ -1054,7 +1088,6 @@ function checkLiveness(): void {
       log(`Expiring stale pending session: ${client.name} (age=${Math.floor((now - client.registeredAt) / 1000)}s)`)
       clients.delete(connId)
       socketToClient.delete(client.socket)
-      lastDelivered.delete(connId)
       try {
         client.socket.destroy()
       } catch {

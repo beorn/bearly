@@ -153,18 +153,21 @@ const MIGRATIONS: readonly Migration[] = [
     version: 1,
     name: "add-sessions-optional-columns",
     up(db) {
-      for (const col of [
-        "project_id TEXT",
-        "claude_session_id TEXT",
-        "claude_session_name TEXT",
-        "last_delivered_ts INTEGER",
-        "last_delivered_seq INTEGER DEFAULT 0",
-      ]) {
-        try {
-          db.run(`ALTER TABLE sessions ADD COLUMN ${col}`)
-        } catch {
-          /* column already exists — seen when upgrading from a DB that ran the old try/catch soup */
-        }
+      // Introspect rather than try/catch — keeps the upgrade silent on fresh
+      // installs (CREATE TABLE already has these columns) and surgical on old
+      // ones (only ADD what's missing).
+      const cols = new Set(
+        (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((r) => r.name),
+      )
+      const wanted: ReadonlyArray<readonly [string, string]> = [
+        ["project_id", "TEXT"],
+        ["claude_session_id", "TEXT"],
+        ["claude_session_name", "TEXT"],
+        ["last_delivered_ts", "INTEGER"],
+        ["last_delivered_seq", "INTEGER DEFAULT 0"],
+      ]
+      for (const [name, spec] of wanted) {
+        if (!cols.has(name)) db.run(`ALTER TABLE sessions ADD COLUMN ${name} ${spec}`)
       }
     },
   },

@@ -258,7 +258,7 @@ describe("tribe self-heal (kill-and-recover)", () => {
       const bob = await connect()
       await bob.call("register", { name: "bob", role: "member" })
 
-      const led1 = parseToolText(await bob.call("tribe.leadership"))
+      const led1 = parseToolText(await bob.call("tribe.chief"))
       expect(led1.holder_name).toBe("alice")
       expect(led1.source).toBe("derived-from-connection-order")
 
@@ -269,7 +269,7 @@ describe("tribe self-heal (kill-and-recover)", () => {
       // Give the daemon a moment to process the close event.
       await new Promise((r) => setTimeout(r, 250))
 
-      const led2 = parseToolText(await bob.call("tribe.leadership"))
+      const led2 = parseToolText(await bob.call("tribe.chief"))
       expect(led2.holder_name).toBe("bob")
       expect(led2.source).toBe("derived-from-connection-order")
     }, 20_000)
@@ -285,7 +285,7 @@ describe("tribe self-heal (kill-and-recover)", () => {
 
       // Bob claims chief explicitly (overrides derivation).
       parseToolText(await bob.call("tribe.claim-chief"))
-      const ledClaim = parseToolText(await alice.call("tribe.leadership"))
+      const ledClaim = parseToolText(await alice.call("tribe.chief"))
       expect(ledClaim.holder_name).toBe("bob")
       expect(ledClaim.source).toBe("explicit-claim")
       expect(ledClaim.claimed).toBe(true)
@@ -296,7 +296,7 @@ describe("tribe self-heal (kill-and-recover)", () => {
       if (bobIdx !== -1) clients.splice(bobIdx, 1)
       await new Promise((r) => setTimeout(r, 250))
 
-      const ledFallback = parseToolText(await alice.call("tribe.leadership"))
+      const ledFallback = parseToolText(await alice.call("tribe.chief"))
       expect(ledFallback.holder_name).toBe("alice")
       expect(ledFallback.source).toBe("derived-from-connection-order")
       expect(ledFallback.claimed).toBe(false)
@@ -411,5 +411,38 @@ describe("tribe self-heal (kill-and-recover)", () => {
       })) as { daemonPid: number }
       expect(helloAfter.daemonPid).toBe(daemon.pid)
     }, 25_000)
+  })
+
+  // =========================================================================
+  // tribe.debug — dump daemon internals for troubleshooting
+  // =========================================================================
+
+  describe("tribe.debug", () => {
+    it("returns a snapshot with clients, chief, and cursors", async () => {
+      daemon = await spawnDaemon(socketPath, dbPath)
+
+      const alice = await connect()
+      await alice.call("register", { name: "debug-alice", role: "member" })
+      // Tiny gap so alice's registeredAt is strictly before bob's.
+      await new Promise((r) => setTimeout(r, 20))
+      const bob = await connect()
+      await bob.call("register", { name: "debug-bob", role: "member" })
+
+      const snap = parseToolText(await bob.call("tribe.debug")) as {
+        clients: Array<{ id: string; name: string; role: string; pid: number; registeredAt: number }>
+        chief: { id: string; name: string; claimed: boolean } | null
+        chiefClaim: string | null
+        cursors: Array<{ id: string; name: string; last_delivered_ts: number | null; last_delivered_seq: number | null }>
+      }
+      expect(Array.isArray(snap.clients)).toBe(true)
+      const clientNames = snap.clients.map((c) => c.name).sort()
+      expect(clientNames).toContain("debug-alice")
+      expect(clientNames).toContain("debug-bob")
+      expect(snap.chief).not.toBeNull()
+      expect(snap.chief?.name).toBe("debug-alice")
+      expect(snap.chief?.claimed).toBe(false)
+      expect(snap.chiefClaim).toBeNull()
+      expect(Array.isArray(snap.cursors)).toBe(true)
+    }, 20_000)
   })
 })
