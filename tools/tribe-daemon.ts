@@ -39,7 +39,10 @@ import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
 import { cleanupOldData, registerSession } from "./lib/tribe/session.ts"
-import { beadsPlugin, gitPlugin, loadPlugins, type PluginContext } from "./lib/tribe/plugins.ts"
+import type { TribeClientApi } from "./lib/tribe/plugin-api.ts"
+import { loadPlugins } from "./lib/tribe/plugin-loader.ts"
+import { gitPlugin } from "./lib/tribe/git-plugin.ts"
+import { beadsPlugin } from "./lib/tribe/beads-plugin.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
 import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
@@ -837,46 +840,53 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 }
 
 // ---------------------------------------------------------------------------
-// Plugins (git poller, beads watcher)
+// Plugins (git / beads / github / health / accountly)
+//
+// Plugins are optional observer modules that emit messages onto the tribe
+// wire via TribeClientApi. The daemon's core responsibilities (register,
+// broadcast, fanout, lore) don't depend on any plugin — TRIBE_NO_PLUGINS=1
+// boots a fully functional daemon with zero plugins.
+//
+// In an out-of-process world each plugin would connect to the daemon over
+// the Unix socket as an observer client. Here they share the daemon's event
+// loop for simplicity — but they are isolated from daemon internals (no DB,
+// no clients map, no session UUID); the TribeClientApi below is the entire
+// surface they see.
 // ---------------------------------------------------------------------------
 
-const pluginCtx: PluginContext = {
-  sendMessage(to, content, type, beadId) {
+const tribeClientApi: TribeClientApi = {
+  send(recipient, content, type, beadId) {
     // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
-    sendMessage(daemonCtx, to, content, type, beadId)
+    sendMessage(daemonCtx, recipient, content, type, beadId)
   },
-  hasChief() {
-    return deriveChiefId(clients.values(), chiefClaim) !== null
-  },
-  hasRecentMessage(contentPrefix) {
-    const since = Date.now() - 300_000
-    return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
+  broadcast(content, type, beadId) {
+    sendMessage(daemonCtx, "*", content, type, beadId)
   },
   claimDedup(key) {
     // Single writer — no need for BEGIN IMMEDIATE in daemon mode
     const result = stmts.claimDedup.run({ $key: key, $session_id: DAEMON_SESSION_ID, $ts: Date.now() })
     return result.changes > 0
   },
-  sessionName: "daemon",
-  sessionId: DAEMON_SESSION_ID,
-  claudeSessionId: null,
-  triggerReload(reason) {
-    log(`Plugin requested reload: ${reason}`)
-    logActivity("reload", `reload: ${reason}`)
-  },
-  getSessionNames() {
-    return Array.from(clients.values())
-      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
-      .map((c) => c.name)
+  hasRecentMessage(contentPrefix) {
+    const since = Date.now() - 300_000
+    return !!stmts.hasRecentMessage.get({ $prefix: contentPrefix, $since: since })
   },
   getActiveSessions() {
     return Array.from(clients.values())
       .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
       .map((c) => ({ name: c.name, pid: c.pid, role: c.role }))
   },
+  getSessionNames() {
+    return Array.from(clients.values())
+      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
+      .map((c) => c.name)
+  },
+  hasChief() {
+    return deriveChiefId(clients.values(), chiefClaim) !== null
+  },
 }
 
-// Wire up log broadcasting now that pluginCtx is ready
+// Wire up log broadcasting now that tribeClientApi is ready
 broadcastLog = (msg, type) => {
   // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
   sendMessage(daemonCtx, "*", msg, type)
@@ -884,9 +894,10 @@ broadcastLog = (msg, type) => {
 
 const plugins = process.env.TRIBE_NO_PLUGINS
   ? []
-  : [gitPlugin(), beadsPlugin(), githubPlugin(), healthMonitorPlugin(), accountlyPlugin()]
-const activePluginNames = plugins.filter((p) => p.available()).map((p) => p.name)
-const stopPlugins = loadPlugins(plugins, pluginCtx)
+  : [gitPlugin, beadsPlugin, githubPlugin, healthMonitorPlugin, accountlyPlugin]
+const loadedPlugins = loadPlugins(plugins, tribeClientApi)
+const activePluginNames = loadedPlugins.active.filter((p) => p.active).map((p) => p.name)
+const stopPlugins = loadedPlugins.stop
 
 // 1-second tick: idle-liveness only. Messages are delivered synchronously via
 // the ctx.onMessageInserted fanout hook (km-tribe.event-bus), so there's no
