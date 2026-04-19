@@ -4,6 +4,21 @@ Incremental reactive collection transforms for the [alien-signals](https://githu
 
 When one item in a large collection changes, only that item's mapped output is recomputed — not the entire collection.
 
+## Which alien-* package do I need?
+
+The `alien-*` family is "signals for a specific shape of data". Pick by what your data looks like:
+
+| Your data is…                                          | Reach for                                                              | What it gives you                                                                                       |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals)         | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.          |
+| **A list that changes over time** (rows, cards, todos) | **`alien-projections`** (you're here)                                  | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes. |
+| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](https://www.npmjs.com/package/alien-resources)     | `createResource(fetcher)` — gives you `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests. |
+| **A tree / hierarchy** (folders, outlines, nested UI)  | [`alien-trees`](https://www.npmjs.com/package/alien-trees)             | `createTree(...)` — ask "does any descendant have X?" or "inherit Y from any ancestor?" in O(1).        |
+
+They **compose**. A list of async-fetched trees of plain values uses all four together. Each package earns its place by exploiting one data shape well, not by trying to do everything.
+
+**You're on `alien-projections`** — reach for this one when you have a reactive array and want a derived reactive array (mapped, filtered, sorted), and you don't want the whole array to recompute every time one item changes.
+
 ## Install
 
 ```bash

@@ -47,14 +47,24 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ## Packages
 
-Standalone npm packages absorbed from bearlymade:
+### The alien-* family — "signals for a specific shape of data"
 
-| Package                                              | What                                                         |
-| ---------------------------------------------------- | ------------------------------------------------------------ |
-| [alien-projections](packages/alien-projections/)     | Incremental reactive collection transforms for alien-signals |
-| [alien-resources](packages/alien-resources/)         | Async signal bridge for alien-signals — reactive resources   |
-| [alien-trees](packages/alien-trees/)                 | Tree-scoped reactive aggregates for alien-signals            |
-| [vitest-silvery-dots](packages/vitest-silvery-dots/) | Streaming dot reporter for Vitest, built with Silvery        |
+Three sibling packages on top of [alien-signals](https://github.com/stackblitz/alien-signals). Each solves one data shape well; they compose for real apps.
+
+| Your data is…                                          | Reach for                                                                          | What it gives you                                                                                            |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals) _(upstream)_        | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.               |
+| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](packages/alien-projections/)                                 | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes.      |
+| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](packages/alien-resources/)                                     | `createResource(fetcher)` — `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests.          |
+| **A tree / hierarchy** (folders, outlines, nested UI)  | [`alien-trees`](packages/alien-trees/)                                             | `createTree(...)` — "does any descendant have X?" / "inherit Y from any ancestor?" in O(1).                  |
+
+A list of async-fetched trees of plain values uses all four together. For React apps, [`@silvery/signals`](https://silvery.dev) bundles the whole family + hooks.
+
+### Other
+
+| Package                                              | What                                                  |
+| ---------------------------------------------------- | ----------------------------------------------------- |
+| [vitest-silvery-dots](packages/vitest-silvery-dots/) | Streaming dot reporter for Vitest, built with Silvery |
 
 ## Development
 

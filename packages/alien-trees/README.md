@@ -4,6 +4,21 @@ Tree-scoped reactive aggregates for the [alien-signals](https://github.com/stack
 
 Declarative aggregates over ancestors or descendants of a tree, maintained incrementally with a sparse ancestor index. Cursor / editing / selection / tag-propagation patterns become O(1) reads + O(depth) writes instead of O(subtree) walks.
 
+## Which alien-* package do I need?
+
+The `alien-*` family is "signals for a specific shape of data". Pick by what your data looks like:
+
+| Your data is…                                          | Reach for                                                                  | What it gives you                                                                                       |
+| ------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals)             | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.          |
+| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](https://www.npmjs.com/package/alien-projections)     | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes. |
+| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](https://www.npmjs.com/package/alien-resources)         | `createResource(fetcher)` — gives you `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests. |
+| **A tree / hierarchy** (folders, outlines, nested UI)  | **`alien-trees`** (you're here)                                            | `createTree(...)` — ask "does any descendant have X?" or "inherit Y from any ancestor?" in O(1).        |
+
+They **compose**. A list of async-fetched trees of plain values uses all four together. Each package earns its place by exploiting one data shape well, not by trying to do everything.
+
+**You're on `alien-trees`** — reach for this one when your data has a parent/child structure and you need reactive "is any descendant doing X?" or "does this node inherit from an ancestor doing Y?" queries. Classic examples: a cursor in an outline (every ancestor highlights), tasks inside folders (folder shows "3 incomplete" live), tag inheritance down a subtree.
+
 ## Install
 
 ```bash
@@ -115,15 +130,9 @@ Strategies are an internal implementation detail. There's one API, and the engin
 
 **Not API-compatible with any of the above.** Follows alien-signals conventions (callable accessors: `store.get(id).cursorDescendant()` not `store.get(id).cursorDescendant.value`). The DSL is specific to alien-trees; similar ideas appear in the ECS and database worlds but no prior JS/TS library packages this exact combination.
 
-## Siblings in the alien-signals ecosystem
+## React integration
 
-| Package                                                                | Shape                   | Use when                                                                             |
-| ---------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------ |
-| [`alien-signals`](https://github.com/stackblitz/alien-signals)         | Scalar cells            | primitive reactivity (signal / computed / effect)                                    |
-| [`alien-projections`](https://www.npmjs.com/package/alien-projections) | Arrays                  | `createProjection(signal, { key, map, filter, sort })` — only re-map changed entries |
-| [`alien-resources`](https://www.npmjs.com/package/alien-resources)     | Async values            | `createResource(fetcher)` — loading / error / auto-cancel                            |
-| **`alien-trees`**                                                      | **Trees (hierarchies)** | **`createTree(factory, traversal)` — O(1) descendant/ancestor queries**              |
-| [`@silvery/signals`](https://silvery.dev)                              | React integration       | Bundles the above + `useSignal`, deep stores, model factories                        |
+[`@silvery/signals`](https://silvery.dev) bundles all four alien-* packages and adds React hooks (`useSignal`, deep stores, model factories). If you're using React, that's the fastest way to pull the whole family in one install.
 
 ## Tests & benchmarks
 
