@@ -224,15 +224,34 @@ function broadcastNotification(method: string, params?: Record<string, unknown>,
 /** Single entry point for all observable activities.
  *  Writes to DB and pushes directly to all connected clients for immediate delivery. */
 function logActivity(type: string, content: string): void {
-  const ts = Date.now()
   sendMessage(daemonCtx, "*", content, type)
-  // Push directly to connected clients — don't rely on the 1s poll interval.
-  // Advance lastDelivered so the next poll doesn't re-deliver the same message.
-  for (const [connId, client] of clients) {
-    if (client.name === daemonCtx.getName()) continue // skip sender
-    pushToClient(connId, "channel", { from: "daemon", type, content })
-    const prev = lastDelivered.get(connId) ?? 0
-    if (ts > prev) lastDelivered.set(connId, ts)
+  // Drain the backlog so connected clients see the activity immediately —
+  // and so the durability cursor advances monotonically through every
+  // un-delivered rowid, not just this one. (The pre-durability code pushed
+  // the just-written message directly and bumped the cursor to it, which
+  // could silently skip any message inserted between the prior cursor and
+  // this activity. km-tribe.message-durability.)
+  pushNewMessages()
+}
+
+/**
+ * Advance the per-connection delivery cursor in-memory AND persist it to the
+ * session row so the cursor survives daemon restart. See km-tribe.message-durability.
+ *
+ * Idempotent: only advances if (ts, seq) is strictly newer than the current
+ * cursor. The DB write is keyed by sessionId (stable across reconnect), not
+ * connId (ephemeral), which is why Phase 1.5's identity-token adoption is
+ * a hard prerequisite for this to work.
+ */
+function advanceDelivered(connId: string, sessionId: string, ts: number, seq: number): void {
+  const prev = lastDelivered.get(connId)
+  if (prev && prev.ts >= ts && prev.seq >= seq) return
+  lastDelivered.set(connId, { ts, seq })
+  try {
+    stmts.updateLastDelivered.run({ $id: sessionId, $ts: ts, $seq: seq })
+  } catch {
+    // Session row may not exist yet if an activity fires between register() and
+    // the upsert — the in-memory advance is still correct.
   }
 }
 
@@ -297,9 +316,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         let adoptedSession: { id: string; name: string; role: string } | null = null
         if (identityToken) {
           const prior = db
-            .prepare(
-              "SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1",
-            )
+            .prepare("SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1")
             .get(identityToken) as { id: string; name: string; role: string } | null
           if (prior) {
             const isActive = Array.from(clients.values()).some((c) => c.ctx.sessionId === prior.id)
@@ -390,6 +407,44 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         }
         clients.set(connId, client)
         markActive()
+
+        // Seed the durability cursor so we don't re-push messages the prior
+        // daemon already delivered (km-tribe.message-durability). Three cases:
+        //   1. Identity-token adoption (Phase 1.5) OR prior session on same
+        //      sessionId — use the persisted last_delivered_seq (even if 0:
+        //      a session that never received anything but had messages queued
+        //      during downtime must still see them on reconnect).
+        //   2. Brand-new session — start at the current max rowid so we don't
+        //      replay the entire message history on first connect.
+        const priorCursor = stmts.getLastDelivered.get({ $id: clientCtx.sessionId }) as {
+          last_delivered_ts: number | null
+          last_delivered_seq: number | null
+        } | null
+        if (adoptedSession) {
+          // Adopted prior identity — honour its persisted cursor verbatim.
+          lastDelivered.set(connId, {
+            ts: priorCursor?.last_delivered_ts ?? 0,
+            seq: priorCursor?.last_delivered_seq ?? 0,
+          })
+        } else {
+          // Brand-new session — skip to current latest so the backlog isn't replayed.
+          const latest = db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
+            max_seq: number | null
+          } | null
+          const bootstrapSeq = latest?.max_seq ?? 0
+          const nowTs = Date.now()
+          lastDelivered.set(connId, { ts: nowTs, seq: bootstrapSeq })
+          // Persist the bootstrap so a subsequent crash doesn't replay history.
+          try {
+            stmts.updateLastDelivered.run({
+              $id: clientCtx.sessionId,
+              $ts: nowTs,
+              $seq: bootstrapSeq,
+            })
+          } catch {
+            /* best effort */
+          }
+        }
 
         const shortProject = project.replace(process.env.HOME ?? "", "~")
         // Suppress join broadcasts during initial window after daemon start (reconnection burst after hot-reload)
@@ -638,18 +693,28 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 // Message push — check DB for new messages and push to clients
 // ---------------------------------------------------------------------------
 
-const lastDelivered = new Map<string, number>() // connId → last message ts
+// Durability cursor (km-tribe.message-durability): tracks the last message
+// successfully pushed to each connection. Persisted to sessions.last_delivered_ts /
+// last_delivered_seq via advanceDelivered() so a daemon crash doesn't cause
+// either re-pushing the full backlog or skipping in-flight messages on reconnect.
+const lastDelivered = new Map<string, { ts: number; seq: number }>() // connId → cursor
 
 function pushNewMessages(): void {
   for (const [connId, client] of clients) {
-    const since = lastDelivered.get(connId) ?? client.registeredAt
+    const cursor = lastDelivered.get(connId)
+    // rowid is strictly monotonic (unlike ts, which can collide within a
+    // millisecond); use it for the "what's new" filter. On first push after
+    // register the cursor.seq is 0 (new session) or the recovered value
+    // (identity-token adoption + DB seed above).
+    const sinceSeq = cursor?.seq ?? 0
     try {
       // Watch sessions see ALL messages; regular sessions see only theirs + broadcasts
       const query = client.name.startsWith("watch-")
-        ? "SELECT id, type, sender, recipient, content, bead_id, ts FROM messages WHERE ts > ? AND sender != ? ORDER BY ts ASC LIMIT 50"
-        : "SELECT id, type, sender, recipient, content, bead_id, ts FROM messages WHERE ts > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY ts ASC LIMIT 50"
-      const params = client.name.startsWith("watch-") ? [since, client.name] : [since, client.name, client.name]
+        ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 50"
+        : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 50"
+      const params = client.name.startsWith("watch-") ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
       const messages = db.prepare(query).all(...params) as Array<{
+        rowid: number
         id: string
         type: string
         sender: string
@@ -667,7 +732,7 @@ function pushNewMessages(): void {
           bead_id: msg.bead_id,
           message_id: msg.id,
         })
-        lastDelivered.set(connId, msg.ts)
+        advanceDelivered(connId, client.ctx.sessionId, msg.ts, msg.rowid)
       }
     } catch {
       // DB error — skip this cycle

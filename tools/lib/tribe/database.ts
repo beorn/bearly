@@ -45,10 +45,9 @@ export function openDatabase(path: string): Database {
   }
   if (MIGRATIONS.length > 0 && MIGRATIONS[MIGRATIONS.length - 1]!.version > currentVersion) {
     const latest = MIGRATIONS[MIGRATIONS.length - 1]!.version
-    db.run(
-      "INSERT INTO _schema_meta (key, value) VALUES ('version', $v) ON CONFLICT(key) DO UPDATE SET value = $v",
-      { $v: String(latest) } as never,
-    )
+    db.run("INSERT INTO _schema_meta (key, value) VALUES ('version', $v) ON CONFLICT(key) DO UPDATE SET value = $v", {
+      $v: String(latest),
+    } as never)
   } else if (versionRow === null && MIGRATIONS.length > 0) {
     // Fresh install — stamp the current version so future migrations start from here.
     const latest = MIGRATIONS[MIGRATIONS.length - 1]!.version
