@@ -7,6 +7,29 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — unified daemon, phase 5a (km-bear.unified-daemon)
+
+The tribe daemon now hosts the former standalone lore daemon's RPC surface
+on the same Unix socket. `tools/tribe-daemon.ts` absorbs `tribe.ask`,
+`tribe.brief`, `tribe.plan`, `tribe.session_register`, `tribe.session_heartbeat`,
+`tribe.sessions_list`, `tribe.workspace`, `tribe.session`, `tribe.inject_delta`,
+`tribe.status`, `tribe.hello` — all the method names defined in
+`plugins/tribe/lore/lib/rpc.ts`. Wire protocol is unchanged (LORE_PROTOCOL_VERSION
+= 4) so existing lore MCP clients keep working.
+
+Implementation keeps the two databases separate (tribe.db + lore.db) but one
+process opens both. The lore-specific polling (focus refresh, summarizer,
+janitor, per-session inject-dedup) moves into a new
+`tools/lib/tribe/lore-handlers.ts` factory that the daemon wires in at startup.
+New daemon flags: `--lore-db`, `--focus-poll-ms`, `--summary-poll-ms`,
+`--summarizer-model`, `--no-lore` (matching the former standalone daemon).
+
+This is Phase 5a — the lore MCP (`plugins/tribe/lore/server.ts`) still connects
+to its own socket and the standalone daemon still exists. Phase 5b will make
+the lore MCP a thin proxy to the unified daemon; Phase 5c deletes the
+standalone daemon + pidfile plumbing. Integration coverage:
+`tests/tribe-unified-daemon.slow.test.ts` (5 smoke tests).
+
 ### Added — persistent push cursor (km-tribe.message-durability)
 
 Phase 1.6 of the plateau. The daemon's per-connection push cursor is now

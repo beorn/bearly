@@ -45,6 +45,8 @@ import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
 import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
 import { createLogger, addWriter } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
+import { createLoreHandlers, resolveSummarizerMode, type LoreConnState } from "./lib/tribe/lore-handlers.ts"
+import { resolveLoreDbPath } from "../plugins/tribe/lore/lib/config.ts"
 
 const ac = new AbortController()
 const timers = createTimers(ac.signal)
@@ -84,6 +86,13 @@ const { values: daemonArgs } = parseArgs({
     // Use --quit-timeout 0 to quit immediately, --quit-timeout -1 to never auto-quit.
     "quit-timeout": { type: "string", default: "1800" },
     foreground: { type: "boolean", default: false },
+    // Lore (memory) handler options — see createLoreHandlers. Defaults match
+    // the standalone lore daemon so behaviour is unchanged after the merge.
+    "lore-db": { type: "string" },
+    "focus-poll-ms": { type: "string", default: process.env.TRIBE_FOCUS_POLL_MS ?? "60000" },
+    "summary-poll-ms": { type: "string", default: process.env.TRIBE_SUMMARY_POLL_MS ?? "120000" },
+    "summarizer-model": { type: "string", default: process.env.TRIBE_SUMMARIZER_MODEL ?? "off" },
+    "no-lore": { type: "boolean", default: false },
   },
   strict: false,
 })
@@ -122,6 +131,32 @@ log(`DB: ${DB_PATH}`)
 log(`PID: ${process.pid}`)
 
 // ---------------------------------------------------------------------------
+// Lore handlers — memory/recall RPC surface absorbed from the former standalone
+// lore daemon (km-bear.unified-daemon Phase 5a). Opens a second SQLite file
+// (lore.db) in the same process; handlers run on the same event loop.
+// ---------------------------------------------------------------------------
+
+const LORE_DB_PATH = resolveLoreDbPath(daemonArgs["lore-db"] as string | undefined)
+const FOCUS_POLL_MS = Math.max(100, parseInt(String(daemonArgs["focus-poll-ms"]), 10) || 60_000)
+const SUMMARY_POLL_MS = Math.max(500, parseInt(String(daemonArgs["summary-poll-ms"]), 10) || 120_000)
+const SUMMARIZER_MODE = resolveSummarizerMode(String(daemonArgs["summarizer-model"]))
+const LORE_ENABLED = !daemonArgs["no-lore"]
+
+const loreHandlers = LORE_ENABLED
+  ? createLoreHandlers({
+      dbPath: LORE_DB_PATH,
+      socketPath: SOCKET_PATH,
+      daemonVersion: "0.10.0",
+      focusPollMs: FOCUS_POLL_MS,
+      summaryPollMs: SUMMARY_POLL_MS,
+      summarizerMode: SUMMARIZER_MODE,
+      signal: ac.signal,
+    })
+  : null
+
+if (loreHandlers) log(`Lore DB: ${LORE_DB_PATH}`)
+
+// ---------------------------------------------------------------------------
 // Client registry
 // ---------------------------------------------------------------------------
 
@@ -140,6 +175,11 @@ type ClientSession = {
   conn: string // Connection path (socket or db)
   ctx: TribeContext
   registeredAt: number
+  /** Per-connection lore state — tracks sessionId/claudePid for lore handlers
+   *  (set on tribe.hello / tribe.session_register). Kept separate from the
+   *  tribe-side sessionId because a single proxy connection may carry both
+   *  coordination + memory traffic interleaved. */
+  lore: LoreConnState
 }
 
 const clients = new Map<string, ClientSession>() // connId → session
@@ -389,8 +429,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 
         registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)
 
+        const existing = clients.get(connId)!
         const client: ClientSession = {
-          socket: clients.get(connId)!.socket,
+          socket: existing.socket,
           id: connId,
           name,
           role,
@@ -404,6 +445,9 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           conn: relPath(SOCKET_PATH),
           ctx: clientCtx,
           registeredAt: Date.now(),
+          // Preserve any lore state already set on the placeholder (tribe.hello
+          // can arrive before register on the lore wire path).
+          lore: existing.lore,
         }
         clients.set(connId, client)
         markActive()
@@ -679,8 +723,28 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         return makeResponse(id, { subscribed: true })
       }
 
-      default:
+      default: {
+        // Lore (memory) RPC surface — absorbed from the former standalone
+        // lore daemon (km-bear.unified-daemon Phase 5a). Lore method names
+        // all sit under the tribe.* namespace (tribe.ask, tribe.brief, ...)
+        // per km-silvery.tribe-mcp-rename. They are mutually exclusive with
+        // the coord methods above because those use TRIBE_COORD_METHODS
+        // (tribe.send / tribe.broadcast / etc.).
+        if (loreHandlers && loreHandlers.isLoreMethod(method)) {
+          const client = clients.get(connId)
+          const loreConn = client?.lore ?? ({ sessionId: null, claudePid: null } as LoreConnState)
+          try {
+            const result = await loreHandlers.dispatch(loreConn, method, p)
+            return makeResponse(id, result as Record<string, unknown>)
+          } catch (err) {
+            const errorWithCode = err as Error & { code?: number }
+            const code = typeof errorWithCode.code === "number" ? errorWithCode.code : -32603
+            const msg = errorWithCode.message ?? String(err)
+            return makeError(id, code, msg)
+          }
+        }
         return makeError(id, -32601, `Method not found: ${method}`)
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -836,6 +900,7 @@ function handleConnection(socket: NetSocket): void {
     conn: "",
     ctx: daemonCtx,
     registeredAt: Date.now(),
+    lore: { sessionId: null, claudePid: null },
   }
   clients.set(connId, placeholder)
   socketToClient.set(socket, connId)
@@ -880,6 +945,7 @@ function handleConnection(socket: NetSocket): void {
     clients.delete(connId)
     socketToClient.delete(socket)
     lastDelivered.delete(connId)
+    if (loreHandlers && client) loreHandlers.dropConn(client.lore.sessionId)
 
     // If the disconnecting client had the explicit chief claim, clear it so
     // the derivation takes over (longest-remaining-connected becomes chief).
@@ -1116,6 +1182,10 @@ function shutdown(): void {
   log("Shutting down...")
   stopPlugins()
   ac.abort() // Clears all managed timers (push, cleanup, quit, debounce)
+  // Close lore handlers (stops focus poller + summarizer, closes lore.db).
+  // `ac.abort()` above already triggers this via the AbortSignal hook, but
+  // call explicitly for clarity and pre-abort ordering.
+  void loreHandlers?.close()
   for (const w of watchers) w.close()
 
   // Close all client connections
