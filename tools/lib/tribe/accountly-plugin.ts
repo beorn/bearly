@@ -18,7 +18,7 @@ import { homedir } from "node:os"
 import { resolve } from "node:path"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
-import type { TribePlugin, PluginContext } from "./plugins.ts"
+import type { TribePluginApi, TribeClientApi } from "./plugin-api.ts"
 
 const log = createLogger("tribe:accountly")
 
@@ -122,17 +122,16 @@ export function getActiveMaxUtilization(status: AccountlyStatus): number {
 // Plugin
 // ---------------------------------------------------------------------------
 
-export function accountlyPlugin(): TribePlugin {
-  const configPath = resolve(homedir(), ".config/accountly/accounts.json")
+const ACCOUNTLY_CONFIG_PATH = resolve(homedir(), ".config/accountly/accounts.json")
 
-  return {
-    name: "accountly",
+export const accountlyPlugin: TribePluginApi = {
+  name: "accountly",
 
-    available() {
-      return existsSync(configPath)
-    },
+  available() {
+    return existsSync(ACCOUNTLY_CONFIG_PATH)
+  },
 
-    start(ctx) {
+  start(api: TribeClientApi) {
       const ac = new AbortController()
       const timers = createTimers(ac.signal)
       const thresholds = getThresholds()
@@ -158,8 +157,8 @@ export function accountlyPlugin(): TribePlugin {
         try {
           const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
           if (!existsSync(cliPath)) {
-            if (ctx.claimDedup("accountly:cli-missing")) {
-              ctx.sendMessage("*", "accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
+            if (api.claimDedup("accountly:cli-missing")) {
+              api.broadcast("accountly plugin: CLI not found, auto-rotation disabled", "health:account:error")
             }
             return nextInterval
           }
@@ -206,10 +205,9 @@ export function accountlyPlugin(): TribePlugin {
           const maxUtil = getActiveMaxUtilization(status)
           const utilBand = Math.floor(maxUtil / 10) * 10 // group by 10% bands
           const statusKey = `${status.active}:${healthy}/${oauthAccounts.length}:${utilBand}`
-          if (statusKey !== lastStatusKey && ctx.claimDedup(`accountly:status:${statusKey}`)) {
+          if (statusKey !== lastStatusKey && api.claimDedup(`accountly:status:${statusKey}`)) {
             lastStatusKey = statusKey
-            ctx.sendMessage(
-              "*",
+            api.broadcast(
               `accountly: ${oauthAccounts.length} accounts (${healthy} healthy), active=${status.active ?? "none"}, util=${Math.round(maxUtil)}%`,
               "health:account:status",
             )
@@ -226,8 +224,7 @@ export function accountlyPlugin(): TribePlugin {
             backoffUntil = Date.now() + backoffMs
             log.debug?.(`usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`)
             if (consecutive429s === 1) {
-              ctx.sendMessage(
-                "*",
+              api.broadcast(
                 `accountly: usage API rate-limited (429), backing off ${Math.round(backoffMs / 1000)}s`,
                 "health:account:error",
               )
@@ -244,8 +241,8 @@ export function accountlyPlugin(): TribePlugin {
           for (const { name, error } of unavailable) {
             if (!warnedUnavailable.has(name)) {
               warnedUnavailable.add(name)
-              if (ctx.claimDedup(`accountly:unavailable:${name}`)) {
-                ctx.sendMessage(
+              if (api.claimDedup(`accountly:unavailable:${name}`)) {
+                api.send(
                   "chief",
                   `Account "${name}" needs attention: ${error}. Run: /login then bun accountly import`,
                   "health:account:unavailable",
@@ -284,9 +281,9 @@ export function accountlyPlugin(): TribePlugin {
 
           if (autoProc.exitCode === 0) {
             lastSwitchTime = Date.now()
-            ctx.sendMessage("*", `Auto-switched account — ${decision.reason}`, "health:account:switched")
+            api.broadcast(`Auto-switched account — ${decision.reason}`, "health:account:switched")
           } else {
-            ctx.sendMessage(
+            api.send(
               "chief",
               `Switch needed (${decision.reason}) but failed: ${(autoErr || autoOut).trim().slice(0, 200)}`,
               "health:account:error",
@@ -320,11 +317,10 @@ export function accountlyPlugin(): TribePlugin {
       schedule()
 
       return () => ac.abort()
-    },
+  },
 
-    instructions() {
-      const t = getThresholds()
-      return `- Account auto-rotation active: switches when 5h>${t.fiveHour}% or 7d>${t.sevenDay}% or month>${t.monthly}%`
-    },
-  }
+  instructions() {
+    const t = getThresholds()
+    return `- Account auto-rotation active: switches when 5h>${t.fiveHour}% or 7d>${t.sevenDay}% or month>${t.monthly}%`
+  },
 }

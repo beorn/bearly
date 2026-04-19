@@ -18,7 +18,7 @@ import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { findBeadsDir } from "./config.ts"
 import { createTimers } from "./timers.ts"
-import type { TribePlugin, PluginContext } from "./plugins.ts"
+import type { TribePluginApi, TribeClientApi } from "./plugin-api.ts"
 
 const log = createLogger("tribe:github")
 
@@ -317,20 +317,19 @@ interface RecentEvent {
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-export function githubPlugin(): TribePlugin {
-  return {
-    name: "github",
+export const githubPlugin: TribePluginApi = {
+  name: "github",
 
-    available() {
-      const token = getGitHubToken()
-      if (!token) {
-        log.info?.("no GitHub token available (skipped)")
-        return false
-      }
-      return true
-    },
+  available() {
+    const token = getGitHubToken()
+    if (!token) {
+      log.info?.("no GitHub token available (skipped)")
+      return false
+    }
+    return true
+  },
 
-    start(ctx) {
+  start(api: TribeClientApi) {
       const token = getGitHubToken()
       if (!token) return
 
@@ -422,7 +421,7 @@ export function githubPlugin(): TribePlugin {
               // Skip push events for the local repo — git plugin already broadcasts commits
               if (formatted.type === "push" && r === local) continue
 
-              ctx.sendMessage("*", `${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
+              api.broadcast(`${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
 
               // Track who pushed to each repo for CI correlation
               if (formatted.type === "push") {
@@ -478,7 +477,7 @@ export function githubPlugin(): TribePlugin {
                       : String(run.conclusion).toUpperCase()
                 const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
                 const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
-                ctx.sendMessage("*", `${line} ${run.html_url}`, `github:workflow`)
+                api.broadcast(`${line} ${run.html_url}`, `github:workflow`)
               }
 
               // Track CI state per repo for escalation (always, regardless of notify filter)
@@ -491,17 +490,16 @@ export function githubPlugin(): TribePlugin {
                 if (state.consecutiveFailures === 3) {
                   const pusher = recentPushers.get(r)
                   const pusherInfo = pusher ? ` Last push by ${pusher.actor}.` : ""
-                  ctx.sendMessage(
-                    "*",
+                  api.broadcast(
                     `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`,
                     "github:ci-alert",
                   )
 
                   // DM sessions that might be responsible — match by repo name in session names
                   const repoShort = r.split("/")[1] ?? r
-                  for (const name of ctx.getSessionNames()) {
+                  for (const name of api.getSessionNames()) {
                     if (name.includes(repoShort) || name.includes(repoShort.replace(".dev", ""))) {
-                      ctx.sendMessage(
+                      api.send(
                         name,
                         `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`,
                         "github:ci-alert",
@@ -509,16 +507,14 @@ export function githubPlugin(): TribePlugin {
                     }
                   }
                 } else if (state.consecutiveFailures > 3 && state.consecutiveFailures % 5 === 0) {
-                  ctx.sendMessage(
-                    "*",
+                  api.broadcast(
                     `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`,
                     "github:ci-alert",
                   )
                 }
               } else if (run.conclusion === "success") {
                 if (state.consecutiveFailures >= 3) {
-                  ctx.sendMessage(
-                    "*",
+                  api.broadcast(
                     `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`,
                     "github:ci-recovered",
                   )
@@ -566,11 +562,10 @@ export function githubPlugin(): TribePlugin {
         ac.abort()
         saveCursor(cursorPath, cursorState)
       }
-    },
+  },
 
-    instructions() {
-      const repo = detectRepoFromGit()
-      return `- GitHub integration active: push, PR, CI, and issue notifications are delivered automatically for ${repo ?? "detected repo"}`
-    },
-  }
+  instructions() {
+    const repo = detectRepoFromGit()
+    return `- GitHub integration active: push, PR, CI, and issue notifications are delivered automatically for ${repo ?? "detected repo"}`
+  },
 }

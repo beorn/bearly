@@ -25,7 +25,7 @@ import { existsSync, readdirSync } from "node:fs"
 import { cpus, totalmem, freemem, loadavg } from "node:os"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
-import type { TribePlugin, PluginContext } from "./plugins.ts"
+import type { TribePluginApi, TribeClientApi } from "./plugin-api.ts"
 
 const log = createLogger("tribe:health")
 
@@ -856,7 +856,7 @@ export async function checkReaper(
   sessions: Array<{ name: string; pid: number; role: string }>,
   thresholds: HealthThresholds,
   state: AlertState,
-  ctx: PluginContext,
+  api: TribeClientApi,
 ): Promise<void> {
   if (!thresholds.reaperEnabled) return
 
@@ -923,13 +923,13 @@ export async function checkReaper(
       suspect.asked = true
       const msg = `health:reaper: PID ${pid} (${suspect.command}) at ${suspect.cpu}% CPU for ${suspect.etime}. Is this yours? Reply within 60s or it will be killed.`
       log.info?.(`reaper: asking about PID ${pid}`)
-      ctx.sendMessage("*", msg, "health:reaper:query")
+      api.broadcast(msg, "health:reaper:query")
     }
 
     // After 3 + graceSamples: check for claims, then kill
     if (suspect.asked && suspect.samples >= 3 + thresholds.reaperGraceSamples) {
       // Check if anyone claimed this PID
-      const claimed = ctx.hasRecentMessage(`reaper:claim PID ${pid}`)
+      const claimed = api.hasRecentMessage(`reaper:claim PID ${pid}`)
       if (claimed) {
         log.info?.(`reaper: PID ${pid} claimed by a session, removing from suspects`)
         state.reaperSuspects.delete(pid)
@@ -977,7 +977,7 @@ export async function checkReaper(
       }
 
       const killMsg = `health:reaper: killed PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s, ${suspect.cpu}% CPU for ${suspect.etime}`
-      ctx.sendMessage("*", killMsg, "health:reaper:killed")
+      api.broadcast(killMsg, "health:reaper:killed")
       state.reaperSuspects.delete(pid)
     }
   }
@@ -1102,16 +1102,15 @@ export async function getHealthSnapshot(): Promise<HealthMetrics> {
 // Plugin factory
 // ---------------------------------------------------------------------------
 
-export function healthMonitorPlugin(): TribePlugin {
-  return {
-    name: "health-monitor",
+export const healthMonitorPlugin: TribePluginApi = {
+  name: "health-monitor",
 
-    available() {
-      // Always available — uses only OS APIs
-      return true
-    },
+  available() {
+    // Always available — uses only OS APIs
+    return true
+  },
 
-    start(ctx) {
+  start(api: TribeClientApi) {
       const pollIntervalSec = parseInt(process.env.HEALTH_POLL_INTERVAL ?? "10", 10) || 10
       const thresholds = defaultThresholds()
       const alertState = createAlertState()
@@ -1130,7 +1129,7 @@ export function healthMonitorPlugin(): TribePlugin {
         try {
           const { metrics, pidToParent } = await collectFullMetrics()
           const alerts = evaluateAlerts(metrics, thresholds, alertState)
-          const sessions = ctx.getActiveSessions()
+          const sessions = api.getActiveSessions()
 
           for (const alert of alerts) {
             // Group offenders by session
@@ -1158,26 +1157,26 @@ export function healthMonitorPlugin(): TribePlugin {
             for (const [name] of sessionLoad) {
               if (name !== "unattributed") {
                 attributedSessions.add(name)
-                ctx.sendMessage(name, msg, `health:${alert.type}:${alert.severity}`)
+                api.send(name, msg, `health:${alert.type}:${alert.severity}`)
               }
             }
 
             // Critical: also broadcast to everyone
             if (alert.severity === "critical") {
-              ctx.sendMessage("*", msg, `health:${alert.type}:${alert.severity}`)
-            } else if (attributedSessions.size === 0 && ctx.hasChief()) {
+              api.broadcast(msg, `health:${alert.type}:${alert.severity}`)
+            } else if (attributedSessions.size === 0 && api.hasChief()) {
               // Warning with no attributed sessions (e.g. disk, worktree): send to chief
-              ctx.sendMessage("chief", msg, `health:${alert.type}:${alert.severity}`)
+              api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
             } else {
               // Warning: send to chief if unattributed processes exist
-              if (sessionLoad.has("unattributed") && ctx.hasChief()) {
-                ctx.sendMessage("chief", msg, `health:${alert.type}:${alert.severity}`)
+              if (sessionLoad.has("unattributed") && api.hasChief()) {
+                api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
               }
             }
           }
 
           // --- Process reaper ---
-          await checkReaper(metrics.cpu.topProcesses, pidToParent, sessions, thresholds, alertState, ctx)
+          await checkReaper(metrics.cpu.topProcesses, pidToParent, sessions, thresholds, alertState, api)
 
           // --- Git lock detection (main repo + submodules) ---
           const gitDir = `${process.cwd()}/.git`
@@ -1209,10 +1208,10 @@ export function healthMonitorPlugin(): TribePlugin {
 
               // DM responsible session
               if (sessionName) {
-                ctx.sendMessage(sessionName, lockMsg, "health:git-lock:warning")
+                api.send(sessionName, lockMsg, "health:git-lock:warning")
               }
               // Broadcast to tribe
-              ctx.sendMessage("*", lockMsg, "health:git-lock:warning")
+              api.broadcast(lockMsg, "health:git-lock:warning")
             }
 
             // Stale lock escalation: >30s
@@ -1220,7 +1219,7 @@ export function healthMonitorPlugin(): TribePlugin {
               alertState.lockStaleWarned.add(lock.path)
               const staleMsg = formatStaleLockMessage(lock, sessionName, durationMs / 1000)
               log.info?.(`alert: ${staleMsg}`)
-              ctx.sendMessage("*", staleMsg, "health:git-lock:warning")
+              api.broadcast(staleMsg, "health:git-lock:warning")
             }
           }
 
@@ -1249,7 +1248,7 @@ export function healthMonitorPlugin(): TribePlugin {
                   alertState.firedAlerts.add("disk-io:warning")
                   const msg = `Disk I/O warning: ${io.readWriteMBps.toFixed(0)} MB/s sustained (threshold: ${thresholds.diskIoWarningMBps} MB/s). Multiple agents may be running tests simultaneously.`
                   log.info?.(`alert: ${msg}`)
-                  ctx.sendMessage("*", msg, "health:disk-io:warning")
+                  api.broadcast(msg, "health:disk-io:warning")
                 }
               } else {
                 alertState.ioAboveWarning = 0
@@ -1278,7 +1277,7 @@ export function healthMonitorPlugin(): TribePlugin {
                   const resetIn = Math.max(0, Math.round((rateLimit.resetAt * 1000 - Date.now()) / 60000))
                   const msg = `GitHub API rate limit warning: ${rateLimit.remaining}/${rateLimit.limit} remaining (${Math.round(remainingPercent)}%). Resets in ${resetIn}min.`
                   log.info?.(`alert: ${msg}`)
-                  ctx.sendMessage("*", msg, "health:gh-rate-limit:warning")
+                  api.broadcast(msg, "health:gh-rate-limit:warning")
                 } else if (remainingPercent >= thresholds.ghRateLimitWarning) {
                   alertState.firedAlerts.delete("gh-rate-limit:warning")
                 }
@@ -1299,10 +1298,9 @@ export function healthMonitorPlugin(): TribePlugin {
       timers.setInterval(() => void sample(), pollIntervalSec * 1000)
 
       return () => ac.abort()
-    },
+  },
 
-    instructions() {
-      return "- Health monitoring active: CPU, memory, process count, disk space, disk I/O, worktree count, file descriptor count, GitHub API rate limit, git lock alerts, and process reaper are broadcast automatically. To claim a process the reaper is targeting, reply with 'reaper:claim PID <pid>'."
-    },
-  }
+  instructions() {
+    return "- Health monitoring active: CPU, memory, process count, disk space, disk I/O, worktree count, file descriptor count, GitHub API rate limit, git lock alerts, and process reaper are broadcast automatically. To claim a process the reaper is targeting, reply with 'reaper:claim PID <pid>'."
+  },
 }
