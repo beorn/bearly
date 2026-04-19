@@ -7,6 +7,30 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added — self-heal invariants integration test
+
+`tests/tribe-self-heal.slow.test.ts` exercises the three "Design principles"
+invariants from the plugin README by spawning a real `tribe-daemon.ts`
+subprocess, simulating crash + recovery on a hermetic tmp socket + DB, and
+asserting each invariant:
+
+1. **Reconnection**: a `createReconnectingClient` proxy transparently
+   resumes against a freshly-spawned daemon on the same socket path,
+   re-running `onConnect` and completing a subsequent `tribe.members` call.
+2. **Always-a-chief**: disconnecting the longest-connected member
+   re-derives chief onto the remaining session; explicit
+   `tribe.claim-chief` promotes a later session and falls back to
+   derivation when the claimer leaves.
+3. **No message loss (DB-durable)**: a `tribe.broadcast` sent before
+   `SIGKILL` is present in the SQLite `messages` table before the kill
+   and visible to a reconnecting session via `tribe.history` after the
+   new daemon boots.
+
+The suite is `.slow.` so it lives in the `slow` vitest project and does not
+run on `bun run test:fast`. Cleanup is aggressive: every test unlinks its
+socket, removes its tmp directory, and `SIGKILL`s any straggler daemon in
+`afterEach`.
+
 ### Changed — heartbeat machinery deleted (Phase 2 of km-tribe.plateau)
 
 Session liveness is no longer a DB timer. Before this change every member
