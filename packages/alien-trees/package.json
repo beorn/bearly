@@ -27,25 +27,41 @@
     "url": "https://github.com/beorn/bearly/issues"
   },
   "license": "MIT",
-  "author": "Beorn",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git"
   },
   "files": [
-    "dist",
-    "README.md"
+    "dist"
   ],
   "type": "module",
-  "module": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsdown",
     "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "alien-signals": "^3.1.2",
+    "tsdown": "^0.21.7"
   },
   "peerDependencies": {
     "alien-signals": ">=3.0.0"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
   }
 }
