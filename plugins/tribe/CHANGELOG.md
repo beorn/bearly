@@ -7,6 +7,47 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — typed `role` enum replaces name-prefix eligibility (km-tribe.polish-sweep item 2)
+
+`TribeRole` is now the closed union `"daemon" | "chief" | "member" | "watch" | "pending"`
+(previously `"chief" | "member"`). Every eligibility/attribution check that
+used to inspect `name.startsWith("watch-")`, `name.startsWith("pending-")`, or
+`name === "daemon"` now consults `session.role` instead.
+
+Why: the old heuristic coupled liveness/eligibility to a stringly-typed name
+convention. A typo (`"watch_"` vs `"watch-"`) silently misrouted messages,
+and renaming a watch session broke its own exclusion. The `sessions.role`
+column already existed on disk — we just widened it into a proper enum.
+
+Daemon changes (`tools/tribe-daemon.ts`):
+
+- `daemonCtx.sessionRole` is now `"daemon"` (was `"member"` with a comment).
+- Placeholder sessions use `role: "pending"` (unregistered half-client).
+- `broadcastToConnected`, `discover`, `checkLiveness` (pending expiry),
+  and the disconnect branch all switched from `name.startsWith(...)` to
+  `client.role === ...`.
+- Register path rejects client-supplied `role` values of `"daemon"` or
+  `"pending"` (downgraded to `"member"`) — both are daemon-internal.
+- `tribeClientApi.getActiveSessions` / `getSessionNames` filter by role.
+- Name recovery via `claude_session_id` ignores rows with
+  `role=pending`/`role=watch`.
+
+`chief.ts`: `isChiefEligible(c)` now reads `c.role` only. `ChiefCandidate`
+gained a `role: string` field.
+
+`tools-list.ts`: `tribe.join` tool schema exposes `role` enum
+`["chief", "member", "watch"]` (`daemon` and `pending` are daemon-internal
+and rejected server-side).
+
+`tribe-watch.tsx`: registers with `role: "watch"` and filters the session
+table by `role !== "watch"` instead of the name prefix.
+
+Exports: `TribeRole`, `TribeParticipantRole`, `TRIBE_ROLES`, `isValidRole`.
+
+Tests: new `tests/tribe-role-typing.test.ts` locks in eligibility behaviour
+for every role. `tests/derive-chief.test.ts` updated to pass `role:` on
+fixture sessions instead of relying on name prefixes.
+
 ### Changed — plugin boundary extracted from daemon core (km-tribe.plugin-extraction)
 
 The five observer plugins (git, beads, github, health-monitor, accountly) now
