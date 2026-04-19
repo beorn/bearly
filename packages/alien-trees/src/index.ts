@@ -1,5 +1,5 @@
 /**
- * @km/reactive-tree — per-node signals + tree-scoped computeds.
+ * alien-trees — per-node signals + tree-scoped computeds.
  *
  * A materialized-view engine over any tree. Writable per-node state is
  * expressed with `signal()`; tree-scoped aggregates (some/count/reduce over
@@ -10,7 +10,7 @@
  *
  * ```ts
  * import { signal } from "alien-signals"
- * import { createTree } from "@km/reactive-tree"
+ * import { createTree } from "alien-trees"
  *
  * const store = createTree(
  *   (tree) => ({

@@ -1,5 +1,5 @@
 /**
- * @km/reactive-tree — engine tests.
+ * alien-trees — engine tests.
  *
  * Full behavioral coverage: signals, some/count/reduce, includeSelf,
  * rebind, lifecycle, atomicity, re-entrancy, bootstrap.

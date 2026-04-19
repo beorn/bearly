@@ -1,5 +1,5 @@
 /**
- * Stress + perf benchmarks for @km/reactive-tree.
+ * Stress + perf benchmarks for alien-trees.
  *
  * Measures the default-strategy engine (sparse-ancestor-index for
  * descendants + some/count; walk for ancestors + anything; walk for reduce).
@@ -23,8 +23,8 @@
  *   - writing a descendants(key) signal costs O(depth) parent() calls
  *   - reading `ancestors(key).some()` costs O(depth) parent() calls
  *
- * Run: `bun vitest bench packages/reactive-tree/`.
- * Verbose: `BENCH_VERBOSE=1 bun vitest bench packages/reactive-tree/`.
+ * Run: `bun vitest bench packages/alien-trees/`.
+ * Verbose: `BENCH_VERBOSE=1 bun vitest bench packages/alien-trees/`.
  */
 
 import { bench, describe } from "vitest"
