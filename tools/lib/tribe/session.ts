@@ -33,6 +33,7 @@ export function registerSession(
   ctx: TribeContext,
   projectId?: string,
   isActive?: (sessionId: string) => boolean,
+  identityToken?: string | null,
 ): void {
   const desiredName = ctx.getName()
   const now = Date.now()
@@ -61,6 +62,7 @@ export function registerSession(
       $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
+      $identity_token: identityToken ?? null,
       $now: now,
     })
   } catch {
@@ -78,6 +80,7 @@ export function registerSession(
       $project_id: projectId ?? null,
       $claude_session_id: ctx.claudeSessionId,
       $claude_session_name: ctx.claudeSessionName,
+      $identity_token: identityToken ?? null,
       $now: now,
     })
   }
@@ -95,11 +98,31 @@ export function registerSession(
   } | null
   if (!cursor) {
     // On reconnect: recover cursor from prior session to avoid re-delivering old messages.
-    // Try three strategies in order: claude_session_id match, PID match, then skip-to-latest.
+    // Try strategies in order: identity_token (most specific), claude_session_id,
+    // PID, then skip-to-latest.
     let initialTs = 0
     let initialSeq = 0
+    // Strategy 0: identity-token match (stable across Claude Code restarts)
+    if (identityToken) {
+      const prior = ctx.db
+        .prepare(
+          "SELECT id, name, role, last_delivered_ts, last_delivered_seq FROM sessions WHERE identity_token = $tok AND id != $id ORDER BY updated_at DESC LIMIT 1",
+        )
+        .get({ $tok: identityToken, $id: ctx.sessionId }) as {
+        id: string
+        name: string
+        role: string
+        last_delivered_ts: number | null
+        last_delivered_seq: number | null
+      } | null
+      if (prior?.last_delivered_seq) {
+        initialTs = prior.last_delivered_ts ?? 0
+        initialSeq = prior.last_delivered_seq
+        log.info?.(`recovered cursor from prior session (identity_token): seq=${initialSeq}`)
+      }
+    }
     // Strategy 1: match by claude_session_id (works when env var propagates)
-    if (ctx.claudeSessionId) {
+    if (initialSeq === 0 && ctx.claudeSessionId) {
       const prior = ctx.db
         .prepare(
           "SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE claude_session_id = $csid AND id != $id AND last_delivered_ts IS NOT NULL ORDER BY last_delivered_ts DESC LIMIT 1",

@@ -23,6 +23,7 @@ export function openDatabase(path: string): Database {
 		project_id TEXT,
 		claude_session_id TEXT,
 		claude_session_name TEXT,
+		identity_token TEXT,
 		started_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	)`)
@@ -129,6 +130,7 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_type_ts ON messages(type, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_reads_session ON reads(session_id, message_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
   db.run("CREATE INDEX IF NOT EXISTS idx_event_log_project_ts ON event_log(project_id, ts)")
@@ -227,6 +229,23 @@ const MIGRATIONS: readonly Migration[] = [
       db.run("DROP TABLE IF EXISTS leadership")
     },
   },
+  {
+    version: 6,
+    name: "add-sessions-identity-token",
+    up(db) {
+      // Phase 1.5 of km-tribe.plateau: stable session identity across Claude
+      // Code restarts. The proxy hashes (claude_session_id, project_path,
+      // role_hint) and sends the result on register; the daemon adopts the
+      // prior sessionId + name + role + cursor when the token matches an
+      // inactive row.
+      try {
+        db.run("ALTER TABLE sessions ADD COLUMN identity_token TEXT")
+      } catch {
+        /* exists */
+      }
+      db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -238,12 +257,12 @@ export type TribeStatements = ReturnType<typeof createStatements>
 export function createStatements(db: Database) {
   return {
     upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $now, $now)
+		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, identity_token, started_at, updated_at)
+		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $identity_token, $now, $now)
 		ON CONFLICT(id) DO UPDATE SET
 			name = $name, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, project_id = $project_id, claude_session_id = $claude_session_id,
-			claude_session_name = $claude_session_name, started_at = $now, updated_at = $now
+			claude_session_name = $claude_session_name, identity_token = $identity_token, started_at = $now, updated_at = $now
 	`),
 
     pollMessages: db.prepare(`

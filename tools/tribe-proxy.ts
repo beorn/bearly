@@ -38,7 +38,7 @@ import { createServer, type Socket as NetSocket, type Server as NetServer } from
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from "node:fs"
 import { dirname } from "node:path"
 import { spawn } from "node:child_process"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
@@ -174,6 +174,16 @@ async function sendDirect(
 // Daemon connection
 // ---------------------------------------------------------------------------
 
+// Identity token — stable across Claude Code restarts in the same project
+// with the same role hint. Hash of (claude_session_id, project_path, role_hint)
+// → first 16 hex chars of sha256. When claude_session_id is null (some
+// environments), the token still matches on project+role — weaker but safe
+// (no cross-project or cross-role leakage). See km-tribe.session-identity.
+const identityToken = createHash("sha256")
+  .update(`${CLAUDE_SESSION_ID ?? ""}|${process.cwd()}|${args.role ?? "member"}`)
+  .digest("hex")
+  .slice(0, 16)
+
 const registerParams = {
   ...(args.name ? { name: args.name } : {}),
   ...(args.role ? { role: args.role } : {}),
@@ -186,6 +196,7 @@ const registerParams = {
   pid: process.pid,
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
+  identityToken,
 }
 
 const daemon = await createReconnectingClient({
@@ -311,7 +322,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (directResult) return directResult
     }
 
-    const result = await daemon.call(name, a)
+    // Attach identity_token to tribe.join so the daemon can adopt prior
+    // session state when Claude Code restarts and the agent calls join again.
+    const payload = name === "tribe.join" ? { ...a, identity_token: identityToken } : a
+    const result = await daemon.call(name, payload)
     // Update local name/role after join/rename
     if (name === "tribe.join" || name === "tribe.rename") {
       const r = result as { content: Array<{ type: string; text: string }> }

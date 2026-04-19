@@ -287,14 +287,37 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const clientPid = Number(p.pid ?? 0)
         const claudeSessionName = (p.claudeSessionName as string) ?? null
         const claudeSessionId = (p.claudeSessionId as string) ?? null
-        const role = detectRole(db, { role: p.role as string | undefined })
+        const identityToken = (p.identityToken as string) ?? null
+        let role = detectRole(db, { role: p.role as string | undefined })
 
-        // Name priority: explicit > Claude session name > recovered from DB > role-based > pid-based
+        // Identity adoption: if the proxy supplied an identity token that
+        // matches a prior, currently-disconnected row, adopt its sessionId +
+        // name + role. This is what makes "reopening later" restore the same
+        // identity (see km-tribe.session-identity).
+        let adoptedSession: { id: string; name: string; role: string } | null = null
+        if (identityToken) {
+          const prior = db
+            .prepare(
+              "SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1",
+            )
+            .get(identityToken) as { id: string; name: string; role: string } | null
+          if (prior) {
+            const isActive = Array.from(clients.values()).some((c) => c.ctx.sessionId === prior.id)
+            if (!isActive) {
+              adoptedSession = prior
+            }
+          }
+        }
+
+        // Name priority: explicit > Claude session name > adopted (identity token)
+        //   > recovered from DB (claude_session_id) > role-based > pid-based
         let name: string
         if (p.name) {
           name = String(p.name)
         } else if (claudeSessionName) {
           name = claudeSessionName
+        } else if (adoptedSession?.name) {
+          name = adoptedSession.name
         } else {
           // Try recovering name from previous session with same Claude session ID
           const prev = claudeSessionId
@@ -314,6 +337,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
             )
             name = role === "chief" ? "chief" : projectName
           }
+        }
+        // Adopt role from prior session if caller didn't supply one explicitly.
+        if (!p.role && adoptedSession?.role) {
+          role = adoptedSession.role as typeof role
         }
         name = deduplicateName(name)
 
@@ -335,7 +362,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const clientCtx = createTribeContext({
           db,
           stmts,
-          sessionId: randomUUID(),
+          sessionId: adoptedSession?.id ?? randomUUID(),
           sessionRole: role,
           initialName: name,
           domains,
@@ -343,7 +370,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           claudeSessionName,
         })
 
-        registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid))
+        registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)
 
         const client: ClientSession = {
           socket: clients.get(connId)!.socket,

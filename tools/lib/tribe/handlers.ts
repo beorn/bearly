@@ -281,9 +281,32 @@ function handleRename(
 }
 
 function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
-  const joinName = a.name as string
-  const joinRole = (a.role as string) ?? ctx.sessionRole
+  let joinName = a.name as string
+  let joinRole = (a.role as string) ?? ctx.sessionRole
   const joinDomains = (a.domains as string[]) ?? ctx.domains
+  const identityToken = (a.identity_token as string) ?? (a.identityToken as string) ?? null
+
+  // Identity-token adoption: if the caller supplies a token that matches a
+  // non-active prior session, inherit its name/role when the caller didn't
+  // pass them explicitly. Symmetric with the register path in tribe-daemon.
+  if (identityToken) {
+    const prior = ctx.db
+      .prepare(
+        "SELECT id, name, role FROM sessions WHERE identity_token = $tok AND id != $id ORDER BY updated_at DESC LIMIT 1",
+      )
+      .get({ $tok: identityToken, $id: ctx.sessionId }) as {
+      id: string
+      name: string
+      role: string
+    } | null
+    if (prior) {
+      const isActive = opts.getActiveSessionIds().has(prior.id)
+      if (!isActive) {
+        if (!a.name) joinName = prior.name
+        if (!a.role) joinRole = prior.role
+      }
+    }
+  }
 
   // Validate name format
   const joinNameError = validateName(joinName)
