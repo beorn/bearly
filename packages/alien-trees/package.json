@@ -53,7 +53,8 @@
   },
   "devDependencies": {
     "alien-signals": "^3.1.2",
-    "tsdown": "^0.21.7"
+    "tsdown": "^0.21.7",
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "alien-signals": ">=3.0.0"
