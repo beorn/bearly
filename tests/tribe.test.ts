@@ -21,11 +21,14 @@ function createTribeDb(path: string): Database {
   db.run("PRAGMA journal_mode = WAL")
   db.run("PRAGMA busy_timeout = 5000")
 
+  // Phase 2 of km-tribe.plateau: schema drops heartbeat/pruned_at in favour
+  // of updated_at. Liveness is determined by the daemon's clients Map at
+  // runtime — the DB only records lifecycle timestamps for cursor recovery.
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
 		domains TEXT NOT NULL DEFAULT '[]', pid INTEGER NOT NULL,
-		cwd TEXT, started_at INTEGER NOT NULL, heartbeat INTEGER NOT NULL,
-		pruned_at INTEGER
+		cwd TEXT, started_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+		last_delivered_ts INTEGER, last_delivered_seq INTEGER DEFAULT 0
 	)`)
   db.run(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY, type TEXT NOT NULL, sender TEXT NOT NULL,
@@ -46,9 +49,9 @@ function createTribeDb(path: string): Database {
 function registerSession(db: Database, id: string, name: string, role: string, domains: string[] = []): void {
   const now = Date.now()
   db.run(
-    `INSERT INTO sessions (id, name, role, domains, pid, cwd, started_at, heartbeat)
+    `INSERT INTO sessions (id, name, role, domains, pid, cwd, started_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET id=?, role=?, domains=?, pid=?, heartbeat=?`,
+		 ON CONFLICT(name) DO UPDATE SET id=?, role=?, domains=?, pid=?, updated_at=?`,
     [
       id,
       name,
@@ -365,22 +368,16 @@ describe("tribe", () => {
     expect(messages[2]!.type).toBe("notify")
   })
 
-  test("heartbeat and liveness", () => {
-    registerSession(db, "id-1", "alive-member", "member")
-    // Simulate dead session (heartbeat 60s ago)
-    db.run(
-      `INSERT INTO sessions (id, name, role, domains, pid, cwd, started_at, heartbeat)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["id-2", "dead-member", "member", "[]", 99999, "/tmp", Date.now() - 120_000, Date.now() - 60_000],
-    )
+  test("updated_at: registration records a fresh timestamp", () => {
+    const before = Date.now()
+    registerSession(db, "id-1", "member-a", "member")
 
-    const threshold = Date.now() - 30_000
-    const alive = db.prepare("SELECT name FROM sessions WHERE heartbeat > ?").all(threshold) as Array<{ name: string }>
-
-    const dead = db.prepare("SELECT name FROM sessions WHERE heartbeat <= ?").all(threshold) as Array<{ name: string }>
-
-    expect(alive.map((s) => s.name)).toContain("alive-member")
-    expect(dead.map((s) => s.name)).toContain("dead-member")
+    const row = db.prepare("SELECT updated_at FROM sessions WHERE id = ?").get("id-1") as {
+      updated_at: number
+    } | null
+    expect(row).not.toBeNull()
+    expect(row!.updated_at).toBeGreaterThanOrEqual(before)
+    expect(row!.updated_at).toBeLessThanOrEqual(Date.now() + 10)
   })
 
   test("events are logged as messages with type 'event.*' and recipient 'log'", () => {
@@ -395,9 +392,7 @@ describe("tribe", () => {
     )
 
     const events = db
-      .prepare(
-        "SELECT type, sender, bead_id FROM messages WHERE type LIKE 'event.%' AND recipient = 'log' ORDER BY ts",
-      )
+      .prepare("SELECT type, sender, bead_id FROM messages WHERE type LIKE 'event.%' AND recipient = 'log' ORDER BY ts")
       .all() as Array<{
       type: string
       sender: string
@@ -429,129 +424,162 @@ describe("tribe", () => {
     expect(after!.read_at).toBeGreaterThan(0)
   })
 
-  test("soft pruning: pruned sessions are marked, not deleted", () => {
+  test("sessions table survives across disconnect (cursor recovery)", () => {
+    // After Phase 2 of km-tribe.plateau, sessions are not soft-pruned on
+    // disconnect — they survive verbatim so that last_delivered_seq can be
+    // queried for cursor recovery when the same claudeSessionId reconnects.
     registerSession(db, "id-1", "worker-a", "member")
-    const prunedAt = Date.now()
+    // Simulate the daemon advancing the member's cursor as messages are delivered.
+    db.run("UPDATE sessions SET last_delivered_seq = ?, last_delivered_ts = ? WHERE id = ?", [42, Date.now(), "id-1"])
 
-    // Soft-prune the session
-    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [prunedAt, "id-1"])
-
-    // Session row still exists
-    const row = db.prepare("SELECT name, pruned_at FROM sessions WHERE id = ?").get("id-1") as {
-      name: string
-      pruned_at: number | null
-    } | null
+    // A row still exists after the connection is gone (no DB-level pruning).
+    const row = db
+      .prepare("SELECT name, last_delivered_seq, last_delivered_ts FROM sessions WHERE id = ?")
+      .get("id-1") as { name: string; last_delivered_seq: number; last_delivered_ts: number } | null
     expect(row).not.toBeNull()
     expect(row!.name).toBe("worker-a")
-    expect(row!.pruned_at).toBe(prunedAt)
+    expect(row!.last_delivered_seq).toBe(42)
+    expect(row!.last_delivered_ts).toBeGreaterThan(0)
   })
 
-  test("soft pruning: pruned sessions excluded from live query", () => {
-    registerSession(db, "id-1", "alive-member", "member")
-    registerSession(db, "id-2", "pruned-member", "member")
-
-    // Soft-prune id-2
-    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-2"])
-
-    const threshold = Date.now() - 30_000
-    const live = db
-      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
-      .all(threshold) as Array<{ name: string }>
-
-    expect(live.map((s) => s.name)).toContain("alive-member")
-    expect(live.map((s) => s.name)).not.toContain("pruned-member")
-
-    // But allSessions still includes it
-    const all = db.prepare("SELECT name FROM sessions").all() as Array<{ name: string }>
-    expect(all.map((s) => s.name)).toContain("pruned-member")
-  })
-
-  test("auto-rejoin: heartbeat clears pruned_at", () => {
-    registerSession(db, "id-1", "worker-a", "member")
-
-    // Soft-prune
-    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
-
-    // Verify pruned
-    const before = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
-      pruned_at: number | null
-    }
-    expect(before.pruned_at).not.toBeNull()
-
-    // Simulate heartbeat (clears pruned_at)
-    db.run("UPDATE sessions SET heartbeat = ?, pruned_at = NULL WHERE id = ?", [Date.now(), "id-1"])
-
-    // Verify no longer pruned
-    const after = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
-      pruned_at: number | null
-    }
-    expect(after.pruned_at).toBeNull()
-  })
-
-  test("auto-rejoin: pruned session reappears in live query after heartbeat", () => {
-    registerSession(db, "id-1", "worker-a", "member")
-
-    // Soft-prune
-    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
-
-    const threshold = Date.now() - 30_000
-
-    // Not in live sessions
-    const before = db
-      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
-      .all(threshold) as Array<{ name: string }>
-    expect(before.map((s) => s.name)).not.toContain("worker-a")
-
-    // Heartbeat clears pruned_at
-    db.run("UPDATE sessions SET heartbeat = ?, pruned_at = NULL WHERE id = ?", [Date.now(), "id-1"])
-
-    // Now in live sessions
-    const after = db
-      .prepare("SELECT name FROM sessions WHERE heartbeat > ? AND pruned_at IS NULL")
-      .all(threshold) as Array<{ name: string }>
-    expect(after.map((s) => s.name)).toContain("worker-a")
-  })
-
-  test("tribe_join: re-register with updated metadata", () => {
+  test("rejoin: re-register with updated metadata bumps updated_at", () => {
     registerSession(db, "id-1", "worker-a", "member", ["silvery"])
+    const initial = (db.prepare("SELECT updated_at FROM sessions WHERE id = ?").get("id-1") as {
+      updated_at: number
+    }).updated_at
 
-    // Simulate tribe_join — update name, role, domains, clear pruned_at
-    db.run("UPDATE sessions SET name = ?, role = ?, domains = ?, heartbeat = ?, pruned_at = NULL WHERE id = ?", [
+    // Rejoin happens through upsertSession — simulate it.
+    const now = initial + 1000
+    db.run("UPDATE sessions SET name = ?, role = ?, domains = ?, updated_at = ? WHERE id = ?", [
       "silvery-expert",
       "member",
       JSON.stringify(["silvery", "flexily"]),
-      Date.now(),
+      now,
       "id-1",
     ])
 
-    const row = db.prepare("SELECT name, role, domains, pruned_at FROM sessions WHERE id = ?").get("id-1") as {
+    const row = db.prepare("SELECT name, role, domains, updated_at FROM sessions WHERE id = ?").get("id-1") as {
       name: string
       role: string
       domains: string
-      pruned_at: number | null
+      updated_at: number
     }
     expect(row.name).toBe("silvery-expert")
     expect(row.role).toBe("member")
     expect(JSON.parse(row.domains)).toEqual(["silvery", "flexily"])
-    expect(row.pruned_at).toBeNull()
+    expect(row.updated_at).toBe(now)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// registerSession — real library function, exercised end-to-end.
+// ---------------------------------------------------------------------------
+
+import { openDatabase, createStatements } from "../tools/lib/tribe/database.ts"
+import { createTribeContext } from "../tools/lib/tribe/context.ts"
+import { registerSession as realRegisterSession } from "../tools/lib/tribe/session.ts"
+
+describe("registerSession (real impl)", () => {
+  let rsDbPath: string
+
+  beforeEach(() => {
+    rsDbPath = join(tmpdir(), `tribe-rs-test-${randomUUID()}.db`)
   })
 
-  test("tribe_join: clears pruned_at on rejoin", () => {
-    registerSession(db, "id-1", "worker-a", "member")
-
-    // Soft-prune then rejoin
-    db.run("UPDATE sessions SET pruned_at = ? WHERE id = ?", [Date.now(), "id-1"])
-    db.run("UPDATE sessions SET name = ?, role = ?, domains = ?, heartbeat = ?, pruned_at = NULL WHERE id = ?", [
-      "worker-a",
-      "member",
-      JSON.stringify([]),
-      Date.now(),
-      "id-1",
-    ])
-
-    const row = db.prepare("SELECT pruned_at FROM sessions WHERE id = ?").get("id-1") as {
-      pruned_at: number | null
+  afterEach(() => {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const p = rsDbPath + suffix
+      if (existsSync(p)) unlinkSync(p)
     }
-    expect(row.pruned_at).toBeNull()
+  })
+
+  test("colliding name from an ACTIVE holder falls back to a suffixed name", () => {
+    const db = openDatabase(rsDbPath)
+    const stmts = createStatements(db)
+    try {
+      const ctxA = createTribeContext({
+        db,
+        stmts,
+        sessionId: randomUUID(),
+        sessionRole: "member",
+        initialName: "worker",
+        domains: [],
+        claudeSessionId: null,
+        claudeSessionName: null,
+      })
+      realRegisterSession(ctxA, undefined, () => false)
+      expect(ctxA.getName()).toBe("worker")
+
+      // B tries to register with the same name while A is active.
+      const ctxB = createTribeContext({
+        db,
+        stmts,
+        sessionId: randomUUID(),
+        sessionRole: "member",
+        initialName: "worker",
+        domains: [],
+        claudeSessionId: null,
+        claudeSessionName: null,
+      })
+      // isActive reports A as currently connected — B cannot overwrite its row.
+      const activeIds = new Set([ctxA.sessionId])
+      realRegisterSession(ctxB, undefined, (sid) => activeIds.has(sid))
+
+      // B got a random suffix; A's row (with its last_delivered_seq / cursor)
+      // is preserved for reconnection-time recovery.
+      expect(ctxB.getName()).not.toBe("worker")
+      expect(ctxB.getName().startsWith("worker-")).toBe(true)
+
+      const rows = db
+        .prepare("SELECT id, name FROM sessions ORDER BY name")
+        .all() as Array<{ id: string; name: string }>
+      expect(rows.map((r) => r.name).sort()).toEqual([ctxB.getName(), "worker"].sort())
+      expect(rows.find((r) => r.name === "worker")!.id).toBe(ctxA.sessionId)
+    } finally {
+      db.close()
+    }
+  })
+
+  test("colliding name from an INACTIVE holder is overwritten (name reclaimed)", () => {
+    const db = openDatabase(rsDbPath)
+    const stmts = createStatements(db)
+    try {
+      // Seed a row for a disconnected session.
+      const staleId = randomUUID()
+      const ctxStale = createTribeContext({
+        db,
+        stmts,
+        sessionId: staleId,
+        sessionRole: "member",
+        initialName: "worker",
+        domains: [],
+        claudeSessionId: null,
+        claudeSessionName: null,
+      })
+      realRegisterSession(ctxStale, undefined, () => false)
+
+      // B registers with the same name; the holder is not in the active set.
+      const ctxB = createTribeContext({
+        db,
+        stmts,
+        sessionId: randomUUID(),
+        sessionRole: "member",
+        initialName: "worker",
+        domains: [],
+        claudeSessionId: null,
+        claudeSessionName: null,
+      })
+      realRegisterSession(ctxB, undefined, () => false)
+
+      expect(ctxB.getName()).toBe("worker")
+
+      // Only B's row remains (the stale one was evicted so B could claim the name).
+      const rows = db.prepare("SELECT id, name FROM sessions").all() as Array<{ id: string; name: string }>
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.name).toBe("worker")
+      expect(rows[0]!.id).toBe(ctxB.sessionId)
+    } finally {
+      db.close()
+    }
   })
 })
