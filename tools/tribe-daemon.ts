@@ -993,7 +993,9 @@ if (INHERIT_FD !== null) {
       probe.once("connect", () => finish(true))
       probe.once("error", () => finish(false))
       // Safety timeout — don't hang daemon startup on a wedged socket
-      setTimeout(() => finish(false), 500).unref()
+      // Node returns NodeJS.Timeout (has .unref()), Bun returns number — guard both
+      const t = setTimeout(() => finish(false), 500) as unknown as { unref?: () => void }
+      t.unref?.()
     })
     if (alive) {
       log(`Another daemon is already listening on ${SOCKET_PATH}, exiting`)
