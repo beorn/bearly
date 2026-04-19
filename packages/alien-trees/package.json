@@ -1,0 +1,51 @@
+{
+  "name": "alien-trees",
+  "version": "0.1.0",
+  "description": "Tree-scoped reactive aggregates (ancestors/descendants · some/count/reduce) for the alien-signals ecosystem",
+  "keywords": [
+    "alien-signals",
+    "ancestors",
+    "bevy",
+    "changed",
+    "computed",
+    "derived",
+    "descendants",
+    "fine-grained",
+    "hierarchy",
+    "incremental",
+    "materialized-view",
+    "reactive",
+    "signals",
+    "solidjs",
+    "sparse-index",
+    "tc39-signals",
+    "tree",
+    "trees"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/alien-trees",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Beorn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "module": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "bun run build"
+  },
+  "peerDependencies": {
+    "alien-signals": ">=3.0.0"
+  }
+}

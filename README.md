@@ -53,6 +53,7 @@ Standalone npm packages absorbed from bearlymade:
 | ---------------------------------------------------- | ------------------------------------------------------------ |
 | [alien-projections](packages/alien-projections/)     | Incremental reactive collection transforms for alien-signals |
 | [alien-resources](packages/alien-resources/)         | Async signal bridge for alien-signals — reactive resources   |
+| [alien-trees](packages/alien-trees/)                 | Tree-scoped reactive aggregates for alien-signals            |
 | [vitest-silvery-dots](packages/vitest-silvery-dots/) | Streaming dot reporter for Vitest, built with Silvery        |
 
 ## Development
