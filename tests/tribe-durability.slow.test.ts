@@ -216,6 +216,88 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     expect(bobSinceRestart.map((e) => e.content)).toEqual(["M4"])
   }, 40_000)
 
+  it("Test G — delivery latency < 100ms (event-driven fanout, not 1s polling)", async () => {
+    // km-tribe.event-bus — the 1s push tick is gone; sendMessage fans out
+    // synchronously to connected sockets. A broadcast-to-notification round
+    // trip must complete well under the old 1000ms polling floor.
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    const alice = await joinWithToken(socketPath, "alice", "token-A")
+    clients.push(alice.client)
+    const bob = await joinWithToken(socketPath, "bob", "token-B")
+    clients.push(bob.client)
+
+    // Timestamp just before the broadcast reaches the daemon. The RPC call
+    // completes only after sendMessage has written to SQLite; alice's socket
+    // receives the channel notification synchronously from that same call.
+    const sendAt = Date.now()
+    await broadcastFrom(bob.client, "G1-sync")
+
+    await waitFor(() => countUserChannels(alice.received, "bob") >= 1, 2000)
+    const receivedAt = Date.now()
+    const latency = receivedAt - sendAt
+
+    expect(latency, `fanout latency was ${latency}ms — expected < 100ms (event-driven)`).toBeLessThan(100)
+
+    const contents = alice.received.filter((e) => e.type === "notify" && e.from === "bob").map((e) => e.content)
+    expect(contents).toEqual(["G1-sync"])
+  }, 20_000)
+
+  it("Test H — replay on reconnect uses persisted cursor, not per-connection Map state", async () => {
+    // km-tribe.event-bus — per-connection `lastDelivered` Map is gone. The
+    // only durable cursor source is sessions.last_delivered_seq. Verify that
+    // (a) a crash across a live connection doesn't re-deliver, and (b) new
+    // post-restart messages arrive synchronously.
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    const alice1 = await joinWithToken(socketPath, "alice-h", "token-H")
+    clients.push(alice1.client)
+    const bob1 = await joinWithToken(socketPath, "bob-h", "token-HB")
+    clients.push(bob1.client)
+
+    // Bob broadcasts 5 messages; alice receives all 5.
+    for (let i = 1; i <= 5; i++) {
+      await broadcastFrom(bob1.client, `H${i}`)
+    }
+    await waitFor(() => countUserChannels(alice1.received, "bob-h") >= 5, 5000)
+    expect(countUserChannels(alice1.received, "bob-h")).toBe(5)
+
+    // SIGKILL daemon with alice still connected — no graceful cursor flush,
+    // so the test only passes if every push during normal operation already
+    // persisted the cursor via persistDeliveredCursor.
+    alice1.client.close()
+    bob1.client.close()
+    clients.splice(0)
+    await killDaemon(daemon)
+    daemon = null
+    unlinkIfExists(socketPath)
+
+    // Fresh daemon, same DB.
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    const alice2 = await joinWithToken(socketPath, "alice-h", "token-H")
+    clients.push(alice2.client)
+
+    // Give any spurious replay a full second to arrive — it MUST NOT.
+    await new Promise((r) => setTimeout(r, 1000))
+    const replayed = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-h")
+    expect(
+      replayed,
+      `alice re-received ${replayed.length} of the 5 prior messages (cursor not persisted from push path)`,
+    ).toHaveLength(0)
+
+    // Bob reconnects and broadcasts H6 — alice must receive it within 100ms.
+    const bob2 = await joinWithToken(socketPath, "bob-h", "token-HB")
+    clients.push(bob2.client)
+    const sendAt = Date.now()
+    await broadcastFrom(bob2.client, "H6")
+    await waitFor(() => countUserChannels(alice2.received, "bob-h") >= 1, 2000)
+    const latency = Date.now() - sendAt
+    expect(latency).toBeLessThan(100)
+    const post = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-h").map((e) => e.content)
+    expect(post).toEqual(["H6"])
+  }, 40_000)
+
   it("Test F — messages queued while alice is disconnected are delivered after daemon restart", async () => {
     // Daemon v1
     daemon = await spawnDaemon(socketPath, dbPath)

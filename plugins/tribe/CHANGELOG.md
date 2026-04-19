@@ -7,13 +7,43 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — `tribe.leadership` renamed to `tribe.chief` (km-tribe.polish-sweep)
+
+The MCP tool is now `tribe.chief`. The old name `tribe.leadership` reflected
+a deleted lease concept — the daemon no longer tracks leadership, only the
+current chief (derived from connection order, or explicitly claimed via
+`tribe.claim-chief`). The response shape is unchanged (`holder_name`,
+`holder_id`, `claimed`, `source`). No deprecation alias is shipped — there
+are no external consumers yet.
+
+### Added — `tribe.debug` MCP tool (km-tribe.polish-sweep)
+
+Dump daemon internals for troubleshooting: connected clients (id, name,
+role, pid, registeredAt), derived chief info, the current explicit chief
+claim (if any), and the per-session persisted delivery cursors. Purely
+additive — handler reads through the `getDebugState` accessor on
+`HandlerOpts`, daemon wires it up with a live snapshot of the `clients`
+Map and a `SELECT id, name, last_delivered_ts, last_delivered_seq FROM
+sessions`. Coverage: `tests/tribe-self-heal.slow.test.ts` "tribe.debug"
+block.
+
+### Changed — migration v1 uses `PRAGMA table_info` (km-tribe.polish-sweep)
+
+`MIGRATIONS[0].up` now introspects `sessions` via `PRAGMA table_info` and
+only issues `ALTER TABLE ADD COLUMN` for columns that don't exist. The
+previous implementation wrapped each ALTER in a try/catch to swallow the
+"duplicate column" error — correct, but abused exceptions for control
+flow. Behaviour is unchanged: fresh installs skip entirely because the
+CREATE TABLE already has all five columns; old installs add exactly the
+missing subset.
+
 ### Changed — unified daemon (km-bear.unified-daemon)
 
 The standalone lore daemon has been folded into the tribe daemon: one
 process per user, one Unix socket, one pid. The tribe daemon now hosts
 both the coordination RPC surface (`tribe.send`, `tribe.broadcast`,
 `tribe.members`, `tribe.history`, `tribe.rename`, `tribe.join`,
-`tribe.leadership`, `tribe.claim-chief`, `tribe.release-chief`,
+`tribe.chief`, `tribe.claim-chief`, `tribe.release-chief`,
 `tribe.retro`, `tribe.reload`, `tribe.health`) and the memory RPC surface
 (`tribe.ask`, `tribe.brief`, `tribe.plan`, `tribe.session_register`,
 `tribe.session_heartbeat`, `tribe.sessions_list`, `tribe.workspace`,
