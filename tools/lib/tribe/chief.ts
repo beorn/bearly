@@ -9,16 +9,22 @@
 /** Minimal shape the derivation reads. Tests pass partial fixtures. */
 export type ChiefCandidate = {
   name: string
+  role: string
   registeredAt: number
   ctx: { sessionId: string }
 }
 
-/** watch-* and pending-* sessions never hold chief; nor does the daemon itself. */
-export function isChiefEligible(c: { name: string }): boolean {
-  if (c.name === "daemon") return false
-  if (c.name.startsWith("watch-")) return false
-  if (c.name.startsWith("pending-")) return false
-  return true
+/**
+ * Chief eligibility by role. Only "chief" and "member" sessions participate
+ * in the chief pool; "daemon", "watch", and "pending" never hold chief.
+ *
+ * This replaced the former name-prefix magic (`name.startsWith("watch-") …`)
+ * in @bearly/tribe 0.10.1 — see km-tribe.polish-sweep item 2. Callers no
+ * longer need to synthesize a `name` to get the right answer; only the role
+ * tag is consulted.
+ */
+export function isChiefEligible(c: { role: string }): boolean {
+  return c.role === "chief" || c.role === "member"
 }
 
 /**

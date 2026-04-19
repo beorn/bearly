@@ -97,8 +97,9 @@ export const TOOLS_LIST = [
         name: { type: "string", description: "Session name" },
         role: {
           type: "string",
-          description: "Session role",
-          enum: ["chief", "member"],
+          description:
+            "Session role. 'chief' = coordinator, 'member' = default worker, 'watch' = read-only observer (never chief-eligible).",
+          enum: ["chief", "member", "watch"],
         },
         domains: {
           type: "array",

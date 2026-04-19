@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite"
 import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
+import type { TribeRole } from "./config.ts"
 
 const log = createLogger("tribe:handlers")
 import { validateName, sanitizeMessage } from "./validation.ts"
@@ -343,7 +344,7 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
     $now: Date.now(),
   })
   ctx.setName(joinName)
-  ctx.setRole(joinRole as "chief" | "member")
+  ctx.setRole(joinRole as TribeRole)
 
   logEvent(ctx, "session.joined", undefined, { name: joinName, role: joinRole, domains: joinDomains, rejoin: true })
 

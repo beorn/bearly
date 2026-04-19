@@ -215,7 +215,7 @@ function App({ client, ac }: { client: DaemonClient; ac: AbortController }) {
           resources: s.daemon.resources ?? [],
         }
         const members = s.sessions
-          .filter((x) => !x.name.startsWith("watch-"))
+          .filter((x) => x.role !== "watch")
           .sort((a, b) => (a.project ?? "").localeCompare(b.project ?? "") || a.name.localeCompare(b.name))
         setSessions([daemonSession, ...members])
         setDaemon(s.daemon)
@@ -317,7 +317,7 @@ await using client = Object.assign(
     async onConnect(c) {
       await c.call("register", {
         name: WATCH_NAME,
-        role: "member",
+        role: "watch",
         domains: [],
         project: process.cwd(),
         projectName: resolveProjectName(),

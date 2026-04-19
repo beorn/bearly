@@ -33,6 +33,7 @@ import {
   detectRole,
   detectName,
   resolveProjectId,
+  type TribeRole,
 } from "./lib/tribe/config.ts"
 import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
@@ -60,7 +61,7 @@ function log(msg: string): void {
 }
 
 // Broadcast warn/error log messages to tribe — makes daemon issues visible
-// to all sessions without needing DEBUG env. Installed after pluginCtx is ready.
+// to all sessions without needing DEBUG env. Installed after tribeClientApi is ready.
 let broadcastLog: ((msg: string, type: string) => void) | undefined
 addWriter((formatted, level) => {
   if ((level === "warn" || level === "error") && broadcastLog) {
@@ -121,7 +122,7 @@ const daemonCtx = createTribeContext({
   db,
   stmts,
   sessionId: DAEMON_SESSION_ID,
-  sessionRole: "member", // Daemon is neutral — doesn't claim chief role
+  sessionRole: "daemon", // Typed role — never chief-eligible (see isChiefEligible)
   initialName: "daemon",
   domains: [],
   claudeSessionId: null,
@@ -169,7 +170,7 @@ type ClientSession = {
   socket: NetSocket
   id: string
   name: string
-  role: string
+  role: TribeRole
   domains: string[]
   project: string
   projectName: string
@@ -347,13 +348,13 @@ function broadcastToConnected(info: {
   for (const [connId, client] of clients) {
     // Don't echo a message back to its own sender.
     if (client.name === info.sender) continue
-    const isWatch = client.name.startsWith("watch-")
+    const isWatch = client.role === "watch"
     if (!isWatch) {
       if (info.recipient !== "*" && info.recipient !== client.name) continue
     }
-    // Skip half-registered clients (placeholder name), and the sentinel 'log'
-    // recipient used by logEvent (never delivered).
-    if (client.name.startsWith("pending-")) continue
+    // Skip half-registered clients (role=pending placeholder), and the
+    // sentinel 'log' recipient used by logEvent (never delivered).
+    if (client.role === "pending") continue
     if (info.recipient === "log") continue
 
     try {
@@ -412,6 +413,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         const claudeSessionId = (p.claudeSessionId as string) ?? null
         const identityToken = (p.identityToken as string) ?? null
         let role = detectRole(db, { role: p.role as string | undefined })
+        // Clients cannot register themselves as "daemon" or "pending" — both are
+        // daemon-internal roles. Downgrade to "member" so a confused client
+        // still gets a usable (but non-privileged) session.
+        if (role === "daemon" || role === "pending") role = "member"
 
         // Identity adoption: if the proxy supplied an identity token that
         // matches a prior, currently-disconnected row, adopt its sessionId +
@@ -440,13 +445,17 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         } else if (adoptedSession?.name) {
           name = adoptedSession.name
         } else {
-          // Try recovering name from previous session with same Claude session ID
+          // Try recovering name from previous session with same Claude session ID.
+          // Skip auto-generated "member-<pid>" names (useless to reuse) and any
+          // role=pending/watch leftovers (they'd route poorly on reconnect).
           const prev = claudeSessionId
             ? (db
-                .prepare("SELECT name FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
-                .get(claudeSessionId) as { name: string } | null)
+                .prepare(
+                  "SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1",
+                )
+                .get(claudeSessionId) as { name: string; role: string } | null)
             : null
-          if (prev && !prev.name.startsWith("member-") && !prev.name.startsWith("pending-")) {
+          if (prev && !prev.name.startsWith("member-") && prev.role !== "pending" && prev.role !== "watch") {
             name = prev.name
           } else {
             const projectName = String(
@@ -460,8 +469,14 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           }
         }
         // Adopt role from prior session if caller didn't supply one explicitly.
+        // Guard against stored rows with stale/unexpected role values — an
+        // invalid or daemon-internal role ("daemon"/"pending") falls back to
+        // the auto-detected role.
         if (!p.role && adoptedSession?.role) {
-          role = adoptedSession.role as typeof role
+          const adopted = adoptedSession.role
+          if (adopted === "chief" || adopted === "member" || adopted === "watch") {
+            role = adopted
+          }
         }
         name = deduplicateName(name)
 
@@ -540,7 +555,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         if (adoptedSession) {
           const sinceSeq = priorCursor?.last_delivered_seq ?? 0
           // Watch sessions see everything; regular sessions see their name + broadcasts.
-          const isWatch = name.startsWith("watch-")
+          const isWatch = role === "watch"
           const replayQuery = isWatch
             ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 200"
             : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 200"
@@ -763,7 +778,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           name: p.name as string | undefined,
         }
 
-        let results = Array.from(clients.values()).filter((c) => !c.name.startsWith("pending-"))
+        let results = Array.from(clients.values()).filter((c) => c.role !== "pending")
         if (query.project_id) results = results.filter((c) => c.projectId === query.project_id)
         if (query.name) results = results.filter((c) => c.name === query.name)
 
@@ -873,12 +888,12 @@ const tribeClientApi: TribeClientApi = {
   },
   getActiveSessions() {
     return Array.from(clients.values())
-      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
+      .filter((c) => c.role !== "watch" && c.role !== "pending")
       .map((c) => ({ name: c.name, pid: c.pid, role: c.role }))
   },
   getSessionNames() {
     return Array.from(clients.values())
-      .filter((c) => !c.name.startsWith("watch-") && !c.name.startsWith("pending-"))
+      .filter((c) => c.role !== "watch" && c.role !== "pending")
       .map((c) => c.name)
   },
   hasChief() {
@@ -928,12 +943,15 @@ function handleConnection(socket: NetSocket): void {
   const connId = randomUUID()
   log(`Client connected: ${connId.slice(0, 8)}`)
 
-  // Pre-register with socket only (full registration on "register" call)
+  // Pre-register with socket only (full registration on "register" call).
+  // role="pending" marks this as half-registered — never chief-eligible, never
+  // counted as a tribe member; the eligibility filter in isChiefEligible and
+  // broadcastToConnected consult `role`, not `name`.
   const placeholder: ClientSession = {
     socket,
     id: connId,
     name: `pending-${connId.slice(0, 6)}`,
-    role: "member",
+    role: "pending",
     domains: [],
     project: process.cwd(),
     projectName: "unknown",
@@ -965,7 +983,7 @@ function handleConnection(socket: NetSocket): void {
 
   socket.on("close", () => {
     const client = clients.get(connId)
-    if (client && client.name !== `pending-${connId.slice(0, 6)}`) {
+    if (client && client.role !== "pending") {
       log(`Client disconnected: ${client.name}`)
       logActivity("session", `${client.name} left`)
 
@@ -1095,7 +1113,7 @@ function checkLiveness(): void {
   // Expire pending sessions that never sent a register message (>60s)
   const now = Date.now()
   for (const [connId, client] of clients) {
-    if (client.name.startsWith("pending-") && now - client.registeredAt > 60_000) {
+    if (client.role === "pending" && now - client.registeredAt > 60_000) {
       log(`Expiring stale pending session: ${client.name} (age=${Math.floor((now - client.registeredAt) / 1000)}s)`)
       clients.delete(connId)
       socketToClient.delete(client.socket)

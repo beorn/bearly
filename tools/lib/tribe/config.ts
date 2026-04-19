@@ -12,7 +12,29 @@ import { parseArgs } from "node:util"
 // Types
 // ---------------------------------------------------------------------------
 
-export type TribeRole = "chief" | "member"
+/**
+ * Session role — a typed tag on the session (stored in `sessions.role`) that
+ * replaces the old name-prefix magic for eligibility checks.
+ *
+ *   - "daemon"  — the daemon itself; never a chief, never a member.
+ *   - "chief"   — the coordinating session (derived from connection order,
+ *                 or explicitly claimed via `tribe.claim-chief`).
+ *   - "member"  — a regular worker session. Default for newly-joined sessions.
+ *   - "watch"   — a dashboard / observer (e.g. `tribe watch`). Never eligible
+ *                 for chief; receives every message on its wire.
+ *   - "pending" — half-registered placeholder used between socket accept and
+ *                 the client's first `register` call.
+ */
+export type TribeRole = "daemon" | "chief" | "member" | "watch" | "pending"
+
+/** Subset of roles that participate as regular tribe members (chief pool). */
+export type TribeParticipantRole = "chief" | "member"
+
+export const TRIBE_ROLES: readonly TribeRole[] = ["daemon", "chief", "member", "watch", "pending"] as const
+
+export function isValidRole(r: unknown): r is TribeRole {
+  return typeof r === "string" && (TRIBE_ROLES as readonly string[]).includes(r)
+}
 
 export type TribeConfig = {
   name: string
@@ -177,7 +199,12 @@ function migrateLegacyTribeDb(legacyPath: string, xdgPath: string): void {
  *  Chief is derived from connection order at runtime (see tribe-daemon `deriveChiefId`), so this
  *  role flag is only an initial hint — the daemon reconciles the actual chief from the client set. */
 export function detectRole(db: Database, args: TribeArgs): TribeRole {
-  if (args.role) return args.role as TribeRole
+  if (args.role && isValidRole(args.role)) return args.role
+  // "watch" and "pending" are always explicit — they're never the result of
+  // auto-detection. The daemon's own ctx is constructed with role="daemon"
+  // directly (bypassing this helper). For regular proxy clients the choice
+  // is chief vs member:
+  //
   // Phase 2 of km-tribe.plateau: there's no heartbeat timer any more, so a
   // DB-only query can't tell "currently connected" from "stale row". The
   // daemon reconciles the actual chief at runtime (see `deriveChiefId`);
