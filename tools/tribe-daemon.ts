@@ -525,32 +525,49 @@ function replayOrBootstrap(connId: string, client: ClientSession, adopted: Prior
   } | null
 
   if (adopted) {
-    const sinceSeq = priorCursor?.last_delivered_seq ?? 0
+    // Drain the backlog in pages of PAGE_SIZE — keep fetching until we reach
+    // the current journal tip. The former single `LIMIT 200` query silently
+    // truncated any backlog larger than 200, and because the durable cursor
+    // only advanced as each delivered row was pushed, a subsequent live
+    // fanout would jump the cursor past the undelivered middle — permanent
+    // loss (km-tribe.delivery-correctness P0.5 + P1.7).
+    //
+    // This runs synchronously inside the register handler, so no fanout can
+    // interleave: bun's event loop can't process another socket `data` or
+    // `close` callback until we return.
+    const PAGE_SIZE = 200
+    let sinceSeq = priorCursor?.last_delivered_seq ?? 0
     // Watch sessions see everything; regular sessions see their name + broadcasts.
     const isWatch = client.role === "watch"
     const replayQuery = isWatch
-      ? "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT 200"
-      : "SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT 200"
-    const replayParams = isWatch ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
-    const backlog = db.prepare(replayQuery).all(...replayParams) as Array<{
-      rowid: number
-      id: string
-      type: string
-      sender: string
-      recipient: string
-      content: string
-      bead_id: string | null
-      ts: number
-    }>
-    for (const msg of backlog) {
-      pushToClient(connId, "channel", {
-        from: msg.sender,
-        type: msg.type,
-        content: msg.content,
-        bead_id: msg.bead_id,
-        message_id: msg.id,
-      })
-      persistDeliveredCursor(client.ctx.sessionId, msg.ts, msg.rowid)
+      ? `SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT ${PAGE_SIZE}`
+      : `SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT ${PAGE_SIZE}`
+    const stmt = db.prepare(replayQuery)
+    for (;;) {
+      const replayParams = isWatch ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
+      const page = stmt.all(...replayParams) as Array<{
+        rowid: number
+        id: string
+        type: string
+        sender: string
+        recipient: string
+        content: string
+        bead_id: string | null
+        ts: number
+      }>
+      if (page.length === 0) break
+      for (const msg of page) {
+        pushToClient(connId, "channel", {
+          from: msg.sender,
+          type: msg.type,
+          content: msg.content,
+          bead_id: msg.bead_id,
+          message_id: msg.id,
+        })
+        persistDeliveredCursor(client.ctx.sessionId, msg.ts, msg.rowid)
+        sinceSeq = msg.rowid
+      }
+      if (page.length < PAGE_SIZE) break
     }
     return
   }
@@ -1049,17 +1066,12 @@ function handleConnection(socket: NetSocket): void {
       // session row survives (cursor recovery queries it on reconnect), and
       // liveness is determined by clients Map membership — `clients.delete`
       // below is the authoritative "this session is gone" signal.
-
-      // Clean up unread direct messages targeted at the disconnected session.
-      // Broadcasts (recipient = '*') are kept. Messages FROM this session are kept (useful history).
-      try {
-        const del = db.prepare("DELETE FROM messages WHERE recipient = ?").run(client.name)
-        if (del.changes > 0) {
-          log(`Cleaned up ${del.changes} direct message(s) for disconnected session ${client.name}`)
-        }
-      } catch {
-        /* best effort */
-      }
+      //
+      // km-tribe.delivery-correctness P0.6: we do NOT delete journal rows on
+      // disconnect. The journal is durable. Delivered-or-not, a direct stays
+      // until retention prunes it — the cursor tracks delivery, the journal
+      // tracks history. The old `DELETE FROM messages WHERE recipient = ?`
+      // fought the durability contract and lost messages sent mid-disconnect.
     }
 
     clients.delete(connId)

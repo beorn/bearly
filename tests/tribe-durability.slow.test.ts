@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { Database } from "bun:sqlite"
 import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
 
 // ---------------------------------------------------------------------------
@@ -340,4 +341,113 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     // And no duplicates.
     expect(contents).toHaveLength(2)
   }, 40_000)
+
+  it("Test I — replay drains >200 backlog on reconnect (no silent truncation)", async () => {
+    // km-tribe.delivery-correctness P0.5 + P1.7: replayOrBootstrap used LIMIT
+    // 200 once. If >200 broadcasts accumulated while alice was disconnected,
+    // only the first 200 were delivered AND the cursor advanced past them via
+    // subsequent fanout — the middle 201..N-1 were dropped silently.
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    // Alice joins to establish her identity row, then leaves offline.
+    const alice1 = await joinWithToken(socketPath, "alice-i", "token-I")
+    clients.push(alice1.client)
+    await new Promise((r) => setTimeout(r, 100))
+    alice1.client.close()
+    clients.splice(clients.indexOf(alice1.client), 1)
+    await new Promise((r) => setTimeout(r, 200))
+
+    // Bob floods 250 broadcasts while alice is offline. Each is written
+    // synchronously before broadcastFrom resolves.
+    const bob1 = await joinWithToken(socketPath, "bob-i", "token-IB")
+    clients.push(bob1.client)
+    const FLOOD = 250
+    for (let i = 1; i <= FLOOD; i++) {
+      await broadcastFrom(bob1.client, `I${i}`)
+    }
+
+    // Alice reconnects. ALL 250 must be delivered — not just the first 200.
+    const alice2 = await joinWithToken(socketPath, "alice-i", "token-I")
+    clients.push(alice2.client)
+
+    await waitFor(() => countUserChannels(alice2.received, "bob-i") >= FLOOD, 10_000)
+    const contents = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
+    expect(
+      contents.length,
+      `alice received ${contents.length} / ${FLOOD} broadcasts (replay truncated?)`,
+    ).toBe(FLOOD)
+    // And they come in order.
+    expect(contents[0]).toBe("I1")
+    expect(contents[FLOOD - 1]).toBe(`I${FLOOD}`)
+
+    // Bob broadcasts one more. Alice must receive it exactly once, not
+    // duplicated, not dropped.
+    await broadcastFrom(bob1.client, "I-after")
+    await waitFor(() => countUserChannels(alice2.received, "bob-i") >= FLOOD + 1, 5000)
+    const post = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
+    expect(post).toHaveLength(FLOOD + 1)
+    expect(post[FLOOD]).toBe("I-after")
+  }, 60_000)
+
+  it("Test J — disconnect does not mutate the journal (durability invariant)", async () => {
+    // km-tribe.delivery-correctness P0.6: the daemon used to DELETE FROM
+    // messages WHERE recipient=<name> on socket close. That violates the
+    // journal's durability contract — delivered-or-not, the history stays
+    // until retention prunes it. Consequences if disconnect deletes:
+    //   (a) a direct sent mid-disconnect (fanout write failed silently) is
+    //       wiped before the recipient's next reconnect can replay it;
+    //   (b) history queries lose resolved conversation context the moment a
+    //       participant leaves.
+    //
+    // This test asserts the invariant at the SQLite level: after alice
+    // disconnects with N directs addressed to her, the journal still has
+    // those N rows.
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    const alice = await joinWithToken(socketPath, "alice-j", "token-J")
+    clients.push(alice.client)
+    const bob = await joinWithToken(socketPath, "bob-j", "token-JB")
+    clients.push(bob.client)
+
+    // Bob sends 3 directs to alice. Fanout delivers each synchronously.
+    const send = async (msg: string) => {
+      const res = (await bob.client.call("tribe.send", { to: "alice-j", message: msg })) as {
+        content?: Array<{ text: string }>
+      }
+      const text = res.content?.[0]?.text
+      if (!text) throw new Error(`send returned no content: ${JSON.stringify(res)}`)
+      const parsed = JSON.parse(text) as { sent?: boolean }
+      if (!parsed.sent) throw new Error(`send did not report sent=true: ${text}`)
+    }
+    await send("J1-direct")
+    await send("J2-direct")
+    await send("J3-direct")
+
+    // Wait for alice to receive them all, so the fanout path has completed.
+    await waitFor(() => countUserChannels(alice.received, "bob-j") >= 3, 5000)
+
+    // Pre-disconnect baseline: 3 directs for alice in the journal.
+    const peek = (): number => {
+      const peekDb = new Database(dbPath, { readonly: true })
+      try {
+        const row = peekDb
+          .prepare("SELECT COUNT(*) as n FROM messages WHERE recipient = 'alice-j'")
+          .get() as { n: number } | null
+        return row?.n ?? 0
+      } finally {
+        peekDb.close()
+      }
+    }
+    expect(peek(), "pre-disconnect: 3 directs in journal").toBe(3)
+
+    // Alice disconnects. Give the daemon a beat to process the close event
+    // (where the bogus DELETE used to fire).
+    alice.client.close()
+    clients.splice(clients.indexOf(alice.client), 1)
+    await new Promise((r) => setTimeout(r, 300))
+
+    // Invariant: journal still has all 3 directs. The daemon must not have
+    // deleted them on disconnect.
+    expect(peek(), "post-disconnect: journal must still have all 3 directs").toBe(3)
+  }, 30_000)
 })
