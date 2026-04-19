@@ -8,10 +8,10 @@
  * through to an in-process library call (preserves Phase 1 behaviour).
  *
  * Tools:
- *   tribe.ask    — wraps recallAgent()
- *   tribe.brief  — wraps getCurrentSessionContext()
- *   tribe.plan   — wraps planQuery({ round: 1 })
- *   tribe.session, tribe.workspace, tribe.inject_delta — daemon-backed.
+ *   lore.ask    — wraps recallAgent()
+ *   lore.brief  — wraps getCurrentSessionContext()
+ *   lore.plan   — wraps planQuery({ round: 1 })
+ *   lore.session, lore.workspace, lore.inject_delta — daemon-backed.
  *
  * Env:
  *   TRIBE_NO_DAEMON=1       — skip the daemon entirely (library-only mode)
@@ -112,7 +112,7 @@ async function getDaemon(): Promise<LoreClient | null> {
 
 const TOOLS = [
   {
-    name: "tribe.ask",
+    name: "lore.ask",
     description:
       "LLM-driven recall over Claude Code session history. Two-round planner + fanout + synthesis. Use for vague or multi-word queries where single FTS misses. Returns a synthesized answer plus the matched documents.",
     inputSchema: {
@@ -138,7 +138,7 @@ const TOOLS = [
     },
   },
   {
-    name: "tribe.brief",
+    name: "lore.brief",
     description:
       "Summary of the current Claude Code session: paths, bead IDs, distinctive tokens, and a truncated conversation tail. Use to check 'what is the user doing right now' without running a full recall.",
     inputSchema: {
@@ -153,9 +153,9 @@ const TOOLS = [
     },
   },
   {
-    name: "tribe.plan",
+    name: "lore.plan",
     description:
-      "Run only the round-1 planner without fanout or synthesis. Returns the variant plan as JSON — fast (~3s) speculative context before committing to a full tribe.ask call.",
+      "Run only the round-1 planner without fanout or synthesis. Returns the variant plan as JSON — fast (~3s) speculative context before committing to a full lore.ask call.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -165,7 +165,7 @@ const TOOLS = [
     },
   },
   {
-    name: "tribe.session",
+    name: "lore.session",
     description:
       "Detailed state of a single session by sessionId: focus tail + LLM summary (when TRIBE_SUMMARIZER_MODEL is enabled) + mentioned paths/beads/tokens. Returns error if the sessionId isn't registered. Daemon-only.",
     inputSchema: {
@@ -177,7 +177,7 @@ const TOOLS = [
     },
   },
   {
-    name: "tribe.inject_delta",
+    name: "lore.inject_delta",
     description:
       "Hook-side recall injection with per-session dedup held by the daemon. Returns additionalContext ready to splice into a Claude Code UserPromptSubmit hookSpecificOutput. Dedup is session-scoped with TTL in turns (default 10). Daemon-preferred; falls back to in-process hookRecall when the daemon is unreachable.",
     inputSchema: {
@@ -195,7 +195,7 @@ const TOOLS = [
     },
   },
   {
-    name: "tribe.workspace",
+    name: "lore.workspace",
     description:
       "Snapshot of all Claude Code sessions currently registered with the lore daemon, each annotated with cached focus data (last activity, focus hint, mentioned paths/beads/tokens). Use to see what other sessions are doing without running a full recall. Daemon-only — returns empty sessions array if the daemon isn't running.",
     inputSchema: {
@@ -212,7 +212,7 @@ const TOOLS = [
 
 async function handleAsk(args: Record<string, unknown>): Promise<string> {
   const query = String(args.query ?? "")
-  if (!query) throw new Error("tribe.ask: `query` is required")
+  if (!query) throw new Error("lore.ask: `query` is required")
 
   const askParams = {
     query,
@@ -320,7 +320,7 @@ async function handleCurrentBrief(args: Record<string, unknown>): Promise<string
 
 async function handlePlanOnly(args: Record<string, unknown>): Promise<string> {
   const query = String(args.query ?? "")
-  if (!query) throw new Error("tribe.plan: `query` is required")
+  if (!query) throw new Error("lore.plan: `query` is required")
 
   const daemon = await getDaemon()
   if (daemon) {
@@ -399,7 +399,7 @@ async function handleWorkspaceState(_args: Record<string, unknown>): Promise<str
 
 async function handleInjectDelta(args: Record<string, unknown>): Promise<string> {
   const prompt = typeof args.prompt === "string" ? args.prompt : ""
-  if (!prompt) throw new Error("tribe.inject_delta: `prompt` is required")
+  if (!prompt) throw new Error("lore.inject_delta: `prompt` is required")
   const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined
   const limit = typeof args.limit === "number" && args.limit > 0 ? args.limit : undefined
   const ttlTurns = typeof args.ttlTurns === "number" && args.ttlTurns > 0 ? args.ttlTurns : undefined
@@ -443,7 +443,7 @@ async function handleInjectDelta(args: Record<string, unknown>): Promise<string>
 
 async function handleSessionState(args: Record<string, unknown>): Promise<string> {
   const sessionId = typeof args.sessionId === "string" ? args.sessionId : ""
-  if (!sessionId) throw new Error("tribe.session: `sessionId` is required")
+  if (!sessionId) throw new Error("lore.session: `sessionId` is required")
   const daemon = await getDaemon()
   if (!daemon) {
     return JSON.stringify(
@@ -486,22 +486,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     let text: string
     switch (name) {
-      case "tribe.ask":
+      case "lore.ask":
         text = await handleAsk(toolArgs)
         break
-      case "tribe.brief":
+      case "lore.brief":
         text = await handleCurrentBrief(toolArgs)
         break
-      case "tribe.plan":
+      case "lore.plan":
         text = await handlePlanOnly(toolArgs)
         break
-      case "tribe.workspace":
+      case "lore.workspace":
         text = await handleWorkspaceState(toolArgs)
         break
-      case "tribe.session":
+      case "lore.session":
         text = await handleSessionState(toolArgs)
         break
-      case "tribe.inject_delta":
+      case "lore.inject_delta":
         text = await handleInjectDelta(toolArgs)
         break
       default:
