@@ -7,28 +7,57 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-### Added — unified daemon, phase 5a (km-bear.unified-daemon)
+### Changed — unified daemon (km-bear.unified-daemon)
 
-The tribe daemon now hosts the former standalone lore daemon's RPC surface
-on the same Unix socket. `tools/tribe-daemon.ts` absorbs `tribe.ask`,
-`tribe.brief`, `tribe.plan`, `tribe.session_register`, `tribe.session_heartbeat`,
-`tribe.sessions_list`, `tribe.workspace`, `tribe.session`, `tribe.inject_delta`,
-`tribe.status`, `tribe.hello` — all the method names defined in
-`plugins/tribe/lore/lib/rpc.ts`. Wire protocol is unchanged (LORE_PROTOCOL_VERSION
-= 4) so existing lore MCP clients keep working.
+The standalone lore daemon has been folded into the tribe daemon: one
+process per user, one Unix socket, one pid. The tribe daemon now hosts
+both the coordination RPC surface (`tribe.send`, `tribe.broadcast`,
+`tribe.members`, `tribe.history`, `tribe.rename`, `tribe.join`,
+`tribe.leadership`, `tribe.claim-chief`, `tribe.release-chief`,
+`tribe.retro`, `tribe.reload`, `tribe.health`) and the memory RPC surface
+(`tribe.ask`, `tribe.brief`, `tribe.plan`, `tribe.session_register`,
+`tribe.session_heartbeat`, `tribe.sessions_list`, `tribe.workspace`,
+`tribe.session`, `tribe.inject_delta`, `tribe.status`, `tribe.hello`).
+Wire protocol is unchanged (`LORE_PROTOCOL_VERSION` stays at 4); existing
+lore MCP clients continue to work.
 
-Implementation keeps the two databases separate (tribe.db + lore.db) but one
-process opens both. The lore-specific polling (focus refresh, summarizer,
-janitor, per-session inject-dedup) moves into a new
-`tools/lib/tribe/lore-handlers.ts` factory that the daemon wires in at startup.
-New daemon flags: `--lore-db`, `--focus-poll-ms`, `--summary-poll-ms`,
-`--summarizer-model`, `--no-lore` (matching the former standalone daemon).
+Rollout:
 
-This is Phase 5a — the lore MCP (`plugins/tribe/lore/server.ts`) still connects
-to its own socket and the standalone daemon still exists. Phase 5b will make
-the lore MCP a thin proxy to the unified daemon; Phase 5c deletes the
-standalone daemon + pidfile plumbing. Integration coverage:
-`tests/tribe-unified-daemon.slow.test.ts` (5 smoke tests).
+- **Phase 5a** (commit 4db8cdf) — `tools/lib/tribe/lore-handlers.ts`
+  factory wraps the former standalone daemon's handlers, focus poller,
+  summarizer, and per-session inject dedup. `tools/tribe-daemon.ts`
+  opens a second SQLite file (lore.db) in the same process and routes
+  `tribe.*` memory methods through the factory. New daemon flags:
+  `--lore-db`, `--focus-poll-ms`, `--summary-poll-ms`,
+  `--summarizer-model`, `--no-lore`. Integration coverage:
+  `tests/tribe-unified-daemon.slow.test.ts` (5 smoke tests).
+
+- **Phase 5b** (commit 93b2155) — `plugins/tribe/lore/server.ts`
+  becomes a thin proxy to the unified tribe daemon. The MCP server
+  connects to `$XDG_RUNTIME_DIR/tribe.sock` (via
+  `resolveSocketPath` from `tools/lib/tribe/socket.ts`) instead of
+  the old lore socket, and its autostart path switches from
+  `ensureDaemonIfConfigured` to `ensureTribeDaemonIfConfigured`.
+
+- **Phase 5c** (commit 2979103) — `plugins/tribe/lore/daemon.ts`
+  and `plugins/tribe/lore/cli.ts` are deleted. The pre-Phase-5c
+  `resolveDaemonScriptPath` / `spawnDaemonDetached` /
+  `ensureDaemonIfConfigured` / `ensureAllDaemonsIfConfigured` exports
+  on `tools/lib/tribe/autostart.ts` are preserved as aliases that all
+  resolve to the unified tribe daemon — external importers keep
+  working. `tests/lore/daemon.test.ts` and `tests/lore/focus.test.ts`
+  now spawn `tools/tribe-daemon.ts` with `--lore-db` instead of the
+  deleted standalone script.
+
+- **Phase 5d** (commit fceeccb) — hook-dispatch calls
+  `ensureTribeDaemonIfConfigured` directly instead of
+  `ensureAllDaemonsIfConfigured`. One probe, one spawn path.
+
+User-visible impact: none if the `.mcp.json` registration is unchanged —
+the `tribe` MCP entry (coord tools) and the `lore` MCP entry (memory
+tools) continue to resolve to the same tribe daemon pid. `lore status`
+and `lore sessions` CLI commands are no longer shipped (the tribe CLI
+covers daemon status; memory queries are MCP tools).
 
 ### Added — persistent push cursor (km-tribe.message-durability)
 

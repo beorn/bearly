@@ -358,4 +358,58 @@ describe("tribe self-heal (kill-and-recover)", () => {
       ).toBe(true)
     }, 25_000)
   })
+
+  // =========================================================================
+  // Invariant 4 — Memory RPC surface survives daemon restart (km-bear.unified-daemon)
+  // =========================================================================
+
+  describe("invariant 4 — lore RPCs are reachable on the unified socket", () => {
+    it("tribe.status and tribe.workspace respond on the same socket the coord protocol uses", async () => {
+      daemon = await spawnDaemon(socketPath, dbPath)
+
+      const c = await connect()
+
+      // Coord protocol: register works as before.
+      await c.call("register", { name: "unified-alice", role: "member" })
+
+      // Lore handshake on the same connection.
+      const hello = (await c.call("tribe.hello", {
+        clientName: "self-heal-lore-smoke",
+        clientVersion: "0.0.0",
+        protocolVersion: 4,
+      })) as { protocolVersion: number; daemonPid: number }
+      expect(hello.protocolVersion).toBe(4)
+      expect(hello.daemonPid).toBe(daemon.pid)
+
+      // Lore status reports the unified daemon.
+      const status = (await c.call("tribe.status", {})) as {
+        daemonPid: number
+        socketPath: string
+        sessionCount: number
+      }
+      expect(status.daemonPid).toBe(daemon.pid)
+      expect(status.socketPath).toBe(socketPath)
+
+      // Workspace is empty (no lore session_register'd sessions yet).
+      const workspace = (await c.call("tribe.workspace", {})) as {
+        generatedAt: number
+        sessions: unknown[]
+      }
+      expect(Array.isArray(workspace.sessions)).toBe(true)
+
+      // Kill and reboot — the lore surface must come back on the same socket.
+      await killDaemon(daemon)
+      daemon = null
+      unlinkIfExists(socketPath)
+      daemon = await spawnDaemon(socketPath, dbPath)
+
+      const c2 = await connect()
+      const helloAfter = (await c2.call("tribe.hello", {
+        clientName: "self-heal-lore-smoke",
+        clientVersion: "0.0.0",
+        protocolVersion: 4,
+      })) as { daemonPid: number }
+      expect(helloAfter.daemonPid).toBe(daemon.pid)
+    }, 25_000)
+  })
 })
