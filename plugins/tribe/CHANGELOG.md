@@ -7,6 +7,48 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed — heartbeat machinery deleted (Phase 2 of km-tribe.plateau)
+
+Session liveness is no longer a DB timer. Before this change every member
+pushed a `heartbeat` RPC to the daemon every 15s; the daemon bumped
+`sessions.heartbeat` every 10s for itself; stale rows were pruned by
+`heartbeat < cutoff` queries and later hard-deleted by a retention sweep.
+
+After this change, the daemon's in-memory `clients: Map` is the single
+source of truth for "who is connected right now". The `sessions` table
+survives (it stores `last_delivered_seq` for cursor recovery across
+reconnects), but it is no longer tri-state.
+
+User-visible changes:
+
+- `tribe.members` and `tribe status` no longer report pruned / offline
+  members by default. Dead sessions disappear from the list when their
+  socket closes; pass `all: true` to `tribe.members` to see the full DB.
+- The `pruned` field on `tribe.members` rows is gone; the old tri-state
+  (`alive` / `pruned` / missing) is now just two-state (`alive: true`
+  for rows whose session is in the `clients` Map, `false` otherwise).
+- `last_heartbeat_sec` is renamed to `last_seen_sec` and reflects the
+  DB's `updated_at` column (bumped on register / rename / last-delivered
+  advance), not a periodic ping.
+- `tribe status` description changed: "heartbeat" → "last-seen".
+
+Schema:
+
+- `sessions.heartbeat` renamed to `sessions.updated_at`.
+- `sessions.pruned_at` dropped.
+- `idx_sessions_pruned` dropped; `idx_sessions_updated` added (used by
+  cursor-recovery ORDER BY).
+
+Cursor recovery: on reconnect, the strategies that previously
+`ORDER BY heartbeat DESC` now `ORDER BY updated_at DESC`. Rejoin under
+the same name is handled by deleting the stale row iff its sessionId is
+not in the daemon's active set — so dead-row-holding-my-name no longer
+blocks registration.
+
+Net deletion: ~80 LOC across `tools/tribe-daemon.ts`, `tools/tribe-proxy.ts`,
+`tools/lib/tribe/session.ts`, `tools/lib/tribe/handlers.ts`, and
+`tools/lib/tribe/database.ts`.
+
 ### Changed — daemon liveness is socket connectability, not a pidfile
 
 The daemon no longer writes, reads, or deletes `tribe.pid`. Liveness is now

@@ -221,7 +221,7 @@ function shouldSample() {
 
 // ../loggily/src/console-sinks.ts
 function isBrowserRuntime() {
-  return typeof globalThis !== "undefined" && typeof globalThis.window !== "undefined" && typeof globalThis.document !== "undefined";
+  return typeof globalThis?.window !== "undefined" && typeof globalThis.document !== "undefined";
 }
 function timeStr(time) {
   return new Date(time).toISOString().split("T")[1]?.split(".")[0] ?? "";
@@ -266,7 +266,7 @@ function createTerminalConsoleSink(format = "console") {
 }
 function writeStderrLine(text) {
   const p = typeof process !== "undefined" ? process : undefined;
-  if (p && p.stderr && typeof p.stderr.write === "function") {
+  if (p?.stderr && typeof p.stderr.write === "function") {
     p.stderr.write(text + `
 `);
     return;
@@ -2063,9 +2063,6 @@ try {
       log4.info?.(`Reconnected to daemon`);
     }
   });
-  timers.setInterval(() => {
-    daemon.call("heartbeat").catch(() => {});
-  }, 15000);
   var joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward \u2014 just join silently and continue.`;
   var chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
