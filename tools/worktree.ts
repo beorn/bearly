@@ -13,10 +13,29 @@
  *   create <name> [branch] - Create worktree at ../<repo>-<name>
  *   merge <name>           - Merge worktree branch into main and clean up
  *   remove <name>          - Remove worktree
- *   list                   - Detailed worktree status
+ *   list                   - Detailed worktree status (with per-submodule HEAD SHAs)
+ *
+ * Submodule isolation
+ * -------------------
+ * Each worktree gets an independent submodule clone stored at
+ * `.git/worktrees/<name>/modules/<path>/`. After `git worktree add`,
+ * running `git submodule update --init --recursive` inside the worktree
+ * populates the working tree AND creates the per-worktree module dir
+ * automatically (modern git behavior). This means changes in worktree A's
+ * `vendor/silvery` never affect worktree B's `vendor/silvery`.
+ *
+ * Note on --recurse-submodules: `git worktree add` does NOT support a
+ * `--recurse-submodules` flag (the documentation sometimes suggests
+ * otherwise; as of git 2.53 the flag is rejected). The `submodule.recurse`
+ * config is respected elsewhere but not for `worktree add`, so we always
+ * run an explicit `git submodule update --init --recursive` post-add.
+ *
+ * On removal, we explicitly clean up `.git/worktrees/<name>/modules/`
+ * before calling `git worktree remove` so git's own cleanup never leaves
+ * orphans (which can happen on interrupted removes or older git versions).
  */
 
-import { existsSync, readFileSync } from "fs"
+import { existsSync, readFileSync, rmSync } from "fs"
 import { join, dirname, basename } from "path"
 import { $ } from "bun"
 
@@ -124,6 +143,39 @@ export async function getWorktrees(
   }
 
   return worktrees
+}
+
+/**
+ * Find the per-worktree submodule modules directory.
+ *
+ * Modern git stores per-worktree submodule clones at
+ * `<common-git-dir>/worktrees/<name>/modules/<submodule-path>/`. This returns
+ * that path for a given worktree (by name). Returns undefined for the main
+ * worktree or if the path can't be resolved.
+ */
+export async function getWorktreeModulesDir(gitRoot: string, worktreeName: string): Promise<string | undefined> {
+  const commonDirResult = await safeExec($`cd ${gitRoot} && git rev-parse --git-common-dir`)
+  if (commonDirResult.exitCode !== 0) return undefined
+  let commonDir = commonDirResult.stdout.trim()
+  if (!commonDir) return undefined
+  // git may return relative path; make absolute
+  if (!commonDir.startsWith("/")) commonDir = join(gitRoot, commonDir)
+  return join(commonDir, "worktrees", worktreeName, "modules")
+}
+
+/** Get per-submodule HEAD SHAs for a worktree, keyed by submodule path. */
+export async function getSubmoduleHeads(worktreePath: string): Promise<Record<string, string>> {
+  const heads: Record<string, string> = {}
+  const submodules = getSubmodulePaths(worktreePath)
+  for (const sub of submodules) {
+    const subPath = join(worktreePath, sub)
+    if (!existsSync(join(subPath, ".git"))) continue
+    const result = await safeExec($`cd ${subPath} && git rev-parse HEAD 2>/dev/null`)
+    if (result.exitCode === 0) {
+      heads[sub] = result.stdout.trim().slice(0, 12)
+    }
+  }
+  return heads
 }
 
 /** Check for uncommitted changes in a worktree */
@@ -333,6 +385,10 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
 
   // Create worktree
+  // Note: git worktree add has no --recurse-submodules flag (as of git 2.53);
+  // we init submodules explicitly below. Each init creates an isolated clone
+  // under .git/worktrees/<name>/modules/<submodule>/ so worktrees can't
+  // collide in each other's vendor/ trees.
   info(`Creating worktree at ${worktreePath}...`)
   const wtResult = await safeExec($`cd ${gitRoot} && git worktree add ${worktreePath} ${branchArg}`)
   if (wtResult.exitCode !== 0) {
@@ -342,9 +398,9 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
   success("Worktree created")
 
-  // Initialize submodules
+  // Initialize submodules (per-worktree isolated clones)
   if (submodules.length > 0) {
-    info("Initializing submodules...")
+    info(`Initializing ${submodules.length} submodule(s) (isolated per-worktree clones)...`)
     const subResult = await safeExec($`cd ${worktreePath} && git submodule update --init --recursive 2>&1`)
     if (subResult.exitCode !== 0) {
       error("Failed to initialize submodules:")
@@ -353,7 +409,14 @@ export async function createWorktree(name: string, branch?: string, options: Cre
       await $`git worktree remove ${worktreePath} --force`.quiet()
       process.exit(1)
     }
-    success("Submodules initialized")
+    // Verify isolation — each submodule's .git should point at per-worktree modules dir
+    const modulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
+    if (modulesDir && existsSync(modulesDir)) {
+      success("Submodules initialized (isolated)")
+      console.log(DIM + `    ${modulesDir}` + RESET)
+    } else {
+      success("Submodules initialized")
+    }
   }
 
   // Run package manager install
@@ -435,6 +498,21 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
     }
   }
 
+  // Pre-clean per-worktree submodule modules dir to prevent orphans.
+  // On some git versions / interrupted operations, `git worktree remove` leaves
+  // .git/worktrees/<name>/modules/* behind. Removing it first ensures a clean
+  // exit regardless.
+  const modulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
+  if (modulesDir && existsSync(modulesDir)) {
+    info("Cleaning per-worktree submodule modules...")
+    try {
+      rmSync(modulesDir, { recursive: true, force: true })
+      success("Per-worktree submodule modules cleaned")
+    } catch (e) {
+      warn(`Failed to clean ${modulesDir} (continuing): ${(e as Error).message}`)
+    }
+  }
+
   // Remove worktree
   info("Removing worktree...")
   const removeResult = await safeExec($`cd ${gitRoot} && git worktree remove ${worktreePath} --force`)
@@ -446,6 +524,15 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 
   // Prune
   await $`cd ${gitRoot} && git worktree prune`.quiet()
+
+  // Final orphan sweep — defensive, in case git left anything behind
+  if (modulesDir && existsSync(modulesDir)) {
+    try {
+      rmSync(modulesDir, { recursive: true, force: true })
+    } catch {
+      // ignore — reported above if needed
+    }
+  }
 
   // Delete branch if requested
   if (deleteBranch && branchName) {
@@ -579,10 +666,25 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
   }
   success("Tests passed")
 
-  // Remove worktree
+  // Remove worktree (pre-clean per-worktree submodule modules first)
   info("Removing worktree...")
+  const mergedModulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
+  if (mergedModulesDir && existsSync(mergedModulesDir)) {
+    try {
+      rmSync(mergedModulesDir, { recursive: true, force: true })
+    } catch {
+      // fall through — git worktree remove will handle most cases
+    }
+  }
   await safeExec($`cd ${gitRoot} && git worktree remove ${worktreePath} --force`)
   await $`cd ${gitRoot} && git worktree prune`.quiet()
+  if (mergedModulesDir && existsSync(mergedModulesDir)) {
+    try {
+      rmSync(mergedModulesDir, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+  }
   success("Worktree removed")
 
   // Delete branch
@@ -644,6 +746,23 @@ async function printWorktreeEntry(
     }
     if (status.changes.length > 5) {
       console.log(DIM + `    ... and ${status.changes.length - 5} more` + RESET)
+    }
+  }
+
+  // Per-submodule HEAD SHAs — shows divergence across worktrees
+  if (submodules.length > 0) {
+    const heads = await getSubmoduleHeads(wt.path)
+    const modulesDir = isMain ? undefined : await getWorktreeModulesDir(gitRoot, name)
+    const isolated = modulesDir && existsSync(modulesDir)
+    const isoMarker = isMain ? "" : isolated ? GREEN + " [isolated]" + RESET : YELLOW + " [shared]" + RESET
+    console.log(DIM + "  submodules" + RESET + isoMarker)
+    for (const sub of submodules) {
+      const sha = heads[sub]
+      if (sha) {
+        console.log(DIM + `    ${sub.padEnd(22)} ${sha}` + RESET)
+      } else {
+        console.log(DIM + `    ${sub.padEnd(22)} ` + RESET + YELLOW + "(not initialized)" + RESET)
+      }
     }
   }
   console.log("")
