@@ -2087,10 +2087,12 @@ Coordination protocol:
 - Use tribe.health() to check for silent members or conflicts
 - When CI alerts arrive, coordinate the fix \u2014 assign the responsible session to investigate
 
-Message format rules:
-- Keep messages SHORT \u2014 1-3 lines max. No essays.
-- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- Batch-acknowledge: if you receive many messages at once, one summary covers all.`;
+User-facing output:
+- Silent by default. Speak to the user only to add non-obvious info. Never narrate "noted"/"acknowledged"/"still waiting" for channel messages, CI alerts, or harness reminder loops. If you have nothing to add, emit nothing.
+
+Tribe messages:
+- Keep SHORT \u2014 1-3 lines max. No essays.
+- Plain text only \u2014 no markdown (**bold**, headers, bullets). Renders as escaped text.`;
   var memberInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
 You are a tribe member \u2014 a worker session coordinated by the chief.
@@ -2116,12 +2118,13 @@ CI protocol:
 - If a CI alert DMs you directly, investigate and fix the failure before pushing more code
 - After fixing, broadcast: tribe.send(to="*", message="ci-fix: <repo> \u2014 <what you fixed>")
 
-Message format rules:
-- Keep messages SHORT \u2014 1-3 lines max. No essays.
-- Use plain text only \u2014 no markdown (**bold**, headers, bullets). It renders as ugly escaped text.
-- Batch-acknowledge stale messages: "Acknowledged N old messages, no action needed"
+User-facing output:
+- Silent by default. Speak to the user only to add non-obvious info. Never narrate "noted"/"acknowledged"/"still waiting" for channel messages, CI alerts, or harness reminder loops. If you have nothing to add, emit nothing.
 
-Don't over-communicate \u2014 only broadcast when it changes what someone else should know.`;
+Tribe messages:
+- Keep SHORT \u2014 1-3 lines max. No essays.
+- Plain text only \u2014 no markdown (**bold**, headers, bullets). Renders as escaped text.
+- Don't over-broadcast \u2014 only send when it changes what someone else should know.`;
   mcp = new Server({ name: "tribe", version: "0.10.0" }, {
     capabilities: {
       experimental: { "claude/channel": {} },
