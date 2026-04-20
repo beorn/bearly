@@ -110,12 +110,17 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     { role: "user" as const, content: userContent },
   ]
 
+  // Reasoning models (e.g. Kimi K2.6) need a floor on maxOutputTokens so the
+  // thinking phase doesn't eat the whole budget and leave empty content.
+  const maxOutputTokens = model.minCompletionTokens
+
   try {
     if (stream && onToken) {
       const result = streamText({
         model: languageModel,
         messages,
         abortSignal,
+        ...(maxOutputTokens ? { maxOutputTokens } : {}),
       })
 
       // Consume the stream and call onToken for each part
@@ -146,6 +151,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         model: languageModel,
         messages,
         abortSignal,
+        ...(maxOutputTokens ? { maxOutputTokens } : {}),
       })
 
       return {

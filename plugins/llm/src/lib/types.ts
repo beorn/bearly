@@ -5,7 +5,7 @@
 import { z } from "zod"
 
 // Provider identifiers
-export const ProviderSchema = z.enum(["openai", "anthropic", "google", "xai", "perplexity", "ollama"])
+export const ProviderSchema = z.enum(["openai", "anthropic", "google", "xai", "perplexity", "ollama", "openrouter"])
 export type Provider = z.infer<typeof ProviderSchema>
 
 // Model identifiers by provider
@@ -20,6 +20,12 @@ export const ModelSchema = z.object({
   outputPricePerM: z.number().optional(),
   // Typical response time
   typicalLatencyMs: z.number().optional(),
+  // Minimum completion token budget — reasoning models (e.g. Kimi K2.6) burn
+  // thousands of tokens thinking before emitting visible output. Without a
+  // floor, max_tokens=1200 returns empty content because the thinking budget
+  // consumed the whole allowance. When set, queryModel() passes this as
+  // maxOutputTokens if it's higher than the caller's value.
+  minCompletionTokens: z.number().optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 
@@ -533,6 +539,23 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 1500,
   },
 
+  // OpenRouter — Moonshot Kimi
+  // Kimi K2.6 released 2026-04-13: 1T MoE (32B active), 262K context, reasoning model.
+  // Pricing via OpenRouter (routes to Moonshot direct); launch-day promo may make it free.
+  // Reasoning budget is heavy (~1500-3500 tokens typical) — minCompletionTokens floors
+  // maxOutputTokens so visible content isn't starved by the thinking phase.
+  {
+    provider: "openrouter",
+    modelId: "moonshotai/kimi-k2.6",
+    displayName: "Kimi K2.6",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.95,
+    outputPricePerM: 4.0,
+    typicalLatencyMs: 15000,
+    minCompletionTokens: 8000,
+  },
+
   // Perplexity
   {
     provider: "perplexity",
@@ -685,7 +708,9 @@ export const BEST_MODELS = {
   // Quick/cheap - fast and cheap
   quick: ["gpt-5-nano", "gemini-2.0-flash-lite", "grok-3-fast", "claude-haiku-4-5-20251001"],
   // Pro - most capable models (very-high cost tier, ~10x standard)
-  pro: ["gpt-5.4-pro", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
+  // Dual-pro mode (CLI `pro` keyword, no --model override) runs the first two
+  // entries in parallel: GPT-5.4 Pro + Kimi K2.6 — A/B test + 2-is-better-than-one.
+  pro: ["gpt-5.4-pro", "moonshotai/kimi-k2.6", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
 }
 
 export type ModelMode = keyof typeof BEST_MODELS
@@ -782,6 +807,8 @@ function getProviderEnvVar(provider: Provider): string {
       return "XAI_API_KEY"
     case "perplexity":
       return "PERPLEXITY_API_KEY"
+    case "openrouter":
+      return "OPENROUTER_API_KEY"
     case "ollama":
       return "OLLAMA_HOST (or localhost:11434)"
     default:

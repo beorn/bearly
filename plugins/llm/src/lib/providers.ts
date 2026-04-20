@@ -7,6 +7,7 @@
  * - GOOGLE_GENERATIVE_AI_API_KEY
  * - XAI_API_KEY
  * - PERPLEXITY_API_KEY
+ * - OPENROUTER_API_KEY (routes to Moonshot, Mistral, Qwen, etc. via OpenAI-compatible API)
  */
 
 import { createOpenAI } from "@ai-sdk/openai"
@@ -23,6 +24,7 @@ let anthropicProvider: ReturnType<typeof createAnthropic> | undefined
 let googleProvider: ReturnType<typeof createGoogleGenerativeAI> | undefined
 let xaiProvider: ReturnType<typeof createXai> | undefined
 let perplexityProvider: ReturnType<typeof createPerplexity> | undefined
+let openrouterProvider: ReturnType<typeof createOpenAI> | undefined
 
 function getOpenAI() {
   if (!openaiProvider) {
@@ -69,6 +71,25 @@ function getPerplexity() {
   return perplexityProvider
 }
 
+// OpenRouter is OpenAI-compatible (/v1/chat/completions) — we reuse createOpenAI
+// with a baseURL override. HTTP-Referer and X-Title are optional but recommended
+// for app attribution in OpenRouter's dashboard.
+function getOpenRouter() {
+  if (!openrouterProvider) {
+    const apiKey = process.env.OPENROUTER_API_KEY
+    if (!apiKey) throw new Error("OPENROUTER_API_KEY not set")
+    openrouterProvider = createOpenAI({
+      apiKey,
+      baseURL: "https://openrouter.ai/api/v1",
+      headers: {
+        "HTTP-Referer": "https://github.com/beorn/bearly",
+        "X-Title": "bearly-llm",
+      },
+    })
+  }
+  return openrouterProvider
+}
+
 /**
  * Get the Vercel AI SDK model instance for a given model definition
  */
@@ -84,6 +105,8 @@ export function getLanguageModel(model: Model): LanguageModel {
       return getXai()(model.modelId)
     case "perplexity":
       return getPerplexity()(model.modelId)
+    case "openrouter":
+      return getOpenRouter()(model.modelId)
     case "ollama":
       throw new Error("Ollama does not use Vercel AI SDK — handle via ollamaChat() directly")
     default:
@@ -106,6 +129,8 @@ export function isProviderAvailable(provider: Provider): boolean {
       return !!process.env.XAI_API_KEY
     case "perplexity":
       return !!process.env.PERPLEXITY_API_KEY
+    case "openrouter":
+      return !!process.env.OPENROUTER_API_KEY
     case "ollama":
       // Ollama availability is checked asynchronously — use isOllamaAvailable() for runtime check.
       // For sync checks (model selection), assume available if not explicitly disabled.
@@ -120,7 +145,7 @@ export function isProviderAvailable(provider: Provider): boolean {
  */
 export function getAvailableProviders(): Provider[] {
   // Ollama excluded — it's checked asynchronously via isOllamaAvailable()
-  const providers: Provider[] = ["openai", "anthropic", "google", "xai", "perplexity"]
+  const providers: Provider[] = ["openai", "anthropic", "google", "xai", "perplexity", "openrouter"]
   return providers.filter(isProviderAvailable)
 }
 
@@ -139,6 +164,8 @@ export function getProviderEnvVar(provider: Provider): string {
       return "XAI_API_KEY"
     case "perplexity":
       return "PERPLEXITY_API_KEY"
+    case "openrouter":
+      return "OPENROUTER_API_KEY"
     case "ollama":
       return "OLLAMA_HOST (or localhost:11434)"
     default:

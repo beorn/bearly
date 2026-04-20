@@ -7,9 +7,11 @@
  */
 
 import { main } from "../plugins/llm/src/cli.ts"
+import { maybeAutoUpdatePricing } from "../plugins/llm/src/lib/dispatch.ts"
 
 try {
   await main()
+  await maybeAutoUpdatePricing(process.argv[2])
 } catch (e) {
   console.error(`[llm] FATAL: ${e instanceof Error ? `${e.message}\n${e.stack}` : String(e)}`)
   process.exit(1)

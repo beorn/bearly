@@ -30,6 +30,7 @@ import {
   buildContext,
   runDeep,
   runDebate,
+  runProDual,
   runRecover,
   runAwait,
 } from "./lib/dispatch"
@@ -182,7 +183,8 @@ EXAMPLES
 
 KEYWORDS
   (none)                 Default: gpt-5.4 (~$0.02)
-  pro                    Pro model: gpt-5.4-pro (~$5-15, ~10x standard)
+  pro                    Dual-pro: GPT-5.4 Pro + Kimi K2.6 in parallel (~$5-15, A/B logged)
+                         (falls back to single GPT-5.4 Pro if OPENROUTER_API_KEY unset)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
@@ -224,6 +226,7 @@ PROVIDERS
   ${available.includes("google" as any) ? "✓" : "○"} Google      ${available.includes("google" as any) ? "ready" : "set GOOGLE_GENERATIVE_AI_API_KEY"}
   ${available.includes("xai" as any) ? "✓" : "○"} xAI (Grok)  ${available.includes("xai" as any) ? "ready" : "set XAI_API_KEY"}
   ${available.includes("perplexity" as any) ? "✓" : "○"} Perplexity  ${available.includes("perplexity" as any) ? "ready" : "set PERPLEXITY_API_KEY"}
+  ${available.includes("openrouter" as any) ? "✓" : "○"} OpenRouter  ${available.includes("openrouter" as any) ? "ready (Kimi K2.6, etc.)" : "set OPENROUTER_API_KEY"}
   ${ollamaStatus} Ollama      ${ollamaStatusText}
 
 RECOVERY (for interrupted deep research)
@@ -389,7 +392,18 @@ export async function main() {
       const q = getQuestion()
       if (!q) error("Usage: llm pro <question>")
       setOutputSlug(q)
-      await askAndFinish(askOpts(q, "pro", "standard", (name) => `[${name} - pro mode]`))
+      // Dual-pro: GPT-5.4 Pro + Kimi K2.6 in parallel. A/B test + two-is-better-than-one.
+      // --model override bypasses to single-model mode; missing OPENROUTER_API_KEY
+      // auto-falls-back to single-model mode inside runProDual.
+      await runProDual({
+        question: q,
+        modelOverride,
+        imagePath,
+        streamToken,
+        buildContext: buildContextFromFlags,
+        outputFile,
+        sessionTag,
+      })
       break
     }
     case "debate": {
@@ -446,8 +460,14 @@ export async function main() {
   }
 }
 
-main()
-  .then(() => maybeAutoUpdatePricing(command))
-  .catch((err) => {
-    error(err instanceof Error ? err.message : String(err))
-  })
+// Auto-run when this file is the entry point (e.g. `bun cli.ts`). When imported
+// by tools/llm.ts (the canonical wrapper), it calls `await main()` explicitly,
+// so we must NOT run here or the command double-fires — billing every pro query
+// twice. The `import.meta.main` guard is bun's equivalent of `__name__ == '__main__'`.
+if (import.meta.main) {
+  main()
+    .then(() => maybeAutoUpdatePricing(command))
+    .catch((err) => {
+      error(err instanceof Error ? err.message : String(err))
+    })
+}

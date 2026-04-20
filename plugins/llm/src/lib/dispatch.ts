@@ -946,3 +946,212 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   console.log(JSON.stringify(errorPayload))
   process.exit(1)
 }
+
+/**
+ * Run dual-pro mode: query GPT-5.4 Pro and Kimi K2.6 in parallel, write both
+ * responses + an A/B log line. Two-is-better-than-one — user reads both, judges.
+ *
+ * A/B log lives at ~/.claude/projects/<project>/memory/ab-pro.jsonl. Each line
+ * records the prompt, both responses' cost/duration/length, so we can rank
+ * quality retrospectively (add a judgement field later if we want automated
+ * scoring). Today it's just an append-only record for human review.
+ *
+ * Falls back to single-model `askAndFinish` if either provider is unavailable.
+ */
+export async function runProDual(options: {
+  question: string
+  modelOverride: Model | undefined
+  imagePath: string | undefined
+  streamToken: (token: string) => void
+  buildContext: (topic: string) => Promise<string | undefined>
+  outputFile: string
+  sessionTag: string
+}): Promise<void> {
+  const { question, modelOverride, imagePath, buildContext, outputFile, sessionTag } = options
+  const { finalizeOutput } = await import("./format")
+
+  // Explicit --model override bypasses dual mode entirely.
+  if (modelOverride) {
+    await askAndFinish({
+      question,
+      modelMode: "pro" as ModelMode,
+      level: "standard",
+      header: (name) => `[${name} - pro mode]`,
+      modelOverride,
+      imagePath,
+      streamToken: options.streamToken,
+      buildContext,
+      outputFile,
+      sessionTag,
+    })
+    return
+  }
+
+  const gptPro = getModel("gpt-5.4-pro")
+  const kimi = getModel("moonshotai/kimi-k2.6")
+  const gptAvailable = gptPro && isProviderAvailable(gptPro.provider)
+  const kimiAvailable = kimi && isProviderAvailable(kimi.provider)
+
+  // Fall back to single-model mode if we can't run both sides.
+  if (!gptAvailable || !kimiAvailable) {
+    const missing = !gptAvailable ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"
+    console.error(`⚠️  Dual-pro unavailable (${missing} not set) — falling back to single model\n`)
+    await askAndFinish({
+      question,
+      modelMode: "pro" as ModelMode,
+      level: "standard",
+      header: (name) => `[${name} - pro mode]`,
+      modelOverride: undefined,
+      imagePath,
+      streamToken: options.streamToken,
+      buildContext,
+      outputFile,
+      sessionTag,
+    })
+    return
+  }
+
+  const context = await buildContext(question)
+  const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
+  if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
+
+  console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName} in parallel...`)
+  console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
+  console.error(`  • K2.6 reasoning floor: ${kimi!.minCompletionTokens} tokens\n`)
+
+  const { ask } = await import("./research")
+
+  // Fire both in parallel. Streaming is disabled — dual streams would interleave
+  // unreadably on stderr. Users read the final files.
+  const [gptResult, kimiResult] = await Promise.allSettled([
+    ask(enrichedQuestion, "standard", { modelOverride: gptPro!.modelId, stream: false }),
+    ask(enrichedQuestion, "standard", { modelOverride: kimi!.modelId, stream: false }),
+  ])
+
+  const gptResp = gptResult.status === "fulfilled" ? gptResult.value : undefined
+  const kimiResp = kimiResult.status === "fulfilled" ? kimiResult.value : undefined
+  const gptErr = gptResult.status === "rejected" ? String(gptResult.reason) : gptResp?.error
+  const kimiErr = kimiResult.status === "rejected" ? String(kimiResult.reason) : kimiResp?.error
+
+  if (gptErr) console.error(`  ✗ ${gptPro!.displayName}: ${gptErr}`)
+  else if (gptResp) console.error(`  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`)
+  if (kimiErr) console.error(`  ✗ ${kimi!.displayName}: ${kimiErr}`)
+  else if (kimiResp) console.error(`  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`)
+
+  // Build the combined report. Both responses presented side-by-side, headers
+  // labelled so the reader can diff. Non-fatal errors surface inline so the
+  // reader sees which model failed without digging through logs.
+  const gptCost = gptResp?.usage
+    ? estimateCost(gptPro!, gptResp.usage.promptTokens, gptResp.usage.completionTokens)
+    : 0
+  const kimiCost = kimiResp?.usage
+    ? estimateCost(kimi!, kimiResp.usage.promptTokens, kimiResp.usage.completionTokens)
+    : 0
+  const totalCost = gptCost + kimiCost
+
+  const parts: string[] = []
+  parts.push(`# Dual-Pro Response\n`)
+  parts.push(`**Question**: ${question}\n`)
+  parts.push(`**Models**: ${gptPro!.displayName} + ${kimi!.displayName}`)
+  parts.push(`**Total cost**: ${formatCost(totalCost)} (${formatCost(gptCost)} + ${formatCost(kimiCost)})\n`)
+
+  parts.push(`---\n`)
+  parts.push(`## ${gptPro!.displayName}`)
+  if (gptResp?.content) {
+    const meta = `_${gptResp.usage?.totalTokens ?? 0} tokens · ${Math.round(gptResp.durationMs / 1000)}s · ${formatCost(gptCost)}_`
+    parts.push(meta + "\n")
+    parts.push(gptResp.content.trim())
+  } else {
+    parts.push(`⚠️  Failed: ${gptErr ?? "no content"}`)
+  }
+
+  parts.push(`\n---\n`)
+  parts.push(`## ${kimi!.displayName}`)
+  if (kimiResp?.content) {
+    const meta = `_${kimiResp.usage?.totalTokens ?? 0} tokens · ${Math.round(kimiResp.durationMs / 1000)}s · ${formatCost(kimiCost)}_`
+    parts.push(meta + "\n")
+    parts.push(kimiResp.content.trim())
+  } else {
+    parts.push(`⚠️  Failed: ${kimiErr ?? "no content"}`)
+  }
+
+  const combined = parts.join("\n")
+
+  await finalizeOutput(combined, outputFile, sessionTag, {
+    query: question,
+    model: `dual-pro (${gptPro!.displayName} + ${kimi!.displayName})`,
+    tokens: (gptResp?.usage?.totalTokens ?? 0) + (kimiResp?.usage?.totalTokens ?? 0),
+    cost: formatCost(totalCost),
+    durationMs: Math.max(gptResp?.durationMs ?? 0, kimiResp?.durationMs ?? 0),
+  })
+
+  // Append an A/B log entry so we can review quality over time.
+  await appendAbProLog({
+    question,
+    sessionTag,
+    outputFile,
+    gpt: { model: gptPro!, response: gptResp, error: gptErr },
+    kimi: { model: kimi!, response: kimiResp, error: kimiErr },
+    gptCost,
+    kimiCost,
+  })
+}
+
+/**
+ * Append one dual-pro run to the A/B log (JSONL). Best-effort — errors are
+ * swallowed so a log write failure doesn't break the user-facing output.
+ *
+ * Log lives with the project's memory directory so it travels with the
+ * Claude Code project context. Fields are stable — later we can `jq` over
+ * them to rank winners, estimate quality deltas, etc.
+ */
+async function appendAbProLog(entry: {
+  question: string
+  sessionTag: string
+  outputFile: string
+  gpt: { model: Model; response: import("./types").ModelResponse | undefined; error: string | undefined }
+  kimi: { model: Model; response: import("./types").ModelResponse | undefined; error: string | undefined }
+  gptCost: number
+  kimiCost: number
+}): Promise<void> {
+  try {
+    const os = await import("os")
+    const fs = await import("fs")
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+    const encoded = projectRoot.replace(/\//g, "-")
+    const dir = `${os.homedir()}/.claude/projects/${encoded}/memory`
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const line =
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        session: entry.sessionTag,
+        question: entry.question,
+        outputFile: entry.outputFile,
+        gpt: {
+          model: entry.gpt.model.modelId,
+          ok: !!entry.gpt.response?.content,
+          error: entry.gpt.error,
+          tokens: entry.gpt.response?.usage?.totalTokens,
+          promptTokens: entry.gpt.response?.usage?.promptTokens,
+          completionTokens: entry.gpt.response?.usage?.completionTokens,
+          durationMs: entry.gpt.response?.durationMs,
+          chars: entry.gpt.response?.content?.length,
+          cost: entry.gptCost,
+        },
+        kimi: {
+          model: entry.kimi.model.modelId,
+          ok: !!entry.kimi.response?.content,
+          error: entry.kimi.error,
+          tokens: entry.kimi.response?.usage?.totalTokens,
+          promptTokens: entry.kimi.response?.usage?.promptTokens,
+          completionTokens: entry.kimi.response?.usage?.completionTokens,
+          durationMs: entry.kimi.response?.durationMs,
+          chars: entry.kimi.response?.content?.length,
+          cost: entry.kimiCost,
+        },
+      }) + "\n"
+    fs.appendFileSync(`${dir}/ab-pro.jsonl`, line)
+  } catch {
+    // Best-effort log
+  }
+}
