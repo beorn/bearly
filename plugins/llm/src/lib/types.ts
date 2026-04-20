@@ -20,12 +20,23 @@ export const ModelSchema = z.object({
   outputPricePerM: z.number().optional(),
   // Typical response time
   typicalLatencyMs: z.number().optional(),
-  // Minimum completion token budget — reasoning models (e.g. Kimi K2.6) burn
-  // thousands of tokens thinking before emitting visible output. Without a
-  // floor, max_tokens=1200 returns empty content because the thinking budget
-  // consumed the whole allowance. When set, queryModel() passes this as
-  // maxOutputTokens if it's higher than the caller's value.
-  minCompletionTokens: z.number().optional(),
+  // Default output token cap for this model. Reasoning models (e.g. Kimi K2.6)
+  // burn thousands of tokens *thinking* before emitting visible output —
+  // max_tokens covers BOTH reasoning and content, so the cap must be generous
+  // enough for "reasoning + complete answer" or the answer gets truncated (or
+  // empty, if reasoning exhausts the budget).
+  //
+  // Sizing guidance:
+  //   - Non-reasoning chat models: leave unset (use provider default ~4K)
+  //   - Reasoning models on short queries (<5K input): 16384
+  //   - Reasoning models on long queries (>30K input): 65536
+  //
+  // History: originally named `minCompletionTokens` with the intent of "floor
+  // the cap so short queries don't return empty"; the name was misleading
+  // because it's the cap itself, not a floor over the caller's value. A K2.6
+  // review of a 60K-token codebase (2026-04-20) returned empty content with
+  // the cap set to 8000 — reasoning ate the whole budget.
+  defaultMaxOutputTokens: z.number().optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 
@@ -542,8 +553,9 @@ export const MODELS: Model[] = [
   // OpenRouter — Moonshot Kimi
   // Kimi K2.6 released 2026-04-13: 1T MoE (32B active), 262K context, reasoning model.
   // Pricing via OpenRouter (routes to Moonshot direct); launch-day promo may make it free.
-  // Reasoning budget is heavy (~1500-3500 tokens typical) — minCompletionTokens floors
-  // maxOutputTokens so visible content isn't starved by the thinking phase.
+  // Reasoning is heavy and counts against the output cap — defaultMaxOutputTokens
+  // is sized generously (64K) so large-context reviews have room for thinking
+  // plus a complete answer. Short queries only bill for what they use.
   {
     provider: "openrouter",
     modelId: "moonshotai/kimi-k2.6",
@@ -553,7 +565,10 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    minCompletionTokens: 8000,
+    // 65K accommodates long-context reviews where reasoning alone eats 20K+.
+    // Smaller queries only bill for what they actually use — the cap is upper
+    // bound, not floor.
+    defaultMaxOutputTokens: 65536,
   },
 
   // Perplexity

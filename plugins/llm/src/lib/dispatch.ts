@@ -1017,7 +1017,7 @@ export async function runProDual(options: {
 
   console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName} in parallel...`)
   console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
-  console.error(`  • K2.6 reasoning floor: ${kimi!.minCompletionTokens} tokens\n`)
+  console.error(`  • K2.6 output cap: ${kimi!.defaultMaxOutputTokens} tokens (reasoning + content)\n`)
 
   const { ask } = await import("./research")
 
