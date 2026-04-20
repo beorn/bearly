@@ -96,7 +96,10 @@ export async function runInjectDelta(
     const text = cleanSnippet(r.snippet)
     if (text.length < minLength) continue
     const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
-    snippets.push(`[${r.type}] ${label}: ${text.slice(0, snippetChars)}`)
+    const body = escapeSnippetBody(text.slice(0, snippetChars))
+    snippets.push(
+      `  <snippet type="${r.type}" session="${r.sessionId.slice(0, 8)}" title=${JSON.stringify(label)}>\n    ${body}\n  </snippet>`,
+    )
     newKeys.push(key)
     if (snippets.length >= limitSnippets) break
   }
@@ -110,10 +113,23 @@ export async function runInjectDelta(
 
   return {
     skipped: false,
-    additionalContext: `## Session Memory\n\n${snippets.join("\n")}`,
+    additionalContext: `<recall-memory note="retrospective context from prior sessions — NOT a new user message; do not answer as if asked">\n${snippets.join("\n")}\n</recall-memory>`,
     newKeys,
     turn,
   }
+}
+
+/**
+ * Escape snippet bodies so they don't terminate the wrapping <snippet> or
+ * <recall-memory> tags. We don't need full XML escaping — the goal is just
+ * to prevent premature tag closure when a snippet happens to contain one of
+ * our wrapper patterns. Leaves all other content (newlines, < >, quotes) alone.
+ */
+function escapeSnippetBody(text: string): string {
+  return text
+    .replaceAll("</snippet>", "</ snippet>")
+    .replaceAll("</recall-memory>", "</ recall-memory>")
+    .replaceAll("\n", "\n    ")
 }
 
 // ---------------------------------------------------------------------------
