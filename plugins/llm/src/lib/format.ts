@@ -41,6 +41,23 @@ export function slugify(text: string): string {
     .slice(0, 40)
 }
 
+/**
+ * Build the canonical /tmp/llm-*.txt output path used for both initial launches
+ * and recover/await flows. Format: /tmp/llm-<session>-<slug-or-rand>-<hash>.txt
+ *
+ * If `topic` is empty/undefined, falls back to a millisecond timestamp slug so
+ * the path is still unique. The 4-char random suffix prevents collisions when
+ * two runs hit the same slug within the same millisecond.
+ */
+export function buildOutputPath(sessionTag: string, topic?: string): string {
+  const hash = Math.random().toString(36).slice(2, 6)
+  const slug = topic ? slugify(topic) : ""
+  // Treat slugs with no alphanumerics (e.g. "---") as empty — they'd produce
+  // visually broken filenames like /tmp/llm-manual-----abcd.txt.
+  const middle = /[a-z0-9]/.test(slug) ? slug : String(Date.now())
+  return `/tmp/llm-${sessionTag}-${middle}-${hash}.txt`
+}
+
 /** Build JSON summary object for the response */
 export function buildResultJson(content: string, meta?: OutputMeta): Record<string, unknown> {
   const result: Record<string, unknown> = {}

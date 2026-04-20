@@ -6,9 +6,13 @@
  *   llm --deep "topic"          Deep research with web search (~$2-5)
  *   llm opinion "question"      Second opinion from GPT/Gemini (~$0.02)
  *   llm debate "question"       Multi-model consensus (~$1-3)
+ *   llm recover <id>            Resume polling (TTY spinner; non-TTY 60s lines)
+ *   llm await <id>              Silent block until done — for non-interactive callers
  *
- * Output: response always written to /tmp/llm-*.txt, JSON metadata on stdout.
- * Streaming tokens shown on stderr only when running in an interactive terminal (TTY).
+ * Output: response always written to /tmp/llm-*.txt (recover/await included),
+ * JSON metadata on stdout. Streaming tokens shown on stderr only in TTY.
+ *
+ * Recover/await ceiling: 600 polls × 5s = 50m. Override with LLM_RECOVER_MAX_ATTEMPTS.
  *
  * Heavy logic lives in lib/llm/:
  *   dispatch.ts — provider dispatch, model selection, recovery, pricing updates
@@ -27,8 +31,9 @@ import {
   runDeep,
   runDebate,
   runRecover,
+  runAwait,
 } from "./lib/dispatch"
-import { formatRelativeTime, slugify, createStreamToken } from "./lib/format"
+import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/format"
 
 import { readdirSync, statSync, unlinkSync } from "fs"
 
@@ -78,14 +83,11 @@ const streamToken = createStreamToken(hasFlag("--verbose"))
  * Response is ALWAYS written to a file. Never stream to stdout — it causes truncation
  * when Claude Code captures background task output.
  */
-let outputFile = outputArg ?? `/tmp/llm-${sessionTag}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.txt`
+let outputFile = outputArg ?? buildOutputPath(sessionTag)
 
 function setOutputSlug(topic: string) {
   if (outputArg) return
-  const slug = slugify(topic)
-  if (slug) {
-    outputFile = `/tmp/llm-${sessionTag}-${slug}-${Math.random().toString(36).slice(2, 6)}.txt`
-  }
+  outputFile = buildOutputPath(sessionTag, topic)
 }
 
 /** Resolve --model flag */
@@ -226,9 +228,15 @@ PROVIDERS
 
 RECOVERY (for interrupted deep research)
   llm recover                       List incomplete/partial responses
-  llm recover <response_id>         Retrieve response by ID from OpenAI
+  llm recover <response_id>         Retrieve & poll response by ID (TTY: spinner;
+                                    non-TTY: 60s-gated lines). Writes /tmp/llm-*.txt.
+  llm await <response_id>           Block silently until done. Prints only the file
+                                    path on stderr + JSON on stdout. For scripts.
   llm partials                      Alias for 'recover' (list partials)
   llm partials --clean              Clean up old partial files (>7 days)
+
+  Env: LLM_RECOVER_MAX_ATTEMPTS     Poll ceiling for recover/await (default 600 = 50m
+                                    @ 5s/poll; was 180/15m before km-infra.llm-recover-ux).
 `)
   process.exit(0)
 }
@@ -245,6 +253,7 @@ const KEYWORDS = [
   "debate",
   "recover",
   "partials",
+  "await",
   "update-pricing",
   "list-models",
 ]
@@ -406,6 +415,10 @@ export async function main() {
         cleanStale: hasFlag("--clean-stale"),
         includeAll: hasFlag("--all"),
       })
+      break
+    }
+    case "await": {
+      await runAwait({ responseId: getQuestion() || undefined })
       break
     }
     case "update-pricing": {

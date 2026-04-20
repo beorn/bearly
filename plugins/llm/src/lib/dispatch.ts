@@ -259,7 +259,7 @@ export async function discoverNewModels(): Promise<string[]> {
  */
 export async function maybeAutoUpdatePricing(command: string | undefined): Promise<void> {
   if (!isPricingStale()) return
-  const skip = ["update-pricing", "recover", "partials"]
+  const skip = ["update-pricing", "recover", "partials", "await"]
   if (!command || command === "--help" || command === "-h") return
   if (skip.includes(command!)) return
 
@@ -700,6 +700,98 @@ export async function runDebate(options: {
   })
 }
 
+/**
+ * Default poll ceiling for recover/await: 600 × 5s = 50 minutes.
+ *
+ * Raised from the original 180 (=15 min) after a GPT 5.4 Pro deep review took
+ * ~40 min end-to-end and the recover command timed out. Tune via env var
+ * LLM_RECOVER_MAX_ATTEMPTS; each attempt is one 5s poll.
+ */
+const DEFAULT_RECOVER_MAX_ATTEMPTS = 600
+
+function resolveMaxAttempts(): number {
+  const raw = process.env.LLM_RECOVER_MAX_ATTEMPTS
+  if (!raw) return DEFAULT_RECOVER_MAX_ATTEMPTS
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECOVER_MAX_ATTEMPTS
+}
+
+/**
+ * Progress printer for poll loops.
+ *
+ * - silent: no output (used by `await`)
+ * - TTY: live `\r`-overwriting spinner every poll
+ * - non-TTY (claude-code, CI): one line per 60s — keeps output compact so
+ *   claude-code's stdout-burst auto-background heuristic doesn't trigger.
+ */
+function makePollProgress(opts: { silent?: boolean } = {}): (status: string, elapsedMs: number) => void {
+  if (opts.silent) return () => {}
+  const isTTY = process.stderr.isTTY
+  let lastLogged = -60
+  return (status, elapsedMs) => {
+    if (isTTY) {
+      process.stderr.write(`\r⏳ ${status} (${Math.round(elapsedMs / 1000)}s elapsed)`)
+      return
+    }
+    const seconds = Math.round(elapsedMs / 1000)
+    if (seconds - lastLogged < 60) return
+    lastLogged = seconds
+    process.stderr.write(`⏳ ${status} (${seconds}s elapsed)\n`)
+  }
+}
+
+/** Write a recovered response to /tmp/llm-*.txt so background callers can find it. */
+async function writeRecoveredResponse(
+  content: string,
+  responseId: string,
+  topic: string | undefined,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined,
+): Promise<string> {
+  const { buildOutputPath, finalizeOutput } = await import("./format")
+  const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
+  const outputFile = buildOutputPath(sessionTag, topic ?? `recover-${responseId}`)
+  await finalizeOutput(content, outputFile, sessionTag, {
+    query: topic,
+    tokens: usage?.totalTokens,
+  })
+  return outputFile
+}
+
+/**
+ * Poll a response ID until completion. Shared by `recover <id>` and `await <id>`.
+ *
+ * @param silentProgress — when true, suppress all progress output (used by `await`).
+ *                        Otherwise TTY gets spinner, non-TTY gets 60s-gated lines.
+ */
+async function pollResponseToCompletion(
+  responseId: string,
+  silentProgress: boolean,
+): Promise<{
+  status: string
+  content: string
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+  error?: string
+}> {
+  const initial = await retrieveResponse(responseId)
+  if (initial.status !== "in_progress" && initial.status !== "queued") {
+    return initial
+  }
+  const maxAttempts = resolveMaxAttempts()
+  if (!silentProgress) {
+    const mins = Math.round((maxAttempts * 5) / 60)
+    console.error(
+      `\nStatus: ${initial.status} — polling every 5s (ceiling: ${mins}m, set LLM_RECOVER_MAX_ATTEMPTS to override)`,
+    )
+  }
+  const result = await pollForCompletion(responseId, {
+    intervalMs: 5_000,
+    maxAttempts,
+    onProgress: makePollProgress({ silent: silentProgress }),
+  })
+  if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
+  return result
+}
+
 /** Run recover/partials command */
 export async function runRecover(options: {
   responseId: string | undefined
@@ -738,58 +830,40 @@ export async function runRecover(options: {
       }
     }
 
-    // Try to retrieve from OpenAI (with polling for in-progress responses)
-    const initial = await retrieveResponse(responseId)
+    const result = await pollResponseToCompletion(responseId, /* silentProgress */ false)
 
-    if (initial.error) {
+    if (result.error && result.status !== "timeout") {
       if (!localPartial) {
-        console.error(JSON.stringify({ error: `Failed to retrieve: ${initial.error}` }))
+        console.error(JSON.stringify({ error: `Failed to retrieve: ${result.error}` }))
         process.exit(1)
       }
-      console.error(`\n⚠️  Could not retrieve from OpenAI: ${initial.error}`)
-    } else if (initial.status === "completed") {
+      console.error(`\n⚠️  Could not retrieve from OpenAI: ${result.error}`)
+    } else if (result.status === "completed" && result.content) {
       console.error("\nFull response from OpenAI:\n")
-      console.log(initial.content)
-      if (initial.usage) {
-        console.error(`\n[${initial.usage.totalTokens} tokens]`)
+      console.log(result.content)
+      if (result.usage) {
+        console.error(`\n[${result.usage.totalTokens} tokens]`)
       }
+      const outputFile = await writeRecoveredResponse(
+        result.content,
+        responseId,
+        localPartial?.metadata.topic,
+        result.usage,
+      )
+      process.stderr.write(`Recovered output written to: ${outputFile}\n`)
       if (localPartial) {
         const { completePartial } = await import("./persistence")
         completePartial(localPartial.path, { delete: true })
       }
-    } else if (initial.status === "in_progress" || initial.status === "queued") {
-      console.error(`\nStatus: ${initial.status} — polling every 5s...`)
-      const result = await pollForCompletion(responseId, {
-        intervalMs: 5_000,
-        maxAttempts: 180,
-        onProgress: (status, elapsed) => {
-          process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
-        },
-      })
-      process.stderr.write("\n")
-
-      if (result.status === "completed" && result.content) {
-        console.error("Full response from OpenAI:\n")
-        console.log(result.content)
-        if (result.usage) {
-          console.error(`\n[${result.usage.totalTokens} tokens]`)
-        }
-        if (localPartial) {
-          const { completePartial } = await import("./persistence")
-          completePartial(localPartial.path, { delete: true })
-        }
-      } else {
-        console.error(`Response ${result.status}${result.error ? `: ${result.error}` : ""}`)
-      }
-    } else if (initial.status === "failed" || initial.status === "cancelled" || initial.status === "expired") {
-      console.error(`\nResponse ${initial.status}`)
+    } else if (result.status === "failed" || result.status === "cancelled" || result.status === "expired") {
+      console.error(`\nResponse ${result.status}`)
       if (localPartial) {
         const { completePartial } = await import("./persistence")
         completePartial(localPartial.path, { delete: true })
         console.error("Cleaned up stale partial file.")
       }
     } else {
-      console.error(`\nResponse status: ${initial.status}`)
+      console.error(`Response ${result.status}${result.error ? `: ${result.error}` : ""}`)
     }
     return
   }
@@ -831,4 +905,44 @@ export async function runRecover(options: {
 
   console.error("To retrieve a response: llm recover <response_id>")
   console.error("To clean up old partials: llm partials --clean")
+}
+
+/**
+ * Run `await <id>` — block silently until a deep-research response completes,
+ * then print only the file path on stderr and a JSON summary on stdout. No
+ * spinner, no preview, no progress. Designed for non-interactive callers
+ * (claude-code, CI) that just want the final result.
+ */
+export async function runAwait(options: { responseId: string | undefined }): Promise<void> {
+  const { responseId } = options
+  if (!responseId) {
+    console.error(JSON.stringify({ error: "Usage: llm await <response_id>" }))
+    process.exit(1)
+  }
+
+  const localPartial = findPartialByResponseId(responseId)
+  const result = await pollResponseToCompletion(responseId, /* silentProgress */ true)
+
+  if (result.status === "completed" && result.content) {
+    const outputFile = await writeRecoveredResponse(
+      result.content,
+      responseId,
+      localPartial?.metadata.topic,
+      result.usage,
+    )
+    process.stderr.write(`Output written to: ${outputFile}\n`)
+    if (localPartial) {
+      const { completePartial } = await import("./persistence")
+      completePartial(localPartial.path, { delete: true })
+    }
+    return
+  }
+
+  const errorPayload: Record<string, unknown> = {
+    error: result.error ?? `Response ${result.status}`,
+    status: result.status,
+    responseId,
+  }
+  console.log(JSON.stringify(errorPayload))
+  process.exit(1)
 }
