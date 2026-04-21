@@ -56,6 +56,37 @@ export interface DeepResearchOptions {
   abortSignal?: AbortSignal
 }
 
+/**
+ * Options for a plain (non-research) Responses-API background query.
+ *
+ * Same persist → fire-and-forget → recoverable semantics as deep research,
+ * but without `web_search_preview` — just the model completing the prompt.
+ * Used by the standard `pro` path so long Pro calls survive SIGINT / network
+ * hiccups / wall-clock kills.
+ */
+export interface BackgroundQueryOptions {
+  prompt: string
+  model: Model
+  /** Topic line stored with the partial for recovery UIs (default: first 80 chars of prompt). */
+  topic?: string
+  /**
+   * Fire-and-forget mode. When true, create the response, persist the ID,
+   * and return `{ content: "", responseId }` immediately. The caller is
+   * expected to surface the ID to the user for `bun llm recover` later.
+   *
+   * When false, create + poll until completion (happy path for fast models).
+   * Either way the ID is persisted before we return — interruption loses
+   * nothing. Default: false (synchronous with recovery as fallback).
+   */
+  fireAndForget?: boolean
+  /** Don't persist to temp file (default: false). */
+  noPersist?: boolean
+  /** Abort signal — Ctrl-C / SIGTERM stops the poll; server-side response continues. */
+  abortSignal?: AbortSignal
+  /** Optional OSS streaming callback — called once with the final text when the background call completes. */
+  onToken?: (token: string) => void
+}
+
 function buildResearchPrompt(topic: string, context?: string): string {
   const contextSection = context ? `## Background Context\n\n${context}\n\n---\n\n` : ""
   return `${contextSection}Research the following topic thoroughly. Provide comprehensive information with sources where possible.
@@ -246,6 +277,150 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       error: errorMessage,
     }
   }
+}
+
+/**
+ * Query any OpenAI chat/reasoning model via the Responses API with
+ * `background: true`. Persists the response ID to disk synchronously,
+ * so recovery via `bun llm recover <id>` works even if the process dies
+ * mid-poll.
+ *
+ * Shape is intentionally narrower than `queryOpenAIDeepResearch`:
+ *   - No `web_search_preview` tool (this is plain chat, not research)
+ *   - No research prompt wrapper (caller passes the final prompt verbatim)
+ *   - No system-prompt plumbing yet (none of our standard-pro callers need it)
+ *
+ * Recovery semantics mirror deep research: every call writes a partial with
+ * the response ID, model, and topic so `bun llm recover <id>` (and the
+ * auto-recover sweep on the next invocation) picks it up uniformly. If the
+ * caller sets `fireAndForget: true` we skip polling and return `content: ""`
+ * with the ID — dual-pro uses this so a 30-min Pro leg can survive Ctrl-C.
+ */
+export async function queryOpenAIBackground(options: BackgroundQueryOptions): Promise<ModelResponse> {
+  const { prompt, model, onToken, noPersist = false } = options
+  const startTime = Date.now()
+  const openai = getClient()
+  const topic = options.topic ?? prompt.slice(0, 80)
+
+  try {
+    // Create in background mode so the ID is captured synchronously — that's
+    // the whole point: even if the process dies on the next tick, the work
+    // continues server-side and is recoverable via the persisted ID.
+    const initialResponse = await openai.responses.create({
+      model: model.modelId,
+      input: prompt,
+      stream: false,
+      background: true,
+      store: true,
+    })
+
+    const responseId = initialResponse.id
+    let partialPath = ""
+
+    if (responseId && !noPersist) {
+      partialPath = getPartialPath(responseId)
+      writePartialHeader(partialPath, {
+        responseId,
+        model: model.displayName,
+        modelId: model.modelId,
+        topic,
+        startedAt: new Date().toISOString(),
+      })
+      log.info?.(`Response ID: ${responseId} (recoverable with 'bun llm recover')`)
+    }
+
+    if (options.fireAndForget) {
+      console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
+      console.error(`   bun llm recover ${responseId}\n`)
+      return {
+        model,
+        content: "",
+        responseId,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        durationMs: Date.now() - startTime,
+      }
+    }
+
+    // Happy path: poll until complete. Matches the 50-min ceiling used by
+    // deep research — a standard Pro call is much shorter in practice but
+    // we prefer one behaviour across paths over bespoke per-model tuning.
+    const pollResult = await pollForCompletion(responseId, {
+      intervalMs: 5_000,
+      abortSignal: options.abortSignal,
+      onProgress: (status, elapsed) => {
+        process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
+      },
+    })
+
+    if (pollResult.status === "completed" && pollResult.content) {
+      if (onToken) onToken(pollResult.content)
+      if (partialPath) {
+        appendPartial(partialPath, pollResult.content)
+        completePartial(partialPath, {
+          delete: true,
+          usage: {
+            promptTokens: pollResult.usage?.promptTokens ?? 0,
+            completionTokens: pollResult.usage?.completionTokens ?? 0,
+            totalTokens: pollResult.usage?.totalTokens ?? 0,
+          },
+        })
+      }
+      if (process.stderr.isTTY) process.stderr.write("\n")
+      return {
+        model,
+        content: pollResult.content,
+        responseId,
+        usage: {
+          promptTokens: pollResult.usage?.promptTokens ?? 0,
+          completionTokens: pollResult.usage?.completionTokens ?? 0,
+          totalTokens: pollResult.usage?.totalTokens ?? 0,
+        },
+        durationMs: Date.now() - startTime,
+      }
+    }
+
+    // Incomplete — return whatever content we have plus the ID so callers
+    // can surface "still running, recover later" without losing context.
+    const partial = pollResult.content || ""
+    if (pollResult.status === "aborted") {
+      log.warn?.(`Polling aborted locally — server-side response ${responseId} still running`)
+    } else {
+      log.warn?.(`Response did not complete: ${pollResult.status}`)
+    }
+    return {
+      model,
+      content: partial,
+      responseId,
+      usage: {
+        promptTokens: pollResult.usage?.promptTokens ?? 0,
+        completionTokens: pollResult.usage?.completionTokens ?? 0,
+        totalTokens: pollResult.usage?.totalTokens ?? 0,
+      },
+      durationMs: Date.now() - startTime,
+      error: pollResult.status === "completed" ? undefined : (pollResult.error ?? `incomplete: ${pollResult.status}`),
+    }
+  } catch (error) {
+    const errorMessage = formatApiError(error)
+    log.error?.(`Background query error: ${errorMessage}`)
+    return {
+      model,
+      content: "",
+      durationMs: Date.now() - startTime,
+      error: errorMessage,
+    }
+  }
+}
+
+/**
+ * Whether a model can be routed through the Responses API for recoverable
+ * background execution. Every OpenAI model supports the Responses API;
+ * other providers don't (OpenRouter/K2.6 routes through a Chat Completions
+ * shim, Anthropic/Google have their own APIs). Deep-research models use
+ * `queryOpenAIDeepResearch` which injects `web_search_preview` — they're
+ * covered by `isOpenAIDeepResearch` and NOT by this predicate.
+ */
+export function isOpenAIBackgroundCapable(model: Model): boolean {
+  return model.provider === "openai" && !model.isDeepResearch
 }
 
 /** Extract concatenated output_text from a Responses API result. */
