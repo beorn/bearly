@@ -46,10 +46,10 @@ import { readdirSync, statSync, unlinkSync } from "fs"
 // any other startup work as a surprise. The wrapper (tools/llm.ts) invokes
 // main() which calls initCli() — no behavior change for the canonical path.
 //
-// The module-scope `args` parsing and `let outputFile` state below still
-// run on import. Pushing them into main() is a deeper refactor; acceptable
-// as-is because nothing currently imports cli.ts except the wrapper. Tracked
-// as a follow-up in km-infra.llm-review-fixes.
+// Module-scope `args` parsing still runs on import (pure read of process.argv,
+// no side effects). outputFile was previously a module-scope `let` mutated
+// via setOutputSlug; it now lives as a local inside main(), resolved per
+// dispatch branch via the pure resolveOutputFile helper below.
 function initCli(): void {
   initializePricing()
 
@@ -101,14 +101,20 @@ const skipConfirm = hasFlag("--yes") || hasFlag("-y")
 const streamToken = createStreamToken(hasFlag("--verbose"))
 
 /**
- * Response is ALWAYS written to a file. Never stream to stdout — it causes truncation
- * when Claude Code captures background task output.
+ * Resolve the output file path for this invocation.
+ *
+ * If `--output <path>` was passed, honour it verbatim regardless of topic.
+ * Otherwise synthesize a slug-bearing path via buildOutputPath. Pure —
+ * callers hold the resolved string as a local, no module-scope mutation.
+ * The previous `let outputFile` + mutating `setOutputSlug` worked, but the
+ * module-scope `let` made it hard to reason about which dispatch path saw
+ * which filename (especially when tests import cli.ts and exercise main()
+ * multiple times). Response is ALWAYS written to a file — never stream to
+ * stdout, it causes truncation when Claude Code captures background tasks.
  */
-let outputFile = outputArg ?? buildOutputPath(sessionTag)
-
-function setOutputSlug(topic: string) {
-  if (outputArg) return
-  outputFile = buildOutputPath(sessionTag, topic)
+function resolveOutputFile(topic?: string): string {
+  if (outputArg) return outputArg
+  return buildOutputPath(sessionTag, topic)
 }
 
 /** Resolve --model flag */
@@ -325,7 +331,13 @@ const KEYWORDS = [
 
 // --- Shared options for dispatch functions ---
 
-function askOpts(question: string, modelMode: string, level: "standard" | "quick", header: (name: string) => string) {
+function askOpts(
+  question: string,
+  modelMode: string,
+  level: "standard" | "quick",
+  header: (name: string) => string,
+  outputFile: string,
+) {
   return {
     question,
     modelMode: modelMode as any,
@@ -386,7 +398,7 @@ export async function main(): Promise<string | undefined> {
   if (!isKeyword && !isDeepFlag && !isAskFlag) {
     const question = extractText(true, [])
     if (!question) usage()
-    setOutputSlug(question)
+    const outputFile = resolveOutputFile(question)
 
     // Check history first
     try {
@@ -406,7 +418,7 @@ export async function main(): Promise<string | undefined> {
       /* History not indexed */
     }
 
-    await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`))
+    await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`, outputFile))
     return command
   }
 
@@ -424,7 +436,7 @@ export async function main(): Promise<string | undefined> {
           `llm --deep --model gpt-5.4-pro "${topic.split(/\s+/).slice(1).join(" ")}"`,
       )
     }
-    setOutputSlug(topic)
+    const outputFile = resolveOutputFile(topic)
     await runDeep({
       topic,
       modelOverride,
@@ -443,8 +455,8 @@ export async function main(): Promise<string | undefined> {
   if (isAskFlag) {
     const question = isKeyword ? getQuestion() : extractText(true, ["/ask"])
     if (!question) error("Usage: llm --ask <question>")
-    setOutputSlug(question)
-    await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`))
+    const outputFile = resolveOutputFile(question)
+    await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`, outputFile))
     return "--ask"
   }
 
@@ -455,21 +467,21 @@ export async function main(): Promise<string | undefined> {
     case "nano": {
       const q = getQuestion()
       if (!q) error("Usage: llm quick <question>")
-      setOutputSlug(q)
-      await askAndFinish(askOpts(q, "quick", "quick", (name) => `[${name} - quick mode]`))
+      const outputFile = resolveOutputFile(q)
+      await askAndFinish(askOpts(q, "quick", "quick", (name) => `[${name} - quick mode]`, outputFile))
       break
     }
     case "opinion": {
       const q = getQuestion()
       if (!q) error("Usage: llm opinion <question>")
-      setOutputSlug(q)
-      await askAndFinish(askOpts(q, "opinion", "standard", (name) => `[Second opinion from ${name}]`))
+      const outputFile = resolveOutputFile(q)
+      await askAndFinish(askOpts(q, "opinion", "standard", (name) => `[Second opinion from ${name}]`, outputFile))
       break
     }
     case "pro": {
       const q = getQuestion()
       if (!q) error("Usage: llm pro <question>")
-      setOutputSlug(q)
+      const outputFile = resolveOutputFile(q)
       // Dual-pro: GPT-5.4 Pro + Kimi K2.6 in parallel. A/B test + two-is-better-than-one.
       // --model override bypasses to single-model mode; missing OPENROUTER_API_KEY
       // auto-falls-back to single-model mode inside runProDual.
@@ -488,7 +500,7 @@ export async function main(): Promise<string | undefined> {
     case "debate": {
       const q = getQuestion()
       if (!q) error("Usage: llm debate <question>")
-      setOutputSlug(q)
+      const outputFile = resolveOutputFile(q)
       await runDebate({
         question: q,
         buildContext: buildContextFromFlags,
