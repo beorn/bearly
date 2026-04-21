@@ -824,8 +824,9 @@ export function getBestAvailableModels(
   return { models: available, warning }
 }
 
-// Helper to get env var for a provider (duplicated here to avoid circular import)
-function getProviderEnvVar(provider: Provider): string {
+/** Map a Provider to the env var name that activates it. Single source of
+ *  truth — re-exported from providers.ts so callers can import from either. */
+export function getProviderEnvVar(provider: Provider): string {
   switch (provider) {
     case "openai":
       return "OPENAI_API_KEY"

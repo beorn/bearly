@@ -795,7 +795,7 @@ async function writeRecoveredResponse(
  * @param silentProgress — when true, suppress all progress output (used by `await`).
  *                        Otherwise TTY gets spinner, non-TTY gets 60s-gated lines.
  */
-async function pollResponseToCompletion(
+export async function pollResponseToCompletion(
   responseId: string,
   silentProgress: boolean,
 ): Promise<{
@@ -1094,10 +1094,16 @@ export async function runProDual(options: {
   // AbortController enforces a 5-minute wall-clock ceiling per side so a hung
   // provider can't stall the whole run indefinitely (real incident: OpenAI
   // synchronous Pro timing out silently at the ai-sdk 300s default — at least
-  // now we fail fast with a clear message). imagePath is forwarded explicitly
-  // — dropping it would silently degrade `--image` to text-only responses.
+  // now we fail fast with a clear message). SIGINT/SIGTERM share the same
+  // controller so Ctrl-C cancels an expensive in-flight call instead of
+  // leaving the provider request running server-side unattended. imagePath is
+  // forwarded explicitly — dropping it would silently degrade `--image` to
+  // text-only responses.
   const ac = new AbortController()
-  const abortTimer = setTimeout(() => ac.abort(), 5 * 60 * 1000)
+  const abortTimer = setTimeout(() => ac.abort("timeout"), 5 * 60 * 1000)
+  const onSignal = () => ac.abort("user-interrupt")
+  process.once("SIGINT", onSignal)
+  process.once("SIGTERM", onSignal)
   const [gptResult, kimiResult] = await Promise.allSettled([
     ask(enrichedQuestion, "standard", {
       modelOverride: gptPro!.modelId,
@@ -1113,6 +1119,8 @@ export async function runProDual(options: {
     }),
   ])
   clearTimeout(abortTimer)
+  process.off("SIGINT", onSignal)
+  process.off("SIGTERM", onSignal)
 
   // Normalize both legs to a consistent (ok, error) shape. "Success" requires
   // non-empty trimmed content AND no error — a fulfilled promise with empty

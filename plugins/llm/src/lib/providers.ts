@@ -149,26 +149,7 @@ export function getAvailableProviders(): Provider[] {
   return providers.filter(isProviderAvailable)
 }
 
-/**
- * Get environment variable name for a provider
- */
-export function getProviderEnvVar(provider: Provider): string {
-  switch (provider) {
-    case "openai":
-      return "OPENAI_API_KEY"
-    case "anthropic":
-      return "ANTHROPIC_API_KEY"
-    case "google":
-      return "GOOGLE_GENERATIVE_AI_API_KEY"
-    case "xai":
-      return "XAI_API_KEY"
-    case "perplexity":
-      return "PERPLEXITY_API_KEY"
-    case "openrouter":
-      return "OPENROUTER_API_KEY"
-    case "ollama":
-      return "OLLAMA_HOST (or localhost:11434)"
-    default:
-      return `${(provider as string).toUpperCase()}_API_KEY`
-  }
-}
+// Re-exported from types.ts (single source of truth). The claim that these
+// had to be duplicated to avoid a circular import was stale — types.ts has
+// no imports from providers.ts, so the function can live there cleanly.
+export { getProviderEnvVar } from "./types"

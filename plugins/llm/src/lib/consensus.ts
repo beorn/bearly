@@ -8,7 +8,7 @@ import { queryModel } from "./research"
 import { getLanguageModel, isProviderAvailable } from "./providers"
 import { generateText } from "ai"
 import type { Model, ModelResponse, ConsensusResult, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, MODELS, estimateCost } from "./types"
+import { getModelsForLevel, getModel, MODELS } from "./types"
 
 export interface ConsensusOptions {
   question: string
@@ -55,14 +55,12 @@ export async function consensus(options: ConsensusOptions): Promise<ConsensusRes
     }),
   )
 
-  // Calculate total cost. Previously this summed `r.usage?.estimatedCost`
-  // which is never populated (ModelResponse.usage omits estimatedCost at
-  // capture time) — totalCost was silently always 0. Compute from the raw
-  // token usage + per-model rates at aggregation time instead.
-  const totalCost = responses.reduce(
-    (sum, r) => (r.usage ? sum + estimateCost(r.model, r.usage.promptTokens, r.usage.completionTokens) : sum),
-    0,
-  )
+  // Cost aggregation matches format.totalResponseCost — single source of
+  // truth for "sum usage × per-model rates" across callers (dual-pro report,
+  // debate report, consensus). Previously this file recomputed inline; now
+  // both paths route through the same helper.
+  const { totalResponseCost } = await import("./format")
+  const totalCost = totalResponseCost(responses)
 
   // Build base result
   const result: ConsensusResult = {
