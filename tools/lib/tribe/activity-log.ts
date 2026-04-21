@@ -1,9 +1,9 @@
 /**
  * Unified tribe session-activity log.
  *
- * Append-only JSONL capturing every observable cross-session event — direct
- * messages, broadcasts, session joins/leaves/renames. Designed for `tail -f`,
- * so `jq .` works on every line without any framing.
+ * Routed through loggily at `.debug` level on the `tribe:activity` namespace.
+ * Loggily writes JSON events to both the configured file sink and any
+ * upstream pipeline (OTel, console, etc.) that the daemon sets up.
  *
  * Motivation: on 2026-04-21 a phantom "chief" offer arrived in a sibling
  * session's prompt stream. Forensics required direct sqlite on tribe.db to
@@ -12,17 +12,22 @@
  *
  * Phases:
  *   1. Tribe daemon — DMs + broadcasts + session lifecycle ✓
- *   2. Recall hook injections — writeInjectActivity() called from
- *      injection-envelope.emitHookJson ✓
+ *   2. Recall hook injections — writeInjectActivity() from emit.ts ✓
  *   3. Injection-gate verdicts (follow-up bead)
  *
  * Path: $TRIBE_ACTIVITY_LOG, or ~/.local/share/tribe/activity.jsonl.
- * Disable with TRIBE_ACTIVITY_LOG=off (used by tests; production leaves it
- * unset so writes happen normally).
+ * Disable with TRIBE_ACTIVITY_LOG=off (used by tests; production leaves
+ * unset so loggily writes to the default path at debug level).
+ *
+ * Why debug level + explicit config array: the loggily config pins level
+ * to "debug" explicitly, so the activity stream fires regardless of the
+ * daemon's wider LOG_LEVEL / DEBUG env. Keeps the contract simple:
+ * activity is always observable, always at debug, always in one place.
  */
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
+import { createLogger, type ConditionalLogger } from "loggily"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,11 +44,9 @@ export interface ActivityEntry {
   peer?: string
   type?: string
   preview?: string
-  /** Total unshortened content length (preview is clipped). */
   chars?: number
   id?: string
   bead_id?: string | null
-  /** Arbitrary decision payload — e.g. injection-gate verdicts. */
   meta?: Record<string, unknown>
 }
 
@@ -51,7 +54,6 @@ export interface ActivityEntry {
 // Config
 // ---------------------------------------------------------------------------
 
-const MAX_PREVIEW = 200
 const DEFAULT_PATH_SUFFIX = "/.local/share/tribe/activity.jsonl"
 
 export function activityLogPath(): string {
@@ -71,6 +73,8 @@ function isDisabled(): boolean {
 
 let parentEnsuredFor: string | null = null
 let warned = false
+let cachedLogger: ConditionalLogger | null = null
+let cachedLoggerPath: string | null = null
 
 function ensureParent(path: string): void {
   if (parentEnsuredFor === path) return
@@ -79,10 +83,37 @@ function ensureParent(path: string): void {
   parentEnsuredFor = path
 }
 
-function previewOf(content: string): string {
-  const clean = content.replace(/\s+/g, " ").trim()
-  if (clean.length <= MAX_PREVIEW) return clean
-  return clean.slice(0, MAX_PREVIEW - 1) + "…"
+function getLogger(): ConditionalLogger | null {
+  if (isDisabled()) return null
+  const path = activityLogPath()
+  if (cachedLogger && cachedLoggerPath === path) return cachedLogger
+  ensureParent(path)
+  // Explicit config array. `level: debug` pins the level; `format: json`
+  // makes the downstream Writable receive JSON-serialized strings. The
+  // Writable writes synchronously (`appendFileSync`) so tail-f readers and
+  // tests both see events immediately — no buffered flush ambiguity.
+  cachedLogger = createLogger("tribe:activity", [
+    { level: "debug", format: "json" },
+    {
+      objectMode: false,
+      write: (data: unknown) => {
+        try {
+          const line =
+            typeof data === "string" ? (data.endsWith("\n") ? data : data + "\n") : JSON.stringify(data) + "\n"
+          appendFileSync(path, line, "utf8")
+        } catch (err) {
+          if (!warned) {
+            warned = true
+            console.error(
+              `[tribe:activity-log] write failed (${String(err)}); path=${path} — further failures silenced`,
+            )
+          }
+        }
+      },
+    },
+  ])
+  cachedLoggerPath = path
+  return cachedLogger
 }
 
 // ---------------------------------------------------------------------------
@@ -90,22 +121,16 @@ function previewOf(content: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Write one entry to the activity log. Append-only, synchronous, best-effort.
- * A failed write never breaks message delivery — it warns once to stderr and
- * subsequent failures are silenced.
+ * Write one entry at `debug` level on the `tribe:activity` namespace.
+ * Append-only, synchronous, best-effort. Failed writes never break message
+ * delivery — they warn once to stderr and subsequent failures are silenced.
  */
 export function writeActivity(entry: ActivityEntry): void {
-  if (isDisabled()) return
-  const path = activityLogPath()
-  try {
-    ensureParent(path)
-    appendFileSync(path, JSON.stringify(entry) + "\n", "utf8")
-  } catch (err) {
-    if (!warned) {
-      warned = true
-      console.error(`[tribe:activity-log] write failed (${String(err)}); path=${path} — further failures silenced`)
-    }
-  }
+  const log = getLogger()
+  if (!log) return
+  // Passing the entry as `data` means loggily inlines its fields at top
+  // level in the JSON output, alongside `time`, `level`, `name`, `msg`.
+  log.debug?.("activity", entry as unknown as Record<string, unknown>)
 }
 
 /**
@@ -142,6 +167,9 @@ export function activityFromMessage(msg: {
     kind = "broadcast"
   }
 
+  const clean = msg.content.replace(/\s+/g, " ").trim()
+  const preview = clean.length <= 200 ? clean : clean.slice(0, 199) + "…"
+
   return {
     ts: msg.ts,
     source: "tribe",
@@ -149,7 +177,7 @@ export function activityFromMessage(msg: {
     session: msg.sender,
     peer: msg.recipient === "*" ? undefined : msg.recipient,
     type: msg.type,
-    preview: previewOf(msg.content),
+    preview,
     id: msg.id,
     bead_id: msg.bead_id,
   }
@@ -160,19 +188,25 @@ export function activityFromMessage(msg: {
  * whenever a UserPromptSubmit additionalContext is about to land in the
  * Claude Code session.
  *
+ * Unlike tribe messages (which carry short broadcasts/DMs and benefit from
+ * 200-char preview caps), injections are the whole payload of interest. We
+ * log the **full** content verbatim so `tail -f | jq '.preview'` shows what
+ * actually reached the prompt. Whitespace is still collapsed for single-line
+ * jq output; `chars` reports the post-collapse length.
+ *
  * Session attribution: $CLAUDE_SESSION_ID when Claude Code sets it, else
- * `pid-<pid>` as a last resort. The key observability value is the *content*
- * — preview shows the first 200 chars of whatever is being injected.
+ * `pid-<pid>` as a last resort.
  */
 export function writeInjectActivity(content: string, extra?: { meta?: Record<string, unknown> }): void {
   const session = process.env.CLAUDE_SESSION_ID ?? `pid-${process.pid}`
+  const collapsed = content.replace(/\s+/g, " ").trim()
   writeActivity({
     ts: Date.now(),
     source: "recall",
     kind: "inject",
     session,
-    preview: previewOf(content),
-    chars: content.length,
+    preview: collapsed,
+    chars: collapsed.length,
     meta: extra?.meta,
   })
 }
@@ -181,4 +215,6 @@ export function writeInjectActivity(content: string, extra?: { meta?: Record<str
 export function __resetActivityLogState(): void {
   parentEnsuredFor = null
   warned = false
+  cachedLogger = null
+  cachedLoggerPath = null
 }

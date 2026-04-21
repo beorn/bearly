@@ -235,7 +235,7 @@ describe("activityLogPath resolution", () => {
 })
 
 describe("writeInjectActivity — phase 2 (recall hook)", () => {
-  it("records source=recall, kind=inject with full chars + truncated preview", () => {
+  it("records source=recall, kind=inject with full uncropped content in preview", () => {
     const content = "x".repeat(500)
     writeInjectActivity(content)
     const entries = readEntries()
@@ -244,7 +244,15 @@ describe("writeInjectActivity — phase 2 (recall hook)", () => {
     expect(e.source).toBe("recall")
     expect(e.kind).toBe("inject")
     expect(e.chars).toBe(500)
-    expect(e.preview?.length).toBe(200) // truncated
+    expect(e.preview?.length).toBe(500) // full content, not truncated
+    expect(e.preview).toBe(content)
+  })
+
+  it("collapses whitespace in injected content for single-line jq output", () => {
+    writeInjectActivity("line1\n\nline2\t\ttab  spaces")
+    const entries = readEntries()
+    expect(entries[0]!.preview).toBe("line1 line2 tab spaces")
+    expect(entries[0]!.chars).toBe(22)
   })
 
   it("uses CLAUDE_SESSION_ID when set, else falls back to pid", () => {
