@@ -831,15 +831,3 @@ function getProviderEnvVar(provider: Provider): string {
   }
 }
 
-/**
- * Prompt template for refining questions before expensive queries
- */
-export const REFINEMENT_PROMPT = `You are a question refinement assistant. Your job is to help clarify and improve questions before they are sent to an expensive AI model.
-
-Given a question, analyze it and provide:
-1. **Ambiguities**: What's unclear or could be interpreted multiple ways?
-2. **Missing context**: What information would help get a better answer?
-3. **Refined question**: A clearer, more specific version of the question
-4. **Recommended approach**: Should this be a quick query, deep research, or multi-model consensus?
-
-Keep your response concise and actionable.`

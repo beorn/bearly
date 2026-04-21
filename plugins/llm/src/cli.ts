@@ -9,8 +9,11 @@
  *   llm recover <id>            Resume polling (TTY spinner; non-TTY 60s lines)
  *   llm await <id>              Silent block until done — for non-interactive callers
  *
- * Output: response always written to /tmp/llm-*.txt (recover/await included),
- * JSON metadata on stdout. Streaming tokens shown on stderr only in TTY.
+ * Output: response written to /tmp/llm-*.txt for all synchronous modes and
+ * recover/await. Fire-and-forget deep research defers file creation until
+ * `bun llm recover <id>` or `bun llm await <id>` is called — the initial
+ * invocation only persists the response ID. JSON metadata on stdout.
+ * Streaming tokens shown on stderr only in TTY.
  *
  * Recover/await ceiling: 600 polls × 5s = 50m. Override with LLM_RECOVER_MAX_ATTEMPTS.
  *
@@ -100,10 +103,29 @@ if (modelOverrideId) {
     modelOverride = parseOllamaModel(modelOverrideId.slice("ollama:".length))
   } else {
     modelOverride = getModel(modelOverrideId)
+    // OpenRouter hosts thousands of models (qwen3, deepseek, llama variants,
+    // …) — we shouldn't have to hardcode every one in types.ts. IDs in the
+    // `owner/model` shape are the OpenRouter convention; synthesize a
+    // transient Model on the fly so the caller can reach any of them without
+    // editing source. Pricing is unknown for synthetics (cost display will
+    // show "$0.00"), costTier falls back to "medium" so requiresConfirmation
+    // behaves reasonably.
+    if (!modelOverride && modelOverrideId.includes("/")) {
+      const { isProviderAvailable: checkProvider } = await import("./lib/providers")
+      if (checkProvider("openrouter")) {
+        modelOverride = {
+          provider: "openrouter",
+          modelId: modelOverrideId,
+          displayName: modelOverrideId,
+          isDeepResearch: false,
+          costTier: "medium",
+        }
+      }
+    }
   }
   if (!modelOverride) {
     const available = MODELS.map((m) => m.modelId).join(", ")
-    error(`Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>`)
+    error(`Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>, or <owner>/<model> for OpenRouter`)
   }
 }
 
@@ -280,7 +302,11 @@ function askOpts(question: string, modelMode: string, level: "standard" | "quick
 
 // --- Main ---
 
-export async function main() {
+/** Returns the canonical command string (e.g. "pro", "--deep", "list-models")
+ * so the wrapper can pass it to maybeAutoUpdatePricing accurately — raw
+ * process.argv[2] fails on invocations like `bun llm --verbose pro "q"`
+ * where argv[2] is the flag, not the keyword. */
+export async function main(): Promise<string | undefined> {
   if (!command || command === "--help" || command === "-h") {
     await checkOllamaStatus()
     usage()
@@ -340,7 +366,7 @@ export async function main() {
     }
 
     await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`))
-    return
+    return command
   }
 
   if (isDeepFlag) {
@@ -359,7 +385,7 @@ export async function main() {
       dryRun: hasFlag("--dry-run"),
     })
     // Deep research is always fire-and-forget. Recover with: bun llm recover
-    return
+    return "--deep"
   }
 
   if (isAskFlag) {
@@ -367,7 +393,7 @@ export async function main() {
     if (!question) error("Usage: llm --ask <question>")
     setOutputSlug(question)
     await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`))
-    return
+    return "--ask"
   }
 
   switch (command) {
@@ -403,6 +429,7 @@ export async function main() {
         buildContext: buildContextFromFlags,
         outputFile,
         sessionTag,
+        skipConfirm,
       })
       break
     }
@@ -458,6 +485,7 @@ export async function main() {
     default:
       error(`Unknown command: ${command}`)
   }
+  return command
 }
 
 // Auto-run when this file is the entry point (e.g. `bun cli.ts`). When imported

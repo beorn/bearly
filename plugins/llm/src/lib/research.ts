@@ -201,6 +201,8 @@ export async function ask(
     /** Pre-resolved Model object (bypasses getModel lookup — used for ollama) */
     modelObject?: Model
     imagePath?: string
+    /** Abort signal for cooperative cancellation (e.g. dual-pro wall-clock timeout) */
+    abortSignal?: AbortSignal
   } = {},
 ): Promise<ModelResponse> {
   // Get model for level, or use override
@@ -227,6 +229,7 @@ export async function ask(
     stream: options.stream,
     onToken: options.onToken,
     imagePath: options.imagePath,
+    abortSignal: options.abortSignal,
   })
 
   return result.response

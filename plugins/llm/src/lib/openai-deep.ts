@@ -220,51 +220,6 @@ function extractResponseText(response: any): {
   }
 }
 
-async function handleStreamDisconnect(
-  responseId: string,
-  model: DeepResearchOptions["model"],
-  topic: string,
-  currentText: string,
-  partialPath: string,
-  onToken?: (token: string) => void,
-): Promise<{ fullText: string; promptTokens: number; completionTokens: number; completed: boolean }> {
-  log.info?.("Stream disconnected, polling for background response...")
-  let fullText = currentText
-  let promptTokens = 0
-  let completionTokens = 0
-
-  const pollResult = await pollForCompletion(responseId, {
-    intervalMs: 5_000,
-    maxAttempts: 180,
-    onProgress: (status, elapsed) => {
-      process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
-    },
-  })
-
-  if (pollResult.content) {
-    const newContent = pollResult.content.slice(fullText.length)
-    if (newContent) onToken?.(newContent)
-    fullText = pollResult.content
-    process.stderr.write("\n")
-    if (partialPath) {
-      writePartialHeader(partialPath, {
-        responseId,
-        model: model.displayName,
-        modelId: model.modelId,
-        topic,
-        startedAt: new Date().toISOString(),
-      })
-      appendPartial(partialPath, fullText)
-    }
-  }
-  if (pollResult.usage) {
-    promptTokens = pollResult.usage.promptTokens
-    completionTokens = pollResult.usage.completionTokens
-  }
-
-  return { fullText, promptTokens, completionTokens, completed: pollResult.status === "completed" }
-}
-
 export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Promise<ModelResponse> {
   const { topic, model, stream = false, onToken, noPersist = false, context } = options
   const background = options.background ?? stream

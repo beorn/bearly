@@ -172,36 +172,3 @@ Format your response as JSON:
   }
 }
 
-/**
- * Deep consensus: use all deep research models
- */
-export async function deepConsensus(
-  question: string,
-  options: { onModelComplete?: (response: ModelResponse) => void } = {},
-): Promise<ConsensusResult> {
-  const deepModels = MODELS.filter((m) => m.isDeepResearch && isProviderAvailable(m.provider))
-
-  if (deepModels.length === 0) {
-    throw new Error("No deep research models available")
-  }
-
-  // Enhanced research prompt for deep consensus
-  const researchPrompt = `Conduct thorough research on the following question. Provide comprehensive analysis with sources where possible.
-
-${question}
-
-Please include:
-- Detailed analysis
-- Multiple perspectives
-- Recent developments
-- Cited sources (if available)
-- Confidence in your findings`
-
-  return consensus({
-    question: researchPrompt,
-    level: "deep",
-    models: deepModels,
-    synthesize: true,
-    ...options,
-  })
-}

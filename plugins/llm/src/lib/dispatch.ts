@@ -158,6 +158,23 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
     const inChanged = u.inputPricePerM !== current.input
     const outChanged = u.outputPricePerM !== current.output
     if (inChanged || outChanged) {
+      // Sanity bound: reject swings greater than 10× in either direction.
+      // Prices do change between model generations, but a real 10× jump is
+      // rare — the likelier explanation is an LLM hallucination (e.g. reading
+      // "$25 per 1K tokens" as "$25 per 1M tokens", or confusing input and
+      // output). Rather than bake a bogus number into the cache and poison
+      // every cost estimate downstream, log the rejection and keep the
+      // previous price. The cache-refresh timer still resets so we don't
+      // retry on every invocation.
+      const inOutlier = Math.abs(u.inputPricePerM - current.input) / current.input > 10
+      const outOutlier = Math.abs(u.outputPricePerM - current.output) / current.output > 10
+      if (inOutlier || outOutlier) {
+        console.error(
+          `⚠️  Suspicious pricing delta for ${u.modelId}: ` +
+            `in $${current.input}→$${u.inputPricePerM}, out $${current.output}→$${u.outputPricePerM} — rejecting`,
+        )
+        continue
+      }
       priceChanges.push({
         modelId: u.modelId,
         oldInput: current.input,
@@ -258,6 +275,9 @@ export async function discoverNewModels(): Promise<string[]> {
  * Prints discoveries prominently to stderr AFTER the main response.
  */
 export async function maybeAutoUpdatePricing(command: string | undefined): Promise<void> {
+  // Respect an explicit opt-out — useful in CI, cost-sensitive batch jobs, or
+  // any environment where surprise API spend is unwelcome.
+  if (process.env.LLM_NO_AUTO_PRICING === "1") return
   if (!isPricingStale()) return
   const skip = ["update-pricing", "recover", "partials", "await"]
   if (!command || command === "--help" || command === "-h") return
@@ -371,17 +391,37 @@ export async function askAndFinish(options: {
   await finishResponse(response.content, model, outputFile, sessionTag, response.usage, response.durationMs, question)
 }
 
-/** Prompt user for Y/n confirmation; exit if declined */
+/** Prompt user for Y/n confirmation; exit if declined.
+ *
+ * Non-TTY safety: if stdin isn't a TTY (CI, Docker, Claude Code background
+ * tasks), stdin.once('data') never resolves because the pipe is closed at
+ * EOF — the process would hang forever waiting for input that can't arrive.
+ * We detect that up front and refuse to proceed unless the caller passed -y.
+ * A 5-minute timeout guards the interactive path too, in case raw mode gets
+ * wedged for any other reason.
+ */
 export async function confirmOrExit(message: string, skipConfirm: boolean): Promise<void> {
   if (skipConfirm) return
+  if (!process.stdin.isTTY) {
+    console.error("Non-interactive environment — pass -y / --yes to skip confirmation.")
+    process.exit(1)
+  }
   console.error(message)
-  const answer = await new Promise<string>((resolve) => {
+  const answer = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      process.stdin.setRawMode?.(false)
+      reject(new Error("confirmation timed out after 5 minutes"))
+    }, 5 * 60 * 1000)
     process.stdin.setRawMode?.(true)
     process.stdin.resume()
     process.stdin.once("data", (data) => {
+      clearTimeout(timer)
       process.stdin.setRawMode?.(false)
       resolve(data.toString().trim().toLowerCase())
     })
+  }).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
   })
   if (answer === "n" || answer === "no") {
     console.error("Cancelled.")
@@ -493,23 +533,10 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
     console.error()
   }
 
-  // If we recovered anything or have partials, ask if user still wants to run new query
-  if (!skipConfirm) {
-    console.error("Continue with new query? [Y/n] ")
-    const confirm = await new Promise<string>((resolve) => {
-      process.stdin.setRawMode?.(true)
-      process.stdin.resume()
-      process.stdin.once("data", (data) => {
-        process.stdin.setRawMode?.(false)
-        resolve(data.toString().trim().toLowerCase())
-      })
-    })
-    if (confirm === "n" || confirm === "no") {
-      return false
-    }
-    console.error()
-  }
-
+  // Delegate to confirmOrExit's hardened prompt (TTY check + 5min timeout).
+  // The skipConfirm short-circuit returns silently; a declined prompt calls
+  // process.exit(0) inside confirmOrExit. We only need to handle "ok, continue".
+  await confirmOrExit("Continue with new query? [Y/n] ", skipConfirm)
   return true
 }
 
@@ -966,8 +993,9 @@ export async function runProDual(options: {
   buildContext: (topic: string) => Promise<string | undefined>
   outputFile: string
   sessionTag: string
+  skipConfirm: boolean
 }): Promise<void> {
-  const { question, modelOverride, imagePath, buildContext, outputFile, sessionTag } = options
+  const { question, modelOverride, imagePath, buildContext, outputFile, sessionTag, skipConfirm } = options
   const { finalizeOutput } = await import("./format")
 
   // Explicit --model override bypasses dual mode entirely.
@@ -1019,14 +1047,38 @@ export async function runProDual(options: {
   console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
   console.error(`  • K2.6 output cap: ${kimi!.defaultMaxOutputTokens} tokens (reasoning + content)\n`)
 
+  // Cost confirmation matches runDebate / runDeep — a $5-15 call deserves a
+  // Y/n gate. The 2026-04-20 double-fire bug made silent billing mistakes
+  // worse than they would otherwise be; this is the explicit-opt-in backstop.
+  await confirmOrExit("⚠️  Dual-pro costs ~$5-15 (mostly GPT-5.4 Pro). Proceed? [Y/n] ", skipConfirm)
+
   const { ask } = await import("./research")
 
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
+  //
+  // AbortController enforces a 5-minute wall-clock ceiling per side so a hung
+  // provider can't stall the whole run indefinitely (real incident: OpenAI
+  // synchronous Pro timing out silently at the ai-sdk 300s default — at least
+  // now we fail fast with a clear message). imagePath is forwarded explicitly
+  // — dropping it would silently degrade `--image` to text-only responses.
+  const ac = new AbortController()
+  const abortTimer = setTimeout(() => ac.abort(), 5 * 60 * 1000)
   const [gptResult, kimiResult] = await Promise.allSettled([
-    ask(enrichedQuestion, "standard", { modelOverride: gptPro!.modelId, stream: false }),
-    ask(enrichedQuestion, "standard", { modelOverride: kimi!.modelId, stream: false }),
+    ask(enrichedQuestion, "standard", {
+      modelOverride: gptPro!.modelId,
+      stream: false,
+      imagePath,
+      abortSignal: ac.signal,
+    }),
+    ask(enrichedQuestion, "standard", {
+      modelOverride: kimi!.modelId,
+      stream: false,
+      imagePath,
+      abortSignal: ac.signal,
+    }),
   ])
+  clearTimeout(abortTimer)
 
   const gptResp = gptResult.status === "fulfilled" ? gptResult.value : undefined
   const kimiResp = kimiResult.status === "fulfilled" ? kimiResult.value : undefined
@@ -1123,6 +1175,11 @@ async function appendAbProLog(entry: {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     const line =
       JSON.stringify({
+        // Schema version so future readers can detect format drift. Bump on
+        // breaking changes (field rename, semantic shift); additive changes
+        // don't require a bump — readers should treat unknown fields as
+        // opaque.
+        schema: "ab-pro/v1",
         timestamp: new Date().toISOString(),
         session: entry.sessionTag,
         question: entry.question,

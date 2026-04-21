@@ -10,8 +10,11 @@ import { main } from "../plugins/llm/src/cli.ts"
 import { maybeAutoUpdatePricing } from "../plugins/llm/src/lib/dispatch.ts"
 
 try {
-  await main()
-  await maybeAutoUpdatePricing(process.argv[2])
+  const resolvedCommand = await main()
+  // main() returns the canonical command (e.g. "pro", "--deep", "list-models")
+  // so the skip-list check inside maybeAutoUpdatePricing works regardless of
+  // argv ordering. Fallback to argv[2] for safety if main didn't produce one.
+  await maybeAutoUpdatePricing(resolvedCommand ?? process.argv[2])
 } catch (e) {
   console.error(`[llm] FATAL: ${e instanceof Error ? `${e.message}\n${e.stack}` : String(e)}`)
   process.exit(1)

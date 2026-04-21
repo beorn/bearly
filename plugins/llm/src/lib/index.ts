@@ -10,5 +10,5 @@ export * from "./format"
 export * from "./dispatch"
 export { retrieveResponse, resumeStream, isOpenAIDeepResearch } from "./openai-deep"
 // Re-export consensus but exclude ConsensusOptions (already exported from types)
-export { consensus, deepConsensus } from "./consensus"
+export { consensus } from "./consensus"
 export type { ConsensusOptions as ConsensusCallOptions } from "./consensus"
