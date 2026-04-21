@@ -467,7 +467,12 @@ export async function confirmOrExit(message: string, skipConfirm: boolean): Prom
     process.exit(1)
   })
   // Ctrl-C / Ctrl-D / ESC in raw mode → cancel, exit 130 (SIGINT convention).
-  if (raw === "\u0003" || raw === "\u0004" || raw === "\u001b") {
+  // Raw-mode `data` events can batch multiple bytes into one Buffer (event-loop
+  // coalescing or fast typing), so "\u0003y" would miss exact-string equality
+  // and fall through to the proceed path. Inspect the FIRST codepoint instead
+  // — any leading control byte means "cancel". Flagged by K2.6 round-3 review.
+  const firstCode = raw.charCodeAt(0)
+  if (firstCode === 3 || firstCode === 4 || firstCode === 27) {
     console.error("\nCancelled.")
     process.exit(130)
   }
@@ -691,7 +696,12 @@ export async function runDeep(options: {
   // For fire-and-forget deep research, empty content is expected — the research continues
   // server-side. The response ID was already persisted by the research layer.
   if (!response.content || response.content.trim().length === 0) {
-    if (response.responseId) {
+    // Only emit the "in_progress" status when the response layer actually
+    // succeeded in firing the job. If there's an error alongside a responseId
+    // (e.g. a client-side timeout after the server accepted the request),
+    // fall through to the error path — otherwise scripts parsing stdout see
+    // a false success. Flagged by K2.6 round-3 review.
+    if (response.responseId && !response.error) {
       // Emit a machine-readable status line on stdout so scripts and callers
       // can harvest the responseId without parsing stderr. Mirrors the
       // normal completion path (which emits JSON via finalizeOutput). The
@@ -709,7 +719,7 @@ export async function runDeep(options: {
       )
       return
     }
-    // No response ID AND no content — this is a genuine failure, write error to file
+    // No response ID OR an error is set — write error details to file
     await finishResponse(undefined, deepModel, outputFile, sessionTag, response.usage, response.durationMs, topic)
     return
   }
@@ -1117,8 +1127,10 @@ export async function runRecover(options: {
       case "aborted": {
         // Local Ctrl-C during recover: partial preserved. User can re-run
         // `llm recover <id>` later; the remote job is still running.
+        // Exit 130 (SIGINT convention) so wrapping scripts can distinguish a
+        // user interrupt from success. Flagged by K2.6 round-3 review.
         console.error(`\n⚠️  Recovery aborted locally — partial kept for future retry`)
-        break
+        process.exit(130)
       }
       case "error": {
         if (!localPartial) {

@@ -344,6 +344,17 @@ export async function pollForGeminiCompletion(
         }
       }
 
+      // Gemini can surface "expired" the same way OpenAI does (long-idle
+      // server-side response with a TTL). Treat it terminally so we stop
+      // burning polls. Flagged by K2.6 round-3 review.
+      if (interaction.status === "expired") {
+        return {
+          status: "expired",
+          content: "",
+          error: "Research expired",
+        }
+      }
+
       // Still in progress - wait and retry
       options.onProgress?.(interaction.status || "in_progress", Date.now() - startTime)
     } catch (err) {

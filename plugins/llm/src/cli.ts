@@ -90,6 +90,12 @@ const KEYWORDS = [
   "await",
   "update-pricing",
   "list-models",
+  // Slash-prefixed synonyms for --deep / --ask. Without these in the list,
+  // resolveCommand would return undefined and `llm /deep "topic"` would
+  // fall through to the default-ask path instead of entering deep research.
+  // isDeepFlag / isAskFlag match against `command` once it's resolved.
+  "/deep",
+  "/ask",
 ]
 
 // Flags whose next argv token is the flag's value — excluded from the user
@@ -120,7 +126,7 @@ function resolveCommand(argv: string[]): string | undefined {
       if (!a.includes("=") && VALUE_FLAGS.includes(a) && i + 1 < argv.length) i++
       continue
     }
-    if (a.match(/^-[a-zA-Z]$/)) continue // short flag (e.g. -y)
+    if (a.match(/^-[a-zA-Z]+$/)) continue // short flag (e.g. -y)
     if (KEYWORDS.includes(a)) return a
     // First positional that's not a keyword: default-ask path (no command).
     return undefined
@@ -238,7 +244,7 @@ function extractText(fromAll: boolean, exclude?: string[]): string {
   return source
     .filter((a, i, arr) => {
       if (a.startsWith("--")) return false
-      if (a.match(/^-[a-zA-Z]$/)) return false
+      if (a.match(/^-[a-zA-Z]+$/)) return false
       if (exclude?.includes(a)) return false
       if (i > 0 && arr[i - 1]?.startsWith("--") && VALUE_FLAGS.includes(arr[i - 1]!)) return false
       return true
@@ -259,7 +265,7 @@ function dropCommandAndLeadingFlags(argv: string[]): string[] {
       if (!a.includes("=") && VALUE_FLAGS.includes(a) && i + 1 < argv.length) i++
       continue
     }
-    if (a.match(/^-[a-zA-Z]$/)) continue
+    if (a.match(/^-[a-zA-Z]+$/)) continue
     if (KEYWORDS.includes(a)) {
       // Keep everything before the keyword (flags) AND everything after it.
       return [...argv.slice(0, i), ...argv.slice(i + 1)]
