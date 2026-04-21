@@ -1295,7 +1295,14 @@ export async function runProDual(options: {
 
   console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName} in parallel...`)
   console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
-  console.error(`  • K2.6 output cap: ${kimi!.reasoning?.maxOutputTokens} tokens (reasoning + content)\n`)
+  // K2.6 uses dynamic sizing via reasoning.contextWindow — the actual output
+  // cap is computed per-call in research.ts (contextWindow − estimated input
+  // − 4096 safety). Report the window + strategy here; per-call numbers show
+  // up in the final report.
+  const k26Cap = kimi!.reasoning?.contextWindow
+    ? `dynamic (up to ~${kimi!.reasoning.contextWindow - 4096} tokens, scales with input)`
+    : `${kimi!.reasoning?.maxOutputTokens} tokens (static)`
+  console.error(`  • K2.6 output budget: ${k26Cap}\n`)
 
   // Cost confirmation matches runDebate / runDeep — a $5-15 call deserves a
   // Y/n gate. The 2026-04-20 double-fire bug made silent billing mistakes
@@ -1307,26 +1314,18 @@ export async function runProDual(options: {
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
   //
-  // A nested AbortController chains a dynamic wall-clock ceiling onto the
-  // outer SIGINT/SIGTERM signal from withSignalAbort: if either the user
-  // interrupts or the timer elapses, both legs abort. Wall-clock guards
-  // against hung providers (real incident: OpenAI synchronous Pro silently
-  // timing out at the ai-sdk 300s default). imagePath is forwarded
-  // explicitly — dropping it would silently degrade `--image` to text-only.
+  // SIGINT-only cancellation. Previously this wrapper enforced a wall-clock
+  // ceiling (5 min → scaled → removed here) that kept killing legitimate
+  // long-context queries. The underlying ai-sdk still has its own per-call
+  // timeouts and the user can always Ctrl+C. Hung-provider guard is a
+  // future-work item — track via km-infra.llm-fire-and-forget-pro (route
+  // standard pro through OpenAI's responses API for true fire-and-forget
+  // + recovery semantics, matching the --deep path).
   //
-  // Timeout scales with input size: baseline 10 min + 1 min per 5K chars
-  // of input (1 min per ~1.5K tokens at ~3 chars/token). Caps at 30 min.
-  // A 113K-char architectural review gets ~32 min; a typical 2K-char query
-  // stays at 10 min. The fixed 5-min ceiling used to fail legitimate
-  // long-context queries (2026-04-20 review timed out on 113K chars).
-  const inputChars = enrichedQuestion.length + (imagePath ? 1024 : 0)
-  const dynamicTimeoutMs = Math.min(
-    30 * 60 * 1000,
-    10 * 60 * 1000 + Math.floor(inputChars / 5000) * 60 * 1000,
-  )
+  // imagePath is forwarded explicitly — dropping it would silently degrade
+  // `--image` to text-only.
   const [gptResult, kimiResult] = await withSignalAbort(async (outerSignal) => {
     const ac = new AbortController()
-    const abortTimer = setTimeout(() => ac.abort("timeout"), dynamicTimeoutMs)
     const onOuterAbort = () => ac.abort(outerSignal.reason ?? "user-interrupt")
     if (outerSignal.aborted) onOuterAbort()
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
@@ -1346,7 +1345,6 @@ export async function runProDual(options: {
         }),
       ])
     } finally {
-      clearTimeout(abortTimer)
       outerSignal.removeEventListener("abort", onOuterAbort)
     }
   })

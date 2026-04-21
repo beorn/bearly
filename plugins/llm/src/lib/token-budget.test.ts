@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest"
-import { estimateTokens, computeMaxOutputTokens } from "./research"
+import { estimateTokens, computeMaxOutputTokens, parseContextLengthError } from "./research"
 import type { Model } from "./types"
 
 /**
@@ -103,6 +103,27 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     }
     const messages = [{ role: "user", content: "Hello" }]
     expect(computeMaxOutputTokens(plainModel, messages)).toBeUndefined()
+  })
+
+  test("OpenRouter/K2.6 context-exceeded error — parsed for retry", () => {
+    const msg =
+      "This endpoint's maximum context length is 262144 tokens. However, you requested about 262189 tokens (30687 of text input, 231502 in the output). Please reduce the length of either one, or use the context-compression plugin to compress your prompt automatically."
+    const parsed = parseContextLengthError(msg)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.realInputTokens).toBe(30687)
+  })
+
+  test("OpenAI-style prompt-too-long error — parsed", () => {
+    const msg = "This model's maximum context length is 128000 tokens. However, your prompt has 130000 tokens."
+    const parsed = parseContextLengthError(msg)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.realInputTokens).toBe(130000)
+  })
+
+  test("Unrelated error — returns null (no retry)", () => {
+    expect(parseContextLengthError("Rate limit exceeded")).toBeNull()
+    expect(parseContextLengthError("Connection timeout")).toBeNull()
+    expect(parseContextLengthError("")).toBeNull()
   })
 
   test("Static ceiling model — returns the static value", () => {

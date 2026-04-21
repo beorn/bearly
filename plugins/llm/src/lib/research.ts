@@ -291,15 +291,103 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       }
     }
   } catch (error) {
+    // Retry once if a combined-limit provider (K2.6 etc.) rejected us because
+    // our estimate under-counted. The error message includes the REAL input
+    // token count — use it to recompute the output cap exactly, then retry.
+    // This is the fallback for the rare case where estimateTokens still
+    // underestimates despite the 3.5-chars/token divisor + 4K SAFETY margin
+    // (e.g. content dominated by CJK / emoji / unusual tokenizers).
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    const capInfo = parseContextLengthError(errorMsg)
+    if (capInfo && model.reasoning?.contextWindow) {
+      const SAFETY = 4096
+      const correctedCap = model.reasoning.contextWindow - capInfo.realInputTokens - SAFETY
+      if (correctedCap > 1024) {
+        console.error(
+          `[retry] ${model.displayName} context-exceeded (estimated ${maxOutputTokens} cap, real input ${capInfo.realInputTokens}). Retrying with cap=${correctedCap}.`,
+        )
+        try {
+          const retryResult = await generateText({
+            model: languageModel,
+            messages,
+            abortSignal,
+            maxOutputTokens: correctedCap,
+            ...(hasProviderOptions ? { providerOptions } : {}),
+          })
+          return {
+            response: {
+              model,
+              content: retryResult.text,
+              reasoning:
+                Array.isArray(retryResult.reasoning) && retryResult.reasoning.length > 0
+                  ? retryResult.reasoning.map((r) => r.text).join("\n")
+                  : undefined,
+              usage: retryResult.usage
+                ? {
+                    promptTokens: retryResult.usage.inputTokens ?? 0,
+                    completionTokens: retryResult.usage.outputTokens ?? 0,
+                    totalTokens: (retryResult.usage.inputTokens ?? 0) + (retryResult.usage.outputTokens ?? 0),
+                  }
+                : undefined,
+              durationMs: Date.now() - startTime,
+            },
+          }
+        } catch (retryError) {
+          // Retry failed — fall through to the original error below.
+          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError)
+          return {
+            response: {
+              model,
+              content: "",
+              durationMs: Date.now() - startTime,
+              error: `${errorMsg} (retry with cap=${correctedCap} also failed: ${retryMsg})`,
+            },
+          }
+        }
+      }
+      // Input alone exceeds the window — no cap will help. Report clearly.
+      return {
+        response: {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: `Input (${capInfo.realInputTokens} tokens) exceeds ${model.displayName}'s ${model.reasoning.contextWindow}-token window. Shorten the prompt or context.`,
+        },
+      }
+    }
     return {
       response: {
         model,
         content: "",
         durationMs: Date.now() - startTime,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMsg,
       },
     }
   }
+}
+
+/**
+ * Parse provider "context length exceeded" errors to extract the real
+ * input token count. Providers report this differently; this handles the
+ * OpenRouter / Moonshot K2.6 wording ("requested about X tokens (Y of
+ * text input, Z in the output)").
+ *
+ * Returns `null` for errors that aren't context-length exceeded.
+ *
+ * @internal — exported for testing only
+ */
+export function parseContextLengthError(errorMsg: string): { realInputTokens: number } | null {
+  // OpenRouter / Moonshot format: "...(30687 of text input, 231502 in the output)."
+  const openrouterMatch = errorMsg.match(/(\d+)\s+of\s+text\s+input/i)
+  if (openrouterMatch) {
+    return { realInputTokens: parseInt(openrouterMatch[1], 10) }
+  }
+  // OpenAI-style: "...prompt has N tokens..." — best-effort.
+  const openaiMatch = errorMsg.match(/prompt\s+has\s+(\d+)\s+tokens/i)
+  if (openaiMatch && /maximum.*context|context.*length|too\s+long/i.test(errorMsg)) {
+    return { realInputTokens: parseInt(openaiMatch[1], 10) }
+  }
+  return null
 }
 
 /**
