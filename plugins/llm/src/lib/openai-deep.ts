@@ -300,10 +300,15 @@ export async function pollForCompletion(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (abortSignal?.aborted) {
+      // "aborted" = local client cancellation; distinct from "cancelled"
+      // which is reserved for remote provider-terminated runs. The
+      // distinction matters for recovery: a local Ctrl-C during `recover`
+      // must NOT delete the partial file, while a remote-cancelled run
+      // should. Flagged in Pro round-2 review 2026-04-21.
       return {
-        status: "cancelled",
+        status: "aborted",
         content: "",
-        error: `Polling cancelled: ${String(abortSignal.reason ?? "aborted")}`,
+        error: `Polling aborted: ${String(abortSignal.reason ?? "local-interrupt")}`,
       }
     }
 

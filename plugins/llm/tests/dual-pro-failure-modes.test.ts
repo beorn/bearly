@@ -99,9 +99,7 @@ describe("dual-pro failure modes", () => {
     const env = makeTestEnv()
 
     generateTextMock.mockReset()
-    generateTextMock
-      .mockRejectedValueOnce(new Error("OpenAI 500"))
-      .mockRejectedValueOnce(new Error("OpenRouter 503"))
+    generateTextMock.mockRejectedValueOnce(new Error("OpenAI 500")).mockRejectedValueOnce(new Error("OpenRouter 503"))
 
     await runDualPro()
 

@@ -431,6 +431,14 @@ export async function askAndFinish(options: {
  * We detect that up front and refuse to proceed unless the caller passed -y.
  * A 5-minute timeout guards the interactive path too, in case raw mode gets
  * wedged for any other reason.
+ *
+ * **Raw-mode Ctrl-C handling**: setRawMode(true) suppresses SIGINT, so
+ * Ctrl-C arrives as the data byte `\u0003` (and Ctrl-D as `\u0004`, ESC
+ * as `\u001b`). Previous implementations only tested for "n"/"no" and fell
+ * through to "proceed" on these — a catastrophic footgun on $5-15
+ * commands. We now explicitly treat those control bytes as cancel and
+ * exit 130 (standard SIGINT exit code). Flagged as blocker in the Pro
+ * round-2 review, 2026-04-21.
  */
 export async function confirmOrExit(message: string, skipConfirm: boolean): Promise<void> {
   if (skipConfirm) return
@@ -439,22 +447,31 @@ export async function confirmOrExit(message: string, skipConfirm: boolean): Prom
     process.exit(1)
   }
   console.error(message)
-  const answer = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      process.stdin.setRawMode?.(false)
-      reject(new Error("confirmation timed out after 5 minutes"))
-    }, 5 * 60 * 1000)
+  const raw = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(
+      () => {
+        process.stdin.setRawMode?.(false)
+        reject(new Error("confirmation timed out after 5 minutes"))
+      },
+      5 * 60 * 1000,
+    )
     process.stdin.setRawMode?.(true)
     process.stdin.resume()
     process.stdin.once("data", (data) => {
       clearTimeout(timer)
       process.stdin.setRawMode?.(false)
-      resolve(data.toString().trim().toLowerCase())
+      resolve(data.toString())
     })
   }).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)
   })
+  // Ctrl-C / Ctrl-D / ESC in raw mode → cancel, exit 130 (SIGINT convention).
+  if (raw === "\u0003" || raw === "\u0004" || raw === "\u001b") {
+    console.error("\nCancelled.")
+    process.exit(130)
+  }
+  const answer = raw.trim().toLowerCase()
   if (answer === "n" || answer === "no") {
     console.error("Cancelled.")
     process.exit(0)
@@ -573,6 +590,11 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
           console.error(`    Run 'llm recover ${partial.metadata.responseId}' to poll until complete`)
           break
         }
+        case "aborted": {
+          // Local interrupt — partial stays, job may still be running remotely.
+          console.error(`    ⚠️  Local abort — partial kept for future recovery`)
+          break
+        }
         case "error":
         case "unknown": {
           console.error(`    ⚠️  Could not recover (status: ${outcome.status})`)
@@ -670,7 +692,21 @@ export async function runDeep(options: {
   // server-side. The response ID was already persisted by the research layer.
   if (!response.content || response.content.trim().length === 0) {
     if (response.responseId) {
-      // Normal fire-and-forget — recovery info already printed by research layer
+      // Emit a machine-readable status line on stdout so scripts and callers
+      // can harvest the responseId without parsing stderr. Mirrors the
+      // normal completion path (which emits JSON via finalizeOutput). The
+      // human-readable "bun llm recover" hint was already printed to stderr
+      // by the research layer. Flagged in Pro round-2 review 2026-04-21.
+      console.log(
+        JSON.stringify({
+          status: "in_progress",
+          responseId: response.responseId,
+          model: deepModel.displayName,
+          provider: deepModel.provider,
+          topic,
+          recoverCommand: `bun llm recover ${response.responseId}`,
+        }),
+      )
       return
     }
     // No response ID AND no content — this is a genuine failure, write error to file
@@ -933,10 +969,15 @@ export async function pollResponseToCompletion(
  * just fall through to the caller's "still running" path.
  */
 export type RecoveryOutcome =
-  | { kind: "completed"; content: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }
+  | {
+      kind: "completed"
+      content: string
+      usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+    }
   | { kind: "failed"; status: string; error?: string }
   | { kind: "stale"; status: string; ageMs: number }
   | { kind: "pending"; status: string; ageMs: number | undefined }
+  | { kind: "aborted"; status: string; error?: string }
   | { kind: "error"; status: string; error?: string }
   | { kind: "unknown"; status: string }
 
@@ -945,18 +986,45 @@ const STALE_THRESHOLD_MS = 30 * 60 * 1000
 
 export function classifyRecovery(
   partial: { metadata: { startedAt: string } } | undefined,
-  result: { status: string; content: string; error?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } },
+  result: {
+    status: string
+    content: string
+    error?: string
+    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+  },
 ): RecoveryOutcome {
+  // Local client abort — NEVER delete the partial. The remote job may still
+  // be running; re-running `recover` later should still work. "cancelled"
+  // is reserved for remote provider-terminated runs.
+  if (result.status === "aborted") {
+    return { kind: "aborted", status: result.status, error: result.error }
+  }
   if (result.status === "completed" && result.content) {
     return { kind: "completed", content: result.content, usage: result.usage }
   }
-  if (result.status === "failed" || result.status === "cancelled" || result.status === "expired") {
+  // "completed && !content" = provider returned completion but no body.
+  // Treated as error rather than success so callers surface the failure.
+  if (result.status === "completed" && !result.content) {
+    return { kind: "error", status: "completed-empty", error: result.error ?? "completed with empty content" }
+  }
+  if (
+    result.status === "failed" ||
+    result.status === "cancelled" ||
+    result.status === "expired" ||
+    result.status === "incomplete"
+  ) {
     return { kind: "failed", status: result.status, error: result.error }
   }
-  if (result.error && result.status !== "timeout") {
+  if (result.status === "timeout") {
+    return { kind: "error", status: result.status, error: result.error ?? "polling timed out" }
+  }
+  if (result.error) {
     return { kind: "error", status: result.status, error: result.error }
   }
-  if (result.status === "in_progress" || result.status === "queued") {
+  // Normalize running states: queued/in_progress/running/processing/submitted
+  // all count as "still going".
+  const runningStates = ["in_progress", "queued", "running", "processing", "submitted"]
+  if (runningStates.includes(result.status)) {
     const ageMs = partial ? Date.now() - new Date(partial.metadata.startedAt).getTime() : undefined
     if (ageMs !== undefined && ageMs > STALE_THRESHOLD_MS) {
       return { kind: "stale", status: result.status, ageMs }
@@ -1034,9 +1102,7 @@ export async function runRecover(options: {
         break
       }
       case "stale": {
-        console.error(
-          `\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`,
-        )
+        console.error(`\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`)
         if (localPartial) {
           completePartial(localPartial.path, { delete: true })
           console.error("Cleaned up stale partial file.")
@@ -1046,6 +1112,12 @@ export async function runRecover(options: {
       case "pending": {
         const ageStr = outcome.ageMs !== undefined ? ` (${Math.round(outcome.ageMs / 60000)}m old)` : ""
         console.error(`Response ${outcome.status}${ageStr}`)
+        break
+      }
+      case "aborted": {
+        // Local Ctrl-C during recover: partial preserved. User can re-run
+        // `llm recover <id>` later; the remote job is still running.
+        console.error(`\n⚠️  Recovery aborted locally — partial kept for future retry`)
         break
       }
       case "error": {
@@ -1282,17 +1354,21 @@ export async function runProDual(options: {
   const gptErr = gptErrRaw ?? (gptResp && !gptOk ? "empty content" : undefined)
   const kimiErr = kimiErrRaw ?? (kimiResp && !kimiOk ? "empty content" : undefined)
 
-  if (gptOk && gptResp) console.error(`  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`)
+  if (gptOk && gptResp)
+    console.error(
+      `  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`,
+    )
   else console.error(`  ✗ ${gptPro!.displayName}: ${gptErr ?? "unknown failure"}`)
-  if (kimiOk && kimiResp) console.error(`  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`)
+  if (kimiOk && kimiResp)
+    console.error(
+      `  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`,
+    )
   else console.error(`  ✗ ${kimi!.displayName}: ${kimiErr ?? "unknown failure"}`)
 
   // Build the combined report. Both responses presented side-by-side, headers
   // labelled so the reader can diff. Non-fatal errors surface inline so the
   // reader sees which model failed without digging through logs.
-  const gptCost = gptResp?.usage
-    ? estimateCost(gptPro!, gptResp.usage.promptTokens, gptResp.usage.completionTokens)
-    : 0
+  const gptCost = gptResp?.usage ? estimateCost(gptPro!, gptResp.usage.promptTokens, gptResp.usage.completionTokens) : 0
   const kimiCost = kimiResp?.usage
     ? estimateCost(kimi!, kimiResp.usage.promptTokens, kimiResp.usage.completionTokens)
     : 0

@@ -51,7 +51,7 @@ describe("reasoning-plumbing", () => {
     resetMocksToOk()
   })
 
-  it("OpenAI o-series: passes providerOptions.openai.reasoning_effort when model.reasoning.openaiEffort is set", async () => {
+  it("OpenAI o-series: passes providerOptions.openai.reasoningEffort when model.reasoning.openaiEffort is set", async () => {
     makeTestEnv()
     vi.resetModules()
 
@@ -69,12 +69,12 @@ describe("reasoning-plumbing", () => {
     expect(generateTextMock).toHaveBeenCalledTimes(1)
     const call = generateTextMock.mock.calls[0]![0]
     expect(call.providerOptions).toBeDefined()
-    expect(call.providerOptions.openai).toEqual({ reasoning_effort: "high" })
+    expect(call.providerOptions.openai).toEqual({ reasoningEffort: "high" })
     // Anthropic slot must NOT leak onto an OpenAI call.
     expect(call.providerOptions.anthropic).toBeUndefined()
   })
 
-  it("Anthropic Claude 4.6: passes providerOptions.anthropic.thinking with budget_tokens when model.reasoning.anthropicBudget is set", async () => {
+  it("Anthropic Claude 4.6: passes providerOptions.anthropic.thinking with budgetTokens when model.reasoning.anthropicBudget is set", async () => {
     makeTestEnv()
     vi.resetModules()
 
@@ -92,7 +92,7 @@ describe("reasoning-plumbing", () => {
     const call = generateTextMock.mock.calls[0]![0]
     expect(call.providerOptions).toBeDefined()
     expect(call.providerOptions.anthropic).toEqual({
-      thinking: { type: "enabled", budget_tokens: 16384 },
+      thinking: { type: "enabled", budgetTokens: 16384 },
     })
     // OpenAI slot must NOT leak onto an Anthropic call.
     expect(call.providerOptions.openai).toBeUndefined()

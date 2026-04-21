@@ -186,4 +186,3 @@ Format your response as JSON:
     confidence: 0.5,
   }
 }
-

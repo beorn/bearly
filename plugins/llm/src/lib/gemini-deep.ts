@@ -246,7 +246,13 @@ async function queryWithPolling(
   process.stderr.write("\n")
 
   if (result.error) {
-    if (partialPath) completePartial(partialPath, { delete: true })
+    // Only delete the partial on terminal remote outcomes — a local abort,
+    // timeout, or transient network error leaves the remote job running,
+    // and the partial file is the local routing hint that lets
+    // pollResponseToCompletion know this is a Gemini interaction. Deleting
+    // it kills recoverability. Flagged in Pro round-2 review 2026-04-21.
+    const isTerminalRemote = result.status === "failed" || result.status === "cancelled"
+    if (partialPath && isTerminalRemote) completePartial(partialPath, { delete: true })
     return {
       model,
       content: "",
@@ -301,10 +307,13 @@ export async function pollForGeminiCompletion(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (abortSignal?.aborted) {
+      // Local-abort status, mirroring openai-deep — "aborted" ≠ "cancelled".
+      // See openai-deep pollForCompletion for why the distinction matters
+      // for recovery partial cleanup.
       return {
-        status: "cancelled",
+        status: "aborted",
         content: "",
-        error: `Polling cancelled: ${String(abortSignal.reason ?? "aborted")}`,
+        error: `Polling aborted: ${String(abortSignal.reason ?? "local-interrupt")}`,
       }
     }
 

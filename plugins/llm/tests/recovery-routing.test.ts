@@ -35,7 +35,6 @@ vi.mock("../src/lib/openai-deep", () => ({
   pollForCompletion: pollOpenAIMock,
   isOpenAIDeepResearch: () => false,
   queryOpenAIDeepResearch: vi.fn(),
-  resumeStream: vi.fn(),
 }))
 
 describe("recovery routing", () => {

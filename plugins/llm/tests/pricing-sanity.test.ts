@@ -65,9 +65,7 @@ describe("pricing sanity", () => {
     queryModelMock.mockResolvedValue({
       response: {
         model: { modelId: "gpt-5.4", displayName: "GPT-5.4", provider: "openai" },
-        content: JSON.stringify([
-          { modelId: "gpt-5.4", inputPricePerM: 250.0, outputPricePerM: 1500.0 },
-        ]),
+        content: JSON.stringify([{ modelId: "gpt-5.4", inputPricePerM: 250.0, outputPricePerM: 1500.0 }]),
         usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
         durationMs: 10,
       },

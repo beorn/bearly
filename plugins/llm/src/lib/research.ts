@@ -49,10 +49,7 @@ function estimateTokens(text: string): number {
  * If dynamic math produces a non-positive value (input already exceeds
  * the window — impossible in practice but worth guarding), fall back to
  * the static ceiling if any, or `undefined` to defer to the provider. */
-function computeMaxOutputTokens(
-  model: Model,
-  messages: Array<{ role: string; content: unknown }>,
-): number | undefined {
+function computeMaxOutputTokens(model: Model, messages: Array<{ role: string; content: unknown }>): number | undefined {
   const reasoning = model.reasoning
   if (!reasoning) return undefined
   if (reasoning.contextWindow) {
@@ -190,13 +187,19 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // transitively) — we construct the shape with any-typed values and cast
   // at the call site rather than pulling in @ai-sdk/provider-utils as a
   // direct dep just for the ProviderOptions alias.
+  // Current AI SDK naming is camelCase, not the raw-API snake_case. Snake
+  // shapes are silently dropped by the SDK — previously this code was a
+  // no-op that appeared to work because the test suite mocked the SDK at
+  // the import boundary. Flagged in Pro round-2 review 2026-04-21.
+  //   - OpenAI: `reasoningEffort`, not `reasoning_effort`
+  //   - Anthropic: `budgetTokens`, not `budget_tokens`
   const providerOptions: Record<string, Record<string, any>> = {}
   if (model.provider === "openai" && model.reasoning?.openaiEffort) {
-    providerOptions.openai = { reasoning_effort: model.reasoning.openaiEffort }
+    providerOptions.openai = { reasoningEffort: model.reasoning.openaiEffort }
   }
   if (model.provider === "anthropic" && model.reasoning?.anthropicBudget) {
     providerOptions.anthropic = {
-      thinking: { type: "enabled", budget_tokens: model.reasoning.anthropicBudget },
+      thinking: { type: "enabled", budgetTokens: model.reasoning.anthropicBudget },
     }
   }
   const hasProviderOptions = Object.keys(providerOptions).length > 0

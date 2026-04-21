@@ -71,7 +71,64 @@ function initCli(): void {
 // --- CLI argument parsing ---
 
 const args = process.argv.slice(2)
-const command = args[0]
+
+// Keywords that trigger specific modes. Hoisted above resolveCommand (which
+// runs at module-scope) so the lookup doesn't trip a temporal-dead-zone
+// ReferenceError. Single source of truth — used by resolveCommand,
+// dropCommandAndLeadingFlags, isKeyword checks, and the --deep-keyword
+// foot-gun guard.
+const KEYWORDS = [
+  "quick",
+  "cheap",
+  "mini",
+  "nano",
+  "opinion",
+  "pro",
+  "debate",
+  "recover",
+  "partials",
+  "await",
+  "update-pricing",
+  "list-models",
+]
+
+// Flags whose next argv token is the flag's value — excluded from the user
+// prompt text by extractText, and skipped over when resolveCommand scans
+// for the command keyword. Missing entries cause that value to leak into
+// the prompt (e.g. --image screenshot.png → "describe this screenshot.png").
+// --models / --provider were aspirational and removed; resurrect here when
+// the CLI actually implements them.
+const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image"]
+
+/**
+ * The canonical command keyword for this invocation — the FIRST positional
+ * that matches a known keyword, skipping over leading flags and their values.
+ *
+ * Why: `args[0]` gets the first token, which breaks on `llm --verbose pro "q"`
+ * (command would be `"--verbose"`, keyword `"pro"` would leak into the prompt).
+ * Pro round-2 review 2026-04-21 flagged this as major — the wrapper's claim of
+ * "canonical command regardless of argv ordering" was false until this fix.
+ *
+ * Returns undefined when no keyword positional exists (default-ask path).
+ */
+function resolveCommand(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a.startsWith("--")) {
+      // Skip the flag's value if it's space-separated (--name value form).
+      // `--name=value` forms are single tokens — just skip this one.
+      if (!a.includes("=") && VALUE_FLAGS.includes(a) && i + 1 < argv.length) i++
+      continue
+    }
+    if (a.match(/^-[a-zA-Z]$/)) continue // short flag (e.g. -y)
+    if (KEYWORDS.includes(a)) return a
+    // First positional that's not a keyword: default-ask path (no command).
+    return undefined
+  }
+  return undefined
+}
+
+const command = resolveCommand(args)
 
 function getArg(name: string): string | undefined {
   // Accept both `--name value` and `--name=value` forms. The latter matters
@@ -148,7 +205,9 @@ if (modelOverrideId) {
   }
   if (!modelOverride) {
     const available = MODELS.map((m) => m.modelId).join(", ")
-    error(`Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>, or <owner>/<model> for OpenRouter`)
+    error(
+      `Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>, or <owner>/<model> for OpenRouter`,
+    )
   }
 }
 
@@ -170,15 +229,12 @@ function buildContextFromFlags(topic: string): Promise<string | undefined> {
   })
 }
 
-// Flags whose next argv token is the flag's value — excluded from the user
-// prompt text by extractText. Missing entries cause that value to leak into
-// the prompt (e.g. --image screenshot.png → "describe this screenshot.png"
-// instead of just "describe this"). --models / --provider were aspirational
-// and removed; resurrect here when the CLI actually implements them.
-const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image"]
-
 function extractText(fromAll: boolean, exclude?: string[]): string {
-  const source = fromAll ? args : args.slice(1)
+  // Drop the keyword (if any) AND any leading flags before the keyword, so
+  // `llm --verbose pro "q"` yields "q", not "pro q". Previously this used
+  // args.slice(1), which broke when a flag came first. Pro round-2 review
+  // 2026-04-21 flagged the leaking-keyword case.
+  const source = fromAll ? args : dropCommandAndLeadingFlags(args)
   return source
     .filter((a, i, arr) => {
       if (a.startsWith("--")) return false
@@ -188,6 +244,29 @@ function extractText(fromAll: boolean, exclude?: string[]): string {
       return true
     })
     .join(" ")
+}
+
+/** Return argv with the resolved command keyword removed and the positional
+ * sequence intact. If there's no keyword, we still strip nothing — the
+ * filter inside extractText handles the remaining flags.
+ *
+ * Stripping the keyword by index rather than value avoids deleting a second
+ * identical token (e.g. a question that happens to be the word "pro"). */
+function dropCommandAndLeadingFlags(argv: string[]): string[] {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a.startsWith("--")) {
+      if (!a.includes("=") && VALUE_FLAGS.includes(a) && i + 1 < argv.length) i++
+      continue
+    }
+    if (a.match(/^-[a-zA-Z]$/)) continue
+    if (KEYWORDS.includes(a)) {
+      // Keep everything before the keyword (flags) AND everything after it.
+      return [...argv.slice(0, i), ...argv.slice(i + 1)]
+    }
+    return argv
+  }
+  return argv
 }
 
 // Provider rows for the --help banner. Typed metadata replaces the previous
@@ -204,11 +283,13 @@ const PROVIDER_ROWS: ReadonlyArray<{ id: Provider; name: string; env: string; re
 
 function providerStatusLines(available: readonly Provider[]): string {
   const set = new Set(available)
-  return PROVIDER_ROWS.map(({ id, name, env, readyHint }) => {
-    const ok = set.has(id)
-    const status = ok ? (readyHint ?? "ready") : `set ${env}`
-    return `  ${ok ? "✓" : "○"} ${name.padEnd(12)}${status}`
-  }).join("\n") + "\n"
+  return (
+    PROVIDER_ROWS.map(({ id, name, env, readyHint }) => {
+      const ok = set.has(id)
+      const status = ok ? (readyHint ?? "ready") : `set ${env}`
+      return `  ${ok ? "✓" : "○"} ${name.padEnd(12)}${status}`
+    }).join("\n") + "\n"
+  )
 }
 
 function getQuestion(): string {
@@ -312,22 +393,7 @@ RECOVERY (for interrupted deep research)
   process.exit(0)
 }
 
-// --- Keywords that trigger specific modes ---
-
-const KEYWORDS = [
-  "quick",
-  "cheap",
-  "mini",
-  "nano",
-  "opinion",
-  "pro",
-  "debate",
-  "recover",
-  "partials",
-  "await",
-  "update-pricing",
-  "list-models",
-]
+// KEYWORDS is defined above (hoisted for resolveCommand's module-scope call).
 
 // --- Shared options for dispatch functions ---
 
@@ -360,7 +426,11 @@ function askOpts(
  * where argv[2] is the flag, not the keyword. */
 export async function main(): Promise<string | undefined> {
   initCli()
-  if (!command || command === "--help" || command === "-h") {
+  // Show usage only for empty argv or explicit help flags. A resolved
+  // `command === undefined` now means "default-ask path" (no keyword
+  // positional), not "show help" — the legacy `command = args[0]` made
+  // the latter equivalent, but resolveCommand tightens the semantics.
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h" || hasFlag("--help")) {
     await checkOllamaStatus()
     usage()
   }
