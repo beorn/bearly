@@ -379,12 +379,12 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 export function parseContextLengthError(errorMsg: string): { realInputTokens: number } | null {
   // OpenRouter / Moonshot format: "...(30687 of text input, 231502 in the output)."
   const openrouterMatch = errorMsg.match(/(\d+)\s+of\s+text\s+input/i)
-  if (openrouterMatch) {
+  if (openrouterMatch && openrouterMatch[1]) {
     return { realInputTokens: parseInt(openrouterMatch[1], 10) }
   }
   // OpenAI-style: "...prompt has N tokens..." — best-effort.
   const openaiMatch = errorMsg.match(/prompt\s+has\s+(\d+)\s+tokens/i)
-  if (openaiMatch && /maximum.*context|context.*length|too\s+long/i.test(errorMsg)) {
+  if (openaiMatch && openaiMatch[1] && /maximum.*context|context.*length|too\s+long/i.test(errorMsg)) {
     return { realInputTokens: parseInt(openaiMatch[1], 10) }
   }
   return null

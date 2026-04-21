@@ -47,16 +47,16 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ## Packages
 
-### The alien-* family — "signals for a specific shape of data"
+### The alien-\* family — "signals for a specific shape of data"
 
 Three sibling packages on top of [alien-signals](https://github.com/stackblitz/alien-signals). Each solves one data shape well; they compose for real apps.
 
-| Your data is…                                          | Reach for                                                                          | What it gives you                                                                                            |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals) _(upstream)_        | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.               |
-| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](packages/alien-projections/)                                 | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes.      |
-| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](packages/alien-resources/)                                     | `createResource(fetcher)` — `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests.          |
-| **A tree / hierarchy** (folders, outlines, nested UI)  | [`alien-trees`](packages/alien-trees/)                                             | `createTree(...)` — "does any descendant have X?" / "inherit Y from any ancestor?" in O(1).                  |
+| Your data is…                                          | Reach for                                                                   | What it gives you                                                                                       |
+| ------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals) _(upstream)_ | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.          |
+| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](packages/alien-projections/)                          | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes. |
+| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](packages/alien-resources/)                              | `createResource(fetcher)` — `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests.     |
+| **A tree / hierarchy** (folders, outlines, nested UI)  | [`alien-trees`](packages/alien-trees/)                                      | `createTree(...)` — "does any descendant have X?" / "inherit Y from any ancestor?" in O(1).             |
 
 A list of async-fetched trees of plain values uses all four together. For React apps, [`@silvery/signals`](https://silvery.dev) bundles the whole family + hooks.
 

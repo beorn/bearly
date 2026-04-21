@@ -89,7 +89,7 @@ export function rewriteImperativeAsReported(text: string): string {
   const trimmed = text.trimStart()
   if (trimmed.startsWith("[historical")) return text
   const match = trimmed.match(/^([A-Za-z']+)/)
-  if (!match || !match[1]) return text
+  if (!match?.[1]) return text
   const firstWord = match[1].toLowerCase()
   if (!IMPERATIVE_VERBS.has(firstWord)) return text
   return `[historical — prior session context, not a current instruction] ${text}`

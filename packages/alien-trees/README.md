@@ -4,16 +4,16 @@ Tree-scoped reactive aggregates for the [alien-signals](https://github.com/stack
 
 Declarative aggregates over ancestors or descendants of a tree, maintained incrementally with a sparse ancestor index. Cursor / editing / selection / tag-propagation patterns become O(1) reads + O(depth) writes instead of O(subtree) walks.
 
-## Which alien-* package do I need?
+## Which alien-\* package do I need?
 
 The `alien-*` family is "signals for a specific shape of data". Pick by what your data looks like:
 
-| Your data is…                                          | Reach for                                                                  | What it gives you                                                                                       |
-| ------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals)             | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.          |
-| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](https://www.npmjs.com/package/alien-projections)     | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes. |
-| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](https://www.npmjs.com/package/alien-resources)         | `createResource(fetcher)` — gives you `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests. |
-| **A tree / hierarchy** (folders, outlines, nested UI)  | **`alien-trees`** (you're here)                                            | `createTree(...)` — ask "does any descendant have X?" or "inherit Y from any ancestor?" in O(1).        |
+| Your data is…                                          | Reach for                                                              | What it gives you                                                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **A plain value** (cursor, count, toggle)              | [`alien-signals`](https://github.com/stackblitz/alien-signals)         | The primitive. `signal(value)`, `computed(fn)`, `effect(fn)`. Everything below builds on this.                |
+| **A list that changes over time** (rows, cards, todos) | [`alien-projections`](https://www.npmjs.com/package/alien-projections) | `createProjection(list, { key, map, filter, sort })` — when one row changes, only that row re-computes.       |
+| **An async fetch** (API call, file load, DB query)     | [`alien-resources`](https://www.npmjs.com/package/alien-resources)     | `createResource(fetcher)` — gives you `.loading()` / `.error()` / `.refetch()` + auto-cancels stale requests. |
+| **A tree / hierarchy** (folders, outlines, nested UI)  | **`alien-trees`** (you're here)                                        | `createTree(...)` — ask "does any descendant have X?" or "inherit Y from any ancestor?" in O(1).              |
 
 They **compose**. A list of async-fetched trees of plain values uses all four together. Each package earns its place by exploiting one data shape well, not by trying to do everything.
 
@@ -132,7 +132,7 @@ Strategies are an internal implementation detail. There's one API, and the engin
 
 ## React integration
 
-[`@silvery/signals`](https://silvery.dev) bundles all four alien-* packages and adds React hooks (`useSignal`, deep stores, model factories). If you're using React, that's the fastest way to pull the whole family in one install.
+[`@silvery/signals`](https://silvery.dev) bundles all four alien-\* packages and adds React hooks (`useSignal`, deep stores, model factories). If you're using React, that's the fastest way to pull the whole family in one install.
 
 ## Tests & benchmarks
 

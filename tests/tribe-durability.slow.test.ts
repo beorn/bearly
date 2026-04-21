@@ -372,10 +372,7 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
 
     await waitFor(() => countUserChannels(alice2.received, "bob-i") >= FLOOD, 10_000)
     const contents = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
-    expect(
-      contents.length,
-      `alice received ${contents.length} / ${FLOOD} broadcasts (replay truncated?)`,
-    ).toBe(FLOOD)
+    expect(contents.length, `alice received ${contents.length} / ${FLOOD} broadcasts (replay truncated?)`).toBe(FLOOD)
     // And they come in order.
     expect(contents[0]).toBe("I1")
     expect(contents[FLOOD - 1]).toBe(`I${FLOOD}`)
@@ -430,9 +427,9 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     const peek = (): number => {
       const peekDb = new Database(dbPath, { readonly: true })
       try {
-        const row = peekDb
-          .prepare("SELECT COUNT(*) as n FROM messages WHERE recipient = 'alice-j'")
-          .get() as { n: number } | null
+        const row = peekDb.prepare("SELECT COUNT(*) as n FROM messages WHERE recipient = 'alice-j'").get() as {
+          n: number
+        } | null
         return row?.n ?? 0
       } finally {
         peekDb.close()
