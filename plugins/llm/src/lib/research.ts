@@ -117,6 +117,29 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // reasoning block unset (provider default applies).
   const maxOutputTokens = model.reasoning?.maxOutputTokens
 
+  // Provider-specific reasoning knobs. OpenAI o-series exposes a
+  // `reasoning_effort` enum (low|medium|high) on the Chat Completions API;
+  // Anthropic Claude 4.5+ extended thinking takes a `thinking` object with
+  // a numeric `budget_tokens`. Vercel AI SDK forwards these via the
+  // `providerOptions` key on generateText/streamText, scoped under the
+  // provider id. Models without a reasoning block leave providerOptions
+  // unset and fall through to the provider default.
+  //
+  // The SDK's type is `Record<string, JSONObject>` (from @ai-sdk/provider,
+  // transitively) — we construct the shape with any-typed values and cast
+  // at the call site rather than pulling in @ai-sdk/provider-utils as a
+  // direct dep just for the ProviderOptions alias.
+  const providerOptions: Record<string, Record<string, any>> = {}
+  if (model.provider === "openai" && model.reasoning?.openaiEffort) {
+    providerOptions.openai = { reasoning_effort: model.reasoning.openaiEffort }
+  }
+  if (model.provider === "anthropic" && model.reasoning?.anthropicBudget) {
+    providerOptions.anthropic = {
+      thinking: { type: "enabled", budget_tokens: model.reasoning.anthropicBudget },
+    }
+  }
+  const hasProviderOptions = Object.keys(providerOptions).length > 0
+
   try {
     if (stream && onToken) {
       const result = streamText({
@@ -124,6 +147,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         messages,
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
+        ...(hasProviderOptions ? { providerOptions } : {}),
       })
 
       // Consume the stream and call onToken for each part
@@ -155,6 +179,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         messages,
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
+        ...(hasProviderOptions ? { providerOptions } : {}),
       })
 
       return {

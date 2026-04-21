@@ -312,6 +312,7 @@ export const MODELS: Model[] = [
     inputPricePerM: 2.0,
     outputPricePerM: 8.0,
     typicalLatencyMs: 10000,
+    reasoning: { openaiEffort: "medium" },
   },
   {
     provider: "openai",
@@ -322,6 +323,9 @@ export const MODELS: Model[] = [
     inputPricePerM: 10.0,
     outputPricePerM: 40.0,
     typicalLatencyMs: 20000,
+    // Pro is paid for deep thought — high effort + generous output cap so
+    // long reasoning traces don't truncate the final answer.
+    reasoning: { openaiEffort: "high", maxOutputTokens: 32768 },
   },
   {
     provider: "openai",
@@ -332,6 +336,7 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.55,
     outputPricePerM: 2.2,
     typicalLatencyMs: 3000,
+    reasoning: { openaiEffort: "medium" },
   },
   {
     provider: "openai",
@@ -342,6 +347,7 @@ export const MODELS: Model[] = [
     inputPricePerM: 1.1,
     outputPricePerM: 4.4,
     typicalLatencyMs: 3000,
+    reasoning: { openaiEffort: "medium" },
   },
   // OpenAI - Deep Research
   {
@@ -375,6 +381,9 @@ export const MODELS: Model[] = [
     inputPricePerM: 15.0,
     outputPricePerM: 75.0,
     typicalLatencyMs: 15000,
+    // Extended thinking for the heaviest Claude — 16K budget covers most
+    // complex reasoning chains without blowing the latency budget.
+    reasoning: { anthropicBudget: 16384 },
   },
   {
     provider: "anthropic",
@@ -385,6 +394,9 @@ export const MODELS: Model[] = [
     inputPricePerM: 3.0,
     outputPricePerM: 15.0,
     typicalLatencyMs: 5000,
+    // Lighter budget for mid-tier — enough for meaningful thinking, half
+    // the budget of Opus to match the tier's cost/latency profile.
+    reasoning: { anthropicBudget: 8192 },
   },
   // Anthropic - Claude 4.5 series
   {
