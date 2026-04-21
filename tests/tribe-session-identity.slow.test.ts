@@ -263,4 +263,92 @@ describe("tribe session identity (identity token adoption)", () => {
     const reg2 = (await c2.call("register", { name: "alice2", role: "member" })) as Record<string, unknown>
     expect(reg2.sessionId).not.toBe(s1)
   }, 20_000)
+
+  // =========================================================================
+  // Test E — F1-B: tribe.rename reclaims names held by non-active sessions
+  // (km-bearly.tribe-session-resume)
+  // =========================================================================
+
+  it("E: tribe.rename reclaims a name whose holder disconnected (tombstones old row)", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    // Client 1 registers as "plateau" then disconnects without cleanup.
+    const c1 = await connect()
+    await c1.call("register", { name: "plateau", role: "member" })
+    c1.close()
+    const idx = clients.indexOf(c1)
+    if (idx !== -1) clients.splice(idx, 1)
+    await new Promise((r) => setTimeout(r, 250))
+
+    // Client 2 registers as "member-other", then renames to "plateau".
+    // Prior behaviour: error "already taken". New behaviour: reclaim.
+    const c2 = await connect()
+    await c2.call("register", { name: "newbie", role: "member" })
+    const result = (await c2.call("tribe.rename", { new_name: "plateau" })) as {
+      content: [{ text: string }]
+    }
+    const parsed = JSON.parse(result.content[0].text)
+    expect(parsed.renamed).toBe(true)
+    expect(parsed.new_name).toBe("plateau")
+  }, 20_000)
+
+  it("E2: rename still errors when the name-holder is active", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    // Client 1 registers as "plateau" and stays connected.
+    const c1 = await connect()
+    await c1.call("register", { name: "plateau", role: "member" })
+
+    // Client 2 tries to rename to "plateau" — should fail.
+    const c2 = await connect()
+    await c2.call("register", { name: "newbie", role: "member" })
+    const result = (await c2.call("tribe.rename", { new_name: "plateau" })) as {
+      content: [{ text: string }]
+    }
+    const parsed = JSON.parse(result.content[0].text)
+    expect(parsed.error).toMatch(/already taken/)
+    expect(parsed.renamed).toBeUndefined()
+  }, 20_000)
+
+  // =========================================================================
+  // Test F — F1-D: auto-adopt non-auto-named dead session at same cwd+role
+  // on fresh register (km-bearly.tribe-session-resume)
+  // =========================================================================
+
+  it("F: registering without name at same cwd+role adopts prior user-chosen name", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    // Session 1 picks a user name "plateau" at cwd /tmp/projX.
+    const cwd = "/tmp"
+    const c1 = await connect()
+    await c1.call("register", { name: "plateau", role: "member", project: cwd })
+    c1.close()
+    const idx = clients.indexOf(c1)
+    if (idx !== -1) clients.splice(idx, 1)
+    await new Promise((r) => setTimeout(r, 250))
+
+    // Session 2 registers at the same cwd+role with NO name (simulating
+    // cross-Claude resume — different identity token, no explicit name).
+    const c2 = await connect()
+    const reg2 = (await c2.call("register", { role: "member", project: cwd })) as Record<string, unknown>
+    expect(reg2.name).toBe("plateau")
+  }, 20_000)
+
+  it("F2: auto-adoption skips auto-generated names (member-*, km-*)", async () => {
+    daemon = await spawnDaemon(socketPath, dbPath)
+
+    // Session 1 registers with an auto-looking name.
+    const cwd = "/tmp"
+    const c1 = await connect()
+    await c1.call("register", { name: "km-abc", role: "member", project: cwd })
+    c1.close()
+    const idx = clients.indexOf(c1)
+    if (idx !== -1) clients.splice(idx, 1)
+    await new Promise((r) => setTimeout(r, 250))
+
+    // Session 2 should NOT adopt "km-abc"; should fall through to fallback.
+    const c2 = await connect()
+    const reg2 = (await c2.call("register", { role: "member", project: cwd })) as Record<string, unknown>
+    expect(reg2.name).not.toBe("km-abc")
+  }, 20_000)
 })

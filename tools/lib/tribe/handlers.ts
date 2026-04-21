@@ -263,7 +263,12 @@ function handleHistory(ctx: TribeContext, a: ToolArgs): ToolResult {
 function handleRename(
   ctx: TribeContext,
   a: ToolArgs,
-  opts: { userRenamed: boolean; setUserRenamed: (v: boolean) => void },
+  opts: {
+    userRenamed: boolean
+    setUserRenamed: (v: boolean) => void
+    /** Optional: when provided, allow reclaiming names held by non-active sessions. */
+    getActiveSessionIds?: () => Set<string>
+  },
 ): ToolResult {
   const newName = a.new_name as string
   // Validate name format
@@ -271,10 +276,30 @@ function handleRename(
   if (nameError) {
     return { content: [{ type: "text", text: JSON.stringify({ error: nameError }) }] }
   }
-  // Check if name is taken
-  const existing = ctx.stmts.checkNameTaken.get({ $name: newName, $session_id: ctx.sessionId })
+  // Check if name is taken. If the holder is a non-active (dead / disconnected)
+  // session, reclaim the name — tombstone the old row so journaled messages
+  // stay addressable (recipient column still points at the old id) but the
+  // unique `name` column is freed. See km-bearly.tribe-session-resume F1-B.
+  const existing = ctx.stmts.checkNameTaken.get({ $name: newName, $session_id: ctx.sessionId }) as
+    | { id: string }
+    | undefined
   if (existing) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${newName}" is already taken` }) }] }
+    const activeIds = opts.getActiveSessionIds?.()
+    const isActive = activeIds ? activeIds.has(existing.id) : true
+    if (isActive) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: `Name "${newName}" is already taken` }) }],
+      }
+    }
+    // Tombstone the dead holder's name so the current session can claim it.
+    // Format: `<name>-dead-<8-char-id-prefix>` — deterministic, preserves the
+    // old row (message journal stays valid), avoids collisions between
+    // multiple sequential reclaims.
+    const tombstoneName = `${newName}-dead-${existing.id.slice(0, 8)}`
+    ctx.db
+      .prepare("UPDATE sessions SET name = $tomb, updated_at = $now WHERE id = $id")
+      .run({ $tomb: tombstoneName, $now: Date.now(), $id: existing.id })
+    log.info?.(`reclaimed name "${newName}" from dead session ${existing.id} (tombstoned as "${tombstoneName}")`)
   }
   const oldName = ctx.getName()
   ctx.stmts.renameSession.run({ $new_name: newName, $session_id: ctx.sessionId, $now: Date.now() })
@@ -322,10 +347,21 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
     return { content: [{ type: "text", text: JSON.stringify({ error: joinNameError }) }] }
   }
 
-  // Check if name is taken by another session
-  const taken = ctx.stmts.checkNameTaken.get({ $name: joinName, $session_id: ctx.sessionId })
+  // Check if name is taken. Like handleRename, reclaim from non-active holders
+  // by tombstoning the dead row (preserves message journal addressability).
+  const taken = ctx.stmts.checkNameTaken.get({ $name: joinName, $session_id: ctx.sessionId }) as
+    | { id: string }
+    | undefined
   if (taken) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
+    const isActive = opts.getActiveSessionIds().has(taken.id)
+    if (isActive) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: `Name "${joinName}" is already taken` }) }] }
+    }
+    const tombstoneName = `${joinName}-dead-${taken.id.slice(0, 8)}`
+    ctx.db
+      .prepare("UPDATE sessions SET name = $tomb, updated_at = $now WHERE id = $id")
+      .run({ $tomb: tombstoneName, $now: Date.now(), $id: taken.id })
+    log.info?.(`reclaimed name "${joinName}" from dead session ${taken.id} (tombstoned as "${tombstoneName}")`)
   }
 
   // Joining with role=chief is now an explicit claim — derived chief otherwise.
