@@ -592,12 +592,17 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    // 128K accommodates long-context reviews where reasoning regularly eats
-    // 60-90K tokens before final output. Smaller queries only bill for what
-    // they actually use — the cap is upper bound, not floor.
-    // History: 8K (broke on 60K input), 64K (truncated at 89K output on a
-    // 6.5K-line code review 2026-04-20), now 128K.
-    reasoning: { maxOutputTokens: 131072 },
+    // 220K output cap — effectively the highest usable value. K2.6's total
+    // context (input + output) is 262144 tokens, so `max_tokens` can never
+    // exceed 262144 − input_tokens. Values above ~260K get rejected with
+    // "maximum context length is 262144 tokens" even on trivial prompts.
+    // 220K leaves 42K headroom for input, which covers every review we've
+    // run (largest was ~35K). Going higher breaks reviews without benefit —
+    // short queries only bill for what they use. Cap is upper bound, not
+    // floor.
+    // History: 8K (empty on 60K input), 64K (truncated at 89K output),
+    // 128K, tried 262144 (combined-context reject), 200K, now 220K.
+    reasoning: { maxOutputTokens: 220000 },
   },
 
   // Perplexity
