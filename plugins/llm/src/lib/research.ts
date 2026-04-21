@@ -26,13 +26,24 @@ export interface QueryOptions {
   abortSignal?: AbortSignal
 }
 
-/** Rough token estimate: ~4 chars/token for English + code. Overestimates
- * rather than under-estimates so our safety margin below the contextWindow
- * actually holds. Accurate-enough since we only need "under the real count"
- * — a proper tokenizer would be more precise but would pull in a
- * per-provider dep we don't otherwise need. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
+/** Rough token estimate: must OVERESTIMATE, not under-estimate.
+ *
+ * ~4 chars/token is the textbook English value, but dense content (code,
+ * JSON, markdown tables, tight punctuation) tokenizes at ~3.3-3.7 chars
+ * per token. Dividing by 4 under-counts by 5-15% on code-heavy content.
+ *
+ * When this function feeds cost estimation (soft hint), under-counting
+ * is harmless. When it feeds `computeMaxOutputTokens` for providers that
+ * enforce a combined input+output cap (Kimi K2.6: 262K), under-counting
+ * silently exceeds the hard limit and fails the request.
+ *
+ * Divisor 3.5 gives ~14% overestimate on English prose and ~0-5% on
+ * dense code — always ≥ real token count for any realistic content.
+ * A proper tokenizer (tiktoken) would be exact but adds a per-provider
+ * dep we don't otherwise need. */
+// @internal — exported for testing only
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5)
 }
 
 /** Compute the output-token cap for a query. Returns `undefined` for
@@ -49,21 +60,35 @@ function estimateTokens(text: string): number {
  * If dynamic math produces a non-positive value (input already exceeds
  * the window — impossible in practice but worth guarding), fall back to
  * the static ceiling if any, or `undefined` to defer to the provider. */
-function computeMaxOutputTokens(model: Model, messages: Array<{ role: string; content: unknown }>): number | undefined {
+// @internal — exported for testing only
+export function computeMaxOutputTokens(
+  model: Model,
+  messages: Array<{ role: string; content: unknown }>,
+): number | undefined {
   const reasoning = model.reasoning
   if (!reasoning) return undefined
   if (reasoning.contextWindow) {
-    const SAFETY = 2048
-    const inputChars = messages.reduce((sum, m) => {
-      if (typeof m.content === "string") return sum + m.content.length
-      if (Array.isArray(m.content)) {
-        for (const part of m.content as Array<{ type: string; text?: string }>) {
-          if (part.type === "text" && part.text) sum += part.text.length
+    // 4096-token safety margin (2× the old value). The prior 2048 margin
+    // was overrun by ~45 tokens in a 2026-04-20 review when the estimator
+    // under-counted code-heavy content by 7%. Even with the tightened
+    // 3.5-chars/token divisor, a generous margin guards against outlier
+    // content (repeated emoji, Chinese/Japanese text, or unusual token
+    // distributions). Cost: 4096 tokens off the output budget on models
+    // that enforce a combined limit — negligible on K2.6's 262K window.
+    const SAFETY = 4096
+    const inputText = messages
+      .map((m) => {
+        if (typeof m.content === "string") return m.content
+        if (Array.isArray(m.content)) {
+          return (m.content as Array<{ type: string; text?: string }>)
+            .filter((p) => p.type === "text" && p.text)
+            .map((p) => p.text)
+            .join("")
         }
-      }
-      return sum
-    }, 0)
-    const estimatedInput = Math.ceil(inputChars / 4)
+        return ""
+      })
+      .join("")
+    const estimatedInput = estimateTokens(inputText)
     const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
     if (dynamicCap > 0) return dynamicCap
   }

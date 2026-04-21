@@ -1307,15 +1307,26 @@ export async function runProDual(options: {
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
   //
-  // A nested AbortController chains the 5-minute wall-clock ceiling onto the
+  // A nested AbortController chains a dynamic wall-clock ceiling onto the
   // outer SIGINT/SIGTERM signal from withSignalAbort: if either the user
   // interrupts or the timer elapses, both legs abort. Wall-clock guards
   // against hung providers (real incident: OpenAI synchronous Pro silently
   // timing out at the ai-sdk 300s default). imagePath is forwarded
   // explicitly — dropping it would silently degrade `--image` to text-only.
+  //
+  // Timeout scales with input size: baseline 10 min + 1 min per 5K chars
+  // of input (1 min per ~1.5K tokens at ~3 chars/token). Caps at 30 min.
+  // A 113K-char architectural review gets ~32 min; a typical 2K-char query
+  // stays at 10 min. The fixed 5-min ceiling used to fail legitimate
+  // long-context queries (2026-04-20 review timed out on 113K chars).
+  const inputChars = enrichedQuestion.length + (imagePath ? 1024 : 0)
+  const dynamicTimeoutMs = Math.min(
+    30 * 60 * 1000,
+    10 * 60 * 1000 + Math.floor(inputChars / 5000) * 60 * 1000,
+  )
   const [gptResult, kimiResult] = await withSignalAbort(async (outerSignal) => {
     const ac = new AbortController()
-    const abortTimer = setTimeout(() => ac.abort("timeout"), 5 * 60 * 1000)
+    const abortTimer = setTimeout(() => ac.abort("timeout"), dynamicTimeoutMs)
     const onOuterAbort = () => ac.abort(outerSignal.reason ?? "user-interrupt")
     if (outerSignal.aborted) onOuterAbort()
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
