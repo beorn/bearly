@@ -28,3 +28,12 @@ export {
   sessionsDir,
 } from "./manifest.ts"
 export type { TurnManifest, InjectedSpan } from "./manifest.ts"
+
+export {
+  retrieveMemory,
+  registerRetrieveSource,
+  qmdFetcher,
+  resetRetrieveFetchers,
+  retrieveFetcherCount,
+} from "./retrieve.ts"
+export type { RetrievedMemory, RetrieveFetcher } from "./retrieve.ts"
