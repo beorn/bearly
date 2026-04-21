@@ -580,7 +580,7 @@ export const MODELS: Model[] = [
   // OpenRouter — Moonshot Kimi
   // Kimi K2.6 released 2026-04-13: 1T MoE (32B active), 262K context, reasoning model.
   // Pricing via OpenRouter (routes to Moonshot direct); launch-day promo may make it free.
-  // Reasoning is heavy and counts against the output cap — defaultMaxOutputTokens
+  // Reasoning is heavy and counts against the output cap — reasoning.maxOutputTokens
   // is sized generously (64K) so large-context reviews have room for thinking
   // plus a complete answer. Short queries only bill for what they use.
   {
