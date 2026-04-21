@@ -400,19 +400,24 @@ export async function main(): Promise<string | undefined> {
     if (!question) usage()
     const outputFile = resolveOutputFile(question)
 
-    // Check history first
+    // Check history first. try/finally ensures closeDb() runs even if the
+    // FTS query throws (e.g., schema version drift, locked DB, malformed
+    // index) — previously the except path leaked the SQLite handle.
     try {
       const db = getDb()
-      const similar = findSimilarQueries(db, question, { limit: 2 })
-      closeDb()
-      if (similar.length > 0) {
-        console.error("📚 Similar past queries:\n")
-        for (const s of similar) {
-          const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
-          const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
-          console.error(`  ${relTime}: ${preview}...`)
+      try {
+        const similar = findSimilarQueries(db, question, { limit: 2 })
+        if (similar.length > 0) {
+          console.error("📚 Similar past queries:\n")
+          for (const s of similar) {
+            const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
+            const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
+            console.error(`  ${relTime}: ${preview}...`)
+          }
+          console.error()
         }
-        console.error()
+      } finally {
+        closeDb()
       }
     } catch {
       /* History not indexed */

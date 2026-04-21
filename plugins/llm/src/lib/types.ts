@@ -592,10 +592,12 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    // 65K accommodates long-context reviews where reasoning alone eats 20K+.
-    // Smaller queries only bill for what they actually use — the cap is upper
-    // bound, not floor.
-    reasoning: { maxOutputTokens: 65536 },
+    // 128K accommodates long-context reviews where reasoning regularly eats
+    // 60-90K tokens before final output. Smaller queries only bill for what
+    // they actually use — the cap is upper bound, not floor.
+    // History: 8K (broke on 60K input), 64K (truncated at 89K output on a
+    // 6.5K-line code review 2026-04-20), now 128K.
+    reasoning: { maxOutputTokens: 131072 },
   },
 
   // Perplexity

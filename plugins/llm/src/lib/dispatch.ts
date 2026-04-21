@@ -484,19 +484,25 @@ export async function buildContext(
   if (options.withHistory) {
     try {
       const db = getDb()
-      const { results } = ftsSearchWithSnippet(db, topic, { limit: 3 })
-      closeDb()
-      if (results.length > 0) {
-        console.error("📚 Including context from session history...\n")
-        parts.push(
-          "Relevant context from previous sessions:\n\n" +
-            results
-              .map((r) => {
-                const role = r.type === "user" ? "User" : "Assistant"
-                return `[${role}]: ${r.snippet.replace(/>>>/g, "").replace(/<<</g, "")}`
-              })
-              .join("\n\n"),
-        )
+      try {
+        const { results } = ftsSearchWithSnippet(db, topic, { limit: 3 })
+        if (results.length > 0) {
+          console.error("📚 Including context from session history...\n")
+          parts.push(
+            "Relevant context from previous sessions:\n\n" +
+              results
+                .map((r) => {
+                  const role = r.type === "user" ? "User" : "Assistant"
+                  return `[${role}]: ${r.snippet.replace(/>>>/g, "").replace(/<<</g, "")}`
+                })
+                .join("\n\n"),
+          )
+        }
+      } finally {
+        // try/finally ensures closeDb() runs even if the FTS query throws —
+        // previously the catch path leaked the SQLite handle. Same pattern
+        // as cli.ts history lookup.
+        closeDb()
       }
     } catch {
       /* History not indexed */
