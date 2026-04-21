@@ -134,10 +134,12 @@ function assertShape(sessionId: string, shape: EvalShape): void {
   } else {
     expect(t.decision.permissionDecision).toBe("allow")
   }
-  // Envelope always ends with the context-protocol footer regardless of
-  // whether recall contributed items.
+  // Tainted envelope (with injected items) always ends with the protocol
+  // footer. Clean envelope (no items) is empty — the footer is only emitted
+  // when there's framed content to demarcate. See emit.ts CONTEXT_PROTOCOL_FOOTER
+  // docstring.
   expect(t.envelope.endsWith(CONTEXT_PROTOCOL_FOOTER)).toBe(true)
-  expect(c.envelope.endsWith(CONTEXT_PROTOCOL_FOOTER)).toBe(true)
+  expect(c.envelope).toBe("")
 }
 
 // ---------------------------------------------------------------------------

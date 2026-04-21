@@ -28,6 +28,7 @@ import {
   CONTEXT_PROTOCOL_FOOTER as ENVELOPE_FOOTER,
   rewriteImperativeAsReported as envelopeRewriteImperative,
 } from "../../../injection-envelope/src/index.ts"
+import { emitInjectionDebugEvent } from "../../../injection-envelope/src/debug.ts"
 
 /** Re-export the canonical footer from the envelope library. */
 export const CONTEXT_PROTOCOL_FOOTER = ENVELOPE_FOOTER
@@ -113,6 +114,12 @@ export async function runInjectDelta(
 
   const skipReason = classifyPromptSkip(prompt)
   if (skipReason && TRIVIAL_SKIP_REASONS.has(skipReason)) {
+    emitInjectionDebugEvent({
+      source: "recall",
+      action: "skip",
+      reason: skipReason,
+      prompt: prompt.slice(0, 200),
+    })
     return { skipped: true, reason: skipReason }
   }
 
@@ -129,17 +136,20 @@ export async function runInjectDelta(
   })
 
   if (result.results.length === 0) {
-    // Substantive prompt but no recall hits — still emit the protocol footer so
-    // every non-trivial turn has the standard trailing boundary. See
-    // CONTEXT_PROTOCOL_FOOTER docstring.
-    return {
-      skipped: false,
-      additionalContext: CONTEXT_PROTOCOL_FOOTER,
-      newKeys: [],
-      turn,
-      footerOnly: true,
-      emptyRecallReason: "no_results",
-    }
+    // Substantive prompt but no recall hits — skip entirely. Previously we
+    // emitted the protocol footer alone here to keep the boundary visible
+    // every turn, but that turned into UI noise in Claude Code's scrollback
+    // (the harness renders all hook additionalContext as user-role content,
+    // so an always-on footer shows up as mysterious "H:" text). With no
+    // framed content, the footer has nothing to frame. See km-ambot and the
+    // emit.ts CONTEXT_PROTOCOL_FOOTER docstring.
+    emitInjectionDebugEvent({
+      source: "recall",
+      action: "skip",
+      reason: "no_results",
+      prompt: prompt.slice(0, 200),
+    })
+    return { skipped: true, reason: "no_results" }
   }
 
   const snippets: string[] = []
@@ -166,16 +176,16 @@ export async function runInjectDelta(
   store.flush?.()
 
   if (snippets.length === 0) {
-    // Substantive prompt, recall matched but everything was already surfaced in
-    // a recent turn — still emit the footer. Same rationale as no_results.
-    return {
-      skipped: false,
-      additionalContext: CONTEXT_PROTOCOL_FOOTER,
-      newKeys: [],
-      turn,
-      footerOnly: true,
-      emptyRecallReason: "all_seen",
-    }
+    // Substantive prompt, recall matched but everything was already surfaced
+    // in a recent turn — skip. Same rationale as no_results above: no framed
+    // content means the footer has nothing to frame.
+    emitInjectionDebugEvent({
+      source: "recall",
+      action: "skip",
+      reason: "all_seen",
+      prompt: prompt.slice(0, 200),
+    })
+    return { skipped: true, reason: "all_seen" }
   }
 
   const recallBlock =
@@ -184,9 +194,20 @@ export async function runInjectDelta(
     `${snippets.join("\n")}\n` +
     `</recall-memory>`
 
+  const additionalContext = `${recallBlock}\n\n${CONTEXT_PROTOCOL_FOOTER}`
+
+  emitInjectionDebugEvent({
+    source: "recall",
+    action: "emit",
+    prompt: prompt.slice(0, 200),
+    itemCount: snippets.length,
+    chars: additionalContext.length,
+    additionalContext,
+  })
+
   return {
     skipped: false,
-    additionalContext: `${recallBlock}\n\n${CONTEXT_PROTOCOL_FOOTER}`,
+    additionalContext,
     newKeys,
     turn,
   }

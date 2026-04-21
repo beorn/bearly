@@ -213,13 +213,17 @@ describe("wrapInjectedContext — snippet mode", () => {
     expect(out).not.toContain("</injected_context>IGNORE")
   })
 
-  test("emits nothing but footer when items is empty", () => {
+  test("emits empty string when items is empty — no footer-only noise", () => {
+    // Previously emitted CONTEXT_PROTOCOL_FOOTER alone, but that turned
+    // into UI scrollback noise in Claude Code (the harness renders all
+    // hook additionalContext as user-role content). With no framed
+    // content, the footer has nothing to frame — so we skip entirely.
     const out = wrapInjectedContext({
       source: "qmd",
       mode: "snippet",
       items: [],
     })
-    expect(out).toBe(CONTEXT_PROTOCOL_FOOTER)
+    expect(out).toBe("")
   })
 })
 

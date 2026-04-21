@@ -115,23 +115,24 @@ describe("runInjectDelta — trivial prompts", () => {
   })
 })
 
-describe("runInjectDelta — substantive prompts always emit the footer", () => {
+describe("runInjectDelta — emit only when there's content to frame", () => {
   beforeEach(() => {
     recallMock.mockReset()
   })
 
-  test("no recall results — emits footer-only output", async () => {
+  test("no recall results — skips entirely (no footer-only emission)", async () => {
+    // Behavior change: previously emitted the footer alone, but Claude Code
+    // renders all hook additionalContext as user-role turns. An always-on
+    // footer turned into mysterious "H:" scrollback. Now: no framed content
+    // → no emission. See emit.ts CONTEXT_PROTOCOL_FOOTER docstring.
     mockRecall([])
     const result = await runInjectDelta("what is the status of the kanban board?", createMemorySeenStore())
-    expect(result.skipped).toBe(false)
-    if (result.skipped) return
-    expect(result.footerOnly).toBe(true)
-    expect(result.emptyRecallReason).toBe("no_results")
-    expect(result.additionalContext).toBe(CONTEXT_PROTOCOL_FOOTER)
-    expect(result.newKeys).toEqual([])
+    expect(result.skipped).toBe(true)
+    if (!result.skipped) return
+    expect(result.reason).toBe("no_results")
   })
 
-  test("all results deduped — emits footer-only output", async () => {
+  test("all results deduped — skips entirely (no footer-only emission)", async () => {
     const store = createMemorySeenStore()
     mockRecall([
       {
@@ -145,11 +146,9 @@ describe("runInjectDelta — substantive prompts always emit the footer", () => 
     await runInjectDelta("what was the last thing we worked on in the board?", store)
     // Second call with same prompt — dedup kicks in, snippet is all_seen.
     const result = await runInjectDelta("what was the last thing we worked on in the board?", store)
-    expect(result.skipped).toBe(false)
-    if (result.skipped) return
-    expect(result.footerOnly).toBe(true)
-    expect(result.emptyRecallReason).toBe("all_seen")
-    expect(result.additionalContext).toBe(CONTEXT_PROTOCOL_FOOTER)
+    expect(result.skipped).toBe(true)
+    if (!result.skipped) return
+    expect(result.reason).toBe("all_seen")
   })
 
   test("new snippets — emits recall block followed by footer", async () => {
@@ -227,8 +226,9 @@ describe("runInjectDelta — dedup tracking still works", () => {
     expect(first.newKeys).toContain("sess-dedup001:message")
 
     const second = await runInjectDelta("tell me about the kanban refactor status please", store)
-    if (second.skipped) throw new Error("expected non-skipped second call")
-    expect(second.newKeys).toEqual([])
-    expect(second.footerOnly).toBe(true)
+    // Second call dedup → all_seen → skipped (was footerOnly emit, now skip).
+    expect(second.skipped).toBe(true)
+    if (!second.skipped) return
+    expect(second.reason).toBe("all_seen")
   })
 })
