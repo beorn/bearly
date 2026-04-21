@@ -89,6 +89,7 @@ async function spawnDaemon(focusPollMs = 500): Promise<Harness> {
         LORE_NO_DAEMON: "0",
         TRIBE_NO_PLUGINS: "1",
         TRIBE_NO_SUPPRESS: "1",
+        TRIBE_ACTIVITY_LOG: "off",
       },
     },
   )

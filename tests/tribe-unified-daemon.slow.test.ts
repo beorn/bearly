@@ -61,6 +61,7 @@ async function spawnDaemon(socketPath: string, dbPath: string, loreDbPath: strin
         TRIBE_DB: dbPath,
         TRIBE_NO_SUPPRESS: "1",
         TRIBE_NO_PLUGINS: "1",
+        TRIBE_ACTIVITY_LOG: "off",
         // No summarizer — tests must not call LLMs.
         TRIBE_SUMMARIZER_MODEL: "off",
       },

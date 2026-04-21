@@ -77,6 +77,7 @@ async function spawnDaemon(socketPath: string, dbPath: string, extra: string[] =
         TRIBE_NO_SUPPRESS: "1",
         // Self-contained: no git/beads/github/health/accountly side effects.
         TRIBE_NO_PLUGINS: "1",
+        TRIBE_ACTIVITY_LOG: "off",
       },
     },
   )

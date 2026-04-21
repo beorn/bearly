@@ -39,6 +39,8 @@ import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
+import { activityFromMessage, writeActivity } from "./lib/tribe/activity-log.ts"
+import type { MessageInsertedInfo } from "./lib/tribe/context.ts"
 import { cleanupOldData, registerSession } from "./lib/tribe/session.ts"
 import type { TribeClientApi } from "./lib/tribe/plugin-api.ts"
 import { loadPlugins } from "./lib/tribe/plugin-loader.ts"
@@ -373,9 +375,17 @@ function broadcastToConnected(info: {
   }
 }
 
-// Install fanout on the daemon's own ctx — logActivity() and the health-monitor
+// Tap: every inserted message flows through `messageTap` — first to the
+// activity log (best-effort observability), then to fanout. See
+// lib/tribe/activity-log.ts. Tests disable with TRIBE_ACTIVITY_LOG=off.
+const messageTap = (info: MessageInsertedInfo): void => {
+  writeActivity(activityFromMessage(info))
+  broadcastToConnected(info)
+}
+
+// Install tap on the daemon's own ctx — logActivity() and the health-monitor
 // / plugin writers all flow through daemonCtx.
-daemonCtx.onMessageInserted = broadcastToConnected
+daemonCtx.onMessageInserted = messageTap
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -468,9 +478,7 @@ function adoptByProjectAndRole(
   if (!projectId) return null
 
   const candidates = db
-    .prepare(
-      "SELECT id, name, role FROM sessions WHERE project_id = ? AND role = ? ORDER BY updated_at DESC LIMIT 50",
-    )
+    .prepare("SELECT id, name, role FROM sessions WHERE project_id = ? AND role = ? ORDER BY updated_at DESC LIMIT 50")
     .all(projectId, role) as PriorSession[]
 
   for (const c of candidates) {
@@ -687,8 +695,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         // still gets a usable (but non-privileged) session.
         if (role === "daemon" || role === "pending") role = "member"
 
-        const isActive = (sid: string): boolean =>
-          Array.from(clients.values()).some((c) => c.ctx.sessionId === sid)
+        const isActive = (sid: string): boolean => Array.from(clients.values()).some((c) => c.ctx.sessionId === sid)
 
         const adopted = adoptIdentity(identityToken, isActive)
 
@@ -733,9 +740,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           domains,
           claudeSessionId,
           claudeSessionName,
-          // Fanout hook — every message written through this ctx reaches
-          // connected sockets synchronously (km-tribe.event-bus).
-          onMessageInserted: broadcastToConnected,
+          // Tap hook — every message written through this ctx flows through
+          // messageTap (activity-log + fanout). See km-tribe.event-bus +
+          // km-tribe.activity-log.
+          onMessageInserted: messageTap,
         })
 
         registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)

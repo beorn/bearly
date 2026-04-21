@@ -54,9 +54,7 @@ describe("pointer mode emission", () => {
     const out = wrapInjectedContext({
       source: "qmd",
       mode: "pointer",
-      items: [
-        { id: "mem-abc", title: "Notes", path: "/p/notes.md", date: "2026-04-21" },
-      ],
+      items: [{ id: "mem-abc", title: "Notes", path: "/p/notes.md", date: "2026-04-21" }],
     })
     expect(out).toMatch(/retrieve_memory/)
   })

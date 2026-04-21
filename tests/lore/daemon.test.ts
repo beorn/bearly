@@ -77,6 +77,7 @@ async function spawnLoreDaemon(extraArgs: string[] = []): Promise<DaemonHarness>
         // Self-contained — no plugins (git/beads/github/health/accountly) firing.
         TRIBE_NO_PLUGINS: "1",
         TRIBE_NO_SUPPRESS: "1",
+        TRIBE_ACTIVITY_LOG: "off",
       },
     },
   )

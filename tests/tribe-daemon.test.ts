@@ -63,6 +63,8 @@ async function spawnDaemon(socketPath: string, extraArgs: string[] = []): Promis
       TRIBE_NO_SUPPRESS: "1",
       // Disable plugins (git, beads, github, health-monitor) — tests are self-contained
       TRIBE_NO_PLUGINS: "1",
+      // Disable activity-log writes so tests don't pollute the real log file
+      TRIBE_ACTIVITY_LOG: "off",
     },
   })
 

@@ -140,6 +140,7 @@ async function spawnDaemon(socketPath: string, dbPath: string): Promise<ChildPro
         // Built-in plugins must stay silent so the only messages on the wire
         // come from the fake plugin under test.
         TRIBE_NO_PLUGINS: "1",
+        TRIBE_ACTIVITY_LOG: "off",
       },
     },
   )
