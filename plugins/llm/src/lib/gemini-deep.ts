@@ -134,11 +134,16 @@ Please provide:
 5. Sources and references (if available)`
 
   try {
-    if (stream && onToken) {
-      return await queryWithStreaming(researchPrompt, model, topic, startTime, onToken, noPersist)
-    } else {
-      return await queryWithPolling(researchPrompt, model, topic, startTime, onToken, noPersist)
-    }
+    // Streaming is disabled pending verification of the SSE event shape.
+    // The current parser speculates on `content.delta` / `delta.text`, which
+    // don't match the Gemini Interactions API (that API emits {candidates:[…]}
+    // SSE frames). Until we have a live probe, force the polling path — it
+    // works, it's just less responsive. The `stream` / `onToken` parameters
+    // are accepted so callers don't need to change; onToken simply fires once
+    // with the final content from the poll path.
+    void stream
+    void onToken
+    return await queryWithPolling(researchPrompt, model, topic, startTime, onToken, noPersist)
   } catch (error) {
     let errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -162,154 +167,13 @@ Please provide:
 }
 
 /**
- * Streaming mode: use SSE to get real-time updates
- */
-async function queryWithStreaming(
-  prompt: string,
-  model: Model,
-  topic: string,
-  startTime: number,
-  onToken: (token: string) => void,
-  noPersist: boolean,
-): Promise<ModelResponse> {
-  const resp = await createInteraction(prompt, model.modelId, { stream: true })
-
-  if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`Gemini API error (${resp.status}): ${text}`)
-  }
-
-  if (!resp.body) {
-    throw new Error("No response body for streaming")
-  }
-
-  let interactionId = ""
-  let partialPath = ""
-  let fullText = ""
-  let completed = false
-  let usage:
-    | {
-        promptTokens: number
-        completionTokens: number
-        totalTokens: number
-      }
-    | undefined
-
-  // Parse SSE stream
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-
-      // Process complete SSE events
-      const lines = buffer.split("\n")
-      buffer = lines.pop() || "" // Keep incomplete line in buffer
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue
-        const data = line.slice(6).trim()
-        if (!data || data === "[DONE]") continue
-
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const event = JSON.parse(data) as any
-
-          // Capture interaction ID
-          if (event.id && !interactionId) {
-            interactionId = event.id
-
-            if (!noPersist) {
-              partialPath = getPartialPath(interactionId)
-              writePartialHeader(partialPath, {
-                responseId: interactionId,
-                model: model.displayName,
-                modelId: model.modelId,
-                topic,
-                startedAt: new Date().toISOString(),
-              })
-            }
-          }
-
-          // Handle text deltas
-          if (event.type === "content.delta" || event.delta?.text) {
-            const text = event.delta?.text || event.text || ""
-            if (text) {
-              onToken(text)
-              fullText += text
-              if (partialPath) appendPartial(partialPath, text)
-            }
-          }
-
-          // Handle completion
-          if (event.type === "interaction.complete" || event.status === "completed") {
-            completed = true
-            // Extract final text if available in the complete event
-            if (event.outputs) {
-              const finalText = extractText(event)
-              if (finalText && finalText.length > fullText.length) {
-                const newContent = finalText.slice(fullText.length)
-                onToken(newContent)
-                fullText = finalText
-              }
-            }
-            if (event.usageMetadata) {
-              usage = extractUsage(event)
-            }
-          }
-        } catch {
-          // Skip malformed JSON lines
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
-
-  // If stream ended without completing, poll for result
-  if (!completed && interactionId) {
-    log.info?.("Stream ended, polling for completion...")
-    const result = await pollForGeminiCompletion(interactionId, {
-      intervalMs: 10_000,
-      maxAttempts: 120,
-      onProgress: (status, elapsed) => {
-        process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
-      },
-    })
-
-    if (result.content && result.content.length > fullText.length) {
-      const newContent = result.content.slice(fullText.length)
-      onToken(newContent)
-      fullText = result.content
-    }
-    if (result.usage) usage = result.usage
-    if (result.status === "completed") completed = true
-    process.stderr.write("\n")
-  }
-
-  // Clean up persistence
-  if (partialPath) {
-    if (completed) {
-      completePartial(partialPath, { delete: true, usage })
-    }
-  }
-
-  return {
-    model,
-    content: fullText,
-    responseId: interactionId,
-    usage,
-    durationMs: Date.now() - startTime,
-  }
-}
-
-/**
- * Non-streaming mode: create interaction then poll until complete
+ * Non-streaming mode: create interaction then poll until complete.
+ *
+ * Streaming (SSE) was removed 2026-04-20 because the parser speculated on
+ * `content.delta` / `delta.text` field names that don't match the actual
+ * Gemini Interactions API. The polling path has always been the reliable
+ * fallback; make it the only path until someone probes the live API and
+ * rewrites the SSE parser against real event frames.
  */
 async function queryWithPolling(
   prompt: string,

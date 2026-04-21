@@ -861,10 +861,19 @@ export async function runRecover(options: {
 
     if (result.error && result.status !== "timeout") {
       if (!localPartial) {
-        console.error(JSON.stringify({ error: `Failed to retrieve: ${result.error}` }))
+        // Match runAwait's error envelope — include responseId + status so
+        // scripts and the `bun llm await` caller can reason about the
+        // failure without re-deriving context.
+        console.error(
+          JSON.stringify({
+            error: `Failed to retrieve: ${result.error}`,
+            status: result.status,
+            responseId,
+          }),
+        )
         process.exit(1)
       }
-      console.error(`\n⚠️  Could not retrieve from OpenAI: ${result.error}`)
+      console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${result.error}`)
     } else if (result.status === "completed" && result.content) {
       console.error("\nFull response from OpenAI:\n")
       console.log(result.content)
@@ -1045,7 +1054,7 @@ export async function runProDual(options: {
 
   console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName} in parallel...`)
   console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
-  console.error(`  • K2.6 output cap: ${kimi!.defaultMaxOutputTokens} tokens (reasoning + content)\n`)
+  console.error(`  • K2.6 output cap: ${kimi!.reasoning?.maxOutputTokens} tokens (reasoning + content)\n`)
 
   // Cost confirmation matches runDebate / runDeep — a $5-15 call deserves a
   // Y/n gate. The 2026-04-20 double-fire bug made silent billing mistakes

@@ -20,23 +20,38 @@ export const ModelSchema = z.object({
   outputPricePerM: z.number().optional(),
   // Typical response time
   typicalLatencyMs: z.number().optional(),
-  // Default output token cap for this model. Reasoning models (e.g. Kimi K2.6)
-  // burn thousands of tokens *thinking* before emitting visible output —
-  // max_tokens covers BOTH reasoning and content, so the cap must be generous
-  // enough for "reasoning + complete answer" or the answer gets truncated (or
-  // empty, if reasoning exhausts the budget).
+  // Reasoning-model metadata. Thinking models burn tokens on chain-of-thought
+  // before emitting visible output — different providers expose different
+  // knobs for controlling that. Fields are composable (a model can declare
+  // both a cap AND an effort level). Absent field means the feature isn't
+  // used for this model.
   //
-  // Sizing guidance:
-  //   - Non-reasoning chat models: leave unset (use provider default ~4K)
-  //   - Reasoning models on short queries (<5K input): 16384
-  //   - Reasoning models on long queries (>30K input): 65536
-  //
-  // History: originally named `minCompletionTokens` with the intent of "floor
-  // the cap so short queries don't return empty"; the name was misleading
-  // because it's the cap itself, not a floor over the caller's value. A K2.6
-  // review of a 60K-token codebase (2026-04-20) returned empty content with
-  // the cap set to 8000 — reasoning ate the whole budget.
-  defaultMaxOutputTokens: z.number().optional(),
+  // History: originally a single field `minCompletionTokens` (intended as
+  // "floor", actually used as a cap on maxOutputTokens); replaced by this
+  // structure so future providers can plug in without bolting on more one-off
+  // fields. See km-infra.llm-review-fixes for context.
+  reasoning: z
+    .object({
+      // Max total output tokens (reasoning + content). Required for models
+      // where reasoning counts against the output budget — Kimi K2.6 and
+      // OpenAI o-series behave this way. Sized generously so a long-context
+      // review has room for ~20K+ reasoning tokens plus a full answer.
+      //   - Short queries (<5K input): 16384 is typical
+      //   - Long queries (>30K input): 65536 is safe
+      // Non-reasoning chat models leave this unset and fall through to the
+      // provider default.
+      maxOutputTokens: z.number().optional(),
+      // OpenAI o-series `reasoning_effort`: low | medium | high. Controls
+      // how many reasoning tokens the model spends before answering.
+      // Plumbing into queryModel is TODO — add when an o-series model is
+      // actually routed through the Chat Completions API from here.
+      openaiEffort: z.enum(["low", "medium", "high"]).optional(),
+      // Anthropic Claude 4.5+ extended-thinking `budget_tokens`. Plumbing
+      // into the @ai-sdk/anthropic provider call is TODO — same reason as
+      // openaiEffort: add when a thinking-enabled Claude model ships here.
+      anthropicBudget: z.number().optional(),
+    })
+    .optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 
@@ -568,7 +583,7 @@ export const MODELS: Model[] = [
     // 65K accommodates long-context reviews where reasoning alone eats 20K+.
     // Smaller queries only bill for what they actually use — the cap is upper
     // bound, not floor.
-    defaultMaxOutputTokens: 65536,
+    reasoning: { maxOutputTokens: 65536 },
   },
 
   // Perplexity

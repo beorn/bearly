@@ -23,7 +23,7 @@
  */
 
 import { getAvailableProviders } from "./lib/providers"
-import { getModel, MODELS, type Model } from "./lib/types"
+import { getModel, MODELS, type Model, type Provider } from "./lib/types"
 import { initializePricing, getStaleWarning } from "./lib/pricing"
 import { getDb, closeDb, findSimilarQueries } from "../../recall/src/history/db"
 import {
@@ -41,22 +41,32 @@ import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/fo
 
 import { readdirSync, statSync, unlinkSync } from "fs"
 
-// Initialize pricing on startup
-initializePricing()
+// Side effects are deferred to initCli() so importing this module from a
+// test or programmatic consumer doesn't fire pricing init, /tmp cleanup, or
+// any other startup work as a surprise. The wrapper (tools/llm.ts) invokes
+// main() which calls initCli() — no behavior change for the canonical path.
+//
+// The module-scope `args` parsing and `let outputFile` state below still
+// run on import. Pushing them into main() is a deeper refactor; acceptable
+// as-is because nothing currently imports cli.ts except the wrapper. Tracked
+// as a follow-up in km-infra.llm-review-fixes.
+function initCli(): void {
+  initializePricing()
 
-// Clean up stale output files (>7 days old)
-try {
-  const maxAge = 7 * 24 * 60 * 60 * 1000
-  const now = Date.now()
-  for (const f of readdirSync("/tmp")) {
-    if (f.startsWith("llm-") && f.endsWith(".txt")) {
-      const path = `/tmp/${f}`
-      try {
-        if (now - statSync(path).mtimeMs > maxAge) unlinkSync(path)
-      } catch {}
+  // Clean up stale output files (>7 days old).
+  try {
+    const maxAge = 7 * 24 * 60 * 60 * 1000
+    const now = Date.now()
+    for (const f of readdirSync("/tmp")) {
+      if (f.startsWith("llm-") && f.endsWith(".txt")) {
+        const path = `/tmp/${f}`
+        try {
+          if (now - statSync(path).mtimeMs > maxAge) unlinkSync(path)
+        } catch {}
+      }
     }
-  }
-} catch {}
+  } catch {}
+}
 
 // --- CLI argument parsing ---
 
@@ -64,6 +74,13 @@ const args = process.argv.slice(2)
 const command = args[0]
 
 function getArg(name: string): string | undefined {
+  // Accept both `--name value` and `--name=value` forms. The latter matters
+  // when callers shell-quote a value containing spaces, or use GNU-style
+  // option parsing habits; dropping it was a silent UX trap.
+  const prefix = `${name}=`
+  for (const a of args) {
+    if (a.startsWith(prefix)) return a.slice(prefix.length)
+  }
   const idx = args.indexOf(name)
   if (idx === -1) return undefined
   return args[idx + 1]
@@ -162,6 +179,27 @@ function extractText(fromAll: boolean, exclude?: string[]): string {
     .join(" ")
 }
 
+// Provider rows for the --help banner. Typed metadata replaces the previous
+// hand-rolled template with six `as any` casts; adding a provider here is a
+// one-line change in a single place.
+const PROVIDER_ROWS: ReadonlyArray<{ id: Provider; name: string; env: string; readyHint?: string }> = [
+  { id: "openai", name: "OpenAI", env: "OPENAI_API_KEY" },
+  { id: "anthropic", name: "Anthropic", env: "ANTHROPIC_API_KEY" },
+  { id: "google", name: "Google", env: "GOOGLE_GENERATIVE_AI_API_KEY" },
+  { id: "xai", name: "xAI (Grok)", env: "XAI_API_KEY" },
+  { id: "perplexity", name: "Perplexity", env: "PERPLEXITY_API_KEY" },
+  { id: "openrouter", name: "OpenRouter", env: "OPENROUTER_API_KEY", readyHint: "ready (Kimi K2.6, etc.)" },
+]
+
+function providerStatusLines(available: readonly Provider[]): string {
+  const set = new Set(available)
+  return PROVIDER_ROWS.map(({ id, name, env, readyHint }) => {
+    const ok = set.has(id)
+    const status = ok ? (readyHint ?? "ready") : `set ${env}`
+    return `  ${ok ? "✓" : "○"} ${name.padEnd(12)}${status}`
+  }).join("\n") + "\n"
+}
+
 function getQuestion(): string {
   return extractText(false, ["/deep", "/ask"])
 }
@@ -243,13 +281,7 @@ LOCAL MODELS
     --model ollama:llava:34b          Multimodal (image support)
 
 PROVIDERS
-  ${available.includes("openai" as any) ? "✓" : "○"} OpenAI      ${available.includes("openai" as any) ? "ready" : "set OPENAI_API_KEY"}
-  ${available.includes("anthropic" as any) ? "✓" : "○"} Anthropic   ${available.includes("anthropic" as any) ? "ready" : "set ANTHROPIC_API_KEY"}
-  ${available.includes("google" as any) ? "✓" : "○"} Google      ${available.includes("google" as any) ? "ready" : "set GOOGLE_GENERATIVE_AI_API_KEY"}
-  ${available.includes("xai" as any) ? "✓" : "○"} xAI (Grok)  ${available.includes("xai" as any) ? "ready" : "set XAI_API_KEY"}
-  ${available.includes("perplexity" as any) ? "✓" : "○"} Perplexity  ${available.includes("perplexity" as any) ? "ready" : "set PERPLEXITY_API_KEY"}
-  ${available.includes("openrouter" as any) ? "✓" : "○"} OpenRouter  ${available.includes("openrouter" as any) ? "ready (Kimi K2.6, etc.)" : "set OPENROUTER_API_KEY"}
-  ${ollamaStatus} Ollama      ${ollamaStatusText}
+${providerStatusLines(available)}  ${ollamaStatus} Ollama      ${ollamaStatusText}
 
 RECOVERY (for interrupted deep research)
   llm recover                       List incomplete/partial responses
@@ -307,6 +339,7 @@ function askOpts(question: string, modelMode: string, level: "standard" | "quick
  * process.argv[2] fails on invocations like `bun llm --verbose pro "q"`
  * where argv[2] is the flag, not the keyword. */
 export async function main(): Promise<string | undefined> {
+  initCli()
   if (!command || command === "--help" || command === "-h") {
     await checkOllamaStatus()
     usage()
@@ -372,6 +405,17 @@ export async function main(): Promise<string | undefined> {
   if (isDeepFlag) {
     const topic = isKeyword ? getQuestion() : extractText(true, ["/deep"])
     if (!topic) error("Usage: llm --deep <topic>")
+    // `--deep <keyword>` silently absorbs the keyword into the topic text
+    // because --deep sets command to "--deep" and the keyword just becomes a
+    // word in the topic. Documented in the skill, but easy to trip over —
+    // error out explicitly so the user knows what happened.
+    const firstWord = topic.split(/\s+/)[0]?.toLowerCase()
+    if (firstWord && KEYWORDS.includes(firstWord)) {
+      error(
+        `"${firstWord}" is a keyword and cannot be combined with --deep. Use --model <id> instead, e.g. ` +
+          `llm --deep --model gpt-5.4-pro "${topic.split(/\s+/).slice(1).join(" ")}"`,
+      )
+    }
     setOutputSlug(topic)
     await runDeep({
       topic,

@@ -112,10 +112,10 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
-  // answer comes back empty/truncated. defaultMaxOutputTokens per model is
-  // sized for the worst case; non-reasoning models leave it unset (provider
-  // default applies).
-  const maxOutputTokens = model.defaultMaxOutputTokens
+  // answer comes back empty/truncated. model.reasoning.maxOutputTokens is
+  // sized per-model for the worst case; non-reasoning models leave the
+  // reasoning block unset (provider default applies).
+  const maxOutputTokens = model.reasoning?.maxOutputTokens
 
   try {
     if (stream && onToken) {
