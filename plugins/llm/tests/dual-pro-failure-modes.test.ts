@@ -29,6 +29,17 @@ vi.mock("ai", () => ({
   streamText: streamTextMock,
 }))
 
+// GPT leg in dual-pro now routes through queryOpenAIBackground (Responses
+// API) for recoverability. Mock it here; Kimi leg still uses generateText.
+const queryBackgroundMock = vi.fn()
+vi.mock("../src/lib/openai-deep", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
+  return {
+    ...actual,
+    queryOpenAIBackground: queryBackgroundMock,
+  }
+})
+
 function abProLogPath(home: string): string {
   // Mirrors dispatch.ts:appendAbProLog — CLAUDE_PROJECT_DIR or cwd, /-encoded.
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
@@ -52,23 +63,24 @@ describe("dual-pro failure modes", () => {
   it("empty-content from GPT side is surfaced as failure", async () => {
     const env = makeTestEnv()
 
-    // GPT returns empty content; K2.6 returns good content. The order inside
-    // Promise.allSettled is stable by index (gpt first, kimi second), but
-    // generateText is shared — we keyed by the model id in the prompt/messages.
-    // Simpler: first call = gpt, second call = kimi (dispatch.ts fires them in
-    // that order inside `await Promise.allSettled([...])`).
+    // GPT leg routes through queryOpenAIBackground (Responses API) since
+    // km-infra.llm-fire-and-forget-pro; K2.6 still uses generateText.
+    // Empty content is the fulfilled-but-empty regression case: progress
+    // line should say ✗, combined report should say "⚠️  Failed".
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockResolvedValueOnce({
+      model: { displayName: "GPT-5.4 Pro" },
+      content: "",
+      responseId: "resp_empty_regression",
+      usage: { promptTokens: 10, completionTokens: 0, totalTokens: 10 },
+      durationMs: 100,
+    })
     generateTextMock.mockReset()
-    generateTextMock
-      .mockResolvedValueOnce({
-        text: "", // empty — fulfilled-but-empty, the regression case
-        reasoning: [],
-        usage: { inputTokens: 10, outputTokens: 0 },
-      })
-      .mockResolvedValueOnce({
-        text: "Kimi's answer",
-        reasoning: [],
-        usage: { inputTokens: 10, outputTokens: 20 },
-      })
+    generateTextMock.mockResolvedValueOnce({
+      text: "Kimi's answer",
+      reasoning: [],
+      usage: { inputTokens: 10, outputTokens: 20 },
+    })
 
     await runDualPro()
 
@@ -98,8 +110,10 @@ describe("dual-pro failure modes", () => {
   it("both legs failing exits 1 with diagnostic stderr", async () => {
     const env = makeTestEnv()
 
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockRejectedValueOnce(new Error("OpenAI 500"))
     generateTextMock.mockReset()
-    generateTextMock.mockRejectedValueOnce(new Error("OpenAI 500")).mockRejectedValueOnce(new Error("OpenRouter 503"))
+    generateTextMock.mockRejectedValueOnce(new Error("OpenRouter 503"))
 
     await runDualPro()
 

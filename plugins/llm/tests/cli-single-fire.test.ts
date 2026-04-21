@@ -30,6 +30,19 @@ vi.mock("ai", () => {
   }
 })
 
+// The pro-mode GPT leg routes through queryOpenAIBackground (Responses API +
+// background: true) since km-infra.llm-fire-and-forget-pro; its siblings
+// queryOpenAIDeepResearch, retrieveResponse, pollForCompletion don't fire in
+// these tests but we mock them together so the module surface is clean.
+const queryBackgroundMock = vi.fn()
+vi.mock("../src/lib/openai-deep", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
+  return {
+    ...actual,
+    queryOpenAIBackground: queryBackgroundMock,
+  }
+})
+
 function resetGenerateTextToOk() {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
@@ -43,6 +56,14 @@ function resetGenerateTextToOk() {
       yield "ok"
     })(),
     usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+  }))
+  queryBackgroundMock.mockReset()
+  queryBackgroundMock.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
+    model,
+    content: "ok",
+    responseId: `resp_test_${Math.random().toString(36).slice(2, 10)}`,
+    usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    durationMs: 100,
   }))
 }
 
@@ -79,9 +100,12 @@ describe("cli-single-fire", () => {
     const mod = await import("../src/cli")
     await mod.main()
 
-    // Dual-pro fires both legs in parallel (non-streaming). Exactly two
-    // generateText calls total — one per leg. Double-fire would be four.
-    expect(generateTextMock.mock.calls.length).toBe(2)
+    // Dual-pro fires both legs in parallel (non-streaming). The GPT leg now
+    // routes through queryOpenAIBackground (Responses API — recoverable),
+    // K2.6 stays on generateText (OpenRouter has no Responses API). Exactly
+    // one call on each mock. Double-fire would be two each.
+    expect(queryBackgroundMock.mock.calls.length).toBe(1)
+    expect(generateTextMock.mock.calls.length).toBe(1)
 
     // A/B log: one line per invocation. Path built from CLAUDE_PROJECT_DIR or
     // cwd — makeTestEnv doesn't override either, so the log lands under

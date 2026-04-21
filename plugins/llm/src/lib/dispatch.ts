@@ -406,19 +406,40 @@ export async function askAndFinish(options: {
     model = result.model
   }
   console.error(header(model.displayName) + "\n")
-  // SIGINT/SIGTERM aborts the in-flight ask() — a long Pro call that the
+
+  // Pro-mode OpenAI calls route through the Responses API so they're
+  // recoverable — a 30-min Pro call that loses its process (SIGINT, network
+  // hiccup, wall-clock kill) still persists its responseId and the user can
+  // `bun llm recover <id>`. Other modes (quick, opinion, default) stay on
+  // generateText: fast models complete in <2s and polling overhead outweighs
+  // the recovery benefit.
+  //
+  // imagePath disables the background route — queryOpenAIBackground is
+  // text-only today. Falling back to generateText preserves multimodal
+  // behaviour at the cost of recoverability for that specific invocation.
+  const { isOpenAIBackgroundCapable, queryOpenAIBackground } = await import("./openai-deep")
+  const useBackground = options.modelMode === "pro" && isOpenAIBackgroundCapable(model) && !imagePath
+
+  // SIGINT/SIGTERM aborts the in-flight call — a long Pro call that the
   // user wants to kill should stop, not wait out the ai-sdk 300s default.
   // The abort reason surfaces in the response error so finishResponse can
   // write it to the output file instead of silently truncating.
   const response = await withSignalAbort((signal) =>
-    ask(enrichedQuestion, level, {
-      modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
-      modelObject: model.provider === "ollama" ? model : undefined,
-      stream: true,
-      onToken: streamToken,
-      imagePath,
-      abortSignal: signal,
-    }),
+    useBackground
+      ? queryOpenAIBackground({
+          prompt: enrichedQuestion,
+          model,
+          topic: question,
+          abortSignal: signal,
+        })
+      : ask(enrichedQuestion, level, {
+          modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
+          modelObject: model.provider === "ollama" ? model : undefined,
+          stream: true,
+          onToken: streamToken,
+          imagePath,
+          abortSignal: signal,
+        }),
   )
   await finishResponse(response.content, model, outputFile, sessionTag, response.usage, response.durationMs, question)
 }
@@ -1322,17 +1343,28 @@ export async function runProDual(options: {
   await confirmOrExit("⚠️  Dual-pro costs ~$5-15 (mostly GPT-5.4 Pro). Proceed? [Y/n] ", skipConfirm)
 
   const { ask } = await import("./research")
+  const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("./openai-deep")
+
+  // Route the GPT leg through the Responses API so the call is recoverable:
+  // a 30+ min Pro call that gets SIGINT / network-hiccup / wall-clock killed
+  // still persists its responseId, and `bun llm recover <id>` reattaches to
+  // the server-side work. K2.6 cannot take this path — OpenRouter doesn't
+  // expose the Responses API, so the Kimi leg stays on generateText (if it's
+  // aborted, work is lost — acceptable given the ~30s typical runtime).
+  //
+  // imagePath disables the background path for the GPT leg — the Responses-API
+  // background helper is text-only today, and silently dropping the image
+  // would be worse than losing recoverability for the rare image+pro case.
+  const canBackgroundGpt = isOpenAIBackgroundCapable(gptPro!) && !imagePath
 
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
   //
   // SIGINT-only cancellation. Previously this wrapper enforced a wall-clock
   // ceiling (5 min → scaled → removed here) that kept killing legitimate
-  // long-context queries. The underlying ai-sdk still has its own per-call
-  // timeouts and the user can always Ctrl+C. Hung-provider guard is a
-  // future-work item — track via km-infra.llm-fire-and-forget-pro (route
-  // standard pro through OpenAI's responses API for true fire-and-forget
-  // + recovery semantics, matching the --deep path).
+  // long-context queries. With the GPT leg on background mode the user can
+  // always `bun llm recover <id>` to reattach — losing the local process is
+  // no longer terminal for the work.
   //
   // imagePath is forwarded explicitly — dropping it would silently degrade
   // `--image` to text-only.
@@ -1342,13 +1374,21 @@ export async function runProDual(options: {
     if (outerSignal.aborted) onOuterAbort()
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
     try {
+      const gptCall = canBackgroundGpt
+        ? queryOpenAIBackground({
+            prompt: enrichedQuestion,
+            model: gptPro!,
+            topic: question,
+            abortSignal: ac.signal,
+          })
+        : ask(enrichedQuestion, "standard", {
+            modelOverride: gptPro!.modelId,
+            stream: false,
+            imagePath,
+            abortSignal: ac.signal,
+          })
       return await Promise.allSettled([
-        ask(enrichedQuestion, "standard", {
-          modelOverride: gptPro!.modelId,
-          stream: false,
-          imagePath,
-          abortSignal: ac.signal,
-        }),
+        gptCall,
         ask(enrichedQuestion, "standard", {
           modelOverride: kimi!.modelId,
           stream: false,
