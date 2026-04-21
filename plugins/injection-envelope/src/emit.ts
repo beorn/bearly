@@ -31,6 +31,9 @@ import {
   type InjectedSpan,
   type TurnManifest,
 } from "./manifest.ts"
+// Observability: every UserPromptSubmit additionalContext emission writes
+// one line to the unified tribe activity log. See km-tribe.activity-log.
+import { writeInjectActivity } from "../../../tools/lib/tribe/activity-log.ts"
 
 /**
  * Trailing protocol reminder, emitted only when there is content to frame.
@@ -276,6 +279,11 @@ function persistManifestFromWrap(opts: WrapOptions): void {
  */
 export function emitHookJson(eventName: string, additionalContext?: string): string {
   if (eventName === "UserPromptSubmit" && additionalContext !== undefined) {
+    // Observability: record the injection into the unified tribe activity log
+    // so `tail -f ~/.local/share/tribe/activity.jsonl` shows everything that
+    // lands in the session's prompt stream. Best-effort; write failures never
+    // propagate to the hook response. See km-tribe.activity-log phase 2.
+    writeInjectActivity(additionalContext)
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",

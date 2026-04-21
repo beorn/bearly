@@ -17,9 +17,11 @@ import {
   activityFromMessage,
   activityLogPath,
   writeActivity,
+  writeInjectActivity,
   __resetActivityLogState,
   type ActivityEntry,
 } from "../tools/lib/tribe/activity-log.ts"
+import { emitHookJson } from "../plugins/injection-envelope/src/emit.ts"
 
 let tmpDir: string
 let origEnv: string | undefined
@@ -229,5 +231,61 @@ describe("activityLogPath resolution", () => {
     delete process.env.TRIBE_ACTIVITY_LOG
     const home = process.env.HOME ?? ""
     expect(activityLogPath()).toBe(`${home}/.local/share/tribe/activity.jsonl`)
+  })
+})
+
+describe("writeInjectActivity — phase 2 (recall hook)", () => {
+  it("records source=recall, kind=inject with full chars + truncated preview", () => {
+    const content = "x".repeat(500)
+    writeInjectActivity(content)
+    const entries = readEntries()
+    expect(entries).toHaveLength(1)
+    const e = entries[0]!
+    expect(e.source).toBe("recall")
+    expect(e.kind).toBe("inject")
+    expect(e.chars).toBe(500)
+    expect(e.preview?.length).toBe(200) // truncated
+  })
+
+  it("uses CLAUDE_SESSION_ID when set, else falls back to pid", () => {
+    const origId = process.env.CLAUDE_SESSION_ID
+    try {
+      process.env.CLAUDE_SESSION_ID = "session-abc"
+      writeInjectActivity("hello")
+      process.env.CLAUDE_SESSION_ID = ""
+      delete process.env.CLAUDE_SESSION_ID
+      writeInjectActivity("world")
+      const entries = readEntries()
+      expect(entries).toHaveLength(2)
+      expect(entries[0]!.session).toBe("session-abc")
+      expect(entries[1]!.session).toMatch(/^pid-\d+$/)
+    } finally {
+      if (origId === undefined) delete process.env.CLAUDE_SESSION_ID
+      else process.env.CLAUDE_SESSION_ID = origId
+    }
+  })
+})
+
+describe("emitHookJson integration — every UserPromptSubmit emission writes to activity log", () => {
+  it("records the additionalContext when emitting UserPromptSubmit", () => {
+    const out = emitHookJson("UserPromptSubmit", "recall: <snippet session='abc'>past work</snippet>")
+    expect(out).toContain("hookSpecificOutput")
+    const entries = readEntries()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.source).toBe("recall")
+    expect(entries[0]!.kind).toBe("inject")
+    expect(entries[0]!.preview).toContain("past work")
+  })
+
+  it("does NOT record when additionalContext is undefined (empty hook output)", () => {
+    const out = emitHookJson("UserPromptSubmit")
+    expect(out).toBe("{}")
+    expect(readEntries()).toHaveLength(0)
+  })
+
+  it("does NOT record for non-UserPromptSubmit events", () => {
+    const out = emitHookJson("SessionEnd", "some content")
+    expect(out).toBe("{}")
+    expect(readEntries()).toHaveLength(0)
   })
 })

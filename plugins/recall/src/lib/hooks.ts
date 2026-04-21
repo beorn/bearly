@@ -13,6 +13,9 @@ import { summarizeUnprocessedDays } from "./summarize-daily"
 import { withDaemonCall } from "../../../tribe/lore/lib/socket.ts"
 import { resolveLoreSocketPath } from "../../../tribe/lore/lib/config.ts"
 import { TRIBE_METHODS, LORE_PROTOCOL_VERSION, type InjectDeltaResult } from "../../../tribe/lore/lib/rpc.ts"
+// Route every UserPromptSubmit emission through the envelope so the unified
+// activity log catches it (km-tribe.activity-log phase 2).
+import { emitHookJson as envelopeEmitHookJson } from "../../../injection-envelope/src/emit.ts"
 
 // ============================================================================
 // Session sentinel (written by hook, read by `bun recall` subprocesses)
@@ -362,14 +365,7 @@ export async function cmdHook(): Promise<void> {
         console.error(
           `[recall hook] daemon OK: ${daemonOutput.contextLen} chars synthesis (${Date.now() - startTime}ms, seen=${daemonOutput.seenCount} turn=${daemonOutput.turnNumber}) prompt="${prompt.slice(0, 60)}"`,
         )
-        console.log(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "UserPromptSubmit",
-              additionalContext: daemonOutput.additionalContext,
-            },
-          }),
-        )
+        console.log(envelopeEmitHookJson("UserPromptSubmit", daemonOutput.additionalContext))
         process.exit(0)
       }
       // kind === "error" — fall through to library path below.
@@ -381,9 +377,11 @@ export async function cmdHook(): Promise<void> {
       console.error(`[recall hook] skipped: ${result.reason} (${elapsed}ms) prompt="${prompt.slice(0, 60)}"`)
       process.exit(0)
     }
-    const synthLen = result.hookOutput?.hookSpecificOutput.additionalContext.length ?? 0
-    console.error(`[recall hook] OK: ${synthLen} chars synthesis (${elapsed}ms) prompt="${prompt.slice(0, 60)}"`)
-    console.log(JSON.stringify(result.hookOutput))
+    const additionalContext = result.hookOutput?.hookSpecificOutput.additionalContext ?? ""
+    console.error(
+      `[recall hook] OK: ${additionalContext.length} chars synthesis (${elapsed}ms) prompt="${prompt.slice(0, 60)}"`,
+    )
+    console.log(envelopeEmitHookJson("UserPromptSubmit", additionalContext))
   } catch (e) {
     const elapsed = Date.now() - startTime
     console.error(

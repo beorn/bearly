@@ -10,14 +10,15 @@
  * discover the offer had never travelled through tribe. The activity log is
  * the observability surface that catches that class of incident live.
  *
- * Phases (this file implements phase 1 only):
- *   1. Tribe daemon — DMs + broadcasts + session lifecycle (this file)
- *   2. Recall hook injections (follow-up bead)
+ * Phases:
+ *   1. Tribe daemon — DMs + broadcasts + session lifecycle ✓
+ *   2. Recall hook injections — writeInjectActivity() called from
+ *      injection-envelope.emitHookJson ✓
  *   3. Injection-gate verdicts (follow-up bead)
  *
  * Path: $TRIBE_ACTIVITY_LOG, or ~/.local/share/tribe/activity.jsonl.
- * Disable with TRIBE_ACTIVITY_LOG=off (used by tests by default via the
- * vitest setup; production leaves it unset so the daemon writes normally).
+ * Disable with TRIBE_ACTIVITY_LOG=off (used by tests; production leaves it
+ * unset so writes happen normally).
  */
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs"
@@ -27,18 +28,23 @@ import { dirname } from "node:path"
 // Types
 // ---------------------------------------------------------------------------
 
-export type ActivityKind = "dm" | "broadcast" | "event" | "session" | "rename"
+export type ActivityKind = "dm" | "broadcast" | "event" | "session" | "rename" | "inject" | "gate"
+export type ActivitySource = "tribe" | "recall" | "gate"
 
 export interface ActivityEntry {
   ts: number
-  source: "tribe"
+  source: ActivitySource
   kind: ActivityKind
   session: string
   peer?: string
   type?: string
   preview?: string
+  /** Total unshortened content length (preview is clipped). */
+  chars?: number
   id?: string
   bead_id?: string | null
+  /** Arbitrary decision payload — e.g. injection-gate verdicts. */
+  meta?: Record<string, unknown>
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +153,28 @@ export function activityFromMessage(msg: {
     id: msg.id,
     bead_id: msg.bead_id,
   }
+}
+
+/**
+ * Record a recall hook injection. Called from injection-envelope.emitHookJson
+ * whenever a UserPromptSubmit additionalContext is about to land in the
+ * Claude Code session.
+ *
+ * Session attribution: $CLAUDE_SESSION_ID when Claude Code sets it, else
+ * `pid-<pid>` as a last resort. The key observability value is the *content*
+ * — preview shows the first 200 chars of whatever is being injected.
+ */
+export function writeInjectActivity(content: string, extra?: { meta?: Record<string, unknown> }): void {
+  const session = process.env.CLAUDE_SESSION_ID ?? `pid-${process.pid}`
+  writeActivity({
+    ts: Date.now(),
+    source: "recall",
+    kind: "inject",
+    session,
+    preview: previewOf(content),
+    chars: content.length,
+    meta: extra?.meta,
+  })
 }
 
 /** Reset cached state. Tests only. */
