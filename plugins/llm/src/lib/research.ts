@@ -26,6 +26,53 @@ export interface QueryOptions {
   abortSignal?: AbortSignal
 }
 
+/** Rough token estimate: ~4 chars/token for English + code. Overestimates
+ * rather than under-estimates so our safety margin below the contextWindow
+ * actually holds. Accurate-enough since we only need "under the real count"
+ * — a proper tokenizer would be more precise but would pull in a
+ * per-provider dep we don't otherwise need. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+/** Compute the output-token cap for a query. Returns `undefined` for
+ * non-reasoning models (provider default applies).
+ *
+ * Dynamic path (`reasoning.contextWindow` set): cap =
+ *   contextWindow − estimatedInputTokens − 2048 safety margin. Handles
+ *   providers like Kimi K2.6 that enforce a combined input+output limit.
+ *   Safety margin is generous enough to absorb tokenizer-estimation error
+ *   without cutting into the output budget meaningfully.
+ *
+ * Static path (`reasoning.maxOutputTokens` set): cap = that value.
+ *
+ * If dynamic math produces a non-positive value (input already exceeds
+ * the window — impossible in practice but worth guarding), fall back to
+ * the static ceiling if any, or `undefined` to defer to the provider. */
+function computeMaxOutputTokens(
+  model: Model,
+  messages: Array<{ role: string; content: unknown }>,
+): number | undefined {
+  const reasoning = model.reasoning
+  if (!reasoning) return undefined
+  if (reasoning.contextWindow) {
+    const SAFETY = 2048
+    const inputChars = messages.reduce((sum, m) => {
+      if (typeof m.content === "string") return sum + m.content.length
+      if (Array.isArray(m.content)) {
+        for (const part of m.content as Array<{ type: string; text?: string }>) {
+          if (part.type === "text" && part.text) sum += part.text.length
+        }
+      }
+      return sum
+    }, 0)
+    const estimatedInput = Math.ceil(inputChars / 4)
+    const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
+    if (dynamicCap > 0) return dynamicCap
+  }
+  return reasoning.maxOutputTokens
+}
+
 export interface QueryResult {
   response: ModelResponse
   stream?: AsyncIterable<string>
@@ -114,10 +161,22 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
-  // answer comes back empty/truncated. model.reasoning.maxOutputTokens is
-  // sized per-model for the worst case; non-reasoning models leave the
-  // reasoning block unset (provider default applies).
-  const maxOutputTokens = model.reasoning?.maxOutputTokens
+  // answer comes back empty/truncated. Two sizing strategies:
+  //
+  //   1. `reasoning.contextWindow` (dynamic): provider enforces a COMBINED
+  //      input+output limit. Compute max_tokens = contextWindow − estimated
+  //      input − safety margin so every query gets the maximum usable
+  //      headroom. Required for Kimi K2.6 (262144-token combined window)
+  //      where a static cap always compromises between short-query headroom
+  //      and long-review safety.
+  //
+  //   2. `reasoning.maxOutputTokens` (static): fixed ceiling, regardless of
+  //      input size. Used when we just want to make sure reasoning has room
+  //      for a worst-case answer and the provider doesn't combine limits.
+  //
+  // contextWindow takes precedence when both are set. Non-reasoning chat
+  // models leave the block unset entirely (provider default applies).
+  const maxOutputTokens = computeMaxOutputTokens(model, messages)
 
   // Provider-specific reasoning knobs. OpenAI o-series exposes a
   // `reasoning_effort` enum (low|medium|high) on the Chat Completions API;

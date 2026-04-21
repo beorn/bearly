@@ -40,7 +40,20 @@ export const ModelSchema = z.object({
       //   - Long queries (>30K input): 65536 is safe
       // Non-reasoning chat models leave this unset and fall through to the
       // provider default.
+      //
+      // Used as a static ceiling. For models where the provider enforces a
+      // COMBINED context limit (input + output ≤ N), prefer `contextWindow`
+      // below — queryModel derives max_tokens dynamically as
+      // `contextWindow − estimatedInput − safetyMargin`, giving every query
+      // the maximum usable headroom without ever tripping the limit.
       maxOutputTokens: z.number().optional(),
+      // Combined context window (input + output) in tokens. When set,
+      // queryModel computes max_tokens at call time rather than using a
+      // fixed ceiling — useful for models like Kimi K2.6 that reject
+      // `max_tokens + input_tokens > contextWindow`. Fixed-ceiling values
+      // are always a compromise between small-query headroom and
+      // large-review safety; dynamic sizing eliminates the tradeoff.
+      contextWindow: z.number().optional(),
       // OpenAI o-series `reasoning_effort`: low | medium | high. Controls
       // how many reasoning tokens the model spends before answering.
       // Plumbing into queryModel is TODO — add when an o-series model is
@@ -592,17 +605,16 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    // 220K output cap — effectively the highest usable value. K2.6's total
-    // context (input + output) is 262144 tokens, so `max_tokens` can never
-    // exceed 262144 − input_tokens. Values above ~260K get rejected with
-    // "maximum context length is 262144 tokens" even on trivial prompts.
-    // 220K leaves 42K headroom for input, which covers every review we've
-    // run (largest was ~35K). Going higher breaks reviews without benefit —
-    // short queries only bill for what they use. Cap is upper bound, not
-    // floor.
+    // Dynamic sizing via contextWindow — queryModel computes max_tokens at
+    // call time as `contextWindow − estimatedInputTokens − 2048` (safety
+    // margin for tokenizer estimation error). A trivial prompt gets ~260K
+    // output room; a 50K-token review gets ~210K; an 80K-token review
+    // gets ~180K. Eliminates the static-cap tradeoff — no value works for
+    // both "tiny queries want all the room" and "big reviews don't want
+    // reject".
     // History: 8K (empty on 60K input), 64K (truncated at 89K output),
-    // 128K, tried 262144 (combined-context reject), 200K, now 220K.
-    reasoning: { maxOutputTokens: 220000 },
+    // 128K, 220K (static ceiling, always a compromise), now dynamic.
+    reasoning: { contextWindow: 262144 },
   },
 
   // Perplexity
