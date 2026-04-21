@@ -527,44 +527,53 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
     // Dispatch to the backend that actually owns this response ID. Previously
     // this path hardcoded OpenAI's retrieveResponse, which silently failed
     // for Gemini interaction IDs persisted from gemini-deep. pollResponse-
-    // ToCompletion resolves provider via the persisted modelId.
+    // ToCompletion resolves provider via the persisted modelId; the shared
+    // classifyRecovery helper then maps the (partial, result) pair onto a
+    // stable RecoveryOutcome so both this path and runRecover share one
+    // classifier — the Gemini routing fix and 30m stale threshold apply
+    // uniformly in one place.
     if (partial.metadata.responseId) {
       const persistedModel = getModel(partial.metadata.modelId)
       const provider = persistedModel?.provider ?? "openai"
       const providerName = provider === "google" ? "Gemini" : "OpenAI"
       const recovered = await pollResponseToCompletion(partial.metadata.responseId, /* silent */ true)
-      if (recovered.status === "completed" && recovered.content) {
-        console.error(`    ✅ Recovered from ${providerName} (${recovered.content.length} chars)`)
-        console.error(`\n--- Recovered Response ---\n`)
-        console.log(recovered.content)
-        if (recovered.usage) {
-          console.error(`\n[Recovered: ${recovered.usage.totalTokens} tokens]`)
-        }
-        // Clean up the partial file
-        const { completePartial } = await import("./persistence")
-        completePartial(partial.path, { delete: true })
-        console.error(`\n--- End Recovered Response ---\n`)
-      } else if (recovered.status === "failed" || recovered.status === "cancelled" || recovered.status === "expired") {
-        console.error(`    ❌ Response ${recovered.status} — removing stale partial`)
-        const { completePartial } = await import("./persistence")
-        completePartial(partial.path, { delete: true })
-      } else if (recovered.status === "in_progress" || recovered.status === "queued") {
-        // Check if stale (>30 min for deep research is suspicious)
-        const partialAge = Date.now() - new Date(partial.metadata.startedAt).getTime()
-        if (partialAge > 30 * 60 * 1000) {
-          console.error(
-            `    ⚠️  Still ${recovered.status} after ${Math.round(partialAge / 60000)}m — likely stale, removing`,
-          )
-          const { completePartial } = await import("./persistence")
+      const outcome = classifyRecovery(partial, recovered)
+      const { completePartial } = await import("./persistence")
+      switch (outcome.kind) {
+        case "completed": {
+          console.error(`    ✅ Recovered from ${providerName} (${outcome.content.length} chars)`)
+          console.error(`\n--- Recovered Response ---\n`)
+          console.log(outcome.content)
+          if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens} tokens]`)
           completePartial(partial.path, { delete: true })
-        } else {
-          console.error(`    ⏳ Still ${recovered.status} on ${providerName} (${Math.round(partialAge / 60000)}m old)`)
-          console.error(`    Run 'llm recover ${partial.metadata.responseId}' to poll until complete`)
+          console.error(`\n--- End Recovered Response ---\n`)
+          break
         }
-      } else {
-        console.error(`    ⚠️  Could not recover (status: ${recovered.status})`)
-        if (partial.content.length > 0) {
-          console.error(`    Local partial has ${partial.content.length} chars saved`)
+        case "failed": {
+          console.error(`    ❌ Response ${outcome.status} — removing stale partial`)
+          completePartial(partial.path, { delete: true })
+          break
+        }
+        case "stale": {
+          console.error(
+            `    ⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale, removing`,
+          )
+          completePartial(partial.path, { delete: true })
+          break
+        }
+        case "pending": {
+          const ageStr = outcome.ageMs !== undefined ? `${Math.round(outcome.ageMs / 60000)}m old` : "age unknown"
+          console.error(`    ⏳ Still ${outcome.status} on ${providerName} (${ageStr})`)
+          console.error(`    Run 'llm recover ${partial.metadata.responseId}' to poll until complete`)
+          break
+        }
+        case "error":
+        case "unknown": {
+          console.error(`    ⚠️  Could not recover (status: ${outcome.status})`)
+          if (partial.content.length > 0) {
+            console.error(`    Local partial has ${partial.content.length} chars saved`)
+          }
+          break
         }
       }
     }
@@ -904,6 +913,53 @@ export async function pollResponseToCompletion(
   return result
 }
 
+/**
+ * Classify a (partial, pollResult) pair into one of four user-facing
+ * outcomes. Both checkAndRecoverPartials (auto-recover before new query)
+ * and runRecover (explicit `llm recover <id>`) do the same branching; this
+ * helper puts the classification logic in one place so the Gemini routing
+ * fix, stale-age threshold, and status taxonomy apply uniformly.
+ *
+ * `partial` is optional because runRecover may be called with a raw
+ * response ID that has no local partial (external callers passing IDs
+ * direct from `openai.responses.create`). Without a partial, we can't
+ * compute age, so "stale" never fires — pending/pending-ish statuses
+ * just fall through to the caller's "still running" path.
+ */
+export type RecoveryOutcome =
+  | { kind: "completed"; content: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }
+  | { kind: "failed"; status: string; error?: string }
+  | { kind: "stale"; status: string; ageMs: number }
+  | { kind: "pending"; status: string; ageMs: number | undefined }
+  | { kind: "error"; status: string; error?: string }
+  | { kind: "unknown"; status: string }
+
+/** Stale threshold for pending deep-research responses: 30m. */
+const STALE_THRESHOLD_MS = 30 * 60 * 1000
+
+export function classifyRecovery(
+  partial: { metadata: { startedAt: string } } | undefined,
+  result: { status: string; content: string; error?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } },
+): RecoveryOutcome {
+  if (result.status === "completed" && result.content) {
+    return { kind: "completed", content: result.content, usage: result.usage }
+  }
+  if (result.status === "failed" || result.status === "cancelled" || result.status === "expired") {
+    return { kind: "failed", status: result.status, error: result.error }
+  }
+  if (result.error && result.status !== "timeout") {
+    return { kind: "error", status: result.status, error: result.error }
+  }
+  if (result.status === "in_progress" || result.status === "queued") {
+    const ageMs = partial ? Date.now() - new Date(partial.metadata.startedAt).getTime() : undefined
+    if (ageMs !== undefined && ageMs > STALE_THRESHOLD_MS) {
+      return { kind: "stale", status: result.status, ageMs }
+    }
+    return { kind: "pending", status: result.status, ageMs }
+  }
+  return { kind: "unknown", status: result.status }
+}
+
 /** Run recover/partials command */
 export async function runRecover(options: {
   responseId: string | undefined
@@ -949,44 +1005,64 @@ export async function runRecover(options: {
       pollResponseToCompletion(responseId, /* silentProgress */ false, signal),
     )
 
-    if (result.error && result.status !== "timeout") {
-      if (!localPartial) {
-        // Match runAwait's error envelope — include responseId + status so
-        // scripts and the `bun llm await` caller can reason about the
-        // failure without re-deriving context.
+    const outcome = classifyRecovery(localPartial ?? undefined, result)
+    const { completePartial } = await import("./persistence")
+    switch (outcome.kind) {
+      case "completed": {
+        console.error("\nFull response from OpenAI:\n")
+        console.log(outcome.content)
+        if (outcome.usage) console.error(`\n[${outcome.usage.totalTokens} tokens]`)
+        // finalizeOutput() inside writeRecoveredResponse already writes the
+        // path line to stderr — skip the redundant "Recovered output written
+        // to:" that used to print a near-identical second line.
+        await writeRecoveredResponse(outcome.content, responseId, localPartial?.metadata.topic, outcome.usage)
+        if (localPartial) completePartial(localPartial.path, { delete: true })
+        break
+      }
+      case "failed": {
+        console.error(`\nResponse ${outcome.status}`)
+        if (localPartial) {
+          completePartial(localPartial.path, { delete: true })
+          console.error("Cleaned up stale partial file.")
+        }
+        break
+      }
+      case "stale": {
         console.error(
-          JSON.stringify({
-            error: `Failed to retrieve: ${result.error}`,
-            status: result.status,
-            responseId,
-          }),
+          `\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`,
         )
-        process.exit(1)
+        if (localPartial) {
+          completePartial(localPartial.path, { delete: true })
+          console.error("Cleaned up stale partial file.")
+        }
+        break
       }
-      console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${result.error}`)
-    } else if (result.status === "completed" && result.content) {
-      console.error("\nFull response from OpenAI:\n")
-      console.log(result.content)
-      if (result.usage) {
-        console.error(`\n[${result.usage.totalTokens} tokens]`)
+      case "pending": {
+        const ageStr = outcome.ageMs !== undefined ? ` (${Math.round(outcome.ageMs / 60000)}m old)` : ""
+        console.error(`Response ${outcome.status}${ageStr}`)
+        break
       }
-      // finalizeOutput() inside writeRecoveredResponse already writes the
-      // path line to stderr — skip the redundant "Recovered output written
-      // to:" that used to print a near-identical second line.
-      await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage)
-      if (localPartial) {
-        const { completePartial } = await import("./persistence")
-        completePartial(localPartial.path, { delete: true })
+      case "error": {
+        if (!localPartial) {
+          // Match runAwait's error envelope — include responseId + status so
+          // scripts and the `bun llm await` caller can reason about the
+          // failure without re-deriving context.
+          console.error(
+            JSON.stringify({
+              error: `Failed to retrieve: ${outcome.error}`,
+              status: outcome.status,
+              responseId,
+            }),
+          )
+          process.exit(1)
+        }
+        console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${outcome.error}`)
+        break
       }
-    } else if (result.status === "failed" || result.status === "cancelled" || result.status === "expired") {
-      console.error(`\nResponse ${result.status}`)
-      if (localPartial) {
-        const { completePartial } = await import("./persistence")
-        completePartial(localPartial.path, { delete: true })
-        console.error("Cleaned up stale partial file.")
+      case "unknown": {
+        console.error(`Response ${outcome.status}${result.error ? `: ${result.error}` : ""}`)
+        break
       }
-    } else {
-      console.error(`Response ${result.status}${result.error ? `: ${result.error}` : ""}`)
     }
     return
   }
