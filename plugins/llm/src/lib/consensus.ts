@@ -17,13 +17,19 @@ export interface ConsensusOptions {
   modelIds?: string[]
   synthesize?: boolean
   onModelComplete?: (response: ModelResponse) => void
+  /**
+   * Abort signal forwarded to every parallel queryModel call. Used by
+   * runDebate so Ctrl-C during a $1-3 multi-model run cancels each
+   * in-flight request instead of letting them complete and bill.
+   */
+  abortSignal?: AbortSignal
 }
 
 /**
  * Query multiple models and optionally synthesize their responses
  */
 export async function consensus(options: ConsensusOptions): Promise<ConsensusResult> {
-  const { question, level = "consensus", synthesize = true, onModelComplete } = options
+  const { question, level = "consensus", synthesize = true, onModelComplete, abortSignal } = options
   const startTime = Date.now()
 
   // Determine which models to use
@@ -49,7 +55,7 @@ export async function consensus(options: ConsensusOptions): Promise<ConsensusRes
   // Query all models in parallel
   const responses = await Promise.all(
     availableModels.map(async (model) => {
-      const result = await queryModel({ question, model })
+      const result = await queryModel({ question, model, abortSignal })
       if (onModelComplete) onModelComplete(result.response)
       return result.response
     }),

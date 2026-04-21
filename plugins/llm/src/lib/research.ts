@@ -72,6 +72,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       stream,
       onToken,
       context,
+      abortSignal,
     })
     return { response }
   }
@@ -84,6 +85,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       stream,
       onToken,
       context,
+      abortSignal,
     })
     return { response }
   }
@@ -268,6 +270,13 @@ export interface ResearchCallOptions {
   context?: string
   /** Fire-and-forget: persist response ID and exit without polling (default: true for deep) */
   fireAndForget?: boolean
+  /**
+   * Abort signal propagated into the poll loops and underlying queryModel
+   * calls. Used by the dispatch-level SIGINT/SIGTERM wiring so Ctrl-C
+   * cancels a long deep-research synchronous call instead of leaving the
+   * provider poll running for up to 50m.
+   */
+  abortSignal?: AbortSignal
 }
 
 /**
@@ -307,6 +316,7 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       onToken: options.onToken,
       context,
       fireAndForget: options.fireAndForget,
+      abortSignal: options.abortSignal,
     })
     return response
   }
@@ -319,6 +329,7 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       context,
       stream: options.stream,
       onToken: options.onToken,
+      abortSignal: options.abortSignal,
     })
     return result.response
   }

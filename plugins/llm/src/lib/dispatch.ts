@@ -16,6 +16,32 @@ import { isPricingStale, cacheCurrentPricing, PRICING_SOURCES } from "./pricing"
 
 const log = createLogger("bearly:llm")
 
+/**
+ * Bind SIGINT/SIGTERM to an AbortController for the duration of `fn`.
+ *
+ * Ctrl-C (SIGINT) and SIGTERM fire `ac.abort("user-interrupt")`, which
+ * propagates to any `ask()` / poll call threading `ac.signal`. Handlers are
+ * removed in `finally` so later signals fall back to the default (kill the
+ * process). `process.once` — we don't want to fire abort twice if the user
+ * hammers Ctrl-C; the second press terminates normally.
+ *
+ * Used by the expensive dispatch paths (askAndFinish, runDeep, runDebate,
+ * runProDual, runRecover, runAwait) so a long Pro call or 50m poll stops
+ * cleanly instead of leaking server-side work / wasting the user's time.
+ */
+async function withSignalAbort<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ac = new AbortController()
+  const onSignal = () => ac.abort("user-interrupt")
+  process.once("SIGINT", onSignal)
+  process.once("SIGTERM", onSignal)
+  try {
+    return await fn(ac.signal)
+  } finally {
+    process.off("SIGINT", onSignal)
+    process.off("SIGTERM", onSignal)
+  }
+}
+
 export interface PricingUpdateResult {
   priceChanges: Array<{
     modelId: string
@@ -380,13 +406,20 @@ export async function askAndFinish(options: {
     model = result.model
   }
   console.error(header(model.displayName) + "\n")
-  const response = await ask(enrichedQuestion, level, {
-    modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
-    modelObject: model.provider === "ollama" ? model : undefined,
-    stream: true,
-    onToken: streamToken,
-    imagePath,
-  })
+  // SIGINT/SIGTERM aborts the in-flight ask() — a long Pro call that the
+  // user wants to kill should stop, not wait out the ai-sdk 300s default.
+  // The abort reason surfaces in the response error so finishResponse can
+  // write it to the output file instead of silently truncating.
+  const response = await withSignalAbort((signal) =>
+    ask(enrichedQuestion, level, {
+      modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
+      modelObject: model.provider === "ollama" ? model : undefined,
+      stream: true,
+      onToken: streamToken,
+      imagePath,
+      abortSignal: signal,
+    }),
+  )
   await finishResponse(response.content, model, outputFile, sessionTag, response.usage, response.durationMs, question)
 }
 
@@ -601,13 +634,21 @@ export async function runDeep(options: {
 
   await confirmOrExit("⚠️  This uses deep research models (~$2-5). Proceed? [Y/n] ", skipConfirm)
 
-  const response = await research(topic, {
-    context,
-    stream: true,
-    onToken: streamToken,
-    modelOverride: deepModel.modelId,
-    fireAndForget: true,
-  })
+  // SIGINT/SIGTERM aborts both the synchronous create (rare — it's a single
+  // HTTP call) and any inline polling (Gemini deep path polls for up to 20m
+  // inside research()). Fire-and-forget OpenAI paths return immediately
+  // after the ID is captured, but we wrap anyway so either provider
+  // branch honours Ctrl-C uniformly.
+  const response = await withSignalAbort((signal) =>
+    research(topic, {
+      context,
+      stream: true,
+      onToken: streamToken,
+      modelOverride: deepModel.modelId,
+      fireAndForget: true,
+      abortSignal: signal,
+    }),
+  )
 
   // Fire-and-forget: response ID is persisted, recover later with `bun llm recover`
   // For fire-and-forget deep research, empty content is expected — the research continues
@@ -693,18 +734,24 @@ export async function runDebate(options: {
 
   await confirmOrExit("⚠️  This queries multiple models (~$1-3). Proceed? [Y/n] ", skipConfirm)
 
-  const result = await consensus({
-    question: enrichedQuestion,
-    modelIds: debateModels.map((m) => m.modelId),
-    synthesize: true,
-    onModelComplete: (response) => {
-      if (response.error) {
-        console.error(`[${response.model.displayName}] Error: ${response.error}`)
-      } else {
-        console.error(`[${response.model.displayName}] ✓`)
-      }
-    },
-  })
+  // SIGINT/SIGTERM aborts all three parallel queryModel calls inside
+  // consensus(). A $1-3 multi-model run that the user wants to kill should
+  // stop billing immediately, not run every leg to completion.
+  const result = await withSignalAbort((signal) =>
+    consensus({
+      question: enrichedQuestion,
+      modelIds: debateModels.map((m) => m.modelId),
+      synthesize: true,
+      abortSignal: signal,
+      onModelComplete: (response) => {
+        if (response.error) {
+          console.error(`[${response.model.displayName}] Error: ${response.error}`)
+        } else {
+          console.error(`[${response.model.displayName}] ✓`)
+        }
+      },
+    }),
+  )
 
   // Build full debate output
   const parts: string[] = []
@@ -794,10 +841,14 @@ async function writeRecoveredResponse(
  *
  * @param silentProgress — when true, suppress all progress output (used by `await`).
  *                        Otherwise TTY gets spinner, non-TTY gets 60s-gated lines.
+ * @param abortSignal — optional signal that short-circuits the poll on abort.
+ *                      Wired by runRecover/runAwait via withSignalAbort so
+ *                      Ctrl-C during a 50-minute recover stops cleanly.
  */
 export async function pollResponseToCompletion(
   responseId: string,
   silentProgress: boolean,
+  abortSignal?: AbortSignal,
 ): Promise<{
   status: string
   content: string
@@ -825,6 +876,7 @@ export async function pollResponseToCompletion(
     const result = await pollForGeminiCompletion(responseId, {
       intervalMs: 5_000,
       maxAttempts,
+      abortSignal,
       onProgress: makePollProgress({ silent: silentProgress }),
     })
     if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
@@ -845,6 +897,7 @@ export async function pollResponseToCompletion(
   const result = await pollForCompletion(responseId, {
     intervalMs: 5_000,
     maxAttempts,
+    abortSignal,
     onProgress: makePollProgress({ silent: silentProgress }),
   })
   if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
@@ -889,7 +942,12 @@ export async function runRecover(options: {
       }
     }
 
-    const result = await pollResponseToCompletion(responseId, /* silentProgress */ false)
+    // SIGINT/SIGTERM during a 50-minute recover should stop cleanly instead
+    // of running until the max-attempt ceiling. The provider-side response
+    // is unaffected — user can re-run `llm recover <id>` later.
+    const result = await withSignalAbort((signal) =>
+      pollResponseToCompletion(responseId, /* silentProgress */ false, signal),
+    )
 
     if (result.error && result.status !== "timeout") {
       if (!localPartial) {
@@ -986,7 +1044,11 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   }
 
   const localPartial = findPartialByResponseId(responseId)
-  const result = await pollResponseToCompletion(responseId, /* silentProgress */ true)
+  // SIGINT/SIGTERM stops the silent poll cleanly — same rationale as
+  // runRecover; a 50m poll should honour Ctrl-C.
+  const result = await withSignalAbort((signal) =>
+    pollResponseToCompletion(responseId, /* silentProgress */ true, signal),
+  )
 
   if (result.status === "completed" && result.content) {
     // finalizeOutput() inside writeRecoveredResponse already emits
@@ -1091,36 +1153,38 @@ export async function runProDual(options: {
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
   //
-  // AbortController enforces a 5-minute wall-clock ceiling per side so a hung
-  // provider can't stall the whole run indefinitely (real incident: OpenAI
-  // synchronous Pro timing out silently at the ai-sdk 300s default — at least
-  // now we fail fast with a clear message). SIGINT/SIGTERM share the same
-  // controller so Ctrl-C cancels an expensive in-flight call instead of
-  // leaving the provider request running server-side unattended. imagePath is
-  // forwarded explicitly — dropping it would silently degrade `--image` to
-  // text-only responses.
-  const ac = new AbortController()
-  const abortTimer = setTimeout(() => ac.abort("timeout"), 5 * 60 * 1000)
-  const onSignal = () => ac.abort("user-interrupt")
-  process.once("SIGINT", onSignal)
-  process.once("SIGTERM", onSignal)
-  const [gptResult, kimiResult] = await Promise.allSettled([
-    ask(enrichedQuestion, "standard", {
-      modelOverride: gptPro!.modelId,
-      stream: false,
-      imagePath,
-      abortSignal: ac.signal,
-    }),
-    ask(enrichedQuestion, "standard", {
-      modelOverride: kimi!.modelId,
-      stream: false,
-      imagePath,
-      abortSignal: ac.signal,
-    }),
-  ])
-  clearTimeout(abortTimer)
-  process.off("SIGINT", onSignal)
-  process.off("SIGTERM", onSignal)
+  // A nested AbortController chains the 5-minute wall-clock ceiling onto the
+  // outer SIGINT/SIGTERM signal from withSignalAbort: if either the user
+  // interrupts or the timer elapses, both legs abort. Wall-clock guards
+  // against hung providers (real incident: OpenAI synchronous Pro silently
+  // timing out at the ai-sdk 300s default). imagePath is forwarded
+  // explicitly — dropping it would silently degrade `--image` to text-only.
+  const [gptResult, kimiResult] = await withSignalAbort(async (outerSignal) => {
+    const ac = new AbortController()
+    const abortTimer = setTimeout(() => ac.abort("timeout"), 5 * 60 * 1000)
+    const onOuterAbort = () => ac.abort(outerSignal.reason ?? "user-interrupt")
+    if (outerSignal.aborted) onOuterAbort()
+    else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
+    try {
+      return await Promise.allSettled([
+        ask(enrichedQuestion, "standard", {
+          modelOverride: gptPro!.modelId,
+          stream: false,
+          imagePath,
+          abortSignal: ac.signal,
+        }),
+        ask(enrichedQuestion, "standard", {
+          modelOverride: kimi!.modelId,
+          stream: false,
+          imagePath,
+          abortSignal: ac.signal,
+        }),
+      ])
+    } finally {
+      clearTimeout(abortTimer)
+      outerSignal.removeEventListener("abort", onOuterAbort)
+    }
+  })
 
   // Normalize both legs to a consistent (ok, error) shape. "Success" requires
   // non-empty trimmed content AND no error — a fulfilled promise with empty

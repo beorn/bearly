@@ -34,6 +34,13 @@ export interface GeminiDeepResearchOptions {
   noPersist?: boolean
   /** Optional context to prepend to the research prompt */
   context?: string
+  /**
+   * Abort signal propagated into pollForGeminiCompletion so Ctrl-C /
+   * SIGTERM stops the poll cleanly during a synchronous deep-research call.
+   * The server-side interaction is unaffected — its ID is persisted and
+   * recoverable via `bun llm recover <id>`.
+   */
+  abortSignal?: AbortSignal
 }
 
 interface InteractionResponse {
@@ -116,7 +123,7 @@ function extractUsage(interaction: InteractionResponse):
  * Query Gemini deep research model using the Interactions API
  */
 export async function queryGeminiDeepResearch(options: GeminiDeepResearchOptions): Promise<ModelResponse> {
-  const { topic, model, stream = false, onToken, noPersist = false, context } = options
+  const { topic, model, stream = false, onToken, noPersist = false, context, abortSignal } = options
   const startTime = Date.now()
 
   // Build the research prompt with optional context
@@ -143,7 +150,7 @@ Please provide:
     // with the final content from the poll path.
     void stream
     void onToken
-    return await queryWithPolling(researchPrompt, model, topic, startTime, onToken, noPersist)
+    return await queryWithPolling(researchPrompt, model, topic, startTime, onToken, noPersist, abortSignal)
   } catch (error) {
     let errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -182,6 +189,7 @@ async function queryWithPolling(
   startTime: number,
   onToken?: (token: string) => void,
   noPersist?: boolean,
+  abortSignal?: AbortSignal,
 ): Promise<ModelResponse> {
   const resp = await createInteraction(prompt, model.modelId)
 
@@ -230,6 +238,7 @@ async function queryWithPolling(
   const result = await pollForGeminiCompletion(interactionId, {
     intervalMs: 10_000,
     maxAttempts: 120, // 20 min max
+    abortSignal,
     onProgress: (status, elapsed) => {
       process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
     },
@@ -268,6 +277,13 @@ export async function pollForGeminiCompletion(
     intervalMs?: number
     maxAttempts?: number
     onProgress?: (status: string, elapsedMs: number) => void
+    /**
+     * AbortSignal that short-circuits the poll loop. Same semantics as
+     * pollForCompletion (openai-deep) — returns a "cancelled" result so the
+     * SIGINT/SIGTERM wiring in dispatch.ts can surface the cancellation
+     * without leaking the next 10s tick.
+     */
+    abortSignal?: AbortSignal
   } = {},
 ): Promise<{
   status: string
@@ -279,10 +295,19 @@ export async function pollForGeminiCompletion(
   }
   error?: string
 }> {
-  const { intervalMs = 10_000, maxAttempts = 120 } = options
+  const { intervalMs = 10_000, maxAttempts = 120, abortSignal } = options
+  const { sleepAbortable } = await import("./openai-deep")
   const startTime = Date.now()
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (abortSignal?.aborted) {
+      return {
+        status: "cancelled",
+        content: "",
+        error: `Polling cancelled: ${String(abortSignal.reason ?? "aborted")}`,
+      }
+    }
+
     try {
       const interaction = await getInteraction(interactionId)
 
@@ -320,7 +345,7 @@ export async function pollForGeminiCompletion(
       )
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    await sleepAbortable(intervalMs, abortSignal)
   }
 
   return {

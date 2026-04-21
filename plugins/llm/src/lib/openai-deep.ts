@@ -47,6 +47,13 @@ export interface DeepResearchOptions {
   context?: string
   /** Fire-and-forget: persist response ID and exit immediately without polling (default: true) */
   fireAndForget?: boolean
+  /**
+   * Abort signal propagated into pollForCompletion so Ctrl-C / SIGTERM
+   * during a synchronous deep-research call stops the poll cleanly. The
+   * server-side response is unaffected — it remains recoverable via
+   * `bun llm recover <id>` since the ID is already persisted.
+   */
+  abortSignal?: AbortSignal
 }
 
 function buildResearchPrompt(topic: string, context?: string): string {
@@ -182,6 +189,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     log.info?.("Research in progress...")
     const pollResult = await pollForCompletion(responseId, {
       intervalMs: 5_000,
+      abortSignal: options.abortSignal,
       onProgress: (status, elapsed) => {
         process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
       },
@@ -262,6 +270,15 @@ export async function pollForCompletion(
     intervalMs?: number
     maxAttempts?: number
     onProgress?: (status: string, elapsedMs: number) => void
+    /**
+     * AbortSignal that short-circuits the poll loop. On abort, returns a
+     * "cancelled" result with the abort reason — callers (dispatch.ts wiring
+     * SIGINT/SIGTERM) can treat it the same as a user cancellation without
+     * the poll leaking sleep ticks. We don't try to cancel the server-side
+     * response; the Responses API keeps it accessible via `retrieveResponse`
+     * for later `bun llm recover`.
+     */
+    abortSignal?: AbortSignal
   } = {},
 ): Promise<{
   status: string
@@ -278,10 +295,18 @@ export async function pollForCompletion(
   // too short for real Pro deep runs, which routinely take 30-40 min.
   const envMax = Number.parseInt(process.env.LLM_RECOVER_MAX_ATTEMPTS ?? "", 10)
   const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : 600
-  const { intervalMs = 5_000, maxAttempts = defaultMax } = options
+  const { intervalMs = 5_000, maxAttempts = defaultMax, abortSignal } = options
   const startTime = Date.now()
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (abortSignal?.aborted) {
+      return {
+        status: "cancelled",
+        content: "",
+        error: `Polling cancelled: ${String(abortSignal.reason ?? "aborted")}`,
+      }
+    }
+
     const result = await retrieveResponse(responseId)
 
     if (result.error) {
@@ -296,9 +321,10 @@ export async function pollForCompletion(
       return { ...result, error: `Response ${result.status}` }
     }
 
-    // Still in progress or queued - wait and retry
+    // Still in progress or queued - wait and retry. sleep() is interruptible
+    // via abortSignal so Ctrl-C doesn't have to wait for the next 5s tick.
     options.onProgress?.(result.status, Date.now() - startTime)
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    await sleepAbortable(intervalMs, abortSignal)
   }
 
   return {
@@ -306,6 +332,32 @@ export async function pollForCompletion(
     content: "",
     error: `Timed out after ${maxAttempts} attempts (${Math.round((maxAttempts * intervalMs) / 1000)}s)`,
   }
+}
+
+/**
+ * Abortable sleep — resolves on timer elapse OR on signal abort, whichever
+ * comes first. Exported so pollForCompletion and pollForGeminiCompletion
+ * share one implementation.
+ */
+export function sleepAbortable(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer)
+        resolve()
+        return
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+  })
 }
 
 /**
