@@ -1,0 +1,28 @@
+{
+  "name": "@bearly/injection-envelope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prompt-injection defense library — envelope framing, imperative rewrite, sanitizer, turn-manifest for PreToolUse authority gate",
+  "keywords": [
+    "additionalContext",
+    "claude-code",
+    "defense-in-depth",
+    "hook",
+    "prompt-injection",
+    "security"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "plugins/injection-envelope"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
