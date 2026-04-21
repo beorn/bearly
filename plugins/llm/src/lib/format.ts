@@ -86,15 +86,19 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
       mkdirSync(researchDir, { recursive: true })
     }
 
-    // Generate filename: YYYY-MM-DD-HHmmss-<slug>.md
+    // Generate filename: YYYYMMDD-HHmmssSSS-<slug>-<rand>.md
+    // Millisecond precision + 4-char random suffix prevents collisions when
+    // parallel Claude Code sessions fire similar queries in the same second —
+    // not hypothetical with the 6+ concurrent sessions this workspace runs.
     const now = new Date()
-    const date = now.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)
+    const isoCompact = now.toISOString().replace(/[-:.]/g, "").replace("T", "-").slice(0, 18)
+    const rand = Math.random().toString(36).slice(2, 6)
     const slug = meta.query
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 50)
-    const filename = `${date}-${slug}.md`
+    const filename = `${isoCompact}-${slug}-${rand}.md`
 
     // Build YAML frontmatter
     const frontmatter = [

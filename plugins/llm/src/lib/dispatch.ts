@@ -85,8 +85,10 @@ export async function performPricingUpdate(options: {
   )
 
   if (pageTexts.length === 0) {
-    cacheCurrentPricing()
-    return { priceChanges: [], error: "Could not fetch any pricing pages. Cache refreshed from hardcoded values." }
+    // Don't cacheCurrentPricing on failure — that would reset the stale-timer
+    // and block retries for another 5 days. Leaving the timer alone means the
+    // next invocation will try again.
+    return { priceChanges: [], error: "Could not fetch any pricing pages. Pricing cache unchanged." }
   }
 
   // Build extraction prompt
@@ -115,8 +117,7 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
     isProviderAvailable(p),
   )
   if (!extractModel) {
-    cacheCurrentPricing()
-    return { priceChanges: [], error: "No LLM available for price extraction. Cache refreshed from hardcoded values." }
+    return { priceChanges: [], error: "No LLM available for price extraction. Pricing cache unchanged." }
   }
   if (extractWarning) log(`  ℹ ${extractWarning}`)
 
@@ -129,10 +130,9 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
   })
 
   if (extractResult.response.error || !extractResult.response.content) {
-    cacheCurrentPricing()
     return {
       priceChanges: [],
-      error: `LLM extraction failed: ${extractResult.response.error ?? "empty response"}. Cache refreshed from hardcoded values.`,
+      error: `LLM extraction failed: ${extractResult.response.error ?? "empty response"}. Pricing cache unchanged.`,
     }
   }
 
@@ -146,8 +146,7 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
     priceUpdates = JSON.parse(jsonStr) as typeof priceUpdates
     if (!Array.isArray(priceUpdates)) priceUpdates = []
   } catch {
-    cacheCurrentPricing()
-    return { priceChanges: [], error: "Could not parse LLM response. Cache refreshed from hardcoded values." }
+    return { priceChanges: [], error: "Could not parse LLM response. Pricing cache unchanged." }
   }
 
   // Apply changes
@@ -492,11 +491,17 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
     console.error(`  ${partial.metadata.responseId}`)
     console.error(`    Started: ${ageStr} | Topic: ${partial.metadata.topic.slice(0, 50)}...`)
 
-    // Try to retrieve from OpenAI
+    // Dispatch to the backend that actually owns this response ID. Previously
+    // this path hardcoded OpenAI's retrieveResponse, which silently failed
+    // for Gemini interaction IDs persisted from gemini-deep. pollResponse-
+    // ToCompletion resolves provider via the persisted modelId.
     if (partial.metadata.responseId) {
-      const recovered = await retrieveResponse(partial.metadata.responseId)
+      const persistedModel = getModel(partial.metadata.modelId)
+      const provider = persistedModel?.provider ?? "openai"
+      const providerName = provider === "google" ? "Gemini" : "OpenAI"
+      const recovered = await pollResponseToCompletion(partial.metadata.responseId, /* silent */ true)
       if (recovered.status === "completed" && recovered.content) {
-        console.error(`    ✅ Recovered from OpenAI (${recovered.content.length} chars)`)
+        console.error(`    ✅ Recovered from ${providerName} (${recovered.content.length} chars)`)
         console.error(`\n--- Recovered Response ---\n`)
         console.log(recovered.content)
         if (recovered.usage) {
@@ -520,7 +525,7 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
           const { completePartial } = await import("./persistence")
           completePartial(partial.path, { delete: true })
         } else {
-          console.error(`    ⏳ Still ${recovered.status} on OpenAI (${Math.round(partialAge / 60000)}m old)`)
+          console.error(`    ⏳ Still ${recovered.status} on ${providerName} (${Math.round(partialAge / 60000)}m old)`)
           console.error(`    Run 'llm recover ${partial.metadata.responseId}' to poll until complete`)
         }
       } else {
@@ -799,6 +804,33 @@ async function pollResponseToCompletion(
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
   error?: string
 }> {
+  // Route to the right backend based on the persisted model. Gemini deep
+  // research writes partials with Gemini interaction IDs into the same
+  // persistence store — previously we always called OpenAI retrieveResponse,
+  // which silently failed for Gemini IDs. Look up the partial, resolve its
+  // provider, and dispatch accordingly. If no partial exists we fall back to
+  // OpenAI (historical default, consistent with external callers passing in
+  // resp_* IDs directly).
+  const partial = findPartialByResponseId(responseId)
+  const persistedModel = partial ? getModel(partial.metadata.modelId) : undefined
+  const isGemini = persistedModel?.provider === "google"
+
+  if (isGemini) {
+    const { pollForGeminiCompletion } = await import("./gemini-deep")
+    const maxAttempts = resolveMaxAttempts()
+    if (!silentProgress) {
+      const mins = Math.round((maxAttempts * 5) / 60)
+      console.error(`\nPolling Gemini interaction (ceiling: ${mins}m, set LLM_RECOVER_MAX_ATTEMPTS to override)`)
+    }
+    const result = await pollForGeminiCompletion(responseId, {
+      intervalMs: 5_000,
+      maxAttempts,
+      onProgress: makePollProgress({ silent: silentProgress }),
+    })
+    if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
+    return result
+  }
+
   const initial = await retrieveResponse(responseId)
   if (initial.status !== "in_progress" && initial.status !== "queued") {
     return initial
@@ -880,13 +912,10 @@ export async function runRecover(options: {
       if (result.usage) {
         console.error(`\n[${result.usage.totalTokens} tokens]`)
       }
-      const outputFile = await writeRecoveredResponse(
-        result.content,
-        responseId,
-        localPartial?.metadata.topic,
-        result.usage,
-      )
-      process.stderr.write(`Recovered output written to: ${outputFile}\n`)
+      // finalizeOutput() inside writeRecoveredResponse already writes the
+      // path line to stderr — skip the redundant "Recovered output written
+      // to:" that used to print a near-identical second line.
+      await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage)
       if (localPartial) {
         const { completePartial } = await import("./persistence")
         completePartial(localPartial.path, { delete: true })
@@ -960,13 +989,9 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   const result = await pollResponseToCompletion(responseId, /* silentProgress */ true)
 
   if (result.status === "completed" && result.content) {
-    const outputFile = await writeRecoveredResponse(
-      result.content,
-      responseId,
-      localPartial?.metadata.topic,
-      result.usage,
-    )
-    process.stderr.write(`Output written to: ${outputFile}\n`)
+    // finalizeOutput() inside writeRecoveredResponse already emits
+    // "Output written to: ..." on stderr — don't print it a second time here.
+    await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage)
     if (localPartial) {
       const { completePartial } = await import("./persistence")
       completePartial(localPartial.path, { delete: true })
@@ -1089,15 +1114,24 @@ export async function runProDual(options: {
   ])
   clearTimeout(abortTimer)
 
+  // Normalize both legs to a consistent (ok, error) shape. "Success" requires
+  // non-empty trimmed content AND no error — a fulfilled promise with empty
+  // content (reasoning-exhaustion, abort, API quirks) is a failure, not a
+  // silent-success. Previously the progress line said ✓ while the combined
+  // report said ⚠️ Failed for the same call — inconsistent + debug-hostile.
   const gptResp = gptResult.status === "fulfilled" ? gptResult.value : undefined
   const kimiResp = kimiResult.status === "fulfilled" ? kimiResult.value : undefined
-  const gptErr = gptResult.status === "rejected" ? String(gptResult.reason) : gptResp?.error
-  const kimiErr = kimiResult.status === "rejected" ? String(kimiResult.reason) : kimiResp?.error
+  const gptErrRaw = gptResult.status === "rejected" ? String(gptResult.reason) : gptResp?.error
+  const kimiErrRaw = kimiResult.status === "rejected" ? String(kimiResult.reason) : kimiResp?.error
+  const gptOk = !gptErrRaw && !!gptResp?.content && gptResp.content.trim().length > 0
+  const kimiOk = !kimiErrRaw && !!kimiResp?.content && kimiResp.content.trim().length > 0
+  const gptErr = gptErrRaw ?? (gptResp && !gptOk ? "empty content" : undefined)
+  const kimiErr = kimiErrRaw ?? (kimiResp && !kimiOk ? "empty content" : undefined)
 
-  if (gptErr) console.error(`  ✗ ${gptPro!.displayName}: ${gptErr}`)
-  else if (gptResp) console.error(`  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`)
-  if (kimiErr) console.error(`  ✗ ${kimi!.displayName}: ${kimiErr}`)
-  else if (kimiResp) console.error(`  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`)
+  if (gptOk && gptResp) console.error(`  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`)
+  else console.error(`  ✗ ${gptPro!.displayName}: ${gptErr ?? "unknown failure"}`)
+  if (kimiOk && kimiResp) console.error(`  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`)
+  else console.error(`  ✗ ${kimi!.displayName}: ${kimiErr ?? "unknown failure"}`)
 
   // Build the combined report. Both responses presented side-by-side, headers
   // labelled so the reader can diff. Non-fatal errors surface inline so the
@@ -1118,7 +1152,7 @@ export async function runProDual(options: {
 
   parts.push(`---\n`)
   parts.push(`## ${gptPro!.displayName}`)
-  if (gptResp?.content) {
+  if (gptOk && gptResp) {
     const meta = `_${gptResp.usage?.totalTokens ?? 0} tokens · ${Math.round(gptResp.durationMs / 1000)}s · ${formatCost(gptCost)}_`
     parts.push(meta + "\n")
     parts.push(gptResp.content.trim())
@@ -1128,7 +1162,7 @@ export async function runProDual(options: {
 
   parts.push(`\n---\n`)
   parts.push(`## ${kimi!.displayName}`)
-  if (kimiResp?.content) {
+  if (kimiOk && kimiResp) {
     const meta = `_${kimiResp.usage?.totalTokens ?? 0} tokens · ${Math.round(kimiResp.durationMs / 1000)}s · ${formatCost(kimiCost)}_`
     parts.push(meta + "\n")
     parts.push(kimiResp.content.trim())
@@ -1156,6 +1190,14 @@ export async function runProDual(options: {
     gptCost,
     kimiCost,
   })
+
+  // If both legs failed, surface as a non-zero exit so scripts don't mistake
+  // an error report for a success. The combined report + A/B log still get
+  // written — useful for post-mortem — but the caller knows it went wrong.
+  if (!gptOk && !kimiOk) {
+    console.error("\n⚠️  Both dual-pro legs failed — see report for details.")
+    process.exit(1)
+  }
 }
 
 /**

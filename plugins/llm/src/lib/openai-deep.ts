@@ -153,11 +153,14 @@ async function handleStreamingResponse(
     }
   }
 
-  // Step 5: Poll until complete — no streaming, just check periodically
+  // Step 5: Poll until complete — no streaming, just check periodically.
+  // Use the same 50-minute ceiling as dispatch-side recovery (600 polls ×
+  // 5s); previously 180 × 5s = 15m, which made long Pro deep runs time out
+  // inside the main call while the server kept working. LLM_RECOVER_MAX_
+  // ATTEMPTS still overrides both paths.
   log.info?.("Research in progress...")
   const pollResult = await pollForCompletion(responseId, {
     intervalMs: 5_000,
-    maxAttempts: 180,
     onProgress: (status, elapsed) => {
       process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
     },
@@ -308,7 +311,12 @@ export async function pollForCompletion(
   }
   error?: string
 }> {
-  const { intervalMs = 5_000, maxAttempts = 180 } = options
+  // Default ceiling: 600 × 5s = 50 minutes (parity with dispatch.ts recover
+  // path). LLM_RECOVER_MAX_ATTEMPTS overrides. Historical 180 was 15 min —
+  // too short for real Pro deep runs, which routinely take 30-40 min.
+  const envMax = Number.parseInt(process.env.LLM_RECOVER_MAX_ATTEMPTS ?? "", 10)
+  const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : 600
+  const { intervalMs = 5_000, maxAttempts = defaultMax } = options
   const startTime = Date.now()
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

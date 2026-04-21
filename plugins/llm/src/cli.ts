@@ -164,7 +164,12 @@ function buildContextFromFlags(topic: string): Promise<string | undefined> {
   })
 }
 
-const VALUE_FLAGS = ["--model", "--models", "--provider", "--context", "--context-file", "--output"]
+// Flags whose next argv token is the flag's value — excluded from the user
+// prompt text by extractText. Missing entries cause that value to leak into
+// the prompt (e.g. --image screenshot.png → "describe this screenshot.png"
+// instead of just "describe this"). --models / --provider were aspirational
+// and removed; resurrect here when the CLI actually implements them.
+const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image"]
 
 function extractText(fromAll: boolean, exclude?: string[]): string {
   const source = fromAll ? args : args.slice(1)
@@ -255,6 +260,9 @@ FLAGS
   --ask, /ask            Explicit default mode (syntactic sugar)
   -y, --yes              Skip confirmation prompts (for scripting)
   --dry-run              Show what would happen without calling APIs
+  --verbose              Stream tokens to stderr even in non-TTY contexts
+                         (DANGEROUS: large outputs can truncate in Claude Code
+                         background tasks — prefer default TTY-only behavior)
   --model <id>           Use specific model (e.g., gpt-5.4-pro, gemini-3-pro-preview)
   --no-recover           Skip auto-recovery of incomplete responses
   --with-history         Include relevant context from session history

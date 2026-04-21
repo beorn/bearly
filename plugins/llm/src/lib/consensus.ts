@@ -8,7 +8,7 @@ import { queryModel } from "./research"
 import { getLanguageModel, isProviderAvailable } from "./providers"
 import { generateText } from "ai"
 import type { Model, ModelResponse, ConsensusResult, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, MODELS } from "./types"
+import { getModelsForLevel, getModel, MODELS, estimateCost } from "./types"
 
 export interface ConsensusOptions {
   question: string
@@ -55,8 +55,14 @@ export async function consensus(options: ConsensusOptions): Promise<ConsensusRes
     }),
   )
 
-  // Calculate total cost
-  const totalCost = responses.reduce((sum, r) => sum + (r.usage?.estimatedCost || 0), 0)
+  // Calculate total cost. Previously this summed `r.usage?.estimatedCost`
+  // which is never populated (ModelResponse.usage omits estimatedCost at
+  // capture time) — totalCost was silently always 0. Compute from the raw
+  // token usage + per-model rates at aggregation time instead.
+  const totalCost = responses.reduce(
+    (sum, r) => (r.usage ? sum + estimateCost(r.model, r.usage.promptTokens, r.usage.completionTokens) : sum),
+    0,
+  )
 
   // Build base result
   const result: ConsensusResult = {
@@ -121,11 +127,16 @@ Format your response as JSON:
   "confidence": 85
 }`
 
-  // Use a fast, cheap model for synthesis (prefer Claude or GPT-4o-mini)
+  // Use a fast, cheap model for synthesis. claude-3-5-haiku-latest was
+  // referenced here historically but isn't in our MODELS registry — the
+  // lookup silently falls through to the costTier==="low" fallback, making
+  // the explicit preference a no-op. Rewritten to prefer models we actually
+  // ship: Claude 4.5 Haiku and GPT-5-nano (both low-cost, fast, reliable).
   const synthesisModel =
     MODELS.find(
       (m) =>
-        (m.modelId === "claude-3-5-haiku-latest" || m.modelId === "gpt-4o-mini") && isProviderAvailable(m.provider),
+        (m.modelId === "claude-haiku-4-5-20251001" || m.modelId === "gpt-5-nano" || m.modelId === "gpt-4o-mini") &&
+        isProviderAvailable(m.provider),
     ) || MODELS.find((m) => m.costTier === "low" && isProviderAvailable(m.provider))
 
   if (!synthesisModel) {
