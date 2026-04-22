@@ -288,7 +288,7 @@ describe("tribe session identity (identity token adoption)", () => {
     const result = (await c2.call("tribe.rename", { new_name: "plateau" })) as {
       content: [{ text: string }]
     }
-    const parsed = JSON.parse(result.content[0].text)
+    const parsed = JSON.parse(result.content[0].text) as { renamed?: boolean; new_name?: string; error?: string }
     expect(parsed.renamed).toBe(true)
     expect(parsed.new_name).toBe("plateau")
   }, 20_000)
@@ -306,7 +306,7 @@ describe("tribe session identity (identity token adoption)", () => {
     const result = (await c2.call("tribe.rename", { new_name: "plateau" })) as {
       content: [{ text: string }]
     }
-    const parsed = JSON.parse(result.content[0].text)
+    const parsed = JSON.parse(result.content[0].text) as { renamed?: boolean; new_name?: string; error?: string }
     expect(parsed.error).toMatch(/already taken/)
     expect(parsed.renamed).toBeUndefined()
   }, 20_000)
