@@ -354,7 +354,8 @@ client.onNotification((method, params) => {
 
 using term = createTerm()
 const ac = new AbortController()
-const handle = render(<App client={client} ac={ac} />, term, { patchConsole: true })
+term.console?.capture({ suppress: true })
+const handle = render(<App client={client} ac={ac} />, term)
 await handle.run()
 ac.abort()
 // client.close() handled by `await using` above
