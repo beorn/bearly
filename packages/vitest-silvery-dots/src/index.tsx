@@ -9,7 +9,16 @@
 import * as fs from "node:fs"
 import React, { useMemo, useSyncExternalStore, type ReactNode } from "react"
 import type { Reporter, TestCase, TestModule, TestSpecification, TestSuite, Vitest } from "vitest/node"
-import { Box, Text, Console, useBoxRect, patchConsole, type Instance, type Term, type PatchedConsole } from "silvery"
+import {
+  Box,
+  Text,
+  Console,
+  useBoxRect,
+  createConsole,
+  type Instance,
+  type Term,
+  type PatchedConsole,
+} from "silvery"
 import { createLogger } from "loggily"
 
 import { createTestStore, type TestState, type TestStore, type TestStoreState } from "./store.js"
@@ -621,9 +630,10 @@ class DotzReporter implements Reporter {
     const stack = new DisposableStack()
     this.disposables = stack
     this.term = stack.use(createTerm())
-    this.patchedConsole = stack.use(patchConsole(console))
+    this.patchedConsole = stack.use(createConsole(console))
+    this.patchedConsole.capture({ suppress: true })
     this.app = stack.use(
-      await render(<Report store={this.store} options={this.options} console={this.patchedConsole} />, this.term, {
+      await render(<Report store={this.store} options={this.options} console={this.patchedConsole ?? undefined} />, this.term, {
         // mode: "inline",
         // alternateScreen: false,
       }),
