@@ -544,8 +544,21 @@ export async function detectGitLocks(gitDir: string): Promise<GitLockInfo[]> {
   return results
 }
 
-/** Threshold in ms before alerting about a git lock (suppresses transient locks) */
-export const LOCK_ALERT_THRESHOLD_MS = 2_000
+/**
+ * Threshold in ms before alerting about a git lock.
+ *
+ * At the default 10s poll interval, a 2s threshold meant ANY lock visible
+ * on two consecutive polls fired a warning — including fast concurrent
+ * commits across sibling sessions that happened to overlap the poll
+ * window. With multiple Claude sessions active, the tribe channel
+ * flooded with "held by unknown for 10s" noise where every commit was
+ * <500ms.
+ *
+ * Bumped to 15s (1.5x the default poll interval) so the lock must
+ * genuinely span more than one poll cycle before we warn. Attribution
+ * (see below) further filters noise.
+ */
+export const LOCK_ALERT_THRESHOLD_MS = 15_000
 
 /** Threshold in ms for escalating a lock to a stale warning */
 export const LOCK_STALE_THRESHOLD_MS = 30_000
@@ -1198,9 +1211,18 @@ export const healthMonitorPlugin: TribePluginApi = {
           // Attribute to a session if possible
           const sessionName = lock.holder ? attributeToSession(lock.holder.pid, pidToParent, sessions) : null
 
-          // First detection: broadcast lock info (suppress transient locks <2s)
+          // First detection: broadcast lock info. Suppress unattributed locks
+          // under the stale threshold — "held by unknown for 10s" is almost
+          // always concurrent commits across sessions briefly overlapping the
+          // poll window, not a real stuck process. If we CAN attribute the
+          // holder (lsof found a known session's PID), warn at the shorter
+          // threshold so the owner knows they're blocking the tribe.
           const lockKey = `git-lock:${lock.path}`
-          if (!alertState.firedAlerts.has(lockKey) && durationMs >= LOCK_ALERT_THRESHOLD_MS) {
+          const shouldAlert =
+            !alertState.firedAlerts.has(lockKey) &&
+            durationMs >= LOCK_ALERT_THRESHOLD_MS &&
+            (sessionName != null || durationMs >= LOCK_STALE_THRESHOLD_MS)
+          if (shouldAlert) {
             alertState.gitLockDetected = true
             alertState.firedAlerts.add(lockKey)
             const lockMsg = formatLockMessage(lock, sessionName, durationSec)
