@@ -276,6 +276,67 @@ async function checkUnpushedSubmodules(gitRoot: string, submodules: string[]): P
   success("Submodules OK")
 }
 
+//
+// Find and kill `dolt sql-server` processes whose cwd is inside the given
+// worktree path.
+//
+// Why this exists: when a worktree has its own .beads/, bd spawns a
+// `dolt sql-server` daemon that reparents to launchd (PID 1) and survives
+// beyond the session that started it. Git `worktree remove` doesn't know
+// about these daemons, so they accumulate — after a few days of agent
+// activity, `ps aux | grep 'dolt sql-server'` shows 9+ processes, most
+// with cwds pointing at long-deleted .claude/worktrees/agent-<id>/.beads
+// subpaths. These zombies contribute to .git/index.lock contention (shared
+// git store across worktrees) and flood the tribe health monitor with
+// lock warnings that name already-dead PIDs.
+//
+// Fix: before `git worktree remove` tears down the filesystem, find any
+// `dolt sql-server` whose cwd is inside the worktree path and kill it.
+// SIGTERM first, SIGKILL after a short grace period for stragglers.
+//
+async function killWorktreeDoltServers(worktreePath: string): Promise<number> {
+  const normalized = worktreePath.endsWith("/") ? worktreePath : `${worktreePath}/`
+
+  const pgrep = await safeExec($`pgrep -f "dolt sql-server"`.quiet())
+  if (pgrep.exitCode !== 0) return 0
+  const pids = pgrep.stdout
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => parseInt(p, 10))
+    .filter((p) => !Number.isNaN(p))
+  if (pids.length === 0) return 0
+
+  const toKill: number[] = []
+  for (const pid of pids) {
+    const cwd = await safeExec($`lsof -p ${pid} -a -d cwd 2>/dev/null`.quiet())
+    if (cwd.exitCode !== 0) continue
+    if (cwd.stdout.includes(normalized)) toKill.push(pid)
+  }
+  if (toKill.length === 0) return 0
+
+  for (const pid of toKill) {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      // already gone / permission — ignore
+    }
+  }
+
+  // Grace period, then escalate to SIGKILL for any survivor
+  await Bun.sleep(1500)
+  for (const pid of toKill) {
+    try {
+      process.kill(pid, 0) // probe; throws if dead
+      process.kill(pid, "SIGKILL")
+    } catch {
+      // probe failed = already dead, which is the goal
+    }
+  }
+
+  return toKill.length
+}
+
 async function installDependencies(worktreePath: string): Promise<void> {
   const hasBunLock = existsSync(join(worktreePath, "bun.lockb")) || existsSync(join(worktreePath, "bun.lock"))
   const hasPackageJson = existsSync(join(worktreePath, "package.json"))
@@ -496,6 +557,16 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
         process.exit(1)
       }
     }
+  }
+
+  // Kill any `dolt sql-server` rooted in this worktree BEFORE touching the
+  // filesystem. Those daemons reparent to launchd and would otherwise outlive
+  // the removal, leaving stale processes that contribute to `.git/index.lock`
+  // contention via periodic housekeeping. See killWorktreeDoltServers for the
+  // full rationale.
+  const doltKilled = await killWorktreeDoltServers(worktreePath)
+  if (doltKilled > 0) {
+    info(`Stopped ${doltKilled} dolt sql-server(s) rooted in this worktree`)
   }
 
   // Pre-clean per-worktree submodule modules dir to prevent orphans.

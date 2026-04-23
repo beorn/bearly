@@ -14,6 +14,8 @@
  * `@bearly/hook-router` once the package is published.
  */
 
+import type { ListenerContext } from "../types.ts"
+
 export default {
   // Shown in `RouterResult` and `BEARLY_HOOKS_DEBUG=1` dispatch logs.
   // Must be unique per loaded listener; use a kebab-case slug.
@@ -33,7 +35,7 @@ export default {
   // 100ms (notify). Keep listeners well under the outer budget.
   timeoutMs: 250,
 
-  async handle(ctx) {
+  async handle(ctx: ListenerContext) {
     // Gate on env var so copying this file doesn't spam stderr. Flip
     // BEARLY_HOOKS_DEBUG=1 (global) or BEARLY_HOOKS_EXAMPLE=1 (this
     // listener only) to see output.
