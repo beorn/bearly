@@ -12,9 +12,12 @@
  * Plain-object form: no imports, no type gymnastics. Ships anywhere Bun
  * can run it. For typed DX, replace with `defineListener({ ... })` from
  * `@bearly/hook-router` once the package is published.
+ *
+ * NOTE: deliberately NO `import type {ListenerContext}` here — this file
+ * is meant to be copy-pasted into `~/.claude/hooks.d/example.ts`, where
+ * the `../types.ts` path would not resolve. `ctx` is `any` at the copy
+ * site; that's fine for a template.
  */
-
-import type { ListenerContext } from "../types.ts"
 
 export default {
   // Shown in `RouterResult` and `BEARLY_HOOKS_DEBUG=1` dispatch logs.
@@ -35,7 +38,8 @@ export default {
   // 100ms (notify). Keep listeners well under the outer budget.
   timeoutMs: 250,
 
-  async handle(ctx: ListenerContext) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async handle(ctx: any) {
     // Gate on env var so copying this file doesn't spam stderr. Flip
     // BEARLY_HOOKS_DEBUG=1 (global) or BEARLY_HOOKS_EXAMPLE=1 (this
     // listener only) to see output.
