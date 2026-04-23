@@ -54,6 +54,7 @@ import { createLogger, addWriter } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 import { createLoreHandlers, resolveSummarizerMode, type LoreConnState } from "./lib/tribe/lore-handlers.ts"
 import { resolveLoreDbPath } from "../plugins/tribe/lore/lib/config.ts"
+import { createCoalescer, type PendingBroadcast } from "./lib/tribe/broadcast-coalescer.ts"
 
 const ac = new AbortController()
 const timers = createTimers(ac.signal)
@@ -512,6 +513,77 @@ function persistDeliveredCursor(sessionId: string, ts: number, seq: number): voi
  * a subsequent daemon restart doesn't re-push (Test E) and so a disconnected
  * session can pick up from where we stopped (Test F).
  */
+// ---------------------------------------------------------------------------
+// Broadcast coalescing (km-tribe.compact-channel-broadcasts)
+//
+// Multiple broadcast-kind events to the same client within a short window are
+// merged into ONE MCP notification with combined content. This cuts the
+// receiver's context-saturation from `<channel>` tag sprawl (each raw tag
+// looks to the model like a transcript fragment under heavy activity, which
+// amplifies role-prefix hallucination). Direct messages are not batched —
+// they're time-sensitive.
+//
+// Window: TRIBE_BROADCAST_BATCH_MS (default 400, 0 = disabled).
+// ---------------------------------------------------------------------------
+
+function broadcastBatchMs(): number {
+  const raw = process.env.TRIBE_BROADCAST_BATCH_MS
+  if (raw === undefined) return 400
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : 400
+}
+
+function singleEventNotification(ev: PendingBroadcast): string {
+  return makeNotification("channel", {
+    from: ev.sender,
+    type: ev.type,
+    content: ev.content,
+    bead_id: ev.bead_id,
+    message_id: ev.id,
+  })
+}
+
+function batchedNotification(events: PendingBroadcast[], dropped: number): string {
+  const lines = events.map((e) => `[${e.sender}] ${e.type}: ${e.content.replace(/\n/g, " ")}`)
+  if (dropped > 0) lines.push(`(+${dropped} more events truncated)`)
+  const total = events.length + dropped
+  const header = `${total} tribe event${total === 1 ? "" : "s"}`
+  const content = `${header}\n${lines.join("\n")}`
+  const last = events[events.length - 1]
+  return makeNotification("channel", {
+    from: "daemon",
+    type: "delta",
+    content,
+    bead_id: null,
+    message_id: last.id,
+    events_count: total,
+  })
+}
+
+const broadcastCoalescer = createCoalescer({
+  batchMs: broadcastBatchMs(),
+  maxEventsPerBatch: 50,
+  deps: {
+    singleEvent: singleEventNotification,
+    batched: batchedNotification,
+    write(connId, payload) {
+      const client = clients.get(connId)
+      if (!client) return false
+      try {
+        client.socket.write(payload)
+        return true
+      } catch {
+        return false
+      }
+    },
+    onDelivered(connId, ev) {
+      const client = clients.get(connId)
+      if (!client) return
+      persistDeliveredCursor(client.ctx.sessionId, ev.ts, ev.rowid)
+    },
+  },
+})
+
 async function broadcastToConnected(info: {
   id: string
   ts: number
@@ -544,14 +616,15 @@ async function broadcastToConnected(info: {
     cleaned = await rewriteViaHaiku(cleaned)
   }
 
-  const params: Record<string, unknown> = {
-    from: info.sender,
+  const pending: PendingBroadcast = {
+    id: info.id,
+    ts: info.ts,
+    rowid: info.rowid,
     type: info.type,
+    sender: info.sender,
     content: cleaned,
     bead_id: info.bead_id,
-    message_id: info.id,
   }
-  const notification = makeNotification("channel", params)
 
   for (const [connId, client] of clients) {
     // Don't echo a message back to its own sender.
@@ -563,12 +636,19 @@ async function broadcastToConnected(info: {
     // Skip half-registered clients (role=pending placeholder).
     if (client.role === "pending") continue
 
-    try {
-      client.socket.write(notification)
-      persistDeliveredCursor(client.ctx.sessionId, info.ts, info.rowid)
-    } catch {
-      // Dead client — cleanup happens on socket close.
+    // Direct messages bypass coalescing — they're time-sensitive.
+    if (info.kind === "direct") {
+      try {
+        client.socket.write(singleEventNotification(pending))
+        persistDeliveredCursor(client.ctx.sessionId, info.ts, info.rowid)
+      } catch {
+        // Dead client — cleanup happens on socket close.
+      }
+      continue
     }
+
+    // Broadcast — per-client coalescing (may write immediately if batchMs=0).
+    broadcastCoalescer.enqueue(connId, pending)
   }
 }
 
@@ -1349,6 +1429,11 @@ function handleConnection(socket: NetSocket): void {
       // tracks history. The old `DELETE FROM messages WHERE recipient = ?`
       // fought the durability contract and lost messages sent mid-disconnect.
     }
+
+    // Flush any pending coalesced broadcasts before tearing down the client
+    // so late-arriving events in the current batch window aren't dropped.
+    broadcastCoalescer.flush(connId)
+    broadcastCoalescer.discard(connId)
 
     clients.delete(connId)
     socketToClient.delete(socket)
