@@ -533,11 +533,33 @@ function broadcastBatchMs(): number {
   return Number.isFinite(n) && n >= 0 ? n : 400
 }
 
+/**
+ * Types that are pure lifecycle/status notifications — no response expected.
+ * Prefixing their content with "Notification:" gives the receiving model an
+ * extra textual cue that this is not a user turn. Combined with the
+ * `<channel>` tag's structural attributes, it reduces the odds of
+ * transcript-continuation hallucination ("Human: <channel...>").
+ *
+ * NOT included: "notify" (used for real session-to-session DMs and
+ * broadcasts that may require a response) and "query"/"response" tool
+ * traffic.
+ */
+function isNotificationOnlyType(type: string): boolean {
+  if (type === "session" || type === "status" || type === "delta") return true
+  if (type.startsWith("chief:")) return true
+  if (type.startsWith("github:")) return true
+  return false
+}
+
+function prefixNotification(type: string, content: string): string {
+  return isNotificationOnlyType(type) ? `Notification: ${content}` : content
+}
+
 function singleEventNotification(ev: PendingBroadcast): string {
   return makeNotification("channel", {
     from: ev.sender,
     type: ev.type,
-    content: ev.content,
+    content: prefixNotification(ev.type, ev.content),
     bead_id: ev.bead_id,
     message_id: ev.id,
   })
@@ -547,7 +569,9 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
   const lines = events.map((e) => `[${e.sender}] ${e.type}: ${e.content.replace(/\n/g, " ")}`)
   if (dropped > 0) lines.push(`(+${dropped} more events truncated)`)
   const total = events.length + dropped
-  const header = `${total} tribe event${total === 1 ? "" : "s"}`
+  // Batched content always inherits the "delta" type — which is
+  // notification-only. Prefix the header too.
+  const header = `Notification: ${total} tribe event${total === 1 ? "" : "s"}`
   const content = `${header}\n${lines.join("\n")}`
   const last = events[events.length - 1]
   return makeNotification("channel", {
