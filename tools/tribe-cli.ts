@@ -23,6 +23,14 @@ import {
   formatDoctorReport,
 } from "./lib/tribe/install.ts"
 import { dispatchHook, type HookEvent } from "./lib/tribe/hook-dispatch.ts"
+import {
+  HOOK_EVENTS,
+  type EnrichmentFields,
+  type HookEvent as RouterHookEvent,
+  loadListeners,
+  runIngest,
+  runNotify,
+} from "./lib/hooks/index.ts"
 import { VALID_AUTOSTART_MODES, type TribeAutostart } from "./lib/tribe/autostart-config.ts"
 import { resolveDbPath } from "./lib/tribe/config.ts"
 
@@ -534,5 +542,107 @@ hookCmd
   .action(async () => {
     await dispatchHook("pre-compact")
   })
+
+// ── hook ingest / notify — pluggable router for external listeners ───────
+//
+// These subcommands route Claude Code (and other coding-agent) hook events
+// through the loader/router at `tools/lib/hooks/`. Listeners drop into
+// `~/.claude/hooks.d/*.ts` and opt into events via filters. `ingest` blocks
+// for up to 5s per listener; `notify` is best-effort (100ms, never throws).
+// Both exit 0 always — a non-zero exit from a Claude Code hook can block
+// the session.
+
+interface PluggableHookOptions {
+  event?: string
+  source?: string
+  activityText?: string
+  toolName?: string
+  finalMessage?: string
+  hookEventName?: string
+  notificationType?: string
+  metadataBase64?: string
+  projectPath?: string
+  sessionId?: string
+}
+
+function parseEnrichment(opts: PluggableHookOptions): EnrichmentFields {
+  const out: EnrichmentFields = {}
+  if (opts.activityText) out.activityText = opts.activityText
+  if (opts.toolName) out.toolName = opts.toolName
+  if (opts.finalMessage) out.finalMessage = opts.finalMessage
+  if (opts.hookEventName) out.hookEventName = opts.hookEventName
+  if (opts.notificationType) out.notificationType = opts.notificationType
+  if (opts.metadataBase64) {
+    try {
+      out.metadata = JSON.parse(Buffer.from(opts.metadataBase64, "base64").toString("utf8"))
+    } catch {
+      // Drop invalid metadata silently — hook CLIs must not throw on bad input.
+    }
+  }
+  return out
+}
+
+function isValidRouterEvent(event: string): event is RouterHookEvent {
+  return (HOOK_EVENTS as readonly string[]).includes(event)
+}
+
+function hooksDebug(msg: string): void {
+  if (process.env.BEARLY_HOOKS_DEBUG || process.env.KM_HOOKS_DEBUG) {
+    process.stderr.write(`[bearly hooks] ${msg}\n`)
+  }
+}
+
+async function runPluggableHook(mode: "ingest" | "notify", opts: PluggableHookOptions): Promise<void> {
+  const event = opts.event ?? ""
+  if (!isValidRouterEvent(event)) {
+    if (mode === "notify") return // silent drop for best-effort mode
+    process.stderr.write(`[bearly hooks] invalid event: ${opts.event ?? "(missing)"}\n`)
+    process.stderr.write(`[bearly hooks] valid events: ${HOOK_EVENTS.join(", ")}\n`)
+    // Exit 0 anyway — non-zero exit from a Claude Code hook can block the session.
+    return
+  }
+  const source = opts.source ?? "claude"
+  const listeners = await loadListeners({ projectPath: opts.projectPath })
+  const enrichment = parseEnrichment(opts)
+  const run = mode === "ingest" ? runIngest : runNotify
+  const result = await run(listeners, event, source, enrichment, {
+    sessionId: opts.sessionId,
+    projectPath: opts.projectPath,
+  })
+  hooksDebug(`${mode} ${event} source=${source} listeners=${result.listeners.length} total=${result.totalMs}ms`)
+  for (const r of result.listeners) {
+    hooksDebug(`  ${r.name}: ${r.status} ${r.durationMs}ms${r.error ? ` error="${r.error}"` : ""}`)
+  }
+}
+
+function addPluggableHookFlags(cmd: Command): Command {
+  return cmd
+    .requiredOption("--event <event>", `Event: ${HOOK_EVENTS.join(" | ")}`)
+    .option("--source <source>", "Source: claude | codex | gemini | opencode | km | ...", "claude")
+    .option("--activity-text <text>", "Short activity summary")
+    .option("--tool-name <name>", "Tool name (for tool-related events)")
+    .option("--final-message <message>", "Assistant's final message (for stop events)")
+    .option("--hook-event-name <name>", "Original agent-side hook event name (e.g. PreToolUse)")
+    .option("--notification-type <type>", "Notification subtype (e.g. permission_prompt)")
+    .option("--metadata-base64 <b64>", "Base64-encoded JSON metadata payload")
+    .option("--project-path <path>", "Project path (for loading project-local listeners)")
+    .option("--session-id <id>", "Session identifier")
+}
+
+addPluggableHookFlags(
+  hookCmd
+    .command("ingest")
+    .description("Dispatch a hook event synchronously (5s per-listener timeout)."),
+).action(async (opts: PluggableHookOptions) => {
+  await runPluggableHook("ingest", opts)
+})
+
+addPluggableHookFlags(
+  hookCmd
+    .command("notify")
+    .description("Dispatch a hook event best-effort (100ms per-listener timeout, never throws)."),
+).action(async (opts: PluggableHookOptions) => {
+  await runPluggableHook("notify", opts)
+})
 
 program.parse()

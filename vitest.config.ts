@@ -16,7 +16,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts", "plugins/**/tests/**/*.test.ts", "plugins/**/src/**/*.test.ts"],
+    include: [
+      "tests/**/*.test.ts",
+      "plugins/**/tests/**/*.test.ts",
+      "plugins/**/src/**/*.test.ts",
+      "tools/**/*.test.ts",
+    ],
     // .slow. tests hit real services (tribe sockets, accountly credentials) — opt-in only.
     exclude: ["**/node_modules/**", "**/dist/**", "**/*.slow.*"],
     // Per-package setup files are loaded by file-pattern: plugins/llm/tests/setup.ts
