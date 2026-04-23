@@ -49,6 +49,7 @@ import { beadsPlugin } from "./lib/tribe/beads-plugin.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"
 import { healthMonitorPlugin } from "./lib/tribe/health-monitor-plugin.ts"
 import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
+import { doltReaperPlugin } from "./lib/tribe/dolt-reaper-plugin.ts"
 import { createLogger, addWriter } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 import { createLoreHandlers, resolveSummarizerMode, type LoreConnState } from "./lib/tribe/lore-handlers.ts"
@@ -1259,7 +1260,7 @@ broadcastLog = (msg, type) => {
 
 const plugins = process.env.TRIBE_NO_PLUGINS
   ? []
-  : [gitPlugin, beadsPlugin, githubPlugin, healthMonitorPlugin, accountlyPlugin]
+  : [gitPlugin, beadsPlugin, githubPlugin, healthMonitorPlugin, accountlyPlugin, doltReaperPlugin]
 const loadedPlugins = loadPlugins(plugins, tribeClientApi)
 const activePluginNames = loadedPlugins.active.filter((p) => p.active).map((p) => p.name)
 const stopPlugins = loadedPlugins.stop
