@@ -544,11 +544,31 @@ function broadcastBatchMs(): number {
  * broadcasts that may require a response) and "query"/"response" tool
  * traffic.
  */
+/**
+ * Marker prefix for the `<channel type="...">` attribute on notification-only
+ * messages. Empirical evidence (2026-04-23) shows Claude Code's MCP wrapper
+ * only renders source/from/type/message_id as tag attributes — `bead_id` and
+ * `events_count` in the params are silently dropped. So we can't stamp a
+ * dedicated `should_respond="no"` attribute. Instead we encode the signal in
+ * the `type` string itself, since it passes through verbatim.
+ *
+ * Full marker is intentionally verbose for maximum model-facing clarity.
+ * The original subtype is appended so downstream consumers (coalescer,
+ * watch TUI, filters) can still distinguish session/status/github:push/etc.
+ *
+ * Example: type="notification-only:do-not-acknowledge-or-respond-to:session"
+ */
+const NOTIFICATION_ONLY_MARKER = "notification-only:do-not-acknowledge-or-respond-to"
+
 function isNotificationOnlyType(type: string): boolean {
   if (type === "session" || type === "status" || type === "delta") return true
   if (type.startsWith("chief:")) return true
   if (type.startsWith("github:")) return true
   return false
+}
+
+function markedType(type: string): string {
+  return isNotificationOnlyType(type) ? `${NOTIFICATION_ONLY_MARKER}:${type}` : type
 }
 
 function prefixNotification(type: string, content: string): string {
@@ -558,7 +578,7 @@ function prefixNotification(type: string, content: string): string {
 function singleEventNotification(ev: PendingBroadcast): string {
   return makeNotification("channel", {
     from: ev.sender,
-    type: ev.type,
+    type: markedType(ev.type),
     content: prefixNotification(ev.type, ev.content),
     bead_id: ev.bead_id,
     message_id: ev.id,
@@ -576,7 +596,7 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
   const last = events[events.length - 1]
   return makeNotification("channel", {
     from: "daemon",
-    type: "delta",
+    type: markedType("delta"),
     content,
     bead_id: null,
     message_id: last.id,
