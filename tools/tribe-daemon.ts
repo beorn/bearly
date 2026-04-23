@@ -557,6 +557,10 @@ function broadcastBatchMs(): number {
  * watch TUI, filters) can still distinguish session/status/github:push/etc.
  *
  * Example: type="notification-only:do-not-acknowledge-or-respond-to:session"
+ *
+ * An earlier iteration also prefixed the CONTENT with "Notification: " as
+ * belt-and-suspenders. Removed 2026-04-23: the type-attribute marker is the
+ * surgical signal; polluting the readable content was unnecessary noise.
  */
 const NOTIFICATION_ONLY_MARKER = "notification-only:do-not-acknowledge-or-respond-to"
 
@@ -571,15 +575,11 @@ function markedType(type: string): string {
   return isNotificationOnlyType(type) ? `${NOTIFICATION_ONLY_MARKER}:${type}` : type
 }
 
-function prefixNotification(type: string, content: string): string {
-  return isNotificationOnlyType(type) ? `Notification: ${content}` : content
-}
-
 function singleEventNotification(ev: PendingBroadcast): string {
   return makeNotification("channel", {
     from: ev.sender,
     type: markedType(ev.type),
-    content: prefixNotification(ev.type, ev.content),
+    content: ev.content,
     bead_id: ev.bead_id,
     message_id: ev.id,
   })
@@ -589,9 +589,7 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
   const lines = events.map((e) => `[${e.sender}] ${e.type}: ${e.content.replace(/\n/g, " ")}`)
   if (dropped > 0) lines.push(`(+${dropped} more events truncated)`)
   const total = events.length + dropped
-  // Batched content always inherits the "delta" type — which is
-  // notification-only. Prefix the header too.
-  const header = `Notification: ${total} tribe event${total === 1 ? "" : "s"}`
+  const header = `${total} tribe event${total === 1 ? "" : "s"}`
   const content = `${header}\n${lines.join("\n")}`
   const last = events[events.length - 1]
   return makeNotification("channel", {
