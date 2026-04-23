@@ -1299,14 +1299,24 @@ export async function runProDual(options: {
   }
 
   const gptPro = getModel("gpt-5.4-pro")
-  const kimi = getModel("moonshotai/kimi-k2.6")
+  // Leg B defaults to Kimi K2.6 (cheap sanity-check). Override with
+  // LLM_DUAL_PRO_B=<modelId> for head-to-head sprints — e.g.
+  // LLM_DUAL_PRO_B=gpt-5.5-pro to A/B frontier OpenAI Pros. The A/B log
+  // (ab-pro.jsonl) records whichever model B was, so mixed windows are
+  // disambiguated after the fact by reading `kimi.model` in each entry.
+  const modelBId = process.env.LLM_DUAL_PRO_B || "moonshotai/kimi-k2.6"
+  const kimi = getModel(modelBId)
   const gptAvailable = gptPro && isProviderAvailable(gptPro.provider)
   const kimiAvailable = kimi && isProviderAvailable(kimi.provider)
 
   // Fall back to single-model mode if we can't run both sides.
   if (!gptAvailable || !kimiAvailable) {
-    const missing = !gptAvailable ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"
-    console.error(`⚠️  Dual-pro unavailable (${missing} not set) — falling back to single model\n`)
+    const missing = !gptAvailable
+      ? "OPENAI_API_KEY"
+      : !kimi
+        ? `unknown model "${modelBId}"`
+        : `provider key for ${kimi.provider}`
+    console.error(`⚠️  Dual-pro unavailable (${missing}) — falling back to single model\n`)
     await askAndFinish({
       question,
       modelMode: "pro" as ModelMode,
@@ -1327,20 +1337,35 @@ export async function runProDual(options: {
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
 
   console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName} in parallel...`)
-  console.error(`  • Estimated cost: $5-15 (Pro) + $0.01-0.05 (K2.6) = ~$5-15 total`)
-  // K2.6 uses dynamic sizing via reasoning.contextWindow — the actual output
-  // cap is computed per-call in research.ts (contextWindow − estimated input
-  // − 4096 safety). Report the window + strategy here; per-call numbers show
-  // up in the final report.
-  const k26Cap = kimi!.reasoning?.contextWindow
-    ? `dynamic (up to ~${kimi!.reasoning.contextWindow - 4096} tokens, scales with input)`
-    : `${kimi!.reasoning?.maxOutputTokens} tokens (static)`
-  console.error(`  • K2.6 output budget: ${k26Cap}\n`)
+  // Cost estimate scales with leg B's tier. K2.6 = $0.01-0.05 (default,
+  // rounding-error). A second very-high Pro (e.g. gpt-5.5-pro for A/B) ≈ $5-15.
+  const legBCostStr = kimi!.costTier === "very-high" ? "$5-15" : "$0.01-0.05"
+  const totalEstStr = kimi!.costTier === "very-high" ? "~$10-30" : "~$5-15"
+  console.error(
+    `  • Estimated cost: $5-15 (${gptPro!.displayName}) + ${legBCostStr} (${kimi!.displayName}) = ${totalEstStr} total`,
+  )
+  // K2.6-style thinking models use dynamic sizing via reasoning.contextWindow.
+  // The actual output cap is computed per-call in research.ts (contextWindow −
+  // estimated input − 4096 safety). Report the window + strategy here; per-call
+  // numbers show up in the final report. Non-thinking models skip this line.
+  if (kimi!.reasoning?.contextWindow || kimi!.reasoning?.maxOutputTokens) {
+    const cap = kimi!.reasoning?.contextWindow
+      ? `dynamic (up to ~${kimi!.reasoning.contextWindow - 4096} tokens, scales with input)`
+      : `${kimi!.reasoning?.maxOutputTokens} tokens (static)`
+    console.error(`  • ${kimi!.displayName} output budget: ${cap}\n`)
+  } else {
+    console.error("")
+  }
 
-  // Cost confirmation matches runDebate / runDeep — a $5-15 call deserves a
-  // Y/n gate. The 2026-04-20 double-fire bug made silent billing mistakes
-  // worse than they would otherwise be; this is the explicit-opt-in backstop.
-  await confirmOrExit("⚠️  Dual-pro costs ~$5-15 (mostly GPT-5.4 Pro). Proceed? [Y/n] ", skipConfirm)
+  // Cost confirmation matches runDebate / runDeep — a multi-dollar call
+  // deserves a Y/n gate. The 2026-04-20 double-fire bug made silent billing
+  // mistakes worse than they would otherwise be; this is the explicit-opt-in
+  // backstop. Prompt scales when both legs are Pro tier (frontier A/B).
+  const proLabel =
+    kimi!.costTier === "very-high"
+      ? `(${gptPro!.displayName} + ${kimi!.displayName}, both Pro tier)`
+      : `(mostly ${gptPro!.displayName})`
+  await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} ${proLabel}. Proceed? [Y/n] `, skipConfirm)
 
   const { ask } = await import("./research")
   const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("./openai-deep")
@@ -1352,10 +1377,14 @@ export async function runProDual(options: {
   // expose the Responses API, so the Kimi leg stays on generateText (if it's
   // aborted, work is lost — acceptable given the ~30s typical runtime).
   //
-  // imagePath disables the background path for the GPT leg — the Responses-API
-  // background helper is text-only today, and silently dropping the image
-  // would be worse than losing recoverability for the rare image+pro case.
+  // imagePath disables the background path — the Responses-API background
+  // helper is text-only today, and silently dropping the image would be worse
+  // than losing recoverability for the rare image+pro case.
   const canBackgroundGpt = isOpenAIBackgroundCapable(gptPro!) && !imagePath
+  // Leg B also qualifies when it's an OpenAI Pro (e.g. gpt-5.5-pro A/B).
+  // K2.6 doesn't — OpenRouter doesn't expose the Responses API, so Kimi stays
+  // on generateText (if aborted, work is lost — acceptable given ~30s runtime).
+  const canBackgroundKimi = isOpenAIBackgroundCapable(kimi!) && !imagePath
 
   // Fire both in parallel. Streaming is disabled — dual streams would interleave
   // unreadably on stderr. Users read the final files.
@@ -1387,15 +1416,20 @@ export async function runProDual(options: {
             imagePath,
             abortSignal: ac.signal,
           })
-      return await Promise.allSettled([
-        gptCall,
-        ask(enrichedQuestion, "standard", {
-          modelOverride: kimi!.modelId,
-          stream: false,
-          imagePath,
-          abortSignal: ac.signal,
-        }),
-      ])
+      const kimiCall = canBackgroundKimi
+        ? queryOpenAIBackground({
+            prompt: enrichedQuestion,
+            model: kimi!,
+            topic: question,
+            abortSignal: ac.signal,
+          })
+        : ask(enrichedQuestion, "standard", {
+            modelOverride: kimi!.modelId,
+            stream: false,
+            imagePath,
+            abortSignal: ac.signal,
+          })
+      return await Promise.allSettled([gptCall, kimiCall])
     } finally {
       outerSignal.removeEventListener("abort", onOuterAbort)
     }

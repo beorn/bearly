@@ -160,6 +160,28 @@ export type CompareOptions = z.infer<typeof CompareOptionsSchema>
 
 // Available models registry with pricing (per 1M tokens, USD)
 export const MODELS: Model[] = [
+  // OpenAI - GPT-5.5 "Spud" series (announced 2026-04-23)
+  // API access rolling out after launch; ChatGPT/Codex first. Pricing from OpenAI announcement.
+  {
+    provider: "openai",
+    modelId: "gpt-5.5",
+    displayName: "GPT-5.5",
+    isDeepResearch: false,
+    costTier: "high",
+    inputPricePerM: 5.0,
+    outputPricePerM: 30.0,
+    typicalLatencyMs: 5000,
+  },
+  {
+    provider: "openai",
+    modelId: "gpt-5.5-pro",
+    displayName: "GPT-5.5 Pro",
+    isDeepResearch: false,
+    costTier: "very-high",
+    inputPricePerM: 30.0,
+    outputPricePerM: 180.0,
+    typicalLatencyMs: 15000,
+  },
   // OpenAI - GPT-5.4 series (2026-03-05)
   {
     provider: "openai",
@@ -771,7 +793,9 @@ export const BEST_MODELS = {
   // Pro - most capable models (very-high cost tier, ~10x standard)
   // Dual-pro mode (CLI `pro` keyword, no --model override) runs the first two
   // entries in parallel: GPT-5.4 Pro + Kimi K2.6 — A/B test + 2-is-better-than-one.
-  pro: ["gpt-5.4-pro", "moonshotai/kimi-k2.6", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
+  // (2026-04-23) GPT-5.5 Pro announced — API rollout pending. Switch default to
+  //   "gpt-5.5-pro" once the API is confirmed live; the registry entry is ready.
+  pro: ["gpt-5.4-pro", "moonshotai/kimi-k2.6", "gpt-5.5-pro", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
 }
 
 export type ModelMode = keyof typeof BEST_MODELS
