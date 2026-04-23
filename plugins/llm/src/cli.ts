@@ -363,6 +363,13 @@ FLAGS
   --context-file <path>  Read context from a file
   --output <file>        Write response to specific file (default: auto /tmp/llm-<session>-<slug>-<rand>.txt)
 
+ENVIRONMENT VARIABLES
+  LLM_DUAL_PRO_B=<modelId>         Swap leg B of dual-pro (default: moonshotai/kimi-k2.6).
+                                   Use for head-to-head A/B sprints — e.g.
+                                   LLM_DUAL_PRO_B=gpt-5.5-pro pairs two frontier
+                                   Pros and logs both to ab-pro.jsonl.
+  LLM_RECOVER_MAX_ATTEMPTS=<n>     Polls for deep-research recovery (default: 600 = 50 min).
+
 FEATURES
   • Auto-recovery: Checks for interrupted responses and recovers them
   • Checks session history first (avoids duplicate research)

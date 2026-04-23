@@ -131,4 +131,35 @@ describe("dual-pro failure modes", () => {
     expect(ab.gpt.ok).toBe(false)
     expect(ab.kimi.ok).toBe(false)
   }, 10_000)
+
+  it("LLM_DUAL_PRO_B=<unknown> falls back to single-model with unknown-model stderr", async () => {
+    const env = makeTestEnv()
+    process.env.LLM_DUAL_PRO_B = "this-model-does-not-exist"
+    try {
+      // Single-model fallback calls queryOpenAIBackground (gpt-5.4-pro is
+      // background-capable). One success returns a normal /pro response.
+      queryBackgroundMock.mockReset()
+      queryBackgroundMock.mockResolvedValueOnce({
+        model: { displayName: "GPT-5.4 Pro" },
+        content: "single-model answer",
+        responseId: "resp_single",
+        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+        durationMs: 100,
+      })
+      generateTextMock.mockReset()
+
+      await runDualPro()
+
+      // The fallback stderr names the unknown model verbatim so typos are
+      // debuggable.
+      const stderrAll = env.stderr.join("\n")
+      expect(stderrAll).toMatch(/Dual-pro unavailable \(unknown model "this-model-does-not-exist"\)/)
+
+      // No A/B log — single-model askAndFinish doesn't call appendAbProLog.
+      const abPath = abProLogPath(env.homeDir)
+      expect(existsSync(abPath)).toBe(false)
+    } finally {
+      delete process.env.LLM_DUAL_PRO_B
+    }
+  }, 10_000)
 })

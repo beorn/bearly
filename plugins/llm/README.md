@@ -63,6 +63,11 @@ export XAI_API_KEY="..."
 export PERPLEXITY_API_KEY="pplx-..."
 ```
 
+## Environment Variables
+
+- `LLM_DUAL_PRO_B=<modelId>` — swap leg B of dual-pro (default `moonshotai/kimi-k2.6`). Use for head-to-head A/B sprints; e.g. `LLM_DUAL_PRO_B=gpt-5.5-pro` pairs two frontier Pros and logs both to `ab-pro.jsonl`.
+- `LLM_RECOVER_MAX_ATTEMPTS=<n>` — deep-research recovery poll ceiling (default 600 = 50 min).
+
 ## License
 
 MIT
