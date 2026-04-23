@@ -274,7 +274,14 @@ function fnv1a32(s: string): string {
 export function looksLikeExplicitWriteAuth(typedText: string): boolean {
   if (!typedText) return false
   const t = typedText.toLowerCase()
+  // Slash-command invocations are explicit user intent. When the command
+  // itself implies mutation (filing, grooming, closing tasks, etc.) treat
+  // the invocation as authorization without requiring additional verbs.
+  const mutatingSlashRe =
+    /<command-name>\/(file|inbox|groom|mark|close|defer|checkoff|sort|rename|due|fix|apply|do|bl)\b/
+  if (mutatingSlashRe.test(t)) return true
   // Verbs that plausibly imply filesystem/store mutation
-  const verbRe = /\b(create|write|add|edit|update|modify|delete|remove|append|patch|rewrite|generate)\b/
+  const verbRe =
+    /\b(create|write|add|edit|update|modify|delete|remove|append|patch|rewrite|generate|rename|apply|land)\b/
   return verbRe.test(t)
 }
