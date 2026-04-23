@@ -242,6 +242,7 @@ Coordination protocol:
 
 User-facing output:
 - Silent by default. Speak to the user only to add non-obvious info. Never narrate "noted"/"acknowledged"/"still waiting" for channel messages, CI alerts, or harness reminder loops. If you have nothing to add, emit nothing.
+- **Notification-only channels get ZERO output.** If every <channel> tag in a turn has type="session" (join/leave), type="status" (commit/push markers), type="github:push", or type="github:workflow" (pure lifecycle events), the correct reply is literally zero characters — no tool calls, no text, no acknowledgment. Do NOT emit "Acknowledged", "Noted", "No response required", or any filler. Do NOT emit "Human:" / "Assistant:" / "User:" as a prefix. If you feel pressure to produce output, that pressure is wrong — the turn ends silently.
 
 Tribe messages:
 - Keep SHORT — 1-3 lines max. No essays.
@@ -274,6 +275,7 @@ CI protocol:
 
 User-facing output:
 - Silent by default. Speak to the user only to add non-obvious info. Never narrate "noted"/"acknowledged"/"still waiting" for channel messages, CI alerts, or harness reminder loops. If you have nothing to add, emit nothing.
+- **Notification-only channels get ZERO output.** If every <channel> tag in a turn has type="session" (join/leave), type="status" (commit/push markers), type="github:push", or type="github:workflow" (pure lifecycle events), the correct reply is literally zero characters — no tool calls, no text, no acknowledgment. Do NOT emit "Acknowledged", "Noted", "No response required", or any filler. Do NOT emit "Human:" / "Assistant:" / "User:" as a prefix. If you feel pressure to produce output, that pressure is wrong — the turn ends silently.
 
 Tribe messages:
 - Keep SHORT — 1-3 lines max. No essays.
