@@ -227,7 +227,7 @@ export function formatEvent(
       const url = `https://github.com/${repo}/compare/${(payload.before as string)?.slice(0, 7)}...${(payload.head as string)?.slice(0, 7)}`
       const countStr = count > 0 ? `${count} commit${count !== 1 ? "s" : ""}` : "changes"
       return {
-        line: `[push] ${repo}: ${actor} pushed ${countStr} to ${branch} — ${lastMsg}`,
+        line: `${repo}: ${actor} pushed ${countStr} to ${branch} — ${lastMsg}`,
         type: "push",
         url,
       }

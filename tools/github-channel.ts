@@ -291,7 +291,7 @@ function formatEvent(event: GitHubEvent): { line: string; type: string; url: str
       const lastMsg = commits?.[commits.length - 1]?.message?.split("\n")[0] ?? ""
       const url = `https://github.com/${repo}/compare/${(payload.before as string)?.slice(0, 7)}...${(payload.head as string)?.slice(0, 7)}`
       return {
-        line: `[push] ${actor} pushed ${count} commit${count !== 1 ? "s" : ""} to ${branch} — ${lastMsg}`,
+        line: `${actor} pushed ${count} commit${count !== 1 ? "s" : ""} to ${branch} — ${lastMsg}`,
         type: "push",
         url,
       }

@@ -48,7 +48,7 @@ describe("formatEvent", () => {
     const result = formatEvent(event, allTypes)
     expect(result).not.toBeNull()
     expect(result!.type).toBe("push")
-    expect(result!.line).toContain("[push]")
+    expect(result!.line).toContain("pushed")
     expect(result!.line).toContain("beorn")
     expect(result!.line).toContain("2 commits")
     expect(result!.line).toContain("main")
