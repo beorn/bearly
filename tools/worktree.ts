@@ -211,6 +211,25 @@ export interface AgentCloneStatus {
   class: AgentCloneClass
   uncommitted: number
   ageHours: number
+  /**
+   * Number of nested clones inside this clone (pre-2026-04-23 isolate.sh
+   * bug — clones inherited their source's `.claude/worktrees/`). Modern
+   * clones reset to HEAD on creation so cascades don't recur, but legacy
+   * preserved clones may still hold them.
+   */
+  cascadeCount: number
+}
+
+/** Count nested agent-* clones inside a given clone path. */
+export async function countCascades(clonePath: string): Promise<number> {
+  const inner = join(clonePath, ".claude", "worktrees")
+  if (!existsSync(inner)) return 0
+  const result = await safeExec($`ls -1 ${inner} 2>/dev/null`)
+  let n = 0
+  for (const name of result.stdout.split("\n")) {
+    if (name.startsWith("agent-") && existsSync(join(inner, name))) n++
+  }
+  return n
 }
 
 export async function classifyAgentClone(clonePath: string): Promise<AgentCloneClass> {
@@ -257,7 +276,8 @@ export async function listAgentClones(rootDir: string): Promise<AgentCloneStatus
     const mtime = parseInt(stat.stdout.trim(), 10) * 1000
     const ageHours = isNaN(mtime) ? 0 : (Date.now() - mtime) / 3600000
     const stProb = await getWorktreeStatus(path)
-    out.push({ name, path, class: cls, uncommitted: stProb.changes.length, ageHours })
+    const cascadeCount = await countCascades(path)
+    out.push({ name, path, class: cls, uncommitted: stProb.changes.length, ageHours, cascadeCount })
   }
   return out
 }
@@ -311,7 +331,20 @@ export async function gcAgentClones(opts: GcOptions = {}): Promise<{
     const tag = deleted.includes(c) ? RED + "DELETE  " + RESET : GREEN + "PRESERVE" + RESET
     const ageStr = `${c.ageHours.toFixed(1)}h`
     const why = c.class === "dirty" ? `${c.class} (${c.uncommitted} uncommitted)` : c.class
-    console.log(`  ${tag}  ${c.name.padEnd(40)} ${DIM}${ageStr.padStart(7)}${RESET}  ${why}`)
+    const cascade = c.cascadeCount > 0 ? YELLOW + ` +${c.cascadeCount} nested cascade` + RESET : ""
+    console.log(`  ${tag}  ${c.name.padEnd(40)} ${DIM}${ageStr.padStart(7)}${RESET}  ${why}${cascade}`)
+  }
+  // Surface cascades inside PRESERVED clones — those won't be cleaned by
+  // outer deletion. User can investigate or pass --include-unique-work to
+  // force-delete the parent.
+  const preservedWithCascade = preserved.filter((c) => c.cascadeCount > 0)
+  if (preservedWithCascade.length > 0) {
+    console.log("")
+    console.log(YELLOW + "  Note: preserved clones contain nested cascades:" + RESET)
+    for (const c of preservedWithCascade) {
+      console.log(DIM + `    ${c.name} contains ${c.cascadeCount} inner clone(s) at .claude/worktrees/` + RESET)
+    }
+    console.log(DIM + "  Cascades are pre-2026-04-23 inheritance junk; review the parent before deleting." + RESET)
   }
 
   if (dryRun || deleted.length === 0) {
