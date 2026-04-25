@@ -191,6 +191,154 @@ export async function getWorktreeStatus(worktreePath: string): Promise<{ dirty: 
 }
 
 // ============================================
+// Agent-clone GC (cp-c-R isolation worktrees)
+// ============================================
+
+/**
+ * Agent-isolation clones are independent full repos under
+ * `<gitRoot>/.claude/worktrees/agent-*` made via APFS `cp -c -R` (not git
+ * worktrees). Hosts that run Claude Code with worktree-isolation hooks
+ * accumulate these clones over time; the gc command classifies and prunes.
+ *
+ * Classification mirrors `.claude/lib/classify-clone.sh` (single algorithm,
+ * two language-specific implementations for the hooks vs CLI).
+ */
+export type AgentCloneClass = "broken" | "dirty" | "unique-work" | "clean"
+
+export interface AgentCloneStatus {
+  name: string
+  path: string
+  class: AgentCloneClass
+  uncommitted: number
+  ageHours: number
+}
+
+export async function classifyAgentClone(clonePath: string): Promise<AgentCloneClass> {
+  if (!existsSync(join(clonePath, ".git"))) return "broken"
+
+  const status = await getWorktreeStatus(clonePath)
+  if (status.dirty) return "dirty"
+
+  const headResult = await safeExec($`cd ${clonePath} && git rev-parse HEAD 2>/dev/null`)
+  const head = headResult.stdout.trim()
+  if (!head) return "broken"
+
+  const inMain = await safeExec($`cd ${clonePath} && git merge-base --is-ancestor ${head} main 2>/dev/null`)
+  if (inMain.exitCode !== 0) return "unique-work"
+
+  // Any local-only branch with commits not in main and not on any remote?
+  const branches = await safeExec(
+    $`cd ${clonePath} && git for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null`,
+  )
+  for (const line of branches.stdout.split("\n")) {
+    if (!line.trim()) continue
+    const sha = line.split(" ")[0]
+    if (!sha) continue
+    const reachable = await safeExec($`cd ${clonePath} && git merge-base --is-ancestor ${sha} main 2>/dev/null`)
+    if (reachable.exitCode === 0) continue
+    const onRemote = await commitExistsOnRemote(clonePath, sha)
+    if (onRemote) continue
+    return "unique-work"
+  }
+
+  return "clean"
+}
+
+export async function listAgentClones(rootDir: string): Promise<AgentCloneStatus[]> {
+  if (!existsSync(rootDir)) return []
+  const out: AgentCloneStatus[] = []
+  const result = await safeExec($`ls -1 ${rootDir} 2>/dev/null`)
+  for (const name of result.stdout.split("\n")) {
+    if (!name || !name.startsWith("agent-")) continue
+    const path = join(rootDir, name)
+    if (!existsSync(path)) continue
+    const cls = await classifyAgentClone(path)
+    const stat = await safeExec($`stat -f '%m' ${path} 2>/dev/null`)
+    const mtime = parseInt(stat.stdout.trim(), 10) * 1000
+    const ageHours = isNaN(mtime) ? 0 : (Date.now() - mtime) / 3600000
+    const stProb = await getWorktreeStatus(path)
+    out.push({ name, path, class: cls, uncommitted: stProb.changes.length, ageHours })
+  }
+  return out
+}
+
+export interface GcOptions {
+  root?: string
+  dryRun?: boolean
+  minAgeHours?: number
+  /** When true, also delete unique-work clones. Default false (preserved). */
+  includeUniqueWork?: boolean
+}
+
+export async function gcAgentClones(opts: GcOptions = {}): Promise<{
+  deleted: AgentCloneStatus[]
+  preserved: AgentCloneStatus[]
+}> {
+  const gitRoot = findGitRoot(process.cwd())
+  if (!gitRoot) {
+    error("Not in a git repository")
+    process.exit(1)
+  }
+  const root = opts.root ?? join(gitRoot, ".claude/worktrees")
+  const dryRun = opts.dryRun ?? false
+  const minAgeHours = opts.minAgeHours ?? 0
+  const includeUnique = opts.includeUniqueWork ?? false
+
+  const clones = await listAgentClones(root)
+  if (clones.length === 0) {
+    info(`No agent clones at ${root}`)
+    return { deleted: [], preserved: [] }
+  }
+
+  const deleted: AgentCloneStatus[] = []
+  const preserved: AgentCloneStatus[] = []
+
+  for (const c of clones) {
+    const eligible = c.class === "clean" || c.class === "broken" || (includeUnique && c.class === "unique-work")
+    const oldEnough = c.ageHours >= minAgeHours
+    if (eligible && oldEnough) {
+      deleted.push(c)
+    } else {
+      preserved.push(c)
+    }
+  }
+
+  // Report
+  console.log(BOLD + (dryRun ? "DRY RUN — " : "") + `Agent clones at ${root}` + RESET)
+  console.log(DIM + `  ${clones.length} total · ${deleted.length} to delete · ${preserved.length} to preserve` + RESET)
+  console.log("")
+  for (const c of clones) {
+    const tag = deleted.includes(c) ? RED + "DELETE  " + RESET : GREEN + "PRESERVE" + RESET
+    const ageStr = `${c.ageHours.toFixed(1)}h`
+    const why = c.class === "dirty" ? `${c.class} (${c.uncommitted} uncommitted)` : c.class
+    console.log(`  ${tag}  ${c.name.padEnd(40)} ${DIM}${ageStr.padStart(7)}${RESET}  ${why}`)
+  }
+
+  if (dryRun || deleted.length === 0) {
+    return { deleted, preserved }
+  }
+
+  // Use /usr/bin/trash if available (recoverable on macOS), else rm -rf.
+  const hasTrash = existsSync("/usr/bin/trash")
+  console.log("")
+  info(`Deleting ${deleted.length} clone(s) via ${hasTrash ? "trash (recoverable)" : "rm -rf"}...`)
+  for (const c of deleted) {
+    if (hasTrash) {
+      await safeExec($`/usr/bin/trash ${c.path}`)
+    } else {
+      try {
+        rmSync(c.path, { recursive: true, force: true })
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  success(`Deleted ${deleted.length} clone(s)`)
+
+  return { deleted, preserved }
+}
+
+// ============================================
 // Commands
 // ============================================
 
@@ -986,6 +1134,7 @@ ${BOLD}USAGE${RESET}
   bun worktree merge <name>             Merge worktree branch into main and clean up
   bun worktree remove <name>            Remove worktree
   bun worktree list                     Detailed worktree status
+  bun worktree gc                       Prune stale agent-isolation clones (.claude/worktrees/agent-*)
 
 ${BOLD}CREATE OPTIONS${RESET}
   --branch <name>   Use specific branch (also used as worktree name if no <name>)
@@ -1001,6 +1150,12 @@ ${BOLD}MERGE OPTIONS${RESET}
 ${BOLD}REMOVE OPTIONS${RESET}
   --delete-branch   Also delete the branch
   -f, --force       Force removal even with uncommitted changes
+
+${BOLD}GC OPTIONS${RESET}
+  --root <dir>             Directory to scan (default: <gitRoot>/.claude/worktrees)
+  --dry-run                Show what would be deleted, don't delete
+  --min-age <hours>        Only delete clones older than this many hours (default 0)
+  --include-unique-work    Also delete clones with local-only commits (default preserved)
 
 ${BOLD}EXAMPLES${RESET}
   bun worktree create my-feature                           # New branch feat/my-feature
@@ -1115,6 +1270,41 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "ls":
       await listWorktrees(true)
       break
+
+    case "gc": {
+      // Parse --root <dir>
+      const rootIdx = args.indexOf("--root")
+      let root: string | undefined
+      if (rootIdx !== -1) {
+        root = args[rootIdx + 1]
+        if (!root || root.startsWith("--")) {
+          error("--root requires a value")
+          process.exit(1)
+        }
+      }
+      // Parse --min-age <hours>
+      const ageIdx = args.indexOf("--min-age")
+      let minAgeHours = 0
+      if (ageIdx !== -1) {
+        const v = args[ageIdx + 1]
+        if (!v || v.startsWith("--")) {
+          error("--min-age requires a value (hours)")
+          process.exit(1)
+        }
+        minAgeHours = parseFloat(v)
+        if (isNaN(minAgeHours)) {
+          error("--min-age must be a number")
+          process.exit(1)
+        }
+      }
+      await gcAgentClones({
+        root,
+        dryRun: hasFlag("--dry-run"),
+        minAgeHours,
+        includeUniqueWork: hasFlag("--include-unique-work"),
+      })
+      break
+    }
 
     case "help":
     case "--help":
