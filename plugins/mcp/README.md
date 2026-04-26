@@ -1,13 +1,15 @@
 # @bearly/mcp — MCP-as-tribe-plugin (prototype)
 
-> **Status:** prototype skeleton. Lifecycle and predicate composition only.
-> Real MCP tool implementations and migration of existing stdio MCPs are
-> follow-up work — see the parent bead.
+> **Status:** prototype skeleton. Wire conformance, lifecycle, and
+> predicate composition only. Real MCP tool implementations beyond an
+> empty `tools/list` and migration of existing stdio MCPs are follow-up
+> work — see the parent bead.
 
 ## What it is
 
 A long-running MCP server, hosted as a plugin on the existing tribe daemon,
-that all Claude Code sessions on the machine share over HTTP+SSE.
+that all Claude Code sessions on the machine share over Streamable HTTP via
+a Unix socket.
 
 Today, every Claude Code session spawns its own MCP servers via stdio. With
 N sessions × M servers, startup latency, FD pressure, and lifecycle bugs all
@@ -16,16 +18,17 @@ machine.
 
 ## Connection-as-lease
 
-The active SSE-connection count IS the lease. There is no `lease()` API, no
-reference-count dance, no handshake — clients just connect over SSE, and
-the connection itself is the "I'm using this" signal.
+The active TCP/Unix-socket connection count IS the lease. There is no
+`lease()` API, no reference-count dance, no handshake — clients just
+connect over the MCP wire, and the kernel-level connection itself is the
+"I'm using this" signal.
 
 ```
 last connection drops → arm idle-quit timer (default 30 min)
-new connection arrives  → cancel the timer
-timer fires             → the `idle` predicate flips true
-                          → `onRequestQuit("idle")` fires
-                          → daemon owner shuts the process down
+new connection arrives → cancel the timer
+timer fires            → the `idle` predicate flips true
+                       → events.emit("request_quit", "idle")
+                       → daemon owner shuts the process down
 ```
 
 Liveness check from outside is a single line: "can I connect to the
@@ -43,7 +46,7 @@ type QuitPredicate = () => boolean | Promise<boolean>
 
 The daemon quits when **any** predicate returns true. Built-ins:
 
-- `idle` — set true by the idle-quit timer when no SSE connections are open
+- `idle` — set true by the idle-quit timer when no MCP-wire connections are open
 - `sigterm` — set true by the SIGTERM handler
 
 Anything else plugs in the same way:
@@ -65,16 +68,52 @@ Predicates are checked:
   external-state predicates don't pay the full poll latency on detach)
 - immediately when the idle timer fires
 
-## Wire (prototype scope)
+## request_quit channel — EventEmitter
+
+The plugin emits a `"request_quit"` event with the firing predicate's
+label as payload. **Multiple subscribers are supported** — this is the
+reason the channel is an EventEmitter rather than a single callback. A
+daemon supervisor can record telemetry while the actual lifecycle handler
+does the shutdown:
+
+```ts
+plugin.events.on("request_quit", (reason) => daemon.shutdown(reason))
+plugin.events.on("request_quit", (reason) => metrics.record(reason))
+```
+
+The plugin does NOT call `process.exit()` — shutdown is the daemon's
+responsibility.
+
+## Wire — Streamable HTTP over Unix socket
+
+Endpoints:
 
 ```
-GET  /healthz   → 200 "ok\n"
-GET  /sse       → text/event-stream; each connect joins the active set
-POST /rpc       → JSON-RPC; right now only `tools/list` → { tools: [] }
+GET    /healthz   → 200 "ok\n"  (cheap liveness probe; no MCP framing)
+POST   /mcp       → @modelcontextprotocol/sdk Streamable HTTP — JSON-RPC requests
+GET    /mcp       → @modelcontextprotocol/sdk Streamable HTTP — server-initiated SSE stream
+DELETE /mcp       → @modelcontextprotocol/sdk Streamable HTTP — session teardown
 ```
 
-**Unix socket only** — the MCP wire is a Unix-domain socket published with
-mode `0600` using bind-before-publish. Only processes the kernel grants
+The plugin uses `@modelcontextprotocol/sdk`'s
+`WebStandardStreamableHTTPServerTransport` — the canonical wire that
+Claude Code's HTTP MCP client speaks. We bridge `Request` ↔
+`IncomingMessage` and `Response` ↔ `ServerResponse` with a small adapter
+(< 30 LOC) so the wire is straight from the SDK without the
+`@hono/node-server` request-listener layer.
+
+The transport runs in **stateful mode** (per-session). Each connecting
+Claude Code session gets a session ID via the `Mcp-Session-Id` response
+header on initialize and echoes it on subsequent requests. The plugin
+keeps a `Map<sessionId, { server, transport }>` so multiple clients can
+share the daemon without crosstalk. Stateless mode requires a fresh
+transport per request (per the SDK's docstring: "Reusing a stateless
+transport causes message ID collisions between clients") — too expensive
+for a long-running server.
+
+### Unix socket (mode 0600, bind-before-publish)
+
+Bound to a Unix-domain socket. Only processes that the kernel grants
 read/write on the socket file (the same UID) can talk to it; there is no
 network listener. Path resolution mirrors the tribe daemon:
 
@@ -83,10 +122,8 @@ network listener. Path resolution mirrors the tribe daemon:
 - `~/.local/share/bearly-mcp/mcp-<pid>.sock` (macOS / no XDG)
 - `/tmp/bearly-mcp/mcp-<pid>.sock` (no `HOME`)
 
-Claude Code's HTTP MCP client supports `unix:` URIs, so consumers point at
-the socket directly — no TCP, no port allocation, no firewall surface.
-
-### Bind-before-publish
+Claude Code's HTTP MCP client supports `unix:` URIs, so consumers point
+at the socket directly — no TCP, no port allocation, no firewall surface.
 
 On startup, the plugin:
 
@@ -103,22 +140,19 @@ On startup, the plugin:
 `stop()` unlinks the published socket, so a restart doesn't hit the
 "already in use" probe.
 
-The MCP SDK's StreamableHttp/SSE transports are deliberately **not** used
-in this skeleton. The prototype validates the lifecycle design (lease /
-predicate composition / clean shutdown) and stays small enough to read in
-one sitting. SDK upgrade is a one-file follow-up.
-
 ## Usage
 
 ```ts
 import { createMcpPlugin } from "@bearly/mcp"
 
 const mcp = createMcpPlugin({
-  onRequestQuit: (reason) => {
-    log.info(`mcp asks to quit: ${reason}`)
-    daemon.shutdown()
-  },
   idleTimeoutMs: 30 * 60 * 1000, // default
+})
+
+// Subscribe to shutdown signals — multi-listener supported.
+mcp.events.on("request_quit", (reason) => {
+  log.info(`mcp asks to quit: ${reason}`)
+  daemon.shutdown()
 })
 
 // Plug into the tribe plugin loader alongside git, beads, github, ...
@@ -130,14 +164,20 @@ mcp.registerQuitPredicate(() => process.ppid === 1)
 
 // And introspect, mostly for tests:
 mcp.getAddress()         // { socketPath } once listening
-mcp.getConnectionCount() // current active SSE count
+mcp.getConnectionCount() // current active wire-connection count
 ```
 
-Connecting from a client (any HTTP library that takes a `socketPath` works):
+Connecting from a client — the canonical SDK Client works:
 
 ```ts
-import { request } from "node:http"
-const req = request({ socketPath: mcp.getAddress()!.socketPath, path: "/rpc", method: "POST" }, ...)
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+
+// (Custom fetch shim required if the client speaks Unix-socket; Claude
+// Code's HTTP MCP client supports `unix:` URIs natively.)
+const client = new Client({ name: "my-client", version: "0.0.0" }, { capabilities: {} })
+await client.connect(new StreamableHTTPClientTransport(new URL("unix:/path/to/mcp.sock?path=/mcp")))
+const tools = await client.listTools() // → { tools: [] } in this prototype
 ```
 
 Plugin shape conforms to `TribePluginApi` (see
@@ -146,9 +186,19 @@ Plugin shape conforms to `TribePluginApi` (see
 
 ## Tests
 
-One happy-path lifecycle test plus two predicate-composition tests live in
-`tests/mcp-plugin.test.ts`. They use a 100ms idle window so the suite stays
-fast; production default is 30 minutes.
+`tests/mcp-plugin.test.ts` covers the full design surface:
+
+1. **lifecycle** — bind-publish, mode 0600, lease taken on connect, dropped
+   on disconnect, idle-quit fires via `events.emit("request_quit", "idle")`.
+   Uses a raw socket to take the lease so SDK timing doesn't interfere.
+2. **MCP wire conformance** — SDK Client → `tools/list` → `[]` over the
+   StreamableHTTPClientTransport, routed through a Unix-socket fetch shim.
+3. **initial-predicate composition** — a custom predicate fires before
+   the idle window, proving predicates compose as flat thunks.
+4. **registerQuitPredicate after start()** works.
+5. **multi-listener** — two `events.on("request_quit", ...)` listeners
+   both receive the event. Pins the EE contract that motivated the swap
+   from a single callback.
 
 ```bash
 # from the bearly worktree (uses the host-repo's vitest binary)
@@ -162,8 +212,6 @@ fast; production default is 30 minutes.
   break it)
 - Auth — next bead
 - Migration of any existing stdio MCP usage in silvercode — next bead
-- StreamableHttp / SSEServerTransport from `@modelcontextprotocol/sdk` —
-  next bead
 
 ## Design rulings (from the parent bead)
 

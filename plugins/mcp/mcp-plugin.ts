@@ -1,10 +1,11 @@
 /**
  * MCP-as-tribe-plugin — prototype.
  *
- * One long-running HTTP+SSE MCP server, shared across Claude Code sessions,
- * hosted as a plugin on the tribe daemon. This is the lifecycle skeleton —
- * tool implementations and migration of existing stdio MCPs follow in later
- * beads.
+ * One long-running MCP server, shared across Claude Code sessions, hosted as
+ * a plugin on the tribe daemon. Wire is `@modelcontextprotocol/sdk`'s
+ * Streamable HTTP transport over a Unix socket. This is the lifecycle
+ * skeleton — real tool implementations and migration of existing stdio
+ * MCPs follow in later beads.
  *
  * # Why one daemon, not one-per-session
  *
@@ -15,13 +16,14 @@
  *
  * # Connection-as-lease
  *
- * The active SSE-connection count IS the lease. No `lease()` API, no
- * reference-count dance, no handshake — Claude Code clients just connect
- * over SSE and the connection itself is the "I'm using this" signal.
+ * The active TCP/Unix-socket connection count IS the lease. No `lease()`
+ * API, no reference-count dance, no handshake — Claude Code clients just
+ * connect over the MCP wire and the connection itself is the "I'm using
+ * this" signal.
  *
  * - Last connection drops → arm idle-quit timer (default 30 min, configurable)
  * - New connection arrives → cancel the timer
- * - Timer fires → predicate returns true → daemon shuts down
+ * - Timer fires → the `idle` predicate flips true → events.emit("request_quit")
  *
  * Liveness check from outside: `connect to the socket`. If it answers, it's
  * alive. No pidfile, no handshake, no reaper.
@@ -45,35 +47,154 @@
  * to add, cheap to compose, and they keep the daemon's own shutdown path a
  * single `Promise.race` over (predicate poll, fast-path event).
  *
+ * # request_quit channel — EventEmitter
+ *
+ * The plugin emits a `"request_quit"` event with the firing predicate's
+ * label as payload. Multiple subscribers can listen — a daemon supervisor
+ * can record telemetry while the actual lifecycle handler does the
+ * shutdown:
+ *
+ *   handle.events.on("request_quit", (reason) => daemon.shutdown(reason))
+ *   handle.events.on("request_quit", (reason) => metrics.record(reason))
+ *
+ * Multi-listener is the win over a single `onRequestQuit` callback. The
+ * plugin does NOT call `process.exit()` — shutdown is the daemon's
+ * responsibility.
+ *
  * # Wire (prototype scope)
  *
- *   GET  /healthz   — 200 "ok\n"
- *   GET  /sse       — text/event-stream; each connect joins the active set
- *   POST /rpc       — JSON-RPC; right now only `tools/list` → { tools: [] }
+ *   GET    /healthz   — 200 "ok\n"  (cheap liveness probe; no MCP framing)
+ *   POST   /mcp       — Streamable HTTP transport (JSON-RPC over POST)
+ *   GET    /mcp       — Streamable HTTP transport (server-initiated SSE stream)
+ *   DELETE /mcp       — Streamable HTTP transport (session teardown, stateful only)
  *
- * Bound to a Unix socket (mode 0600, bind-before-publish). The MCP wire is
- * loopback in spirit — only processes on the same machine that can read the
- * socket file can talk to it. Claude Code's HTTP MCP client supports `unix:`
- * URIs, so consumers point at the socket directly.
+ * `/mcp` is a single MCP endpoint per the Streamable HTTP spec; the SDK's
+ * `StreamableHTTPServerTransport.handleRequest(req, res)` dispatches by
+ * HTTP method internally. We run the transport in stateless mode
+ * (`sessionIdGenerator: undefined`) for the prototype — no per-client
+ * state, each request stands alone. Statefulness is a follow-up if needed.
  *
- * The MCP SDK's StreamableHttp/SSE transports are deliberately NOT used
- * here — this prototype validates the LIFECYCLE design (lease / predicate
- * composition / clean shutdown) and stays small enough to read in one
- * sitting. Wire upgrade to the MCP SDK is a one-file follow-up.
+ * Bound to a Unix socket (mode 0600, bind-before-publish). Same-UID local
+ * IPC, no TCP, no network surface. Claude Code's HTTP MCP client supports
+ * `unix:` URIs, so consumers point at the socket directly.
  *
  * @see tools/lib/tribe/plugin-api.ts — TribePluginApi shape
  * @see tools/lib/tribe/socket.ts     — XDG socket-path resolver we mirror
  * @see tools/lib/tribe/git-plugin.ts — minimal plugin example
  */
 
-import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
+import { createServer, type IncomingMessage, type ServerResponse, type Server as HttpServer } from "node:http"
 import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs"
-import { createConnection } from "node:net"
+import { createConnection, type Socket } from "node:net"
 import { dirname, resolve } from "node:path"
-import { randomBytes } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
+import { EventEmitter } from "node:events"
 import { createLogger } from "loggily"
+import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js"
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import type { TribePluginApi, TribeClientApi } from "../../tools/lib/tribe/plugin-api.ts"
 import { createTimers } from "../../tools/lib/tribe/timers.ts"
+
+// ---------------------------------------------------------------------------
+// Node IncomingMessage / ServerResponse  ↔  web-standard Request / Response
+// ---------------------------------------------------------------------------
+//
+// The MCP SDK ships two flavors of the streamable HTTP server transport:
+//   - StreamableHTTPServerTransport — wraps the web-standard transport in
+//     `@hono/node-server`'s adapter for direct Node http.Server use.
+//   - WebStandardStreamableHTTPServerTransport — Request → Response, which
+//     is the underlying primitive.
+//
+// We bridge to the web-standard transport directly. The hono adapter has
+// surfaced flaky behavior with our minimal test fetch shim (500 Internal
+// Server Error with no body, no error event), and the bridge is small
+// enough that owning it is cheaper than debugging through a third
+// integration layer. ~30 lines, no dependencies beyond `node:http`.
+
+function toWebRequest(req: IncomingMessage): Request {
+  // Build a stable URL — the host header is what the client sent, but
+  // we never actually use it (the transport only reads pathname / search
+  // / headers). `localhost` is a safe default for over-Unix-socket calls.
+  const host = req.headers.host ?? "localhost"
+  const url = new URL(req.url ?? "/", `http://${host}`)
+
+  const headers = new Headers()
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (Array.isArray(v)) for (const vv of v) headers.append(k, vv)
+    else if (typeof v === "string") headers.set(k, v)
+  }
+
+  // GET/HEAD have no body. Otherwise, stream from the IncomingMessage.
+  const method = req.method ?? "GET"
+  const hasBody = method !== "GET" && method !== "HEAD"
+  const body = hasBody
+    ? new ReadableStream<Uint8Array>({
+        start(controller) {
+          req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+          req.on("end", () => controller.close())
+          req.on("error", (err) => controller.error(err))
+        },
+      })
+    : null
+
+  return new Request(url, {
+    method,
+    headers,
+    body,
+    // Required by the Fetch spec when `body` is a ReadableStream.
+    duplex: "half",
+  } as RequestInit & { duplex?: "half" })
+}
+
+async function writeWebResponse(webRes: Response, nodeRes: ServerResponse): Promise<void> {
+  const headerObj: Record<string, string> = {}
+  webRes.headers.forEach((value, key) => {
+    headerObj[key] = value
+  })
+  nodeRes.writeHead(webRes.status, headerObj)
+
+  if (webRes.body === null) {
+    nodeRes.end()
+    return
+  }
+  // For SSE responses Node buffers headers until first body write — that
+  // makes the client wait indefinitely for the response handshake. Force
+  // headers out so the client side completes its `fetch()` Promise as
+  // soon as the server starts streaming.
+  if (typeof nodeRes.flushHeaders === "function") nodeRes.flushHeaders()
+  const reader = webRes.body.getReader()
+  // If the client tears down (close/error), cancel the body reader so the
+  // server-side stream stops producing into a dead socket.
+  let clientGone = false
+  const onClientGone = (): void => {
+    if (clientGone) return
+    clientGone = true
+    reader.cancel().catch(() => {
+      /* already done */
+    })
+  }
+  nodeRes.on("close", onClientGone)
+  nodeRes.on("error", onClientGone)
+
+  try {
+    // Stream chunks straight to the response — keeps SSE working without
+    // buffering the whole body, since the transport's SSE response is an
+    // open stream.
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      if (clientGone) break
+      nodeRes.write(value)
+    }
+  } catch {
+    /* reader was cancelled — nothing more to do */
+  } finally {
+    nodeRes.off("close", onClientGone)
+    nodeRes.off("error", onClientGone)
+    if (!clientGone) nodeRes.end()
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -99,19 +220,20 @@ import { createTimers } from "../../tools/lib/tribe/timers.ts"
  */
 export type QuitPredicate = () => boolean | Promise<boolean>
 
+/**
+ * Event surface emitted by the plugin handle. Use `events.on("request_quit",
+ * reason => ...)` to subscribe. Multiple listeners are supported — that's
+ * the reason this is an EventEmitter rather than a single callback.
+ */
+export interface McpPluginEvents {
+  /** A quit predicate returned true; `reason` is the predicate's label. */
+  request_quit: [reason: string]
+}
+
 export interface McpPluginOptions {
   /**
-   * Called when a registered quit predicate returns true. The daemon's own
-   * shutdown path should subscribe via this callback. The plugin does NOT
-   * call `process.exit()` — shutdown is the daemon's responsibility.
-   *
-   * @param reason  short human-readable diagnostic, e.g. "idle 30m" or "SIGTERM"
-   */
-  onRequestQuit?: (reason: string) => void
-
-  /**
-   * Idle-quit window — how long after the last SSE connection drops before
-   * the idle predicate flips true. Default 30 minutes.
+   * Idle-quit window — how long after the last MCP-wire connection drops
+   * before the idle predicate flips true. Default 30 minutes.
    */
   idleTimeoutMs?: number
 
@@ -129,8 +251,13 @@ export interface McpPluginOptions {
   socketPath?: string
 
   /**
+   * MCP server identity reported back in the initialize response.
+   */
+  serverInfo?: { name: string; version: string }
+
+  /**
    * Hook tests reach for to register custom predicates BEFORE start(),
-   * without needing to touch the global `registerQuitPredicate` export.
+   * without needing to touch `registerQuitPredicate` after the fact.
    */
   initialPredicates?: QuitPredicate[]
 }
@@ -139,22 +266,32 @@ export interface McpPluginHandle extends TribePluginApi {
   /**
    * Register an additional quit predicate AFTER start() has been called.
    * Predicates are called from the slow tick AND on connection-count-zero
-   * transitions, so `register → idle drop → predicate fires → onRequestQuit`
+   * transitions, so `register → idle drop → predicate fires → request_quit`
    * is observable within `pollIntervalMs`.
    */
   registerQuitPredicate(fn: QuitPredicate): void
 
   /**
    * The bound Unix socket path — only meaningful AFTER start() has been
-   * called. Returns `null` if the server isn't listening (not started, or
-   * stopped).
+   * called and bind-and-publish has completed. Returns `null` until then.
    */
   getAddress(): { socketPath: string } | null
 
   /**
-   * Active SSE-connection count — primarily for tests and observability.
+   * Active wire-connection count — primarily for tests and observability.
+   * Tracks raw TCP/Unix-socket connections to the http.Server (which is
+   * what holds the lease), not MCP request/response pairs.
    */
   getConnectionCount(): number
+
+  /**
+   * Subscribe to plugin events. Currently emits:
+   *
+   *   - `"request_quit"` with `(reason: string)` — a quit predicate fired.
+   *     Multiple listeners supported; daemon supervisor + telemetry can
+   *     coexist on the same channel.
+   */
+  events: EventEmitter<McpPluginEvents>
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +338,12 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const socketPath = resolveMcpSocketPath(opts)
-  const onRequestQuit = opts.onRequestQuit ?? (() => {})
+  const serverInfo = opts.serverInfo ?? { name: "@bearly/mcp", version: "0.0.0" }
+
+  const events = new EventEmitter<McpPluginEvents>()
+  // Allow many subscribers — daemon shutdown handler, telemetry, debug
+  // listeners. The default of 10 is plenty for now but explicit is clearer.
+  events.setMaxListeners(64)
 
   // ------------------------------------------------------------------------
   // Predicate registry
@@ -219,7 +361,10 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   // Connection tracking + idle-quit
   // ------------------------------------------------------------------------
 
-  const connections = new Set<ServerResponse>()
+  // Track raw TCP/Unix-socket connections — that's the lease. The MCP
+  // SDK's transport handles request/response framing on top, but the
+  // kernel-level connection is what proves "someone is using us".
+  const wireConnections = new Set<Socket>()
   let idleTimerFired = false
   let idleTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -228,7 +373,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     idleTimer = setTimeout(() => {
       idleTimerFired = true
       idleTimer = null
-      // Probe predicates immediately so onRequestQuit fires without
+      // Probe predicates immediately so request_quit fires without
       // waiting for the next slow tick.
       void checkPredicates("idle-timer-fired")
     }, idleTimeoutMs)
@@ -269,7 +414,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
         if (result) {
           quitting = true
           log.info?.(`quit requested (predicate=${label} trigger=${trigger})`)
-          onRequestQuit(label)
+          events.emit("request_quit", label)
           return
         }
       } catch (err) {
@@ -279,34 +424,93 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   }
 
   // ------------------------------------------------------------------------
+  // MCP server + transport (per-session)
+  // ------------------------------------------------------------------------
+  //
+  // The MCP SDK's Streamable HTTP transport requires one transport instance
+  // per session. The Protocol layer also requires one instance per
+  // connection (see protocol.ts: "Already connected to a transport. Call
+  // close() before connecting to a new transport, or use a separate
+  // Protocol instance per connection."). So our model is:
+  //
+  //   sessionId  →  { server: McpServer, transport: …Transport }
+  //
+  // - Request with no Mcp-Session-Id header → new client; spin up a
+  //   fresh server+transport pair, connect them, dispatch, store under
+  //   the session ID the transport generated.
+  // - Request with a known session ID → look up and dispatch to the
+  //   stored transport.
+  // - Unknown session ID → the transport returns 404 itself (we just
+  //   route to a fresh "default" pair which will reject).
+  //
+  // Tool handlers are configured by `installHandlers(server)`; the same
+  // logic runs on every server instance, just rebound. This is the price
+  // of the SDK's per-connection-Protocol design — the alternative would
+  // be reimplementing wire framing ourselves, which is what the SDK
+  // exists to spare us.
+
+  function installHandlers(server: McpServer): void {
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+      // Skeleton: real tools come in a follow-up bead.
+      return { tools: [] }
+    })
+  }
+
+  type SessionEntry = { server: McpServer; transport: WebStandardStreamableHTTPServerTransport }
+  const sessions = new Map<string, SessionEntry>()
+
+  async function createSessionEntry(): Promise<SessionEntry> {
+    const server = new McpServer(serverInfo, { capabilities: { tools: {} } })
+    installHandlers(server)
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        // The transport tells us its session ID once initialize completes;
+        // record it for subsequent same-session requests.
+        sessions.set(id, { server, transport })
+      },
+    })
+    transport.onerror = (err) => {
+      log.warn?.(`mcp transport onerror: ${err instanceof Error ? err.message : err}`)
+    }
+    transport.onclose = () => {
+      // Best-effort cleanup — find this transport in `sessions` and remove.
+      for (const [id, entry] of sessions) {
+        if (entry.transport === transport) sessions.delete(id)
+      }
+    }
+    await server.connect(transport)
+    return { server, transport }
+  }
+
+  function lookupOrCreateSession(req: Request): Promise<SessionEntry> {
+    const id = req.headers.get("mcp-session-id")
+    if (id !== null) {
+      const existing = sessions.get(id)
+      if (existing) return Promise.resolve(existing)
+      // Unknown session ID — return a fresh pair; the transport's
+      // session validation will reject the request with 404.
+    }
+    return createSessionEntry()
+  }
+
+  // ------------------------------------------------------------------------
   // HTTP wire
   // ------------------------------------------------------------------------
 
-  let server: Server | null = null
+  let httpServer: HttpServer | null = null
   let abortCtl: AbortController | null = null
   let timers: ReturnType<typeof createTimers> | null = null
 
-  function handleSse(_req: IncomingMessage, res: ServerResponse): void {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      // Disable buffering on intermediaries (defense-in-depth even on
-      // Unix-socket — a future sidecar relay shouldn't break SSE).
-      "X-Accel-Buffering": "no",
-    })
-    // SSE preamble — comment line keeps the connection warm if the first
-    // event takes a while to arrive.
-    res.write(": connected\n\n")
-
-    connections.add(res)
+  function trackConnection(socket: Socket): void {
+    wireConnections.add(socket)
     cancelIdleTimer()
-    log.debug?.(`sse connect (count=${connections.size})`)
+    log.debug?.(`wire connect (count=${wireConnections.size})`)
 
     const drop = (): void => {
-      if (!connections.delete(res)) return
-      log.debug?.(`sse disconnect (count=${connections.size})`)
-      if (connections.size === 0) {
+      if (!wireConnections.delete(socket)) return
+      log.debug?.(`wire disconnect (count=${wireConnections.size})`)
+      if (wireConnections.size === 0) {
         armIdleTimer()
         // Event-driven check: predicates that watch external state
         // (parent gone, quota exhausted) get probed at the moment a
@@ -314,63 +518,38 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
         void checkPredicates("connection-zero")
       }
     }
-    res.on("close", drop)
-    res.on("error", drop)
+    socket.once("close", drop)
+    socket.once("error", drop)
   }
 
-  async function readBody(req: IncomingMessage): Promise<string> {
-    const chunks: Buffer[] = []
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
-    }
-    return Buffer.concat(chunks).toString("utf8")
-  }
-
-  async function handleRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    let body: string
-    try {
-      body = await readBody(req)
-    } catch (err) {
-      writeJson(res, 400, { error: { code: -32700, message: `read error: ${err}` } })
-      return
-    }
-
-    let msg: { id?: string | number; method?: string; params?: unknown }
-    try {
-      msg = JSON.parse(body) as typeof msg
-    } catch (err) {
-      writeJson(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: `parse error: ${err}` } })
-      return
-    }
-
-    const { id = null, method } = msg
-    if (method === "tools/list") {
-      // Skeleton: real tools come in a follow-up bead.
-      writeJson(res, 200, { jsonrpc: "2.0", id, result: { tools: [] } })
-      return
-    }
-
-    writeJson(res, 200, { jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } })
-  }
-
-  function writeJson(res: ServerResponse, status: number, body: unknown): void {
-    res.writeHead(status, { "Content-Type": "application/json" })
-    res.end(JSON.stringify(body))
-  }
-
-  function dispatch(req: IncomingMessage, res: ServerResponse): void {
+  async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/"
     if (req.method === "GET" && url === "/healthz") {
       res.writeHead(200, { "Content-Type": "text/plain" })
       res.end("ok\n")
       return
     }
-    if (req.method === "GET" && url === "/sse") {
-      handleSse(req, res)
-      return
-    }
-    if (req.method === "POST" && url === "/rpc") {
-      void handleRpc(req, res)
+    if (url.startsWith("/mcp")) {
+      // Hand off to the MCP SDK transport. The web-standard transport
+      // takes a Request and returns a Response; we bridge to/from Node's
+      // IncomingMessage/ServerResponse with a small adapter (`toWebRequest`
+      // + `writeWebResponse`). No `@hono/node-server` in the path — fewer
+      // moving pieces, easier to debug.
+      try {
+        const webRequest = toWebRequest(req)
+        const session = await lookupOrCreateSession(webRequest)
+        const webResponse = await session.transport.handleRequest(webRequest)
+        await writeWebResponse(webResponse, res)
+      } catch (err) {
+        const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)
+        log.error?.(`mcp dispatch error: ${msg}`)
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(`internal error: ${msg}\n`)
+        } else {
+          res.end()
+        }
+      }
       return
     }
     res.writeHead(404, { "Content-Type": "text/plain" })
@@ -445,12 +624,16 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     // (POSIX guarantees same-filesystem rename atomicity).
     const tempPath = resolve(dir, `.mcp-${process.pid}-${randomBytes(4).toString("hex")}.tmp.sock`)
 
-    server = createServer(dispatch)
+    httpServer = createServer((req, res) => {
+      void dispatch(req, res)
+    })
+    httpServer.on("connection", trackConnection)
+
     await new Promise<void>((resolveListen, reject) => {
       const onError = (err: Error): void => reject(err)
-      server!.once("error", onError)
-      server!.listen(tempPath, () => {
-        server!.removeListener("error", onError)
+      httpServer!.once("error", onError)
+      httpServer!.listen(tempPath, () => {
+        httpServer!.removeListener("error", onError)
         resolveListen()
       })
     })
@@ -470,7 +653,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   }
 
   function start(): void {
-    if (server !== null) throw new Error("mcp plugin already started")
+    if (httpServer !== null) throw new Error("mcp plugin already started")
 
     abortCtl = new AbortController()
     timers = createTimers(abortCtl.signal)
@@ -483,9 +666,9 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     process.on("SIGTERM", onSigterm)
     abortCtl.signal.addEventListener("abort", () => process.off("SIGTERM", onSigterm), { once: true })
 
-    // bindAndPublish is async; surface bind errors via console + abort —
-    // the daemon's plugin loader doesn't await start(), and a thrown error
-    // here would just trigger unhandled rejection.
+    // bindAndPublish is async; surface bind errors via log + abort — the
+    // daemon's plugin loader doesn't await start(), and a thrown error
+    // here would just trigger an unhandled rejection.
     bindAndPublish().catch((err: unknown) => {
       log.error?.(`bindAndPublish failed: ${err instanceof Error ? err.message : err}`)
       abortCtl?.abort()
@@ -503,18 +686,29 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   function stop(): void {
     abortCtl?.abort()
     cancelIdleTimer()
-    // Force-close active SSE responses so the server can shut down.
-    for (const res of connections) {
+    // Tear down active sockets so the server can shut down promptly.
+    for (const sock of wireConnections) {
       try {
-        res.end()
+        sock.destroy()
       } catch {
         /* already closed */
       }
     }
-    connections.clear()
-    if (server !== null) {
-      const s = server
-      server = null
+    wireConnections.clear()
+    // Close every per-session transport. Transport.close() returns a
+    // promise but we don't need to await — http.Server.close() finishes
+    // the cleanup synchronously enough for shutdown.
+    for (const { transport } of sessions.values()) {
+      try {
+        void transport.close()
+      } catch {
+        /* already closed */
+      }
+    }
+    sessions.clear()
+    if (httpServer !== null) {
+      const s = httpServer
+      httpServer = null
       s.close()
     }
     // Unlink the published socket so a restart doesn't trip the "already
@@ -554,7 +748,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     getAddress() {
       // Listening implies the file exists. We treat "no server" as not
       // started; tests poll on this to wait for bind-and-publish.
-      if (server === null || !server.listening) return null
+      if (httpServer === null || !httpServer.listening) return null
       // Until rename completes the published path may not exist; expose
       // the address only once the published path is in place.
       if (!existsSync(socketPath)) return null
@@ -562,8 +756,10 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     },
 
     getConnectionCount() {
-      return connections.size
+      return wireConnections.size
     },
+
+    events,
   }
 
   return handle

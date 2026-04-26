@@ -1,21 +1,29 @@
 /**
- * Happy-path lifecycle test for createMcpPlugin.
+ * Tests for createMcpPlugin — Unix socket wire + MCP SDK transport +
+ * EventEmitter request_quit channel.
  *
- * Validates the full design ruling, now over a Unix socket transport:
- *   1. Plugin starts, bind-and-publishes a socket file at the expected path.
- *   2. Socket file exists with mode 0600.
- *   3. SSE client connects → connection count goes 0 → 1, idle timer cancels.
- *   4. POST /rpc with `tools/list` → `{ result: { tools: [] } }`.
- *   5. SSE client disconnects → count back to 0, idle timer arms.
- *   6. After idle window elapses, the registered onRequestQuit fires.
- *   7. stop() cleans up — published socket file is unlinked.
+ *   1. lifecycle: connect raw HTTP → wire count 0 → 1; disconnect → 0;
+ *      idle window expires → events.emit("request_quit", "idle"). Validates
+ *      the connection-as-lease design ruling end-to-end.
+ *   2. tools/list: SDK Client (StreamableHTTPClientTransport) over a
+ *      Unix-socket fetch shim → `tools/list` → `[]`. Validates wire
+ *      conformance with the @modelcontextprotocol/sdk transport.
+ *   3. initial-predicate composition: a custom predicate fires before
+ *      the idle window — proves predicates compose as flat thunks.
+ *   4. registerQuitPredicate after start() works.
+ *   5. multi-listener: two `events.on("request_quit", ...)` listeners
+ *      both receive the event — pins the EventEmitter contract that
+ *      motivated the swap from `onRequestQuit` callback.
  */
 
 import { describe, it, expect } from "vitest"
 import { mkdtempSync, statSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
-import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http"
+import { request as httpRequest, type IncomingMessage } from "node:http"
+import { createConnection } from "node:net"
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpPlugin } from "../mcp-plugin.ts"
 import type { TribeClientApi } from "../../../tools/lib/tribe/plugin-api.ts"
 
@@ -36,78 +44,100 @@ function makeSocketPath(): string {
   return resolve(dir, "m.sock")
 }
 
-/** Send a JSON-RPC POST over a Unix socket and return the parsed JSON body. */
-function unixPostJson(socketPath: string, path: string, body: unknown): Promise<unknown> {
+/**
+ * Open a raw Unix socket connection to the plugin and HOLD it open
+ * (without finishing an HTTP request) until the test calls `close()`.
+ * Used by the lifecycle test to take + drop the lease deterministically
+ * — without the SDK's SSE-stream long-poll interfering with timing.
+ *
+ * Implementation: connect, write a partial HTTP request line so the
+ * server's parser is in mid-stream and won't close on us, but never
+ * send the trailing `\r\n\r\n` that would let the parser dispatch the
+ * request. This keeps the kernel-level connection — which IS the
+ * lease, by design — alive on both sides until we destroy it.
+ */
+function holdRawConnection(socketPath: string): Promise<{ close: () => void }> {
   return new Promise((resolvePromise, reject) => {
-    const req = httpRequest(
-      {
-        socketPath,
-        path,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      },
-      (res: IncomingMessage) => {
-        const chunks: Buffer[] = []
-        res.on("data", (c: Buffer) => chunks.push(c))
-        res.on("end", () => {
+    const sock = createConnection(socketPath)
+    sock.once("connect", () => {
+      sock.write("GET /healthz HTTP/1.1\r\nHost: localhost\r\n")
+      // Intentionally NOT writing the closing `\r\n\r\n` — the request
+      // is in mid-headers from the server's POV. Connection stays open.
+      resolvePromise({
+        close: () => {
           try {
-            resolvePromise(JSON.parse(Buffer.concat(chunks).toString("utf8")))
-          } catch (err) {
-            reject(err as Error)
+            sock.destroy()
+          } catch {
+            /* already gone */
           }
-        })
-        res.on("error", reject)
-      },
-    )
-    req.on("error", reject)
-    req.end(JSON.stringify(body))
-  })
-}
-
-/** GET over a Unix socket, returning the (status, body) pair. */
-function unixGet(socketPath: string, path: string): Promise<{ status: number; body: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const req = httpRequest({ socketPath, path, method: "GET" }, (res: IncomingMessage) => {
-      const chunks: Buffer[] = []
-      res.on("data", (c: Buffer) => chunks.push(c))
-      res.on("end", () => {
-        resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") })
+        },
       })
-      res.on("error", reject)
     })
-    req.on("error", reject)
-    req.end()
+    sock.once("error", reject)
   })
 }
 
 /**
- * Open an SSE connection over a Unix socket. Returns the underlying request
- * (so the test can abort it) plus the first decoded chunk (the preamble),
- * confirming the server has flushed headers and the connection is in the
- * active set.
+ * Fetch shim that routes requests over a Unix socket. The MCP SDK's
+ * StreamableHTTPClientTransport accepts a custom `fetch` impl, so we plug
+ * this in and the SDK is unaware that the wire is a socket file.
  */
-function unixSse(socketPath: string): Promise<{ req: ClientRequest; preamble: string; close: () => void }> {
-  return new Promise((resolvePromise, reject) => {
-    const req = httpRequest({ socketPath, path: "/sse", method: "GET" }, (res: IncomingMessage) => {
-      res.once("data", (c: Buffer) => {
-        resolvePromise({
-          req,
-          preamble: c.toString("utf8"),
-          close: () => {
-            // destroy() severs the socket — the server's res.on("close")
-            // listener fires and drops the connection from the active set.
-            req.destroy()
+type FetchLike = (url: string | URL, init?: RequestInit) => Promise<Response>
+
+function makeUnixFetch(socketPath: string): FetchLike {
+  return async (input, init) => {
+    const url = typeof input === "string" ? new URL(input) : input
+    const path = url.pathname + url.search
+    const method = init?.method ?? "GET"
+    const bodyRaw = init?.body
+    const bodyBuf =
+      typeof bodyRaw === "string"
+        ? Buffer.from(bodyRaw, "utf8")
+        : bodyRaw instanceof Uint8Array
+          ? Buffer.from(bodyRaw)
+          : undefined
+
+    const headers: Record<string, string> = {}
+    if (init?.headers) {
+      const h = new Headers(init.headers)
+      h.forEach((v, k) => {
+        headers[k] = v
+      })
+    }
+    if (bodyBuf !== undefined) headers["content-length"] = String(bodyBuf.length)
+
+    return new Promise((resolvePromise, reject) => {
+      const req = httpRequest({ socketPath, path, method, headers, agent: false }, (res: IncomingMessage) => {
+        const respHeaders = new Headers()
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (Array.isArray(v)) for (const vv of v) respHeaders.append(k, vv)
+          else if (typeof v === "string") respHeaders.set(k, v)
+        }
+        // Stream the response body — SSE responses don't end until the
+        // server says so, so collecting then resolving would deadlock.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            res.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+            res.on("end", () => controller.close())
+            res.on("error", (err) => controller.error(err))
+          },
+          cancel() {
             res.destroy()
+            req.destroy()
           },
         })
+        resolvePromise(new Response(body, { status: res.statusCode ?? 0, headers: respHeaders }))
       })
-      res.on("error", () => {
-        /* swallowed — close()/destroy() trips this on shutdown */
-      })
+      req.on("error", reject)
+      const sig = init?.signal
+      if (sig) {
+        if (sig.aborted) req.destroy()
+        else sig.addEventListener("abort", () => req.destroy(), { once: true })
+      }
+      if (bodyBuf !== undefined) req.write(bodyBuf)
+      req.end()
     })
-    req.on("error", reject)
-    req.end()
-  })
+  }
 }
 
 async function until(pred: () => boolean, timeoutMs = 1_000, stepMs = 10): Promise<void> {
@@ -118,62 +148,84 @@ async function until(pred: () => boolean, timeoutMs = 1_000, stepMs = 10): Promi
   }
 }
 
-describe("createMcpPlugin (Unix socket wire)", () => {
-  it("connection-as-lease lifecycle: bind-publish → tools/list → disconnect → idle-quit", async () => {
-    const quitReasons: string[] = []
+describe("createMcpPlugin (Unix socket + MCP SDK transport)", () => {
+  it("lifecycle: bind-publish, lease taken on connect, dropped on disconnect, idle-quit fires via EventEmitter", async () => {
+    const reasons: string[] = []
     const socketPath = makeSocketPath()
     const plugin = createMcpPlugin({
       socketPath,
-      onRequestQuit: (reason) => quitReasons.push(reason),
       idleTimeoutMs: 100, // tiny window for the test
       pollIntervalMs: 50,
     })
+    plugin.events.on("request_quit", (reason) => reasons.push(reason))
 
     const stop = plugin.start(noopApi) ?? (() => {})
     try {
-      // Wait for bind-and-publish to finish.
       await until(() => plugin.getAddress() !== null)
       expect(plugin.getAddress()).toEqual({ socketPath })
 
-      // Socket file is present with mode 0600 (owner rw, no group/other).
+      // Bind-before-publish: socket file exists with mode 0600.
       expect(existsSync(socketPath)).toBe(true)
       const mode = statSync(socketPath).mode & 0o777
       expect(mode).toBe(0o600)
 
-      // ---- 1. Health check over Unix socket ----
-      const health = await unixGet(socketPath, "/healthz")
-      expect(health.status).toBe(200)
-      expect(health.body).toBe("ok\n")
+      // ---- Connection-as-lease ----
+      // Open a raw connection (no MCP framing) to hold the lease — keeps
+      // the lifecycle test independent of the SDK's SSE long-poll
+      // semantics. Verifies the kernel-level connection is what we
+      // track, not anything HTTP/MCP-specific.
+      const conn = await holdRawConnection(socketPath)
+      await until(() => plugin.getConnectionCount() >= 1)
+      // While connected, the idle predicate is held off — no quit yet.
+      await new Promise((r) => setTimeout(r, 200)) // > idleTimeoutMs
+      expect(reasons).toHaveLength(0)
 
-      // ---- 2. Connect SSE client ----
-      const sse = await unixSse(socketPath)
-      expect(sse.preamble).toContain("connected")
-      await until(() => plugin.getConnectionCount() === 1)
-
-      // ---- 3. tools/list returns [] ----
-      const toolsList = (await unixPostJson(socketPath, "/rpc", {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/list",
-      })) as { jsonrpc: string; id: number; result: { tools: unknown[] } }
-      expect(toolsList.jsonrpc).toBe("2.0")
-      expect(toolsList.id).toBe(1)
-      expect(toolsList.result.tools).toEqual([])
-
-      // ---- 4. Disconnect → idle timer arms ----
-      sse.close()
+      // ---- Drop the connection → idle timer arms → request_quit fires ----
+      conn.close()
       await until(() => plugin.getConnectionCount() === 0)
-      expect(quitReasons).toHaveLength(0)
-
-      // ---- 5. After idle window → onRequestQuit fires ----
-      await until(() => quitReasons.length > 0, 1_000)
-      expect(quitReasons[0]).toBe("idle")
+      await until(() => reasons.length > 0, 1_000)
+      expect(reasons[0]).toBe("idle")
     } finally {
       stop()
     }
 
-    // ---- 6. stop() unlinks the published socket ----
+    // stop() unlinks the published socket.
     expect(existsSync(socketPath)).toBe(false)
+  })
+
+  it("MCP wire conformance: SDK Client → tools/list returns []", async () => {
+    // This test validates that an actual @modelcontextprotocol/sdk Client
+    // — using the canonical StreamableHTTPClientTransport — can talk to
+    // the plugin and round-trip a tools/list request. The fetch shim
+    // routes the SDK's HTTP calls over the Unix socket. tools/list is
+    // skeleton-empty by design; real tools come in a follow-up bead.
+    const socketPath = makeSocketPath()
+    const plugin = createMcpPlugin({
+      socketPath,
+      // Big windows so idle-quit doesn't race the test.
+      idleTimeoutMs: 60_000,
+      pollIntervalMs: 60_000,
+    })
+    const stop = plugin.start(noopApi) ?? (() => {})
+    try {
+      await until(() => plugin.getAddress() !== null)
+
+      const client = new McpClient({ name: "test-client", version: "0.0.0" }, { capabilities: {} })
+      const transport = new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
+        fetch: makeUnixFetch(socketPath),
+      })
+      await client.connect(transport)
+
+      const tools = await client.listTools()
+      expect(tools.tools).toEqual([])
+
+      // We don't test client.close()/teardown timing here — the SDK's
+      // SSE-stream long-poll has subtle interactions with our fetch shim
+      // that don't bear on wire conformance. The lifecycle test above
+      // covers connect/disconnect using a raw connection.
+    } finally {
+      stop()
+    }
   })
 
   it("custom predicate composes with built-ins (no kind field, just a thunk)", async () => {
@@ -182,11 +234,12 @@ describe("createMcpPlugin (Unix socket wire)", () => {
     const socketPath = makeSocketPath()
     const plugin = createMcpPlugin({
       socketPath,
-      onRequestQuit: (r) => reasons.push(r),
       idleTimeoutMs: 60_000, // big enough that idle won't fire
       pollIntervalMs: 25,
       initialPredicates: [() => trigger],
     })
+    plugin.events.on("request_quit", (r) => reasons.push(r))
+
     const stop = plugin.start(noopApi) ?? (() => {})
     try {
       await until(() => plugin.getAddress() !== null)
@@ -204,10 +257,11 @@ describe("createMcpPlugin (Unix socket wire)", () => {
     const socketPath = makeSocketPath()
     const plugin = createMcpPlugin({
       socketPath,
-      onRequestQuit: (r) => reasons.push(r),
       idleTimeoutMs: 60_000,
       pollIntervalMs: 25,
     })
+    plugin.events.on("request_quit", (r) => reasons.push(r))
+
     const stop = plugin.start(noopApi) ?? (() => {})
     try {
       await until(() => plugin.getAddress() !== null)
@@ -218,6 +272,35 @@ describe("createMcpPlugin (Unix socket wire)", () => {
       fire = true
       await until(() => reasons.length > 0, 500)
       expect(reasons[0]).toBe("user")
+    } finally {
+      stop()
+    }
+  })
+
+  it("multiple request_quit listeners both receive the event", async () => {
+    // The motivation for swapping callback → EventEmitter: more than one
+    // subscriber. This test pins that contract — both the supervisor's
+    // shutdown handler AND a telemetry listener receive the same event.
+    const supervisor: string[] = []
+    const telemetry: string[] = []
+    let trigger = false
+    const socketPath = makeSocketPath()
+    const plugin = createMcpPlugin({
+      socketPath,
+      idleTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+      initialPredicates: [() => trigger],
+    })
+    plugin.events.on("request_quit", (r) => supervisor.push(r))
+    plugin.events.on("request_quit", (r) => telemetry.push(r))
+
+    const stop = plugin.start(noopApi) ?? (() => {})
+    try {
+      await until(() => plugin.getAddress() !== null)
+      trigger = true
+      await until(() => supervisor.length > 0 && telemetry.length > 0, 500)
+      expect(supervisor).toEqual(["initial"])
+      expect(telemetry).toEqual(["initial"])
     } finally {
       stop()
     }

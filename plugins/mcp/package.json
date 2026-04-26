@@ -12,5 +12,8 @@
   "type": "module",
   "exports": {
     ".": "./mcp-plugin.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
   }
 }
