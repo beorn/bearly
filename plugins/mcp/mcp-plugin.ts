@@ -23,8 +23,8 @@
  * - New connection arrives → cancel the timer
  * - Timer fires → predicate returns true → daemon shuts down
  *
- * Liveness check from outside: `connect to the socket / port`. If it answers,
- * it's alive. No pidfile, no handshake, no reaper.
+ * Liveness check from outside: `connect to the socket`. If it answers, it's
+ * alive. No pidfile, no handshake, no reaper.
  *
  * # Composable quit predicates
  *
@@ -51,17 +51,26 @@
  *   GET  /sse       — text/event-stream; each connect joins the active set
  *   POST /rpc       — JSON-RPC; right now only `tools/list` → { tools: [] }
  *
+ * Bound to a Unix socket (mode 0600, bind-before-publish). The MCP wire is
+ * loopback in spirit — only processes on the same machine that can read the
+ * socket file can talk to it. Claude Code's HTTP MCP client supports `unix:`
+ * URIs, so consumers point at the socket directly.
+ *
  * The MCP SDK's StreamableHttp/SSE transports are deliberately NOT used
  * here — this prototype validates the LIFECYCLE design (lease / predicate
  * composition / clean shutdown) and stays small enough to read in one
  * sitting. Wire upgrade to the MCP SDK is a one-file follow-up.
  *
  * @see tools/lib/tribe/plugin-api.ts — TribePluginApi shape
- * @see tools/lib/tribe/git-plugin.ts  — minimal plugin example
+ * @see tools/lib/tribe/socket.ts     — XDG socket-path resolver we mirror
+ * @see tools/lib/tribe/git-plugin.ts — minimal plugin example
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
-import { AddressInfo } from "node:net"
+import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs"
+import { createConnection } from "node:net"
+import { dirname, resolve } from "node:path"
+import { randomBytes } from "node:crypto"
 import { createLogger } from "loggily"
 import type { TribePluginApi, TribeClientApi } from "../../tools/lib/tribe/plugin-api.ts"
 import { createTimers } from "../../tools/lib/tribe/timers.ts"
@@ -113,16 +122,11 @@ export interface McpPluginOptions {
   pollIntervalMs?: number
 
   /**
-   * Bind host. Default `127.0.0.1`. Loopback only — this server speaks
-   * to in-machine Claude Code sessions, NOT the network.
+   * Override the published Unix-socket path. If omitted, resolved via
+   * `resolveMcpSocketPath()` (XDG_RUNTIME_DIR else `~/.local/share/bearly-mcp/`,
+   * filename `mcp-<pid>.sock`).
    */
-  host?: string
-
-  /**
-   * Bind port. Default 0 (ephemeral); the chosen port is exposed on the
-   * returned plugin handle as `getAddress()`.
-   */
-  port?: number
+  socketPath?: string
 
   /**
    * Hook tests reach for to register custom predicates BEFORE start(),
@@ -141,15 +145,47 @@ export interface McpPluginHandle extends TribePluginApi {
   registerQuitPredicate(fn: QuitPredicate): void
 
   /**
-   * The bound address — only meaningful AFTER start() has been called.
-   * Returns `null` if the server isn't listening (not started, or stopped).
+   * The bound Unix socket path — only meaningful AFTER start() has been
+   * called. Returns `null` if the server isn't listening (not started, or
+   * stopped).
    */
-  getAddress(): { host: string; port: number } | null
+  getAddress(): { socketPath: string } | null
 
   /**
    * Active SSE-connection count — primarily for tests and observability.
    */
   getConnectionCount(): number
+}
+
+// ---------------------------------------------------------------------------
+// Socket-path resolver (mirrors tools/lib/tribe/socket.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the published MCP socket path. Priority:
+ *
+ *   1. `opts.socketPath`   — explicit override
+ *   2. `BEARLY_MCP_SOCKET` — env override
+ *   3. `XDG_RUNTIME_DIR/bearly-mcp/mcp-<pid>.sock`
+ *   4. `~/.local/share/bearly-mcp/mcp-<pid>.sock` (macOS / no XDG)
+ *   5. `/tmp/bearly-mcp/mcp-<pid>.sock` (no HOME — exotic environments)
+ *
+ * Per-PID filename keeps multi-instance dev usage clean (e.g. one MCP
+ * daemon per logical workspace if you ever want it). The default deployment
+ * is one per user; both work.
+ *
+ * Note: macOS limits Unix-socket paths to 104 bytes. If `$HOME` is unusually
+ * deep, callers may want to override via `opts.socketPath` to point at a
+ * shorter path (e.g. `/tmp/...`).
+ */
+export function resolveMcpSocketPath(opts?: { socketPath?: string }): string {
+  if (opts?.socketPath) return opts.socketPath
+  if (process.env.BEARLY_MCP_SOCKET) return process.env.BEARLY_MCP_SOCKET
+
+  const xdg = process.env.XDG_RUNTIME_DIR
+  const home = process.env.HOME
+  const dir = xdg ?? (home !== undefined && home !== "" ? resolve(home, ".local/share/bearly-mcp") : "/tmp/bearly-mcp")
+  return resolve(dir, `mcp-${process.pid}.sock`)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +200,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
 
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  const host = opts.host ?? "127.0.0.1"
-  const port = opts.port ?? 0
+  const socketPath = resolveMcpSocketPath(opts)
   const onRequestQuit = opts.onRequestQuit ?? (() => {})
 
   // ------------------------------------------------------------------------
@@ -257,7 +292,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
       // Disable buffering on intermediaries (defense-in-depth even on
-      // loopback — shared MCP wire might one day go through a sidecar).
+      // Unix-socket — a future sidecar relay shouldn't break SSE).
       "X-Accel-Buffering": "no",
     })
     // SSE preamble — comment line keeps the connection warm if the first
@@ -346,6 +381,94 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   // Lifecycle
   // ------------------------------------------------------------------------
 
+  /**
+   * Probe whether `path` is a live Unix socket (something is `accept()`-ing).
+   * If `connect()` succeeds → live; if it fails → stale (or absent). We use
+   * this to decide whether a leftover socket file is safe to unlink before
+   * we bind.
+   *
+   * Best-effort with a short timeout — never hangs daemon startup.
+   */
+  function probeAlive(path: string, timeoutMs = 250): Promise<boolean> {
+    return new Promise((resolveProbe) => {
+      let settled = false
+      const done = (alive: boolean): void => {
+        if (settled) return
+        settled = true
+        try {
+          probe.destroy()
+        } catch {
+          /* ignore */
+        }
+        resolveProbe(alive)
+      }
+      const probe = createConnection(path)
+      probe.once("connect", () => done(true))
+      probe.once("error", () => done(false))
+      const t = setTimeout(() => done(false), timeoutMs)
+      ;(t as { unref?: () => void }).unref?.()
+    })
+  }
+
+  /**
+   * Bind-before-publish:
+   *
+   *   1. Create parent dir if missing.
+   *   2. If a socket file already exists at `socketPath`, probe it. If
+   *      something is alive, error out — we don't trample a running peer.
+   *      Otherwise unlink it (stale).
+   *   3. Bind the HTTP server to a temp path inside the same dir.
+   *   4. chmod 0600 on the temp path (owner-only access).
+   *   5. Atomic `rename(temp → published)`.
+   *
+   * Step (4) before step (5) means the published path is never world-
+   * readable, even briefly.
+   */
+  async function bindAndPublish(): Promise<void> {
+    const dir = dirname(socketPath)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+
+    if (existsSync(socketPath)) {
+      const alive = await probeAlive(socketPath)
+      if (alive) {
+        throw new Error(`mcp socket ${socketPath} is already in use by a live peer`)
+      }
+      log.debug?.(`removing stale socket ${socketPath}`)
+      try {
+        unlinkSync(socketPath)
+      } catch {
+        /* ignore — race with another startup is fine */
+      }
+    }
+
+    // Temp path: hidden, randomized, in the same dir so `rename()` is atomic
+    // (POSIX guarantees same-filesystem rename atomicity).
+    const tempPath = resolve(dir, `.mcp-${process.pid}-${randomBytes(4).toString("hex")}.tmp.sock`)
+
+    server = createServer(dispatch)
+    await new Promise<void>((resolveListen, reject) => {
+      const onError = (err: Error): void => reject(err)
+      server!.once("error", onError)
+      server!.listen(tempPath, () => {
+        server!.removeListener("error", onError)
+        resolveListen()
+      })
+    })
+
+    // chmod BEFORE publishing — published path is never wider than 0600.
+    try {
+      chmodSync(tempPath, 0o600)
+    } catch (err) {
+      log.warn?.(`chmod 0600 failed (continuing): ${err instanceof Error ? err.message : err}`)
+    }
+
+    // Publish atomically. If another process raced us to the published
+    // path, `rename` will replace whatever's there — but since we already
+    // probed-and-unlinked above, that's a benign last-writer-wins.
+    renameSync(tempPath, socketPath)
+    log.info?.(`mcp plugin listening on unix:${socketPath}`)
+  }
+
   function start(): void {
     if (server !== null) throw new Error("mcp plugin already started")
 
@@ -360,10 +483,12 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     process.on("SIGTERM", onSigterm)
     abortCtl.signal.addEventListener("abort", () => process.off("SIGTERM", onSigterm), { once: true })
 
-    server = createServer(dispatch)
-    server.listen(port, host, () => {
-      const addr = server?.address() as AddressInfo | null
-      log.info?.(`mcp plugin listening on http://${host}:${addr?.port ?? "?"}`)
+    // bindAndPublish is async; surface bind errors via console + abort —
+    // the daemon's plugin loader doesn't await start(), and a thrown error
+    // here would just trigger unhandled rejection.
+    bindAndPublish().catch((err: unknown) => {
+      log.error?.(`bindAndPublish failed: ${err instanceof Error ? err.message : err}`)
+      abortCtl?.abort()
     })
 
     // Slow tick — predicates that don't have a natural event get checked here.
@@ -392,6 +517,16 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
       server = null
       s.close()
     }
+    // Unlink the published socket so a restart doesn't trip the "already
+    // in use" probe. Best-effort — a dead listener leaves a stale file
+    // that the next start() will clean up anyway.
+    if (existsSync(socketPath)) {
+      try {
+        unlinkSync(socketPath)
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   // ------------------------------------------------------------------------
@@ -402,7 +537,8 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     name: "mcp",
 
     available() {
-      // Loopback HTTP is universally available; no external dependency.
+      // Unix sockets are universally available on the platforms tribe
+      // supports; no external dependency to probe.
       return true
     },
 
@@ -416,9 +552,13 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     },
 
     getAddress() {
-      const addr = server?.address()
-      if (addr === null || addr === undefined || typeof addr === "string") return null
-      return { host, port: addr.port }
+      // Listening implies the file exists. We treat "no server" as not
+      // started; tests poll on this to wait for bind-and-publish.
+      if (server === null || !server.listening) return null
+      // Until rename completes the published path may not exist; expose
+      // the address only once the published path is in place.
+      if (!existsSync(socketPath)) return null
+      return { socketPath }
     },
 
     getConnectionCount() {

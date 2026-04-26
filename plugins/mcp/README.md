@@ -28,10 +28,10 @@ timer fires             → the `idle` predicate flips true
                           → daemon owner shuts the process down
 ```
 
-Liveness check from outside is a single line: "can I connect to the port?"
-No pidfile, no handshake, no reaper. The pidfile/reaper edifice was deleted
-from silvercode in commit `4f9e9ebb5` (898 LOC) — this design exists so we
-don't reintroduce it.
+Liveness check from outside is a single line: "can I connect to the
+socket?" No pidfile, no handshake, no reaper. The pidfile/reaper edifice
+was deleted from silvercode in commit `4f9e9ebb5` (898 LOC) — this design
+exists so we don't reintroduce it.
 
 ## Composable quit predicates
 
@@ -73,8 +73,35 @@ GET  /sse       → text/event-stream; each connect joins the active set
 POST /rpc       → JSON-RPC; right now only `tools/list` → { tools: [] }
 ```
 
-Bound to `127.0.0.1:<ephemeral-port>` by default. Loopback only — this
-server speaks to in-machine Claude Code sessions, not the network.
+**Unix socket only** — the MCP wire is a Unix-domain socket published with
+mode `0600` using bind-before-publish. Only processes the kernel grants
+read/write on the socket file (the same UID) can talk to it; there is no
+network listener. Path resolution mirrors the tribe daemon:
+
+- `BEARLY_MCP_SOCKET` env var (override)
+- `XDG_RUNTIME_DIR/bearly-mcp/mcp-<pid>.sock`
+- `~/.local/share/bearly-mcp/mcp-<pid>.sock` (macOS / no XDG)
+- `/tmp/bearly-mcp/mcp-<pid>.sock` (no `HOME`)
+
+Claude Code's HTTP MCP client supports `unix:` URIs, so consumers point at
+the socket directly — no TCP, no port allocation, no firewall surface.
+
+### Bind-before-publish
+
+On startup, the plugin:
+
+1. Creates the parent dir (mode `0700`).
+2. Probes any existing file at the published path. If it answers a
+   `connect()`, refuses to start (a live peer owns the path). Otherwise
+   unlinks the stale file.
+3. Binds the HTTP server to a hidden temp path in the same dir
+   (`.mcp-<pid>-<rand>.tmp.sock`).
+4. `chmod 0600` on the temp path — the published path is **never** visible
+   with wider permissions, even briefly.
+5. `rename(temp → published)` — atomic on the same filesystem.
+
+`stop()` unlinks the published socket, so a restart doesn't hit the
+"already in use" probe.
 
 The MCP SDK's StreamableHttp/SSE transports are deliberately **not** used
 in this skeleton. The prototype validates the lifecycle design (lease /
@@ -102,8 +129,15 @@ loadPlugins(plugins, tribeClientApi)
 mcp.registerQuitPredicate(() => process.ppid === 1)
 
 // And introspect, mostly for tests:
-mcp.getAddress()         // { host, port } once listening
+mcp.getAddress()         // { socketPath } once listening
 mcp.getConnectionCount() // current active SSE count
+```
+
+Connecting from a client (any HTTP library that takes a `socketPath` works):
+
+```ts
+import { request } from "node:http"
+const req = request({ socketPath: mcp.getAddress()!.socketPath, path: "/rpc", method: "POST" }, ...)
 ```
 
 Plugin shape conforms to `TribePluginApi` (see
@@ -137,7 +171,8 @@ fast; production default is 30 minutes.
    IS the lease.
 2. **Composable predicates** typed uniformly as
    `() => boolean | Promise<boolean>`. No tagged union, no `kind` field.
-3. **Loopback only** for the HTTP wire. (Tribe daemon's own IPC stays Unix
-   socket — not changed by this plugin.)
+3. **Unix socket only** for the MCP wire (mode `0600`, bind-before-publish).
+   Same-UID local IPC, no TCP, no network surface. Tribe daemon's own
+   coordination IPC also stays Unix-socket — not changed by this plugin.
 4. **No pidfile, no handshake.** Liveness = "can I connect?".
 5. **Default 30-min idle-quit**, configurable; tests can override to 100ms.
