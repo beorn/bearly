@@ -42,7 +42,9 @@ describe("kanban-bridge listener", () => {
     const listener = createKanbanBridge({ spawn, resolveBinary: () => fakeBin })
     await runIngest([listener], "stop", "claude")
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.args.slice(0, 5)).toEqual(["hooks", "notify", "--event", "to_review", "--source", "km"].slice(0, 5))
+    expect(calls[0]?.args.slice(0, 5)).toEqual(
+      ["hooks", "notify", "--event", "to_review", "--source", "km"].slice(0, 5),
+    )
     expect(calls[0]?.args).toContain("to_review")
   })
 

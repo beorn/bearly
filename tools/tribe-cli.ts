@@ -630,9 +630,7 @@ function addPluggableHookFlags(cmd: Command): Command {
 }
 
 addPluggableHookFlags(
-  hookCmd
-    .command("ingest")
-    .description("Dispatch a hook event synchronously (5s per-listener timeout)."),
+  hookCmd.command("ingest").description("Dispatch a hook event synchronously (5s per-listener timeout)."),
 ).action(async (opts: PluggableHookOptions) => {
   await runPluggableHook("ingest", opts)
 })

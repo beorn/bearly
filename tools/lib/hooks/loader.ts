@@ -70,8 +70,7 @@ async function loadDir(dir: string): Promise<Listener[]> {
 
 export async function loadListeners(opts: LoadOptions = {}): Promise<Listener[]> {
   const userDir = opts.userDir ?? join(homedir(), ".claude", "hooks.d")
-  const projectDir =
-    opts.projectDir ?? (opts.projectPath ? join(opts.projectPath, ".claude", "hooks.d") : undefined)
+  const projectDir = opts.projectDir ?? (opts.projectPath ? join(opts.projectPath, ".claude", "hooks.d") : undefined)
   const [userListeners, projectListeners] = await Promise.all([
     loadDir(userDir),
     projectDir ? loadDir(projectDir) : Promise.resolve([]),

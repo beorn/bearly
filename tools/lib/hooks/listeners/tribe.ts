@@ -66,7 +66,9 @@ export interface CreateTribeListenerOptions {
  *
  * Exported for tests and for anyone re-implementing the mapping.
  */
-export function mapToLegacyEvent(ctx: Pick<ListenerContext, "event" | "notificationType">): LegacyHookEvent | undefined {
+export function mapToLegacyEvent(
+  ctx: Pick<ListenerContext, "event" | "notificationType">,
+): LegacyHookEvent | undefined {
   switch (ctx.event) {
     case "session_start":
       return "session-start"
