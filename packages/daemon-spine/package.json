@@ -4,13 +4,13 @@
   "private": true,
   "description": "Shared Unix-socket IPC spine — JSON-RPC 2.0 wire protocol, line parser, daemon client, auto-start, and reconnection",
   "keywords": [
-    "ipc",
-    "unix-socket",
-    "json-rpc",
-    "daemon",
     "claude-code",
+    "daemon",
+    "ipc",
+    "json-rpc",
+    "lore",
     "tribe",
-    "lore"
+    "unix-socket"
   ],
   "homepage": "https://github.com/beorn/bearly/tree/main/packages/daemon-spine",
   "bugs": {

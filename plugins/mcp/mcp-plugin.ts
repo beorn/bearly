@@ -14,19 +14,29 @@
  * (orphaned children, double-close, PID exhaustion) all scale linearly. A
  * shared MCP daemon drops that to one process per machine.
  *
- * # Connection-as-lease
+ * # Request-as-lease
  *
- * The active TCP/Unix-socket connection count IS the lease. No `lease()`
- * API, no reference-count dance, no handshake — Claude Code clients just
- * connect over the MCP wire and the connection itself is the "I'm using
- * this" signal.
+ * The count of active in-flight HTTP responses IS the lease. No `lease()`
+ * API, no reference-count dance, no handshake — Claude Code clients hit the
+ * MCP wire and each open response is the "I'm using this" signal. Quick
+ * request/response pairs (POST /mcp tools/list, GET /healthz) take and
+ * release the lease in microseconds. Long-running streams (GET /mcp's SSE
+ * channel) hold it for the duration of the stream.
  *
- * - Last connection drops → arm idle-quit timer (default 30 min, configurable)
- * - New connection arrives → cancel the timer
+ * - Last response closes → arm idle-quit timer (default 30 min, configurable)
+ * - New request arrives → cancel the timer
  * - Timer fires → the `idle` predicate flips true → events.emit("request_quit")
  *
  * Liveness check from outside: `connect to the socket`. If it answers, it's
  * alive. No pidfile, no handshake, no reaper.
+ *
+ * Note: an earlier draft tracked the kernel-level TCP/Unix-socket connection
+ * via http.Server's "connection" event. Bun's http.Server (1.3.x) does not
+ * fire server-side socket close events on keep-alive client disconnect (see
+ * oven-sh/bun#7716), so that signal silently dropped the lease accounting on
+ * Bun. Tracking at the request/response level uses signals both runtimes
+ * honor, and the realistic lease semantics are unchanged — an MCP client
+ * with no open response isn't actually using the daemon.
  *
  * # Composable quit predicates
  *
@@ -85,7 +95,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server as HttpServer } from "node:http"
 import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs"
-import { createConnection, type Socket } from "node:net"
+import { createConnection } from "node:net"
 import { dirname, resolve } from "node:path"
 import { randomBytes, randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
@@ -278,9 +288,10 @@ export interface McpPluginHandle extends TribePluginApi {
   getAddress(): { socketPath: string } | null
 
   /**
-   * Active wire-connection count — primarily for tests and observability.
-   * Tracks raw TCP/Unix-socket connections to the http.Server (which is
-   * what holds the lease), not MCP request/response pairs.
+   * Active in-flight response count — primarily for tests and observability.
+   * Tracks open HTTP responses (which is what holds the lease). A long-
+   * running SSE response holds the lease for its lifetime; a quick
+   * request-response pair takes and releases it in microseconds.
    */
   getConnectionCount(): number
 
@@ -358,13 +369,25 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   }
 
   // ------------------------------------------------------------------------
-  // Connection tracking + idle-quit
+  // Lease tracking + idle-quit
   // ------------------------------------------------------------------------
 
-  // Track raw TCP/Unix-socket connections — that's the lease. The MCP
-  // SDK's transport handles request/response framing on top, but the
-  // kernel-level connection is what proves "someone is using us".
-  const wireConnections = new Set<Socket>()
+  // Track active in-flight responses — that's the lease. The original
+  // design tracked raw TCP/Unix-socket connections via http.Server's
+  // "connection" event, but Bun's http.Server (1.3.x) does NOT fire the
+  // server-side socket "close" event when a keep-alive client disconnects
+  // (see oven-sh/bun#7716). Both runtimes fire `res.on("close")` reliably,
+  // so we track at the response level instead. Semantically equivalent
+  // for the realistic case (an MCP client either has an open SSE stream
+  // = active response = lease held, or it doesn't = no lease) and works
+  // identically on Bun and Node.
+  //
+  // Quick requests (e.g. POST /mcp tools/list, GET /healthz) take and
+  // release the lease in microseconds. Long-running streams (GET /mcp
+  // SSE) hold it for the duration of the stream. Either way, the
+  // idle-quit timer arms once the count drops to zero and stays there
+  // for `idleTimeoutMs`.
+  const activeResponses = new Set<ServerResponse>()
   let idleTimerFired = false
   let idleTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -502,29 +525,79 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   let abortCtl: AbortController | null = null
   let timers: ReturnType<typeof createTimers> | null = null
 
-  function trackConnection(socket: Socket): void {
-    wireConnections.add(socket)
+  function trackResponse(req: IncomingMessage, res: ServerResponse): void {
+    activeResponses.add(res)
     cancelIdleTimer()
-    log.debug?.(`wire connect (count=${wireConnections.size})`)
+    log.debug?.(`wire connect (count=${activeResponses.size})`)
 
     const drop = (): void => {
-      if (!wireConnections.delete(socket)) return
-      log.debug?.(`wire disconnect (count=${wireConnections.size})`)
-      if (wireConnections.size === 0) {
+      if (!activeResponses.delete(res)) return
+      log.debug?.(`wire disconnect (count=${activeResponses.size})`)
+      if (activeResponses.size === 0) {
         armIdleTimer()
         // Event-driven check: predicates that watch external state
-        // (parent gone, quota exhausted) get probed at the moment a
-        // session detaches, not just on the slow tick.
+        // (parent gone, quota exhausted) get probed at the moment the
+        // last in-flight response detaches, not just on the slow tick.
         void checkPredicates("connection-zero")
       }
     }
-    socket.once("close", drop)
-    socket.once("error", drop)
+    // Fire on whichever close event arrives first — Set delete is
+    // idempotent so duplicate fires are harmless.
+    //
+    //   - Node: `res.on("close")` fires on `res.end()` AND on client
+    //     disconnect during streaming.
+    //   - Bun (1.3.x): `res.on("close")` fires on `res.end()` for short
+    //     responses but NOT on client disconnect for streaming responses
+    //     (oven-sh/bun#7716). `req.on("close")` DOES fire reliably in
+    //     both cases on Bun, so we listen there too.
+    //
+    // Using both ensures the lease drops promptly on either runtime,
+    // regardless of which signal the runtime chooses to honor.
+    res.once("close", drop)
+    req.once("close", drop)
   }
 
   async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Track this request as the lease. See `activeResponses` doc above for
+    // why we track at the response level rather than the socket level.
+    trackResponse(req, res)
+
     const url = req.url ?? "/"
-    if (req.method === "GET" && url === "/healthz") {
+    if (req.method === "GET" && url.startsWith("/healthz")) {
+      // Optional `?stream=<ms>` opens a streaming response that stays open
+      // for up to <ms> milliseconds, or until the client disconnects.
+      // Pings are written every 100ms so the response stream stays live
+      // (Node/Bun keep `res.on("close")` armed for the whole window).
+      // Realistic use: liveness probe + lease-take in one round trip
+      // (e.g. an external supervisor wanting to verify the plugin is up
+      // AND hold the lease for a brief grace window). Test use: take a
+      // deterministic, runtime-independent lease without dragging the
+      // MCP SDK into lifecycle assertions.
+      const q = url.indexOf("?")
+      const streamParam = q >= 0 ? new URLSearchParams(url.slice(q + 1)).get("stream") : null
+      const streamMs = streamParam !== null ? Math.max(0, Number(streamParam) | 0) : 0
+      if (streamMs > 0) {
+        res.writeHead(200, { "Content-Type": "text/plain" })
+        res.write("ok\n")
+        const ping = setInterval(() => {
+          if (res.writableEnded || res.destroyed) {
+            clearInterval(ping)
+            return
+          }
+          res.write(":\n")
+        }, 100)
+        ;(ping as { unref?: () => void }).unref?.()
+        const stop = setTimeout(() => {
+          clearInterval(ping)
+          if (!res.writableEnded) res.end()
+        }, streamMs)
+        ;(stop as { unref?: () => void }).unref?.()
+        res.once("close", () => {
+          clearInterval(ping)
+          clearTimeout(stop)
+        })
+        return
+      }
       res.writeHead(200, { "Content-Type": "text/plain" })
       res.end("ok\n")
       return
@@ -627,7 +700,6 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     httpServer = createServer((req, res) => {
       void dispatch(req, res)
     })
-    httpServer.on("connection", trackConnection)
 
     await new Promise<void>((resolveListen, reject) => {
       const onError = (err: Error): void => reject(err)
@@ -686,15 +758,20 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   function stop(): void {
     abortCtl?.abort()
     cancelIdleTimer()
-    // Tear down active sockets so the server can shut down promptly.
-    for (const sock of wireConnections) {
+    // End any in-flight responses so the server can shut down promptly.
+    for (const res of activeResponses) {
       try {
-        sock.destroy()
+        res.end()
+      } catch {
+        /* already ended */
+      }
+      try {
+        res.socket?.destroy()
       } catch {
         /* already closed */
       }
     }
-    wireConnections.clear()
+    activeResponses.clear()
     // Close every per-session transport. Transport.close() returns a
     // promise but we don't need to await — http.Server.close() finishes
     // the cleanup synchronously enough for shutdown.
@@ -756,7 +833,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
     },
 
     getConnectionCount() {
-      return wireConnections.size
+      return activeResponses.size
     },
 
     events,

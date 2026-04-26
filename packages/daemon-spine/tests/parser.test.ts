@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createLineParser } from "../src/parser.ts"
 import type { JsonRpcMessage } from "../src/rpc.ts"
 
@@ -25,10 +25,24 @@ describe("createLineParser", () => {
   })
 
   it("skips invalid JSON without throwing", () => {
-    const out: JsonRpcMessage[] = []
-    const parse = createLineParser((m) => out.push(m))
-    parse(Buffer.from('not-json\n{"jsonrpc":"2.0","id":1,"method":"a"}\n'))
-    expect(out).toHaveLength(1)
-    expect((out[0] as { method: string }).method).toBe("a")
+    // Parser logs a warning for invalid JSON via loggily — silence it so
+    // the test-harness console-quiet check doesn't flag it. The behavior
+    // we're verifying is that the parser doesn't throw and still emits
+    // the valid line that follows the bad one.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const out: JsonRpcMessage[] = []
+      const parse = createLineParser((m) => out.push(m))
+      parse(Buffer.from('not-json\n{"jsonrpc":"2.0","id":1,"method":"a"}\n'))
+      expect(out).toHaveLength(1)
+      expect((out[0] as { method: string }).method).toBe("a")
+      // Sanity-check the warning fired with the bad input — we want the
+      // log behavior covered, not just suppressed.
+      expect(warnSpy).toHaveBeenCalled()
+      const firstCall = warnSpy.mock.calls[0]?.join(" ") ?? ""
+      expect(firstCall).toContain("not-json")
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })

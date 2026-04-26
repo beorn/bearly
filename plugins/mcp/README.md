@@ -52,7 +52,7 @@ The daemon quits when **any** predicate returns true. Built-ins:
 Anything else plugs in the same way:
 
 ```ts
-plugin.registerQuitPredicate(() => process.ppid === 1)        // parent gone
+plugin.registerQuitPredicate(() => process.ppid === 1) // parent gone
 plugin.registerQuitPredicate(async () => await quotaExhausted())
 plugin.registerQuitPredicate(() => !configFileStillExists())
 ```
@@ -163,7 +163,7 @@ loadPlugins(plugins, tribeClientApi)
 mcp.registerQuitPredicate(() => process.ppid === 1)
 
 // And introspect, mostly for tests:
-mcp.getAddress()         // { socketPath } once listening
+mcp.getAddress() // { socketPath } once listening
 mcp.getConnectionCount() // current active wire-connection count
 ```
 

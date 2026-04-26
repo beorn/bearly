@@ -161,9 +161,7 @@ export async function connectOrStart(socketPath: string, opts?: ConnectOrStartOp
 
   const script = opts?.daemonScript
   if (!script) {
-    throw new Error(
-      `connectOrStart: no daemon at ${socketPath} and no daemonScript provided to spawn one`,
-    )
+    throw new Error(`connectOrStart: no daemon at ${socketPath} and no daemonScript provided to spawn one`)
   }
 
   const args = ["--socket", socketPath, ...(opts?.daemonArgs ?? [])]

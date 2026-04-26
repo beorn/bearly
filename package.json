@@ -25,14 +25,14 @@
     "type": "git",
     "url": "https://github.com/beorn/bearly.git"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "files": [
     "tools",
     "skills"
   ],
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
   "exports": {
     "./tools/worktree": "./tools/worktree.ts"
   },
@@ -48,11 +48,11 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.63",
-    "@bearly/daemon-spine": "workspace:*",
     "@ai-sdk/google": "^3.0.52",
     "@ai-sdk/openai": "^3.0.47",
     "@ai-sdk/perplexity": "^3.0.25",
     "@ai-sdk/xai": "^3.0.72",
+    "@bearly/daemon-spine": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@silvery/commander": "^0.6.0",
     "@termless/core": "^0.3.0",

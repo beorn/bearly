@@ -21,7 +21,6 @@ import { mkdtempSync, statSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { request as httpRequest, type IncomingMessage } from "node:http"
-import { createConnection } from "node:net"
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpPlugin } from "../mcp-plugin.ts"
@@ -45,35 +44,61 @@ function makeSocketPath(): string {
 }
 
 /**
- * Open a raw Unix socket connection to the plugin and HOLD it open
- * (without finishing an HTTP request) until the test calls `close()`.
- * Used by the lifecycle test to take + drop the lease deterministically
- * — without the SDK's SSE-stream long-poll interfering with timing.
+ * Open a long-running streaming HTTP GET against `/healthz?stream=<ms>`
+ * and hold the response open until the caller invokes `close()`. Used by
+ * the lifecycle test to take and drop the lease deterministically.
  *
- * Implementation: connect, write a partial HTTP request line so the
- * server's parser is in mid-stream and won't close on us, but never
- * send the trailing `\r\n\r\n` that would let the parser dispatch the
- * request. This keeps the kernel-level connection — which IS the
- * lease, by design — alive on both sides until we destroy it.
+ * Why a streaming GET, not a raw keep-alive socket? The plugin tracks the
+ * lease at the response level — a request is a lease while its response
+ * is open. This matches both runtimes:
+ *
+ *   - Node and Bun both fire `res.on("close")` reliably when the response
+ *     stream ends, whether by `res.end()` or by client cancellation.
+ *   - Bun's http.Server (1.3.x) does NOT fire socket-level close events on
+ *     keep-alive disconnect (oven-sh/bun#7716), so kernel-level connection
+ *     tracking is unreliable there. Tracking at the response level avoids
+ *     the broken signal entirely.
+ *
+ * Realistic mirror of production: an MCP client opens GET /mcp for the
+ * SSE stream and that stream IS its lease for as long as it's open.
+ * `/healthz?stream` is a lighter-weight probe that exercises the same
+ * lease accounting without dragging the MCP SDK transport into the
+ * lifecycle assertions.
  */
-function holdRawConnection(socketPath: string): Promise<{ close: () => void }> {
+function holdStreamingRequest(socketPath: string): Promise<{ close: () => void }> {
   return new Promise((resolvePromise, reject) => {
-    const sock = createConnection(socketPath)
-    sock.once("connect", () => {
-      sock.write("GET /healthz HTTP/1.1\r\nHost: localhost\r\n")
-      // Intentionally NOT writing the closing `\r\n\r\n` — the request
-      // is in mid-headers from the server's POV. Connection stays open.
-      resolvePromise({
-        close: () => {
-          try {
-            sock.destroy()
-          } catch {
-            /* already gone */
-          }
-        },
-      })
-    })
-    sock.once("error", reject)
+    const req = httpRequest(
+      {
+        socketPath,
+        method: "GET",
+        // Big window — the test calls close() when it's done; the server
+        // will release the lease either on close() or after this timeout.
+        path: "/healthz?stream=60000",
+        agent: false,
+      },
+      (res: IncomingMessage) => {
+        // Headers received → response is open and registered as a lease.
+        // Drain data into the void so the response stream stays live; we
+        // just don't propagate it anywhere.
+        res.on("data", () => {
+          /* discard */
+        })
+        res.on("error", () => {
+          /* swallow — close path handles teardown */
+        })
+        resolvePromise({
+          close: () => {
+            try {
+              req.destroy()
+            } catch {
+              /* already gone */
+            }
+          },
+        })
+      },
+    )
+    req.once("error", reject)
+    req.end()
   })
 }
 
@@ -169,18 +194,20 @@ describe("createMcpPlugin (Unix socket + MCP SDK transport)", () => {
       const mode = statSync(socketPath).mode & 0o777
       expect(mode).toBe(0o600)
 
-      // ---- Connection-as-lease ----
-      // Open a raw connection (no MCP framing) to hold the lease — keeps
-      // the lifecycle test independent of the SDK's SSE long-poll
-      // semantics. Verifies the kernel-level connection is what we
-      // track, not anything HTTP/MCP-specific.
-      const conn = await holdRawConnection(socketPath)
+      // ---- Response-as-lease ----
+      // Open a long-running streaming GET to hold the lease. The plugin
+      // tracks active in-flight responses (see `activeResponses` doc in
+      // mcp-plugin.ts); this mirrors the realistic MCP SSE long-poll
+      // pattern without dragging the SDK transport into the lifecycle
+      // assertions.
+      const conn = await holdStreamingRequest(socketPath)
       await until(() => plugin.getConnectionCount() >= 1)
-      // While connected, the idle predicate is held off — no quit yet.
+      // While the response is open, the idle predicate is held off — no
+      // quit yet, even past the idle window.
       await new Promise((r) => setTimeout(r, 200)) // > idleTimeoutMs
       expect(reasons).toHaveLength(0)
 
-      // ---- Drop the connection → idle timer arms → request_quit fires ----
+      // ---- Drop the request → response closes → idle timer arms → request_quit fires ----
       conn.close()
       await until(() => plugin.getConnectionCount() === 0)
       await until(() => reasons.length > 0, 1_000)
