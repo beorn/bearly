@@ -20,6 +20,7 @@ export default defineConfig({
       "tests/**/*.test.ts",
       "plugins/**/tests/**/*.test.ts",
       "plugins/**/src/**/*.test.ts",
+      "packages/**/tests/**/*.test.ts",
       "tools/**/*.test.ts",
     ],
     // .slow. tests hit real services (tribe sockets, accountly credentials) — opt-in only.
