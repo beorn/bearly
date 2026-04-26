@@ -1,0 +1,60 @@
+{
+  "name": "@bearly/daemon-spine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared Unix-socket IPC spine — JSON-RPC 2.0 wire protocol, line parser, daemon client, auto-start, and reconnection",
+  "keywords": [
+    "ipc",
+    "unix-socket",
+    "json-rpc",
+    "daemon",
+    "claude-code",
+    "tribe",
+    "lore"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/daemon-spine",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "loggily": "^0.4.2"
+  },
+  "devDependencies": {
+    "tsdown": "^0.21.7",
+    "typescript": "^5.9.3"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  }
+}

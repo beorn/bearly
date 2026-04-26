@@ -30,6 +30,9 @@
     "skills"
   ],
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "exports": {
     "./tools/worktree": "./tools/worktree.ts"
   },
@@ -45,6 +48,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.63",
+    "@bearly/daemon-spine": "workspace:*",
     "@ai-sdk/google": "^3.0.52",
     "@ai-sdk/openai": "^3.0.47",
     "@ai-sdk/perplexity": "^3.0.25",
