@@ -1,0 +1,16 @@
+{
+  "name": "@bearly/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MCP server as a tribe plugin — single long-running HTTP+SSE wire shared by all Claude Code sessions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "plugins/mcp"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./mcp-plugin.ts"
+  }
+}
