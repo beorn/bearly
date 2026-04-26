@@ -10,11 +10,22 @@ import * as fs from "node:fs"
 import React, { useMemo, useSyncExternalStore, type ReactNode } from "react"
 import type { Reporter, TestCase, TestModule, TestSpecification, TestSuite, Vitest } from "vitest/node"
 import { Box, Text, Console, useBoxRect, createConsole, type Instance, type Term, type PatchedConsole } from "silvery"
+import type { TextProps } from "silvery"
 import { createLogger } from "loggily"
 
 import { createTestStore, type TestState, type TestStore, type TestStoreState } from "./store.js"
 
 const log = createLogger("vitestx:dotz")
+
+// `dim` was removed from silvery's StyleProps — `<DText dim>` no longer typechecks.
+// DText preserves the visual intent (muted, low-emphasis) by mapping `dim` to the
+// `$muted` color token. When `color` is also set, dim acts as an opacity hint we
+// approximate via the unstyled `color` (callers preferring a specific dim color
+// should pass `color` directly without `dim`).
+function DText({ dim, color, ...rest }: TextProps & { dim?: boolean }) {
+  const resolvedColor = color ?? (dim ? "$muted" : undefined)
+  return <Text {...rest} color={resolvedColor} />
+}
 
 // =============================================================================
 // Constants & Types (exported for testing)
@@ -105,7 +116,7 @@ export function Report({ store, options, width, console: patched }: ReportProps)
 
 export function StatusDot({ status }: { status: StatusKey }) {
   const { char, label: _, ...style } = STATUS_DOTS[status]
-  return <Text {...style}>{char}</Text>
+  return <DText {...style}>{char}</DText>
 }
 
 /** Single dot for legend use only. Bulk rendering uses DotStrip. */
@@ -115,9 +126,9 @@ export function Dot(props: DotProps) {
   if (props.status !== "passed") return <StatusDot status={props.status} />
   const { char, bright } = durationToSymbol(props.duration, props.options.slowThreshold, props.options.symbols)
   return (
-    <Text color="green" dim={!bright}>
+    <DText color="green" dim={!bright}>
       {char}
-    </Text>
+    </DText>
   )
 }
 
@@ -173,9 +184,9 @@ export function DotStrip({ testIds, state, options }: { testIds: string[]; state
     } else {
       if (currentStyle && currentChars) {
         groups.push(
-          <Text key={groups.length} color={currentStyle.color} dim={currentStyle.dim}>
+          <DText key={groups.length} color={currentStyle.color} dim={currentStyle.dim}>
             {currentChars}
-          </Text>,
+          </DText>,
         )
       }
       currentChars = char
@@ -185,9 +196,9 @@ export function DotStrip({ testIds, state, options }: { testIds: string[]; state
   }
   if (currentStyle && currentChars) {
     groups.push(
-      <Text key={groups.length} color={currentStyle.color} dim={currentStyle.dim}>
+      <DText key={groups.length} color={currentStyle.color} dim={currentStyle.dim}>
         {currentChars}
-      </Text>,
+      </DText>,
     )
   }
 
@@ -197,9 +208,9 @@ export function DotStrip({ testIds, state, options }: { testIds: string[]; state
 export function DurationSymbol({ duration, options }: { duration: number; options: Options }) {
   const { char, bright } = durationToSymbol(duration, options.slowThreshold, options.symbols)
   return (
-    <Text color="green" dim={!bright}>
+    <DText color="green" dim={!bright}>
       {char}
-    </Text>
+    </DText>
   )
 }
 
@@ -209,7 +220,7 @@ function LegendItem({ children, label }: { children: ReactNode; label: string })
   return (
     <Box flexDirection="row" gap={1}>
       {children}
-      <Text dim>{label}</Text>
+      <DText dim>{label}</DText>
     </Box>
   )
 }
@@ -217,7 +228,7 @@ function LegendItem({ children, label }: { children: ReactNode; label: string })
 export function DotsLegend({ options }: { options: Options }) {
   return (
     <Box flexDirection="row" gap={2} marginBottom={1}>
-      <Text dim>Legend:</Text>
+      <DText dim>Legend:</DText>
       <LegendItem label="fast">
         <Dot status="passed" duration={0} options={options} />
       </LegendItem>
@@ -347,10 +358,10 @@ function DotsSectionInner({ state, options, width: cols }: Omit<DotsSectionProps
                 return (
                   <Box key={file} flexDirection="row">
                     <Box width={maxLabelWidth}>
-                      <Text dim>
+                      <DText dim>
                         {"  "}
                         {name}
-                      </Text>
+                      </DText>
                     </Box>
                     <Box flexDirection="row" flexWrap="wrap" width={dotsWidth}>
                       <DotStrip testIds={fileStats.testIds} state={state} options={options} />
@@ -378,7 +389,7 @@ function DotsSectionInner({ state, options, width: cols }: Omit<DotsSectionProps
 }
 
 function Sep() {
-  return <Text dim>{" | "}</Text>
+  return <DText dim>{" | "}</DText>
 }
 
 export function Summary({ state }: { state: TestStoreState }) {
@@ -409,7 +420,7 @@ export function Summary({ state }: { state: TestStoreState }) {
 
   return (
     <Box id="summary" flexDirection="row" marginTop={1}>
-      <Text dim>Tests </Text>
+      <DText dim>Tests </DText>
       {counts.length > 0 ? (
         counts.map((node, i) => (
           <React.Fragment key={i}>
@@ -418,11 +429,11 @@ export function Summary({ state }: { state: TestStoreState }) {
           </React.Fragment>
         ))
       ) : (
-        <Text dim>0</Text>
+        <DText dim>0</DText>
       )}
       <Text color="gray">{` (${total})`}</Text>
       <Text>{"  "}</Text>
-      <Text dim>Time </Text>
+      <DText dim>Time </DText>
       <Text>{fmtDuration(elapsed)}</Text>
       <Text color="gray">{` (sum ${fmtDuration(sum)})`}</Text>
     </Box>
@@ -468,24 +479,24 @@ export function PackageTable({ state }: { state: TestStoreState }) {
         return (
           <Box key={cat} flexDirection="row">
             <Box width={w}>
-              <Text color={rowColor} dim={rowDim}>
+              <DText color={rowColor} dim={rowDim}>
                 {cat}
-              </Text>
+              </DText>
             </Box>
             <Box width={7}>
-              <Text color={rowColor} dim={rowDim}>
+              <DText color={rowColor} dim={rowDim}>
                 {String(n).padStart(7)}
-              </Text>
+              </DText>
             </Box>
             <Box width={10}>
-              <Text color={rowColor} dim={rowDim}>
+              <DText color={rowColor} dim={rowDim}>
                 {fmtDuration(st.duration).padStart(10)}
-              </Text>
+              </DText>
             </Box>
             <Box width={8}>
-              <Text color={rowColor} dim={rowDim}>
+              <DText color={rowColor} dim={rowDim}>
                 {slow.padStart(8)}
-              </Text>
+              </DText>
             </Box>
           </Box>
         )
@@ -508,16 +519,16 @@ export function SlowTests({ state, options }: { state: TestStoreState; options: 
           const minMs = Math.round(slowThreshold * (i + 1) * rangePerSymbol)
           return (
             <Box key={i} flexDirection="row" gap={1}>
-              <Text color="green" dim>
+              <DText color="green" dim>
                 {sym}
-              </Text>
-              <Text dim>≥{fmtMs(minMs)}</Text>
+              </DText>
+              <DText dim>≥{fmtMs(minMs)}</DText>
             </Box>
           )
         })}
         <Box flexDirection="row" gap={1}>
           <Text color="green">{symbols.at(-1) ?? "●"}</Text>
-          <Text dim>≥{fmtMs(slowThreshold * DURATION_MULTIPLIER)}</Text>
+          <DText dim>≥{fmtMs(slowThreshold * DURATION_MULTIPLIER)}</DText>
         </Box>
       </Box>
       {state.topSlowest.slice(0, MAX_SLOW_TESTS).map((test, i) => {
@@ -550,7 +561,7 @@ export function Failures({ state }: { state: TestStoreState }) {
             <Text bold>{err.name}</Text>
           </Box>
           <Box marginLeft={2}>
-            <Text dim>{err.file}</Text>
+            <DText dim>{err.file}</DText>
           </Box>
           {err.errors.map((e, j) => (
             <Box key={j} flexDirection="column">
@@ -558,9 +569,9 @@ export function Failures({ state }: { state: TestStoreState }) {
                 <Text>{e.message}</Text>
               </Box>
               {e.stack?.split("\n").map((line, k) => (
-                <Text key={k} dim>
+                <DText key={k} dim>
                   {line}
-                </Text>
+                </DText>
               ))}
             </Box>
           ))}

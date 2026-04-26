@@ -156,6 +156,9 @@ export function expandQueryVariants(query: string): string[] | null {
  * Combined: rank / recency_factor (dividing a negative number by a value <1 makes it more negative = better)
  */
 export function boostedRank(rank: number, timestamp: number): number {
+  // Defensive: rows with missing/non-numeric timestamps fall back to no recency boost.
+  // Previously NaN would propagate through sort comparators and produce undefined ordering.
+  if (!Number.isFinite(timestamp)) return rank
   const daysAgo = (Date.now() - timestamp) / ONE_DAY_MS
   const recencyFactor = 1 / (1 + daysAgo / 7)
   // rank is negative (bm25), so multiplying by recencyFactor (0..1) makes recent items more negative = better
@@ -206,7 +209,13 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
       const jsonStr = line.slice(colonIdx + 1)
 
       try {
-        const msg = JSON.parse(jsonStr) as { type?: string; timestamp?: number; message?: { content?: unknown } }
+        // JSONL timestamps are ISO date strings ("2026-04-26T..."); accept
+        // either a string (parse to ms) or a number (already ms).
+        const msg = JSON.parse(jsonStr) as {
+          type?: string
+          timestamp?: number | string
+          message?: { content?: unknown }
+        }
         if (msg.type !== "human" && msg.type !== "assistant") continue
 
         const text =
@@ -229,11 +238,17 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
         const start = Math.max(0, firstIdx - 100)
         const snippet = text.slice(start, start + 500)
 
+        const tsNumeric =
+          typeof msg.timestamp === "number"
+            ? msg.timestamp
+            : typeof msg.timestamp === "string"
+              ? Date.parse(msg.timestamp)
+              : Date.now()
         results.push({
           type: "message",
           sessionId,
           sessionTitle: "(current session)",
-          timestamp: msg.timestamp ?? Date.now(),
+          timestamp: Number.isFinite(tsNumeric) ? tsNumeric : Date.now(),
           snippet: `[CURRENT SESSION] ${snippet}`,
           rank: -100 - matchCount,
         })

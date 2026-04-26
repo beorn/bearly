@@ -53,6 +53,10 @@ export function makeTestEnv(): TestEnv {
   process.env.OPENROUTER_API_KEY = "sk-test-openrouter"
   // Prevent the auto-update-pricing post-run side-effect from firing.
   process.env.LLM_NO_AUTO_PRICING = "1"
+  // Skip the default-mode "📚 Similar past queries" history scan — it hits the
+  // real ~/.claude/session-index.db (20s+) and stalls the vitest worker even
+  // when dispatch is mocked.
+  process.env.LLM_NO_HISTORY = "1"
 
   const exitCodes: number[] = []
   const stderr: string[] = []
@@ -70,6 +74,12 @@ export function makeTestEnv(): TestEnv {
   })
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     stdout.push(args.map(String).join(" "))
+  })
+  // loggily writes warn-level messages to console.warn — capture them as stderr
+  // so they don't trip the strict `Test produced console output` assertion in
+  // packages/km-infra/vitest/setup.ts.
+  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    stderr.push(args.map(String).join(" "))
   })
   vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
     stderr.push(String(chunk))

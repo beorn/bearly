@@ -486,24 +486,28 @@ export async function main(): Promise<string | undefined> {
     // Check history first. try/finally ensures closeDb() runs even if the
     // FTS query throws (e.g., schema version drift, locked DB, malformed
     // index) — previously the except path leaked the SQLite handle.
-    try {
-      const db = getDb()
+    // Skip when LLM_NO_HISTORY=1 (set by tests; the real DB scan can take 20s+
+    // and stalls the vitest worker even when dispatch is mocked).
+    if (!process.env.LLM_NO_HISTORY) {
       try {
-        const similar = findSimilarQueries(db, question, { limit: 2 })
-        if (similar.length > 0) {
-          console.error("📚 Similar past queries:\n")
-          for (const s of similar) {
-            const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
-            const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
-            console.error(`  ${relTime}: ${preview}...`)
+        const db = getDb()
+        try {
+          const similar = findSimilarQueries(db, question, { limit: 2 })
+          if (similar.length > 0) {
+            console.error("📚 Similar past queries:\n")
+            for (const s of similar) {
+              const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
+              const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
+              console.error(`  ${relTime}: ${preview}...`)
+            }
+            console.error()
           }
-          console.error()
+        } finally {
+          closeDb()
         }
-      } finally {
-        closeDb()
+      } catch {
+        /* History not indexed */
       }
-    } catch {
-      /* History not indexed */
     }
 
     await askAndFinish(askOpts(question, "default", "standard", (name) => `[${name}]`, outputFile))

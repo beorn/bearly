@@ -597,7 +597,7 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
     type: markedType("delta"),
     content,
     bead_id: null,
-    message_id: last.id,
+    message_id: last?.id ?? null,
     events_count: total,
   })
 }

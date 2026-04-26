@@ -1547,7 +1547,10 @@ async function appendAbProLog(entry: {
     const fs = await import("fs")
     const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
     const encoded = projectRoot.replace(/\//g, "-")
-    const dir = `${os.homedir()}/.claude/projects/${encoded}/memory`
+    // Prefer HOME env (test isolation respects it; os.homedir() reads from
+    // getuid() and ignores HOME, leaking writes into the real user profile).
+    const home = process.env.HOME || os.homedir()
+    const dir = `${home}/.claude/projects/${encoded}/memory`
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     const line =
       JSON.stringify({

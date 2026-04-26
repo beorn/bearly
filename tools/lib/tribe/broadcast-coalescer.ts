@@ -84,7 +84,7 @@ export function createCoalescer(opts: { batchMs: number; maxEventsPerBatch: numb
     const kept = events.length > maxEventsPerBatch ? events.slice(0, maxEventsPerBatch) : events
     const dropped = events.length - kept.length
 
-    const payload = kept.length === 1 ? singleEvent(kept[0]) : batched(kept, dropped)
+    const payload = kept.length === 1 ? singleEvent(kept[0]!) : batched(kept, dropped)
     const ok = write(connId, payload)
     if (!ok) return
     for (const ev of kept) onDelivered(connId, ev)
