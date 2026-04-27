@@ -18,6 +18,8 @@ See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#doma
 
 **0.10.0 — purge complete (2026-04-17)** — MCP tools live exclusively under the `tribe.*` namespace, env vars exclusively under `TRIBE_*`. All legacy `lore.*` / `tribe_*` / `LORE_*` names introduced for the 0.9.0 deprecation window have been removed — both tools/list emission and dispatch reject them. Daemon wire-protocol version 4. See `plugins/tribe/CHANGELOG.md` for the full purge scope.
 
+**Matrix-shape rooms (km-tribe.matrix-shape)** — schema migration v10 added `rooms` and `room_members` tables modelled on the Matrix protocol's room shape. **Single-default-room semantics today**: every project has one room (`room:<project_id>` or `room:default` for unscoped sessions), every connected session is a member, every message is implicitly in it. `tribe.members` JOINs `room_members` to source its session list, and a startup invariant (`backfillDefaultRoomMembers` in `with-runtime.ts`) guarantees every session row has its membership row. Sub-rooms (multi-room within a daemon) and federated rooms (cross-machine bridging) are tracked separately under the same bead — not in scope today.
+
 ### Supporting primitives
 
 | Package          | npm               | Role                                                                                                    | Entry Point       |
