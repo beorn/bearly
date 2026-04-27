@@ -55,3 +55,6 @@ export type { Broadcast, WithBroadcast } from "./with-broadcast.ts"
 
 export { withSocketServer, probeAndCleanSocket } from "./with-socket-server.ts"
 export type { SocketServer, WithSocketServer } from "./with-socket-server.ts"
+
+export { withDispatcher } from "./with-dispatcher.ts"
+export type { Dispatcher, DispatcherRuntimeHooks, WithDispatcher } from "./with-dispatcher.ts"

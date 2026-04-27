@@ -66,6 +66,7 @@ import {
   withConfig,
   withDaemonContext,
   withDatabase,
+  withDispatcher,
   withLore,
   withProjectRoot,
   withSocketServer,
@@ -165,7 +166,21 @@ if (partialShape.config.inheritFd === null) {
   }
 }
 
-const tribeShape = withSocketServer<typeof partialShape>()(partialShape)
+// Refs for runtime hooks the dispatcher needs but that are wired up later
+// (idle-quit's markActive/markIdle, plugin names, quit-timeout). Each hook is
+// a thin lambda that reads through the ref so Phase 4 can land before
+// withIdleQuit / withRuntime / plugin loading move into the pipe.
+const activePluginNamesRef: { current: string[] } = { current: [] }
+const markActiveRef: { current: () => void } = { current: () => {} }
+const markIdleRef: { current: () => void } = { current: () => {} }
+
+const withSocketShape = withSocketServer<typeof partialShape>()(partialShape)
+const tribeShape = withDispatcher<typeof withSocketShape>({
+  onActiveClient: () => markActiveRef.current(),
+  onIdle: () => markIdleRef.current(),
+  getActivePluginNames: () => activePluginNamesRef.current,
+  getQuitTimeoutSec: () => withSocketShape.config.quitTimeoutSec,
+})(withSocketShape)
 
 // Lore tools are conditional on lore being enabled — register them after the
 // pipe so the registry stays append-only when --no-lore is set.
@@ -216,664 +231,6 @@ log(`DB: ${DB_PATH}`)
 log(`PID: ${process.pid}`)
 if (loreHandlers) log(`Lore DB: ${LORE_DB_PATH}`)
 
-// Client registry + chief derivation now live on the daemon value via
-// withClientRegistry — see lib/tribe/compose/with-client-registry.ts. The
-// `clients` and `socketToClient` Maps are aliased above; chief lease is
-// accessed through `registry.{getChiefClaim,setChiefClaim,claimChief,...}`.
-
-/** No-op handler opts for daemon-side tool calls (no MCP session to clean up) */
-const DAEMON_HANDLER_OPTS = {
-  cleanup: () => {},
-  userRenamed: false,
-  setUserRenamed: () => {},
-  getChiefId: () => registry.getChiefId(),
-  getChiefInfo: () => registry.getChiefInfo(),
-  claimChief: (sessionId: string, name: string) => registry.claimChief(sessionId, name, logActivity),
-  releaseChief: (sessionId: string) => registry.releaseChief(sessionId, logActivity),
-  getActiveSessionIds: () => registry.getActiveSessionIds(),
-  getActiveSessionInfo: () => registry.getActiveSessionInfo(),
-  getDebugState: () => ({
-    clients: Array.from(clients.values()).map((c) => ({
-      id: c.ctx.sessionId,
-      name: c.name,
-      role: c.role,
-      pid: c.pid,
-      registeredAt: c.registeredAt,
-    })),
-    chief: registry.getChiefInfo(),
-    chiefClaim: registry.getChiefClaim(),
-    cursors: db.prepare("SELECT id, name, last_delivered_ts, last_delivered_seq FROM sessions").all() as Array<{
-      id: string
-      name: string
-      last_delivered_ts: number | null
-      last_delivered_seq: number | null
-    }>,
-  }),
-} as const
-
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Make a path relative to cwd */
-function relPath(p: string): string {
-  const cwd = process.cwd()
-  return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p
-}
-
-/** Generate a unique member-<pid> name, with random suffix if taken */
-function generateMemberName(pid: number, connId: string): string {
-  const pidName = `member-${pid || connId.slice(0, 6)}`
-  const taken = db.prepare("SELECT id FROM sessions WHERE name = ?").get(pidName)
-  return taken ? `member-${pid}-${Math.random().toString(36).slice(2, 5)}` : pidName
-}
-
-/** Deduplicate name against connected clients */
-function deduplicateName(name: string): string {
-  const connectedNames = new Set(Array.from(clients.values()).map((c) => c.name))
-  if (!connectedNames.has(name)) return name
-  const base = name
-  let suffix = 2
-  while (connectedNames.has(`${base}-${suffix}`)) suffix++
-  return `${base}-${suffix}`
-}
-
-// ---------------------------------------------------------------------------
-// Register handler — composed from small, locally-scoped helpers so the
-// top-level `case "register":` body stays readable. Each helper takes only
-// the dependencies it needs and returns a plain value; no side effects on
-// globals except where explicitly labelled.
-// ---------------------------------------------------------------------------
-
-type PriorSession = { id: string; name: string; role: string }
-
-/**
- * If the proxy supplied an identity token matching a prior, currently-
- * disconnected row, return that row so the caller can adopt its sessionId +
- * name + role. Returns null when there's no match or the prior session is
- * still actively connected. See km-tribe.session-identity.
- */
-function adoptIdentity(identityToken: string | null, isActive: (sessionId: string) => boolean): PriorSession | null {
-  if (!identityToken) return null
-  const prior = db
-    .prepare("SELECT id, name, role FROM sessions WHERE identity_token = ? ORDER BY updated_at DESC LIMIT 1")
-    .get(identityToken) as PriorSession | null
-  if (!prior) return null
-  if (isActive(prior.id)) return null
-  return prior
-}
-
-/**
- * True if a session name looks auto-generated (daemon fallback) and should
- * NOT be adopted by later sessions. Covers: `member-<digits>`, `km-<digits>`,
- * `member-<short>` (short rand hash), `chief`, any tombstoned dead row
- * (`*-dead-<8hex>`), and generic project-name fallbacks.
- *
- * Recognised non-auto names: user-chosen slugs like "plateau", "tea-wiring",
- * "backdrop" etc. — those get adopted by F1-D.
- */
-function isAutoGeneratedName(name: string): boolean {
-  if (!name) return true
-  if (name === "chief") return true
-  if (name.includes("-dead-")) return true
-  if (/^member-[\w\d]{3,}$/.test(name)) return true
-  if (/^km-?\d+$/.test(name)) return true
-  if (/^km-[a-z0-9]{3,4}$/.test(name)) return true // km-7y5, km-5l5 auto-suffixed
-  if (/^agent-[a-f0-9]+$/.test(name)) return true
-  if (/^user-[\w\d]+$/.test(name)) return true
-  return false
-}
-
-/**
- * F1-D — find a prior, non-active session at the same project_id + role
- * whose name is user-chosen (not auto-generated). Returns the most-recent
- * match, or null. Enables automatic resume of a user's named session across
- * Claude Code invocations at the same project root.
- *
- * `project_id` is already a realpath-normalised sha256 prefix (see
- * `resolveProjectId()`), so symlink/mount-path quirks are handled upstream.
- * See km-bearly.tribe-session-resume.
- */
-function adoptByProjectAndRole(
-  projectId: string | null,
-  role: TribeRole,
-  isActive: (sessionId: string) => boolean,
-): PriorSession | null {
-  if (!projectId) return null
-
-  const candidates = db
-    .prepare("SELECT id, name, role FROM sessions WHERE project_id = ? AND role = ? ORDER BY updated_at DESC LIMIT 50")
-    .all(projectId, role) as PriorSession[]
-
-  for (const c of candidates) {
-    if (isActive(c.id)) continue
-    if (isAutoGeneratedName(c.name)) continue
-    return { id: c.id, name: c.name, role: c.role }
-  }
-  return null
-}
-
-/**
- * Resolve the session name from (in order):
- *   1. Explicit `p.name`
- *   2. Claude session name (CLAUDE_SESSION_NAME env)
- *   3. identity_token-adopted name
- *   4. Prior row keyed by claude_session_id (non-auto names only)
- *   5. **F1-D** — non-active session at same realpath(cwd)+role with a
- *      user-chosen name (e.g. "plateau" reclaimed on clean shutdown+resume)
- *   6. Role/project fallback (`chief` or project dir name)
- */
-function resolveName(
-  p: Record<string, unknown>,
-  adopted: PriorSession | null,
-  claudeSessionName: string | null,
-  claudeSessionId: string | null,
-  role: TribeRole,
-  isActive: (sessionId: string) => boolean,
-  projectId: string | null,
-): string {
-  if (p.name) return String(p.name)
-  if (claudeSessionName) return claudeSessionName
-  if (adopted?.name) return adopted.name
-
-  // Recover from a prior row with the same Claude session ID. Skip
-  // auto-generated names (useless to reuse) and role=pending/watch leftovers
-  // (they'd route poorly on reconnect).
-  const prev = claudeSessionId
-    ? (db
-        .prepare("SELECT name, role FROM sessions WHERE claude_session_id = ? ORDER BY updated_at DESC LIMIT 1")
-        .get(claudeSessionId) as { name: string; role: string } | null)
-    : null
-  if (prev && !isAutoGeneratedName(prev.name) && prev.role !== "pending" && prev.role !== "watch") {
-    return prev.name
-  }
-
-  // F1-D — project+role adoption (cross-Claude-session resume at same project).
-  const projectAdopted = adoptByProjectAndRole(projectId, role, isActive)
-  if (projectAdopted) return projectAdopted.name
-
-  const projectName = String(
-    p.projectName ??
-      String(p.project ?? process.cwd())
-        .split("/")
-        .pop() ??
-      "unknown",
-  )
-  return role === "chief" ? "chief" : projectName
-}
-
-/**
- * Apply a newly-registered client to the daemon's in-memory state: builds
- * the ClientSession, replaces the placeholder entry, and flags the daemon
- * as active. Returns the installed client record.
- */
-function applyClient(
-  connId: string,
-  fields: {
-    name: string
-    role: TribeRole
-    domains: string[]
-    project: string
-    projectName: string
-    projectId: string
-    pid: number
-    claudeSessionId: string | null
-    peerSocket: string | null
-    ctx: TribeContext
-  },
-): ClientSession {
-  const existing = clients.get(connId)!
-  const client: ClientSession = {
-    socket: existing.socket,
-    id: connId,
-    name: fields.name,
-    role: fields.role,
-    domains: fields.domains,
-    project: fields.project,
-    projectName: fields.projectName,
-    projectId: fields.projectId,
-    pid: fields.pid,
-    claudeSessionId: fields.claudeSessionId,
-    peerSocket: fields.peerSocket,
-    conn: relPath(SOCKET_PATH),
-    ctx: fields.ctx,
-    registeredAt: Date.now(),
-    // Preserve any lore state already set on the placeholder (tribe.hello
-    // can arrive before register on the lore wire path).
-    lore: existing.lore,
-  }
-  clients.set(connId, client)
-  markActive()
-  return client
-}
-
-/**
- * Advance the durability cursor and, for adopted identities, replay any
- * messages written after the persisted cursor. Brand-new sessions skip to
- * the current MAX(rowid) so a fresh join doesn't receive the entire project
- * history. See km-tribe.message-durability.
- */
-function replayOrBootstrap(connId: string, client: ClientSession, adopted: PriorSession | null): void {
-  const priorCursor = stmts.getLastDelivered.get({ $id: client.ctx.sessionId }) as {
-    last_delivered_ts: number | null
-    last_delivered_seq: number | null
-  } | null
-
-  if (adopted) {
-    // Drain the backlog in pages of PAGE_SIZE — keep fetching until we reach
-    // the current journal tip. The former single `LIMIT 200` query silently
-    // truncated any backlog larger than 200, and because the durable cursor
-    // only advanced as each delivered row was pushed, a subsequent live
-    // fanout would jump the cursor past the undelivered middle — permanent
-    // loss (km-tribe.delivery-correctness P0.5 + P1.7).
-    //
-    // This runs synchronously inside the register handler, so no fanout can
-    // interleave: bun's event loop can't process another socket `data` or
-    // `close` callback until we return.
-    const PAGE_SIZE = 200
-    let sinceSeq = priorCursor?.last_delivered_seq ?? 0
-    // Watch sessions see everything; regular sessions see their name + broadcasts.
-    const isWatch = client.role === "watch"
-    const replayQuery = isWatch
-      ? `SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND sender != ? ORDER BY rowid ASC LIMIT ${PAGE_SIZE}`
-      : `SELECT rowid, id, type, sender, recipient, content, bead_id, ts FROM messages WHERE rowid > ? AND (recipient = ? OR recipient = '*') AND sender != ? ORDER BY rowid ASC LIMIT ${PAGE_SIZE}`
-    const stmt = db.prepare(replayQuery)
-    for (;;) {
-      const replayParams = isWatch ? [sinceSeq, client.name] : [sinceSeq, client.name, client.name]
-      const page = stmt.all(...replayParams) as Array<{
-        rowid: number
-        id: string
-        type: string
-        sender: string
-        recipient: string
-        content: string
-        bead_id: string | null
-        ts: number
-      }>
-      if (page.length === 0) break
-      for (const msg of page) {
-        broadcast.pushToClient(connId, "channel", {
-          from: msg.sender,
-          type: msg.type,
-          content: msg.content,
-          bead_id: msg.bead_id,
-          message_id: msg.id,
-        })
-        broadcast.persistDeliveredCursor(client.ctx.sessionId, msg.ts, msg.rowid)
-        sinceSeq = msg.rowid
-      }
-      if (page.length < PAGE_SIZE) break
-    }
-    return
-  }
-
-  // Brand-new session — skip to current latest so the backlog isn't replayed.
-  const latest = db.prepare("SELECT MAX(rowid) as max_seq FROM messages").get() as {
-    max_seq: number | null
-  } | null
-  const bootstrapSeq = latest?.max_seq ?? 0
-  broadcast.persistDeliveredCursor(client.ctx.sessionId, Date.now(), bootstrapSeq)
-}
-
-/**
- * Emit the "X joined" broadcast unless we're inside the post-start suppress
- * window (hot-reload reconnection burst). Also tags sub-agent joins with
- * their parent session name when another connection shares the same
- * Claude session id.
- */
-function announceJoin(client: ClientSession): void {
-  if (Date.now() - startedAt <= SUPPRESS_WINDOW_MS) return
-
-  let parentName: string | null = null
-  if (client.claudeSessionId) {
-    for (const [cid, c] of clients) {
-      if (cid !== client.id && c.claudeSessionId === client.claudeSessionId) {
-        parentName = c.name
-        break
-      }
-    }
-  }
-  const shortProject = client.project.replace(process.env.HOME ?? "", "~")
-  const suffix = parentName ? ` (sub-agent of ${parentName})` : ""
-  logActivity("session", `${client.name} joined (${client.role}) pid=${client.pid} ${shortProject}${suffix}`)
-}
-
-// ---------------------------------------------------------------------------
-// JSON-RPC handler
-// ---------------------------------------------------------------------------
-
-async function handleRequest(req: JsonRpcRequest, connId: string): Promise<string> {
-  const { method, params, id } = req
-  const p = (params ?? {}) as Record<string, unknown>
-
-  try {
-    switch (method) {
-      case "register": {
-        const claudeSessionName = (p.claudeSessionName as string) ?? null
-        const claudeSessionId = (p.claudeSessionId as string) ?? null
-        const identityToken = (p.identityToken as string) ?? null
-
-        let role = detectRole(db, { role: p.role as string | undefined })
-        // Clients cannot register themselves as "daemon" or "pending" — both are
-        // daemon-internal roles. Downgrade to "member" so a confused client
-        // still gets a usable (but non-privileged) session.
-        if (role === "daemon" || role === "pending") role = "member"
-
-        const isActive = (sid: string): boolean => Array.from(clients.values()).some((c) => c.ctx.sessionId === sid)
-
-        const adopted = adoptIdentity(identityToken, isActive)
-
-        // Adopt role from prior session if caller didn't supply one explicitly.
-        // Guard against stored rows with stale/unexpected role values — an
-        // invalid or daemon-internal role ("daemon"/"pending") falls back to
-        // the auto-detected role.
-        if (!p.role && adopted?.role) {
-          const adoptedRole = adopted.role
-          if (adoptedRole === "chief" || adoptedRole === "member" || adoptedRole === "watch") {
-            role = adoptedRole
-          }
-        }
-
-        // Compute project identity FIRST so resolveName's F1-D step can use
-        // project_id for cross-Claude-session name adoption.
-        const project = String(p.project ?? process.cwd())
-        const projectName = String(p.projectName ?? project.split("/").pop() ?? "unknown")
-        const projectId = String(p.projectId ?? resolveProjectId(project))
-
-        const name = deduplicateName(
-          resolveName(p, adopted, claudeSessionName, claudeSessionId, role, isActive, projectId),
-        )
-        const domains = (p.domains as string[]) ?? []
-        const peerSocket = (p.peerSocket as string) ?? null
-        const pid = Number(p.pid ?? 0)
-
-        // Log protocol version mismatch as warning
-        const clientProtocolVersion = p.protocolVersion ? Number(p.protocolVersion) : undefined
-        if (clientProtocolVersion !== undefined && clientProtocolVersion !== TRIBE_PROTOCOL_VERSION) {
-          log(
-            `Protocol version mismatch: client=${clientProtocolVersion}, daemon=${TRIBE_PROTOCOL_VERSION} (session=${name})`,
-          )
-        }
-
-        const clientCtx = createTribeContext({
-          db,
-          stmts,
-          sessionId: adopted?.id ?? randomUUID(),
-          sessionRole: role,
-          initialName: name,
-          domains,
-          claudeSessionId,
-          claudeSessionName,
-          // Tap hook — every message written through this ctx flows through
-          // messageTap (activity-log + fanout). See km-tribe.event-bus +
-          // km-tribe.activity-log.
-          onMessageInserted: messageTap,
-        })
-
-        registerSession(clientCtx, projectId, (sid) => registry.getActiveSessionIds().has(sid), identityToken)
-
-        const client = applyClient(connId, {
-          name,
-          role,
-          domains,
-          project,
-          projectName,
-          projectId,
-          pid,
-          claudeSessionId,
-          peerSocket,
-          ctx: clientCtx,
-        })
-
-        replayOrBootstrap(connId, client, adopted)
-        announceJoin(client)
-
-        // Chief derived from connection order (or explicit claim).
-        const chiefInfo = registry.getChiefInfo()
-        const chiefName = chiefInfo?.name ?? "none"
-
-        // Return current coordination state for this project
-        const coordState = db
-          .prepare("SELECT key, value FROM coordination WHERE project_id = ?")
-          .all(projectId) as Array<{ key: string; value: string | null }>
-
-        return makeResponse(id, {
-          sessionId: clientCtx.sessionId,
-          name,
-          role,
-          chief: chiefName,
-          protocolVersion: TRIBE_PROTOCOL_VERSION,
-          coordinationState: coordState,
-          daemon: { pid: process.pid, uptime: Math.floor((Date.now() - startedAt) / 1000) },
-        })
-      }
-
-      // Tribe tool calls — delegate to existing handlers.
-      case TRIBE_COORD_METHODS.send:
-      case TRIBE_COORD_METHODS.broadcast:
-      case TRIBE_COORD_METHODS.members:
-      case TRIBE_COORD_METHODS.history:
-      case TRIBE_COORD_METHODS.rename:
-      case TRIBE_COORD_METHODS.join:
-      case TRIBE_COORD_METHODS.health:
-      case TRIBE_COORD_METHODS.reload:
-      case TRIBE_COORD_METHODS.retro:
-      case TRIBE_COORD_METHODS.chief:
-      case TRIBE_COORD_METHODS.claimChief:
-      case TRIBE_COORD_METHODS.releaseChief:
-      case TRIBE_COORD_METHODS.debug:
-      case TRIBE_COORD_METHODS.inbox:
-      case TRIBE_COORD_METHODS.mode:
-      case TRIBE_COORD_METHODS.snooze:
-      case TRIBE_COORD_METHODS.dismiss: {
-        const client = clients.get(connId)
-        const ctx = client?.ctx ?? daemonCtx
-
-        const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
-
-        // Sync client registry after name/role changes
-        // (Don't logActivity here — the handler already broadcasts for rename,
-        // and for join the session announces itself. Avoids duplicate messages.)
-        if ((method === TRIBE_COORD_METHODS.join || method === TRIBE_COORD_METHODS.rename) && client) {
-          client.name = ctx.getName()
-          client.role = ctx.getRole()
-        }
-
-        // Fanout happens synchronously inside sendMessage via the
-        // ctx.onMessageInserted hook installed on clientCtx at register time
-        // (km-tribe.event-bus). No polling drain needed.
-
-        return makeResponse(id, result)
-      }
-
-      // CLI-specific methods
-      case "cli_status": {
-        const now = Date.now()
-
-        // Build parent map: first session per claudeSessionId is the parent
-        const parentMap = new Map<string, string>()
-        for (const [, c] of clients) {
-          if (c.claudeSessionId && !parentMap.has(c.claudeSessionId)) {
-            parentMap.set(c.claudeSessionId, c.name)
-          }
-        }
-
-        const sessions = Array.from(clients.values()).map((c) => {
-          const parent = c.claudeSessionId ? parentMap.get(c.claudeSessionId) : undefined
-          return {
-            id: c.id,
-            name: c.name,
-            role: c.role,
-            domains: c.domains,
-            pid: c.pid,
-            project: c.project,
-            projectName: c.projectName,
-            projectId: c.projectId,
-            claudeSessionId: c.claudeSessionId,
-            peerSocket: c.peerSocket,
-            connectedAt: c.registeredAt,
-            uptimeMs: now - c.registeredAt,
-            source: "daemon" as const,
-            conn: c.conn,
-            resources: [] as string[],
-            parent: parent && parent !== c.name ? parent : undefined,
-          }
-        })
-
-        return makeResponse(id, {
-          sessions,
-          daemon: {
-            pid: process.pid,
-            uptime: Math.floor((Date.now() - startedAt) / 1000),
-            clients: clients.size,
-            dbPath: DB_PATH,
-            socketPath: SOCKET_PATH,
-            resources: activePluginNames,
-          },
-        })
-      }
-
-      case "cli_health": {
-        const health = await handleToolCall(daemonCtx, TRIBE_COORD_METHODS.health, {}, DAEMON_HANDLER_OPTS)
-        // Include machine health metrics from health-monitor plugin
-        const { getHealthSnapshot } = await import("./lib/tribe/health-monitor-plugin.ts")
-        let machine: unknown = null
-        try {
-          machine = await getHealthSnapshot()
-        } catch {
-          /* health snapshot unavailable */
-        }
-        return makeResponse(id, {
-          ...health,
-          machine,
-          daemon: {
-            pid: process.pid,
-            uptime: Math.floor((Date.now() - startedAt) / 1000),
-            clients: clients.size,
-          },
-        })
-      }
-
-      case "cli_log": {
-        const limit = Number(p.limit ?? 20)
-        const rows = db.prepare("SELECT * FROM messages ORDER BY ts DESC LIMIT ?").all(limit)
-        return makeResponse(id, { messages: (rows as unknown[]).reverse() })
-      }
-
-      case "cli_daemon": {
-        return makeResponse(id, {
-          pid: process.pid,
-          uptime: Math.floor((Date.now() - startedAt) / 1000),
-          clients: clients.size,
-          dbPath: DB_PATH,
-          socketPath: SOCKET_PATH,
-          startedAt,
-          quitTimeout: QUIT_TIMEOUT,
-        })
-      }
-
-      // Log event — fire-and-forget from proxies for observability.
-      // Events land in `messages WHERE kind='event'` as the single source of
-      // truth (km-tribe.polish-sweep item 9 folded the former `event_log`
-      // dual-write into this journal).
-      case "log_event": {
-        const client = clients.get(connId)
-        const ctx = client?.ctx ?? daemonCtx
-        logEvent(
-          ctx,
-          String(p.type ?? "unknown"),
-          p.bead_id as string | undefined,
-          p.meta as Record<string, unknown> | undefined,
-        )
-        // If content is provided, also broadcast via logActivity for watch visibility
-        if (p.content) logActivity(String(p.type ?? "event"), String(p.content))
-        return makeResponse(id, { ok: true })
-      }
-
-      // Discovery — find peers by project, name, or resource
-      case "discover": {
-        const query = {
-          project_id: p.project_id as string | undefined,
-          name: p.name as string | undefined,
-        }
-
-        let results = Array.from(clients.values()).filter((c) => c.role !== "pending")
-        if (query.project_id) results = results.filter((c) => c.projectId === query.project_id)
-        if (query.name) results = results.filter((c) => c.name === query.name)
-
-        return makeResponse(id, {
-          results: results.map((c) => ({
-            name: c.name,
-            role: c.role,
-            project: c.project,
-            projectId: c.projectId,
-            peerSocket: c.peerSocket,
-            domains: c.domains,
-          })),
-        })
-      }
-
-      // Coordination state — queryable key-value per project
-      case "set_state": {
-        const client = clients.get(connId)
-        const projectId = String(p.project_id ?? client?.projectId ?? "")
-        const key = String(p.key)
-        const value = p.value !== undefined ? JSON.stringify(p.value) : null
-        db.prepare(
-          "INSERT OR REPLACE INTO coordination (project_id, key, value, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)",
-        ).run(projectId, key, value, client?.name ?? "daemon", Date.now())
-        return makeResponse(id, { ok: true })
-      }
-
-      case "get_state": {
-        const client = clients.get(connId)
-        const projectId = String(p.project_id ?? client?.projectId ?? "")
-        if (p.key) {
-          const row = db
-            .prepare("SELECT * FROM coordination WHERE project_id = ? AND key = ?")
-            .get(projectId, String(p.key))
-          return makeResponse(id, { state: row ?? null })
-        }
-        const rows = db.prepare("SELECT * FROM coordination WHERE project_id = ?").all(projectId)
-        return makeResponse(id, { state: rows })
-      }
-
-      // Stream mode for watch
-      case "subscribe": {
-        return makeResponse(id, { subscribed: true })
-      }
-
-      default: {
-        // Lore (memory) RPC surface — absorbed from the former standalone
-        // lore daemon (km-bear.unified-daemon Phase 5a). Lore method names
-        // all sit under the tribe.* namespace (tribe.ask, tribe.brief, ...)
-        // per km-silvery.tribe-mcp-rename. They are mutually exclusive with
-        // the coord methods above because those use TRIBE_COORD_METHODS
-        // (tribe.send / tribe.broadcast / etc.).
-        if (loreHandlers && loreHandlers.isLoreMethod(method)) {
-          const client = clients.get(connId)
-          const loreConn = client?.lore ?? ({ sessionId: null, claudePid: null } as LoreConnState)
-          try {
-            const result = await loreHandlers.dispatch(loreConn, method, p)
-            return makeResponse(id, result as Record<string, unknown>)
-          } catch (err) {
-            const errorWithCode = err as Error & { code?: number }
-            const code = typeof errorWithCode.code === "number" ? errorWithCode.code : -32603
-            const msg = errorWithCode.message ?? String(err)
-            return makeError(id, code, msg)
-          }
-        }
-        return makeError(id, -32601, `Method not found: ${method}`)
-      }
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    log(`Error handling ${method}: ${msg}`)
-    return makeError(id, -32603, msg)
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Plugins (git / beads / github / health / accountly)
 //
@@ -881,18 +238,10 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 // wire via TribeClientApi. The daemon's core responsibilities (register,
 // broadcast, fanout, lore) don't depend on any plugin — TRIBE_NO_PLUGINS=1
 // boots a fully functional daemon with zero plugins.
-//
-// In an out-of-process world each plugin would connect to the daemon over
-// the Unix socket as an observer client. Here they share the daemon's event
-// loop for simplicity — but they are isolated from daemon internals (no DB,
-// no clients map, no session UUID); the TribeClientApi below is the entire
-// surface they see.
 // ---------------------------------------------------------------------------
 
 const tribeClientApi: TribeClientApi = {
   send(recipient, content, type, beadId, classification) {
-    // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
-    // Kind is inferred: '*' → 'broadcast', anything else → 'direct'.
     sendMessage(
       daemonCtx,
       recipient,
@@ -908,7 +257,6 @@ const tribeClientApi: TribeClientApi = {
     sendMessage(daemonCtx, "*", content, type, beadId, undefined, "broadcast", classification ?? {})
   },
   claimDedup(key) {
-    // Single writer — no need for BEGIN IMMEDIATE in daemon mode
     const result = stmts.claimDedup.run({ $key: key, $session_id: DAEMON_SESSION_ID, $ts: Date.now() })
     return result.changes > 0
   },
@@ -931,15 +279,15 @@ const tribeClientApi: TribeClientApi = {
   },
 }
 
-// Daemon warn/error log fanout is wired by withBroadcast (broadcast.log) — no
-// per-boot wiring needed here. broadcast pipeline tap is on daemonCtx already.
-
 const plugins = process.env.TRIBE_NO_PLUGINS
   ? []
   : [gitPlugin, beadsPlugin, githubPlugin, healthMonitorPlugin, accountlyPlugin, doltReaperPlugin]
 const loadedPlugins = loadPlugins(plugins, tribeClientApi)
 const activePluginNames = loadedPlugins.active.filter((p) => p.active).map((p) => p.name)
 const stopPlugins = loadedPlugins.stop
+
+// Publish the plugin names through the dispatcher's runtime hook (cli_status).
+activePluginNamesRef.current = activePluginNames
 
 // 1-second tick: idle-liveness only. Messages are delivered synchronously via
 // the ctx.onMessageInserted fanout hook (km-tribe.event-bus), so there's no
@@ -952,112 +300,9 @@ const livenessInterval = timers.setInterval(() => {
 const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
 cleanupOldData(daemonCtx)
 
-// Chief is derived from connection order (see `deriveChiefId`). No promotion
-// timers, no lease renewal — the chief changes automatically when the
-// longest-connected client disconnects. An explicit `tribe.claim-chief`
-// overrides this until the claimer disconnects or calls `tribe.release-chief`.
-
-// ---------------------------------------------------------------------------
-// Socket server
-// ---------------------------------------------------------------------------
-
-// Suppress join/leave broadcasts during initial reconnection burst after hot-reload.
-// TRIBE_NO_SUPPRESS=1 disables this (used in tests).
-const SUPPRESS_WINDOW_MS = process.env.TRIBE_NO_SUPPRESS ? 0 : 10_000
-
-function handleConnection(socket: NetSocket): void {
-  const connId = randomUUID()
-  log(`Client connected: ${connId.slice(0, 8)}`)
-
-  // Pre-register with socket only (full registration on "register" call).
-  // role="pending" marks this as half-registered — never chief-eligible, never
-  // counted as a tribe member; the eligibility filter in isChiefEligible and
-  // broadcastToConnected consult `role`, not `name`.
-  const placeholder: ClientSession = {
-    socket,
-    id: connId,
-    name: `pending-${connId.slice(0, 6)}`,
-    role: "pending",
-    domains: [],
-    project: process.cwd(),
-    projectName: "unknown",
-    projectId: "",
-    pid: 0,
-    claudeSessionId: null,
-    peerSocket: null,
-    conn: "",
-    ctx: daemonCtx,
-    registeredAt: Date.now(),
-    lore: { sessionId: null, claudePid: null },
-  }
-  clients.set(connId, placeholder)
-  socketToClient.set(socket, connId)
-  markActive()
-
-  const parse = createLineParser(async (msg: JsonRpcMessage) => {
-    if (isRequest(msg)) {
-      const response = await handleRequest(msg, connId)
-      try {
-        socket.write(response)
-      } catch {
-        // Socket died during handling
-      }
-    }
-  })
-
-  socket.on("data", parse)
-
-  socket.on("close", () => {
-    const client = clients.get(connId)
-    if (client && client.role !== "pending") {
-      log(`Client disconnected: ${client.name}`)
-      logActivity("session", `${client.name} left`)
-
-      // Phase 2 of km-tribe.plateau: no DB bookkeeping on disconnect. The
-      // session row survives (cursor recovery queries it on reconnect), and
-      // liveness is determined by clients Map membership — `clients.delete`
-      // below is the authoritative "this session is gone" signal.
-      //
-      // km-tribe.delivery-correctness P0.6: we do NOT delete journal rows on
-      // disconnect. The journal is durable. Delivered-or-not, a direct stays
-      // until retention prunes it — the cursor tracks delivery, the journal
-      // tracks history. The old `DELETE FROM messages WHERE recipient = ?`
-      // fought the durability contract and lost messages sent mid-disconnect.
-    }
-
-    // Flush any pending coalesced broadcasts before tearing down the client
-    // so late-arriving events in the current batch window aren't dropped.
-    broadcast.flushConnection(connId)
-    broadcast.discardConnection(connId)
-
-    clients.delete(connId)
-    socketToClient.delete(socket)
-    // No per-connection cursor state to clean up — the durability cursor lives
-    // in sessions.last_delivered_seq (km-tribe.event-bus).
-    if (loreHandlers && client) loreHandlers.dropConn(client.lore.sessionId)
-
-    // If the disconnecting client had the explicit chief claim, clear it so
-    // the derivation takes over (longest-remaining-connected becomes chief).
-    if (client && registry.getChiefClaim() === client.ctx.sessionId) {
-      registry.setChiefClaim(null)
-      logActivity("chief:released", `${client.name} released chief (disconnect)`)
-    }
-
-    // Start idle countdown if no clients left
-    if (clients.size === 0) markIdle()
-  })
-
-  socket.on("error", (err) => {
-    log(`Client error (${connId.slice(0, 8)}): ${err.message}`)
-    // Error triggers close event, which handles cleanup
-    socket.destroy()
-  })
-}
-
-// Wire the dispatcher's connection handler onto the bound server. The server
-// itself is created + listening from withSocketServer; this attaches the
-// per-accept logic.
-server.on("connection", handleConnection)
+// withDispatcher already attached `handleConnection` to socket.server during
+// composition. The connection-as-lease idle hooks are wired via the
+// markActive/markIdle ref lambdas defined alongside the pipe.
 
 // ---------------------------------------------------------------------------
 // Auto-quit liveness — declarative deadline + periodic check
@@ -1083,6 +328,11 @@ function markIdle(): void {
   idleDeadline = Date.now() + QUIT_TIMEOUT * 1000
   log(`No clients connected. Auto-quit in ${QUIT_TIMEOUT}s...`)
 }
+
+// Wire the dispatcher's runtime hooks now that markActive/markIdle exist.
+// Phase 8 (withIdleQuit) will fold these into a factory so the refs go away.
+markActiveRef.current = markActive
+markIdleRef.current = markIdle
 
 function checkLiveness(): void {
   // Expire pending sessions that never sent a register message (>60s)
