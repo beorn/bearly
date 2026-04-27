@@ -35,8 +35,8 @@
  * orphans (which can happen on interrupted removes or older git versions).
  */
 
-import { existsSync, readFileSync, rmSync } from "fs"
-import { join, dirname, basename } from "path"
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync } from "fs"
+import { join, dirname, basename, relative } from "path"
 import { $ } from "bun"
 
 // ANSI colors
@@ -534,6 +534,111 @@ async function installDependencies(worktreePath: string): Promise<void> {
     if (result.exitCode !== 0) warn("npm install failed (continuing)")
     else success("Dependencies installed")
   }
+
+  // bun install hoists workspace packages to root node_modules only when
+  // a non-workspace package transitively depends on them. Workspace packages
+  // depended on only by other workspace packages can end up nested-only
+  // (e.g. vendor/silvery/packages/ag-react/node_modules/@silvery/ag exists,
+  // but <root>/node_modules/@silvery/ag is missing). Tests that import
+  // @silvery/ag from outside that ag-react subtree fail with
+  // "Cannot find package '@silvery/ag'". km-bearly.worktree-create-silvery-symlinks.
+  // The fix: after bun install, walk every workspace glob in the root
+  // package.json, and for each workspace package whose root-level symlink
+  // is missing, create it. Idempotent — existing symlinks are left alone.
+  ensureWorkspaceSymlinks(worktreePath)
+}
+
+/**
+ * Read root package.json's `workspaces` array (if any), expand each glob
+ * pattern (only trailing `/*` is supported — the only form km uses), and
+ * return absolute paths to every workspace package directory.
+ */
+function listWorkspacePackages(rootPath: string): string[] {
+  const pkgPath = join(rootPath, "package.json")
+  if (!existsSync(pkgPath)) return []
+  let pkg: { workspaces?: string[] | { packages?: string[] } }
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { workspaces?: string[] | { packages?: string[] } }
+  } catch {
+    return []
+  }
+  const globs = Array.isArray(pkg.workspaces)
+    ? pkg.workspaces
+    : Array.isArray(pkg.workspaces?.packages)
+      ? pkg.workspaces.packages
+      : []
+  const out: string[] = []
+  for (const glob of globs) {
+    if (!glob.endsWith("/*")) continue
+    const parent = join(rootPath, glob.slice(0, -2))
+    if (!existsSync(parent)) continue
+    let entries: string[]
+    try {
+      entries = readdirSync(parent)
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      const dir = join(parent, e)
+      if (existsSync(join(dir, "package.json"))) out.push(dir)
+    }
+  }
+  return out
+}
+
+/**
+ * For every workspace package, ensure <root>/node_modules/<package-name>
+ * is a symlink to the package directory. Skip packages that already have
+ * an entry (file, dir, or symlink) at that location — bun's existing
+ * choices are preserved. Created symlinks are relative so the worktree
+ * stays self-contained.
+ */
+function ensureWorkspaceSymlinks(rootPath: string): void {
+  const pkgs = listWorkspacePackages(rootPath)
+  if (pkgs.length === 0) return
+  const nodeModules = join(rootPath, "node_modules")
+  let linked = 0
+  for (const pkgDir of pkgs) {
+    let manifest: { name?: string; private?: boolean }
+    try {
+      manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as {
+        name?: string
+        private?: boolean
+      }
+    } catch {
+      continue
+    }
+    if (!manifest.name) continue
+    const linkPath = join(nodeModules, manifest.name)
+    // existsSync follows symlinks; if the target is missing it returns false
+    // even when the symlink itself is present. Use a stat probe instead so
+    // we don't clobber a broken-but-present symlink (those are bun's choice
+    // to flag missing deps, not ours to repair).
+    try {
+      readdirSync(dirname(linkPath))
+    } catch {
+      mkdirSync(dirname(linkPath), { recursive: true })
+    }
+    let alreadyPresent = false
+    try {
+      // statSync would throw on missing target; readdirSync of the parent
+      // and entry-name check is the cheapest probe that doesn't follow.
+      const parentEntries = readdirSync(dirname(linkPath))
+      alreadyPresent = parentEntries.includes(basename(linkPath))
+    } catch {
+      alreadyPresent = false
+    }
+    if (alreadyPresent) continue
+    const target = relative(dirname(linkPath), pkgDir)
+    try {
+      symlinkSync(target, linkPath)
+      linked++
+    } catch {
+      // Race with concurrent install or filesystem issue — log but keep going.
+      warn(`failed to symlink ${manifest.name} → ${target}`)
+    }
+  }
+  if (linked > 0) info(`Ensured ${linked} workspace symlink(s) in node_modules`)
 }
 
 async function allowDirenv(worktreePath: string): Promise<void> {
