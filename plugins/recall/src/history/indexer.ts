@@ -43,6 +43,64 @@ export interface IndexProgress {
 // Time window for indexing - sessions older than this are skipped
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
+// .recall-ignore — quarantine list for the session indexer.
+//
+// File: ~/.claude/.recall-ignore (one entry per line, # comments allowed,
+// blank lines ignored). Each entry is a glob matched against the session
+// file's absolute path AND its path relative to PROJECTS_DIR. Use `**`
+// for recursive globs. Files matched here are skipped by findSessionFiles
+// and therefore never enter the FTS5 index, never surface in recall
+// results, and never feed cross-session compounding via search hits.
+//
+// Quarantine is for forensic content (smoking-gun JSONLs, role-prefix
+// emission captures, adversarial corpora) whose mere presence in the
+// recall index pumps trigger tokens into future sessions. See
+// hub/silvercode/design/ambient-context-safety.md §9 (content quarantine).
+let _ignoreCache: { mtime: number; matchers: ((p: string) => boolean)[] } | null = null
+
+function loadRecallIgnore(): ((p: string) => boolean)[] {
+  const ignorePath = path.join(os.homedir(), ".claude", ".recall-ignore")
+  let mtime = 0
+  try {
+    mtime = fs.statSync(ignorePath).mtime.getTime()
+  } catch {
+    // missing file — empty ignore list
+    if (_ignoreCache && _ignoreCache.mtime === 0) return _ignoreCache.matchers
+    _ignoreCache = { mtime: 0, matchers: [] }
+    return []
+  }
+  if (_ignoreCache && _ignoreCache.mtime === mtime) return _ignoreCache.matchers
+
+  const lines = fs
+    .readFileSync(ignorePath, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"))
+
+  const matchers = lines.map((pattern) => {
+    // Expand ~ to homedir for absolute-path entries.
+    const expanded = pattern.startsWith("~/") ? path.join(os.homedir(), pattern.slice(2)) : pattern
+    const glob = new Glob(expanded)
+    return (filePath: string): boolean => {
+      // Match against absolute path AND PROJECTS_DIR-relative path so users
+      // can write either form in .recall-ignore.
+      if (glob.match(filePath)) return true
+      const rel = path.relative(PROJECTS_DIR, filePath)
+      if (rel && !rel.startsWith("..") && glob.match(rel)) return true
+      return false
+    }
+  })
+
+  _ignoreCache = { mtime, matchers }
+  return matchers
+}
+
+export function isRecallIgnored(filePath: string): boolean {
+  const matchers = loadRecallIgnore()
+  for (const m of matchers) if (m(filePath)) return true
+  return false
+}
+
 export interface IndexOptions {
   incremental?: boolean // Only index new/updated sessions
   messagesOnly?: boolean // Skip writes table (faster)
@@ -57,6 +115,7 @@ export async function* findSessionFiles(): AsyncGenerator<string> {
 
   const glob = new Glob("**/*.jsonl")
   for await (const file of glob.scan({ cwd: PROJECTS_DIR, absolute: true })) {
+    if (isRecallIgnored(file)) continue
     yield file
   }
 }
@@ -331,6 +390,40 @@ export function pruneOldSessions(
   }
 }
 
+/**
+ * Prune sessions whose jsonl_path now matches a .recall-ignore entry.
+ * Run on every rebuild (full or incremental) so quarantine takes effect
+ * the first time the indexer runs after the ignore file is updated.
+ */
+export function pruneIgnoredSessions(
+  db: Database,
+): { sessions: number; messages: number; writes: number } {
+  const allSessions = db.prepare(`SELECT id, jsonl_path FROM sessions`).all() as {
+    id: string
+    jsonl_path: string
+  }[]
+
+  const ignoredIds: string[] = []
+  for (const s of allSessions) {
+    const abs = path.isAbsolute(s.jsonl_path) ? s.jsonl_path : path.join(PROJECTS_DIR, s.jsonl_path)
+    if (isRecallIgnored(abs)) ignoredIds.push(s.id)
+  }
+
+  if (ignoredIds.length === 0) return { sessions: 0, messages: 0, writes: 0 }
+
+  const placeholders = ignoredIds.map(() => "?").join(",")
+  const messagesResult = db.prepare(`DELETE FROM messages WHERE session_id IN (${placeholders})`).run(...ignoredIds)
+  const writesResult = db.prepare(`DELETE FROM writes WHERE session_id IN (${placeholders})`).run(...ignoredIds)
+  db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...ignoredIds)
+  db.prepare("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')").run()
+
+  return {
+    sessions: ignoredIds.length,
+    messages: messagesResult.changes,
+    writes: writesResult.changes,
+  }
+}
+
 export async function rebuildIndex(db: Database, options: IndexOptions = {}): Promise<IndexResult> {
   const startTime = Date.now()
   const cutoffTime = Date.now() - THIRTY_DAYS_MS
@@ -342,6 +435,10 @@ export async function rebuildIndex(db: Database, options: IndexOptions = {}): Pr
   } else {
     // In incremental mode, prune sessions older than 30 days
     pruneOldSessions(db, cutoffTime)
+    // Always prune sessions matched by .recall-ignore, even in incremental
+    // mode — quarantine must take effect immediately after the ignore file
+    // is updated, without requiring a full rebuild.
+    pruneIgnoredSessions(db)
   }
 
   let totalFiles = 0
