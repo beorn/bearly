@@ -59,14 +59,44 @@ describe("buildLeaderboard — leaderboard math", () => {
   it("aggregates multi-leg entries into per-model averages", () => {
     const entries: AbProEntry[] = [
       {
-        a: { model: "champA", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 }, cost: 0.5, durationMs: 10000 },
-        b: { model: "runnerB", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 0.05, durationMs: 8000 },
-        c: { model: "challC", ok: true, score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 }, cost: 1.0, durationMs: 15000 },
+        a: {
+          model: "champA",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+          cost: 0.5,
+          durationMs: 10000,
+        },
+        b: {
+          model: "runnerB",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 0.05,
+          durationMs: 8000,
+        },
+        c: {
+          model: "challC",
+          ok: true,
+          score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+          cost: 1.0,
+          durationMs: 15000,
+        },
       },
       {
-        a: { model: "champA", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 }, cost: 0.6, durationMs: 11000 },
+        a: {
+          model: "champA",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+          cost: 0.6,
+          durationMs: 11000,
+        },
         b: { model: "runnerB", ok: false, durationMs: 0 },
-        c: { model: "challC", ok: true, score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 }, cost: 1.1, durationMs: 16000 },
+        c: {
+          model: "challC",
+          ok: true,
+          score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+          cost: 1.1,
+          durationMs: 16000,
+        },
       },
     ]
     const board = buildLeaderboard(entries, FLAT_WEIGHTS)
@@ -93,7 +123,10 @@ describe("buildLeaderboard — leaderboard math", () => {
 
   it("normalizes legacy v1 (gpt/kimi) shape", () => {
     const entries: AbProEntry[] = [
-      { gpt: { model: "gpt-5.4-pro", ok: true, cost: 0.5, durationMs: 12000 }, kimi: { model: "kimi", ok: false, cost: 0, durationMs: 0 } },
+      {
+        gpt: { model: "gpt-5.4-pro", ok: true, cost: 0.5, durationMs: 12000 },
+        kimi: { model: "kimi", ok: false, cost: 0, durationMs: 0 },
+      },
     ]
     const board = buildLeaderboard(entries, FLAT_WEIGHTS)
     const gpt = board.find((r) => r.model === "gpt-5.4-pro")!
@@ -109,11 +142,23 @@ describe("buildLeaderboard — leaderboard math", () => {
     const entries: AbProEntry[] = [
       // Cheap-and-fast leg
       {
-        a: { model: "cheap", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 0.01, durationMs: 1000 },
+        a: {
+          model: "cheap",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 0.01,
+          durationMs: 1000,
+        },
       },
       // Expensive-and-slow leg with same score
       {
-        a: { model: "expensive", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 5.0, durationMs: 60_000 },
+        a: {
+          model: "expensive",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 5.0,
+          durationMs: 60_000,
+        },
       },
     ]
     const flat = buildLeaderboard(entries, { score: 1, cost: 0, time: 0 })
@@ -138,11 +183,20 @@ describe("evaluatePromotion — three-gate threshold", () => {
   const pool = ["challC"]
 
   function row(model: string, calls: number, avgScore: number, failureRate: number): LeaderboardRow {
-    return { model, calls, successCalls: Math.round(calls * (1 - failureRate)), failureRate, avgScore, avgCost: 0, avgTimeMs: 0, rankScore: avgScore }
+    return {
+      model,
+      calls,
+      successCalls: Math.round(calls * (1 - failureRate)),
+      failureRate,
+      avgScore,
+      avgCost: 0,
+      avgTimeMs: 0,
+      rankScore: avgScore,
+    }
   }
 
   it("offers promotion when all three gates pass", () => {
-    const board = [row("challC", 12, 4.5, 0.05), row("champA", 30, 4.0, 0.10)]
+    const board = [row("challC", 12, 4.5, 0.05), row("champA", 30, 4.0, 0.1)]
     const v = evaluatePromotion(board, champion, pool)
     expect(v.shouldOfferPromotion).toBe(true)
     expect(v.challenger?.model).toBe("challC")
@@ -161,7 +215,7 @@ describe("evaluatePromotion — three-gate threshold", () => {
   })
 
   it("blocks when challenger failure rate is worse", () => {
-    const board = [row("challC", 12, 4.5, 0.20), row("champA", 30, 4.0, 0.05)]
+    const board = [row("challC", 12, 4.5, 0.2), row("champA", 30, 4.0, 0.05)]
     expect(evaluatePromotion(board, champion, pool).shouldOfferPromotion).toBe(false)
   })
 
@@ -220,7 +274,8 @@ describe("judge prompt + parser", () => {
   })
 
   it("strips markdown code fences before parsing", () => {
-    const raw = '```json\n{"a":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"b":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"winner":"tie"}\n```'
+    const raw =
+      '```json\n{"a":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"b":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"winner":"tie"}\n```'
     const parsed = parseJudgeResponse(raw)
     expect(parsed?.winner).toBe("tie")
   })
@@ -306,11 +361,7 @@ describe("sampleBacktestEntries — stratified backtest sampling", () => {
   })
 
   it("always includes pinned entries first", () => {
-    const entries = [
-      mkEntry("recent1", 1),
-      mkEntry("recent2", 2),
-      mkEntry("pinned-old", 100, true),
-    ]
+    const entries = [mkEntry("recent1", 1), mkEntry("recent2", 2), mkEntry("pinned-old", 100, true)]
     const sample = sampleBacktestEntries(entries, { size: 2, now })
     expect(sample.find((e) => e.question === "pinned-old")).toBeDefined()
   })
@@ -527,6 +578,10 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
   let homeDir: string
   let prevHome: string | undefined
   let prevProjectDir: string | undefined
+  let logSpy: ReturnType<typeof vit.spyOn>
+  let errSpy: ReturnType<typeof vit.spyOn>
+  let stdoutSpy: ReturnType<typeof vit.spyOn>
+  let stderrSpy: ReturnType<typeof vit.spyOn>
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), "dual-pro-dispatch-"))
@@ -540,6 +595,13 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-google"
     process.env.LLM_NO_HISTORY = "1"
     process.env.LLM_NO_AUTO_PRICING = "1"
+    // Silence dispatch-path output. format.ts writes the "Output written to: …"
+    // footer via process.stderr.write directly (bypassing console), so spy on
+    // both. Tests assert against the persisted ab-pro.jsonl, not stdout.
+    logSpy = vit.spyOn(console, "log").mockImplementation(() => {})
+    errSpy = vit.spyOn(console, "error").mockImplementation(() => {})
+    stdoutSpy = vit.spyOn(process.stdout, "write").mockImplementation(() => true)
+    stderrSpy = vit.spyOn(process.stderr, "write").mockImplementation(() => true)
   })
 
   afterEach(() => {
@@ -548,6 +610,10 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
     else delete process.env.HOME
     if (prevProjectDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjectDir
     else delete process.env.CLAUDE_PROJECT_DIR
+    logSpy.mockRestore()
+    errSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
     vit.restoreAllMocks()
   })
 
@@ -567,7 +633,13 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
     generateTextMock3.mockImplementation(async (args: { messages?: { role: string; content: unknown }[] }) => {
       const messages = args.messages ?? []
       const text = messages
-        .map((m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: { text?: string }) => c.text ?? "").join(" ") : ""))
+        .map((m) =>
+          typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((c: { text?: string }) => c.text ?? "").join(" ")
+              : "",
+        )
         .join(" ")
       if (text.includes("STRICT JSON")) {
         return {
@@ -700,11 +772,7 @@ describe("filterPoolByCapability — capability-aware pool filter", () => {
   })
 
   it("filters by deepResearch capability", () => {
-    const result = filterPoolByCapability(
-      ["gpt-5.4-pro", "o3-deep-research-2025-06-26"],
-      ["deepResearch"],
-      () => true,
-    )
+    const result = filterPoolByCapability(["gpt-5.4-pro", "o3-deep-research-2025-06-26"], ["deepResearch"], () => true)
     expect(result).toEqual(["o3-deep-research-2025-06-26"])
   })
 
