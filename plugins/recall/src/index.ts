@@ -20,6 +20,7 @@ export { writeTrace } from "./lib/trace.ts"
 
 export { analyzeQuality, isAcceptable } from "./lib/quality-gate.ts"
 export type { QualityResult, QualitySignals, QualityOpts } from "./lib/quality-gate.ts"
+export { scanChats } from "./lib/purge-corrupted.ts"
 
 export { recall, boostedRank, expandQueryVariants, setRecallLogging, parseTimeToMs } from "./history/search.ts"
 export {

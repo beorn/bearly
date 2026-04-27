@@ -45,6 +45,8 @@ import {
 
 export interface SearchOptions {
   raw?: boolean
+  /** Alias for raw — vocabulary parity with accountly's "snippet vs pointer" mode. */
+  snippets?: boolean
   json?: boolean
   since?: string
   limit?: string
@@ -88,8 +90,11 @@ export async function cmdSearch(query: string | undefined, options: SearchOption
     include,
   } = options
 
-  // Power-user flags imply raw mode
-  const impliedRaw = raw || !!question || !!response || !!tool || !!session || !!include || !!regexMode
+  // Power-user flags imply raw mode. --snippets is an explicit alias for
+  // --raw — surfaces the vocabulary used by the accountly side ("snippet vs
+  // pointer" mode) for users who learned that distinction first.
+  const impliedRaw =
+    raw || !!options.snippets || !!question || !!response || !!tool || !!session || !!include || !!regexMode
 
   // Regex mode delegates to grep
   if (regexMode) {

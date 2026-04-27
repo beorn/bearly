@@ -67,6 +67,7 @@ program
   .description("Search and synthesize session history")
   .argument("<query>", "Search query")
   .option("--raw", "Skip LLM synthesis, show raw results")
+  .option("--snippets", "Alias for --raw — show raw FTS5 snippets instead of synthesized narrative")
   .option("--json", "JSON output")
   .option("-s, --since <time>", "Time filter: 1h, 1d, 1w, today, yesterday (default: 30d)")
   .option("-n, --limit <num>", "Max results (default: 10)", int)
