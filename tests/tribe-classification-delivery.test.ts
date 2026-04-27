@@ -1,11 +1,17 @@
 /**
- * km-tribe.event-classification — delivery-filter + envelope integration.
+ * km-tribe.event-classification — daemon-spawn delivery-filter integration.
  *
  * Spawns a real daemon and verifies:
- *   - `responseExpected` and `plugin_kind` appear on channel notifications
- *   - tribe.mode("focus") drops responseExpected="optional" pushes
- *   - tribe.snooze suppresses matching kinds; direct DMs bypass
- *   - tribe.dismiss writes the audit row
+ *   - `plugin_kind` appears on channel notifications (replyHint is no longer
+ *     surfaced on the wire — derived at delivery time, see v4 protocol bump)
+ *   - tribe.filter mode='focus' suppresses broadcasts (which derive to
+ *     replyHint='optional') but still delivers direct DMs (which derive to
+ *     replyHint='yes')
+ *   - tribe.filter with kinds + until silences matching plugin_kind broadcasts
+ *     and bypasses kinds/until for direct DMs
+ *
+ * tribe.filter unit-level coverage (validation, schema writes) lives in
+ * tribe-filter.test.ts.
  */
 
 import { describe, it, expect, afterEach, beforeEach } from "vitest"
@@ -45,7 +51,7 @@ async function spawnDaemon(socketPath: string): Promise<ChildProcess> {
   return child
 }
 
-describe("classification — channel envelope + mode + snooze + dismiss", () => {
+describe("tribe.filter — daemon-spawn delivery integration", () => {
   let socketPath: string
   let daemon: ChildProcess | null = null
   const clients: DaemonClient[] = []
@@ -84,7 +90,7 @@ describe("classification — channel envelope + mode + snooze + dismiss", () => 
     return c
   }
 
-  it("channel envelope carries responseExpected + plugin_kind on every push notification", async () => {
+  it("channel envelope carries plugin_kind on push notifications (no replyHint on wire)", async () => {
     daemon = await spawnDaemon(socketPath)
     const receiver = await connect()
     const notifs: Array<{ method: string; params?: Record<string, unknown> }> = []
@@ -94,17 +100,17 @@ describe("classification — channel envelope + mode + snooze + dismiss", () => 
     const sender = await connect()
     await sender.call("register", { name: "bob", role: "member" })
 
-    // Send a direct push with responseExpected="yes".
     await sender.call("tribe.send", { to: "alice", message: "review please", type: "request" })
 
     await waitFor(() => notifs.some((n) => n.method === "channel" && String(n.params?.from) === "bob"), 5000)
     const env = notifs.find((n) => n.method === "channel" && String(n.params?.from) === "bob")!
-    expect(env.params?.responseExpected).toBe("yes")
+    // v4 wire: the replyHint is no longer surfaced on the channel envelope.
+    expect(env.params?.responseExpected).toBeUndefined()
     // plugin_kind is null for human DMs (no plugin originated it)
     expect(env.params?.plugin_kind).toBeNull()
   }, 15_000)
 
-  it("tribe.mode focus suppresses responseExpected!=yes broadcasts", async () => {
+  it("tribe.filter mode=focus suppresses broadcasts but still delivers DMs", async () => {
     daemon = await spawnDaemon(socketPath)
     const focused = await connect()
     const focusedNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
@@ -112,23 +118,23 @@ describe("classification — channel envelope + mode + snooze + dismiss", () => 
       if (method === "channel") focusedNotifs.push({ method, params })
     })
     await focused.call("register", { name: "alice", role: "chief" })
-    await focused.call("tribe.mode", { mode: "focus" })
+    await focused.call("tribe.filter", { mode: "focus" })
 
     const sender = await connect()
     await sender.call("register", { name: "bob", role: "member" })
 
-    // Optional broadcast — should NOT reach focused.
+    // Broadcast — derived replyHint='optional' → suppressed under focus mode.
     await sender.call("tribe.broadcast", { message: "FYI", type: "status" })
     await new Promise((r) => setTimeout(r, 700)) // give time for fanout
     const optionalReceived = focusedNotifs.find((n) => String(n.params?.content ?? "").includes("FYI"))
     expect(optionalReceived).toBeUndefined()
 
-    // Direct DM (responseExpected defaults to "yes") — DOES reach focused.
+    // Direct DM from a peer member — derived replyHint='yes' → delivered.
     await sender.call("tribe.send", { to: "alice", message: "blocker", type: "query" })
     await waitFor(() => focusedNotifs.some((n) => String(n.params?.content ?? "").includes("blocker")), 3000)
   }, 15_000)
 
-  it("tribe.snooze suppresses matching plugin_kind broadcasts; auto-reverts when expired", async () => {
+  it("tribe.filter with kinds + until suppresses matching broadcasts; DMs bypass", async () => {
     daemon = await spawnDaemon(socketPath)
     const reader = await connect()
     const readerNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
@@ -136,32 +142,32 @@ describe("classification — channel envelope + mode + snooze + dismiss", () => 
       if (method === "channel") readerNotifs.push({ method, params })
     })
     await reader.call("register", { name: "alice", role: "chief" })
-    // Snooze for 200ms, github:* only.
-    await reader.call("tribe.snooze", { duration_sec: 0.2, kinds: ["github:*"] })
+    // Mute github:* for 200ms.
+    await reader.call("tribe.filter", { kinds: ["github:*"], until: Date.now() + 200 })
 
     const sender = await connect()
     await sender.call("register", { name: "bob", role: "member" })
 
-    // Direct DM bypasses snooze — should arrive.
+    // Direct DM bypasses the kinds/until dimensions — should arrive.
     await sender.call("tribe.send", { to: "alice", message: "direct", type: "notify" })
     await waitFor(() => readerNotifs.some((n) => String(n.params?.content ?? "").includes("direct")), 3000)
 
-    // Wait past snooze window, then verify a fresh broadcast goes through.
+    // Wait past the mute window, then verify a fresh broadcast goes through.
     await new Promise((r) => setTimeout(r, 250))
-    await sender.call("tribe.broadcast", { message: "post-snooze fyi", type: "notify" })
-    await waitFor(() => readerNotifs.some((n) => String(n.params?.content ?? "").includes("post-snooze")), 3000)
+    await sender.call("tribe.broadcast", { message: "post-filter fyi", type: "notify" })
+    await waitFor(() => readerNotifs.some((n) => String(n.params?.content ?? "").includes("post-filter")), 3000)
   }, 15_000)
 
-  it("tribe.dismiss inserts an audit row addressable by message id", async () => {
+  it("tribe.filter empty args clears any active filter", async () => {
     daemon = await spawnDaemon(socketPath)
     const c = await connect()
     await c.call("register", { name: "alice", role: "chief" })
-    const messageId = randomUUID()
-    const result = (await c.call("tribe.dismiss", {
-      message_id: messageId,
-      reason: "test dismissal",
-    })) as { content: Array<{ type: string; text: string }> }
-    const parsed = JSON.parse(result.content[0]!.text) as { dismissed: boolean }
-    expect(parsed.dismissed).toBe(true)
+    // Set, then clear.
+    await c.call("tribe.filter", { mode: "focus", kinds: ["bead:*"] })
+    const cleared = (await c.call("tribe.filter", {})) as { content: Array<{ type: string; text: string }> }
+    const parsed = JSON.parse(cleared.content[0]!.text) as { mode: string; kinds: unknown; until: unknown }
+    expect(parsed.mode).toBe("normal")
+    expect(parsed.kinds).toBeNull()
+    expect(parsed.until).toBeNull()
   }, 10_000)
 })
