@@ -34,7 +34,7 @@ import {
   TRIBE_PROTOCOL_VERSION,
   type DaemonClient,
 } from "./lib/tribe/socket.ts"
-import { createLineParser, makeRequest, makeResponse, makeError, isRequest } from "@bearly/daemon-spine"
+import { createLineParser, makeRequest, makeResponse, makeError, isRequest } from "@bearly/tribe-client"
 import { recall as bearlyRecall } from "../plugins/recall/src/history/search.ts"
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import React, { useEffect, useState } from "react"
 import { createTerm, render, Box, Text, H1, Muted, Small, Divider, useApp, useInput } from "@silvery/ag-react"
 import { createConnection } from "node:net"
 import { resolve } from "node:path"
-import { createLineParser, makeRequest } from "@bearly/daemon-spine"
+import { createLineParser, makeRequest } from "@bearly/tribe-client"
 import type { DaemonStatus, Decision } from "@bearly/bg-recall"
 
 type RPCCall = (method: string, params?: Record<string, unknown>) => Promise<unknown>

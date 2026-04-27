@@ -1,26 +1,26 @@
 /**
- * Lore socket utilities — re-exports `@bearly/daemon-spine` IPC primitives
+ * Lore socket utilities — re-exports `@bearly/tribe-client` IPC primitives
  * plus the lore-specific auto-start wrapper.
  *
  * The wire format is shared with the unified tribe daemon (the standalone
  * lore daemon was retired in 2026-04-17 Phase 5c); this module exists so
- * lore-side callers can keep their existing imports while the spine owns
- * the wire/client implementation.
+ * lore-side callers can keep their existing imports while `@bearly/tribe-client`
+ * owns the wire/client implementation.
  */
 
 import { dirname, resolve } from "node:path"
 import {
-  connectOrStart as spineConnectOrStart,
-  connectToDaemon as spineConnectToDaemon,
-  createReconnectingClient as spineCreateReconnectingClient,
-  type ConnectOrStartOpts as SpineConnectOrStartOpts,
+  connectOrStart as clientConnectOrStart,
+  connectToDaemon as clientConnectToDaemon,
+  createReconnectingClient as clientCreateReconnectingClient,
+  type ConnectOrStartOpts as ClientConnectOrStartOpts,
   type ConnectToDaemonOpts,
   type DaemonClient,
-  type ReconnectingClientOpts as SpineReconnectingClientOpts,
-} from "@bearly/daemon-spine"
+  type ReconnectingClientOpts as ClientReconnectingClientOpts,
+} from "@bearly/tribe-client"
 
 // ---------------------------------------------------------------------------
-// Re-exports from the spine
+// Re-exports from @bearly/tribe-client
 // ---------------------------------------------------------------------------
 
 export {
@@ -33,7 +33,7 @@ export {
   makeRequest,
   makeResponse,
   withDaemonCall,
-} from "@bearly/daemon-spine"
+} from "@bearly/tribe-client"
 
 export type {
   DaemonCallOutcome,
@@ -41,10 +41,10 @@ export type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
-} from "@bearly/daemon-spine"
+} from "@bearly/tribe-client"
 
 // ---------------------------------------------------------------------------
-// LoreClient — historical alias of the spine's DaemonClient
+// LoreClient — historical alias of the tribe-client's DaemonClient
 // ---------------------------------------------------------------------------
 
 export type LoreClient = DaemonClient
@@ -52,13 +52,13 @@ export type LoreClient = DaemonClient
 // ---------------------------------------------------------------------------
 // connectToDaemon — defaults to lore's 30s call timeout (kept as a separate
 // wrapper rather than a re-export so callers don't accidentally pick up the
-// spine's 10s default).
+// tribe-client's 10s default).
 // ---------------------------------------------------------------------------
 
 const LORE_DEFAULT_CALL_TIMEOUT_MS = 30_000
 
 export function connectToDaemon(socketPath: string, opts?: ConnectToDaemonOpts): Promise<LoreClient> {
-  return spineConnectToDaemon(socketPath, {
+  return clientConnectToDaemon(socketPath, {
     callTimeoutMs: opts?.callTimeoutMs ?? LORE_DEFAULT_CALL_TIMEOUT_MS,
   })
 }
@@ -94,7 +94,7 @@ function defaultDaemonScript(): string {
   return resolve(dirname(new URL(import.meta.url).pathname), "../../../../tools/tribe-daemon.ts")
 }
 
-function toSpineOpts(opts?: ConnectOrStartOpts): SpineConnectOrStartOpts {
+function toClientOpts(opts?: ConnectOrStartOpts): ClientConnectOrStartOpts {
   return {
     daemonScript: opts?.daemonScript ?? defaultDaemonScript(),
     daemonArgs: opts?.dbPath ? ["--lore-db", opts.dbPath] : undefined,
@@ -105,11 +105,11 @@ function toSpineOpts(opts?: ConnectOrStartOpts): SpineConnectOrStartOpts {
 }
 
 export function connectOrStart(socketPath: string, opts?: ConnectOrStartOpts): Promise<LoreClient> {
-  return spineConnectOrStart(socketPath, toSpineOpts(opts))
+  return clientConnectOrStart(socketPath, toClientOpts(opts))
 }
 
 export function createReconnectingClient(opts: ReconnectingClientOpts): Promise<LoreClient> {
-  const spineOpts: SpineReconnectingClientOpts = {
+  const clientOpts: ClientReconnectingClientOpts = {
     socketPath: opts.socketPath,
     onConnect: opts.onConnect,
     onDisconnect: opts.onDisconnect,
@@ -119,7 +119,7 @@ export function createReconnectingClient(opts: ReconnectingClientOpts): Promise<
     daemonScript: defaultDaemonScript(),
     daemonArgs: opts.dbPath ? ["--lore-db", opts.dbPath] : undefined,
   }
-  return spineCreateReconnectingClient(spineOpts)
+  return clientCreateReconnectingClient(clientOpts)
 }
 
 export type { ConnectToDaemonOpts }

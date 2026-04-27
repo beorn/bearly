@@ -11,7 +11,7 @@
 import { describe, expect, it, afterEach } from "vitest"
 import { existsSync, unlinkSync } from "node:fs"
 import { randomUUID } from "node:crypto"
-import { createScope, pipe, withTool, withTools } from "../packages/daemon-spine/src/index.ts"
+import { createScope, pipe, withTool, withTools } from "../packages/tribe-client/src/index.ts"
 import {
   createBaseTribe,
   messagingTools,

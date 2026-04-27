@@ -1,6 +1,6 @@
 /**
  * Tribe-daemon composition layer — `pipe + with*` factories that build the
- * daemon value top-down. Pairs with `@bearly/daemon-spine`'s `pipe`, `Scope`,
+ * daemon value top-down. Pairs with `@bearly/tribe-client`'s `pipe`, `Scope`,
  * and tool-registry primitives.
  *
  * Reading order matches the runtime topology in `hub/architecture.md` § "Tribe

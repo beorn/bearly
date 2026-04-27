@@ -11,7 +11,7 @@
  * tribe-daemon's handleRequest had before.
  */
 
-import type { Tool, ToolContext } from "@bearly/daemon-spine"
+import type { Tool, ToolContext } from "@bearly/tribe-client"
 import { TRIBE_METHODS } from "../../../../plugins/tribe/lore/lib/rpc.ts"
 import type { LoreConnState, LoreHandlers } from "../lore-handlers.ts"
 

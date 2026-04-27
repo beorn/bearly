@@ -32,7 +32,7 @@
  * (test fixtures, embedded usage) can compose from the same primitives.
  */
 
-import { pipe, withTool, withTools } from "@bearly/daemon-spine"
+import { pipe, withTool, withTools } from "@bearly/tribe-client"
 import { gitPlugin } from "./lib/tribe/git-plugin.ts"
 import { beadsPlugin } from "./lib/tribe/beads-plugin.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"

@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { createScope, type Scope } from "@bearly/daemon-spine"
+import { createScope, type Scope } from "@bearly/tribe-client"
 
 export interface BaseTribe {
   readonly scope: Scope

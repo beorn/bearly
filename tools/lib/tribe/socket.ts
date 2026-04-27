@@ -1,22 +1,22 @@
 /**
- * Tribe socket utilities — re-exports the shared `@bearly/daemon-spine` IPC
+ * Tribe socket utilities — re-exports the shared `@bearly/tribe-client` IPC
  * primitives plus tribe-specific constants and the auto-start wrapper that
  * defaults to spawning `tools/tribe-daemon.ts`.
  *
  * The wire protocol, line parser, client, and reconnection logic live in
- * the spine package; this module is now a thin tribe-flavored facade.
+ * `@bearly/tribe-client`; this module is now a thin tribe-flavored facade.
  */
 
 import { dirname, resolve } from "node:path"
 import {
-  connectOrStart as spineConnectOrStart,
-  connectToDaemon as spineConnectToDaemon,
-  createReconnectingClient as spineCreateReconnectingClient,
-  type ConnectOrStartOpts as SpineConnectOrStartOpts,
+  connectOrStart as clientConnectOrStart,
+  connectToDaemon as clientConnectToDaemon,
+  createReconnectingClient as clientCreateReconnectingClient,
+  type ConnectOrStartOpts as ClientConnectOrStartOpts,
   type ConnectToDaemonOpts,
   type DaemonClient,
-  type ReconnectingClientOpts as SpineReconnectingClientOpts,
-} from "@bearly/daemon-spine"
+  type ReconnectingClientOpts as ClientReconnectingClientOpts,
+} from "@bearly/tribe-client"
 
 // ---------------------------------------------------------------------------
 // Protocol version (tribe-specific)
@@ -32,7 +32,7 @@ import {
 export const TRIBE_PROTOCOL_VERSION = 3
 
 // ---------------------------------------------------------------------------
-// Re-exports from the spine
+// Re-exports from @bearly/tribe-client
 // ---------------------------------------------------------------------------
 
 export {
@@ -48,7 +48,7 @@ export {
   makeResponse,
   resolvePeerSocketPath,
   resolveSocketPath,
-} from "@bearly/daemon-spine"
+} from "@bearly/tribe-client"
 
 export type {
   DaemonClient,
@@ -56,7 +56,7 @@ export type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
-} from "@bearly/daemon-spine"
+} from "@bearly/tribe-client"
 
 // ---------------------------------------------------------------------------
 // Tribe-flavored connectOrStart / createReconnectingClient
@@ -89,7 +89,7 @@ function defaultDaemonScript(): string {
   return resolve(dirname(new URL(import.meta.url).pathname), "../../tribe-daemon.ts")
 }
 
-function toSpineOpts(opts?: ConnectOrStartOpts): SpineConnectOrStartOpts {
+function toClientOpts(opts?: ConnectOrStartOpts): ClientConnectOrStartOpts {
   return {
     daemonScript: opts?.daemonScript ?? defaultDaemonScript(),
     daemonArgs: opts?.dbPath ? ["--db", opts.dbPath] : undefined,
@@ -100,11 +100,11 @@ function toSpineOpts(opts?: ConnectOrStartOpts): SpineConnectOrStartOpts {
 }
 
 export function connectOrStart(socketPath: string, opts?: ConnectOrStartOpts): Promise<DaemonClient> {
-  return spineConnectOrStart(socketPath, toSpineOpts(opts))
+  return clientConnectOrStart(socketPath, toClientOpts(opts))
 }
 
 export function createReconnectingClient(opts: ReconnectingClientOpts): Promise<DaemonClient> {
-  const spineOpts: SpineReconnectingClientOpts = {
+  const clientOpts: ClientReconnectingClientOpts = {
     socketPath: opts.socketPath,
     onConnect: opts.onConnect,
     onDisconnect: opts.onDisconnect,
@@ -114,7 +114,7 @@ export function createReconnectingClient(opts: ReconnectingClientOpts): Promise<
     daemonScript: defaultDaemonScript(),
     daemonArgs: opts.dbPath ? ["--db", opts.dbPath] : undefined,
   }
-  return spineCreateReconnectingClient(spineOpts)
+  return clientCreateReconnectingClient(clientOpts)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ export function createReconnectingClient(opts: ReconnectingClientOpts): Promise<
 export async function probeDaemonPid(socketPath: string): Promise<number | null> {
   let client: DaemonClient
   try {
-    client = await spineConnectToDaemon(socketPath)
+    client = await clientConnectToDaemon(socketPath)
   } catch {
     return null
   }
@@ -148,6 +148,6 @@ export async function probeDaemonPid(socketPath: string): Promise<number | null>
   }
 }
 
-// Re-export the spine's per-call options type so existing tribe callers that
-// reach for `ConnectToDaemonOpts` keep working.
+// Re-export the per-call options type so existing tribe callers that reach
+// for `ConnectToDaemonOpts` keep working.
 export type { ConnectToDaemonOpts }

@@ -15,7 +15,7 @@
  */
 
 import { createLogger } from "loggily"
-import { pipe, withTool, withTools, createScope } from "@bearly/daemon-spine"
+import { pipe, withTool, withTools, createScope } from "@bearly/tribe-client"
 import { gitPlugin } from "./lib/tribe/git-plugin.ts"
 import { beadsPlugin } from "./lib/tribe/beads-plugin.ts"
 import { githubPlugin } from "./lib/tribe/github-plugin.ts"

@@ -13,7 +13,7 @@
  * coordinationTools family.
  */
 
-import type { Tool, ToolContext } from "@bearly/daemon-spine"
+import type { Tool, ToolContext } from "@bearly/tribe-client"
 import { handleToolCall, TRIBE_COORD_METHODS, type HandlerOpts } from "../handlers.ts"
 import type { TribeContext } from "../context.ts"
 
