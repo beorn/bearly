@@ -148,7 +148,7 @@ function toWebRequest(req: IncomingMessage): Request {
       })
     : null
 
-  return new Request(url, {
+  return new Request(url.toString(), {
     method,
     headers,
     body,
