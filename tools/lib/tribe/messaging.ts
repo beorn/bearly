@@ -68,11 +68,7 @@ export type Classification = {
  *   - sender role of `daemon` / `system` (plugin emits) → `'optional'`
  *   - everything else (direct DM from a peer member) → `'yes'`
  */
-export function deriveReplyHint(opts: {
-  kind: MessageKind
-  recipient: string
-  senderRole: string
-}): ReplyHint {
+export function deriveReplyHint(opts: { kind: MessageKind; recipient: string; senderRole: string }): ReplyHint {
   if (opts.kind === "event") return "no"
   if (opts.recipient === "*") return "optional"
   if (opts.senderRole === "daemon" || opts.senderRole === "system") return "optional"

@@ -221,11 +221,7 @@ describe("CAS property — cache hit on identical input", () => {
     // First call: cache miss
     expect(readCache(key)).toBeNull()
     // Simulated dispatch + write
-    writeCache(
-      key,
-      { model: { modelId: "test" }, usage: { estimatedCost: 1.5 }, durationMs: 1000 },
-      "expensive answer",
-    )
+    writeCache(key, { model: { modelId: "test" }, usage: { estimatedCost: 1.5 }, durationMs: 1000 }, "expensive answer")
     // Second call: cache hit — would short-circuit dispatch in real flow
     const hit = readCache<{ usage: { estimatedCost: number } }>(key)
     expect(hit).not.toBeNull()
@@ -258,31 +254,19 @@ describe("filename format — <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json
   })
 
   it("err status when envelope.error is non-empty and not abort/truncate", () => {
-    writeCache(
-      { model: "x", prompt: "p" },
-      { model: { modelId: "x" }, error: "some failure" },
-      "",
-    )
+    writeCache({ model: "x", prompt: "p" }, { model: { modelId: "x" }, error: "some failure" }, "")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
     expect(files[0]).toMatch(/,err\.json$/)
   })
 
   it("abrt status when envelope.error mentions abort", () => {
-    writeCache(
-      { model: "x", prompt: "p" },
-      { model: { modelId: "x" }, error: "AbortError: aborted by user" },
-      "",
-    )
+    writeCache({ model: "x", prompt: "p" }, { model: { modelId: "x" }, error: "AbortError: aborted by user" }, "")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
     expect(files[0]).toMatch(/,abrt\.json$/)
   })
 
   it("trunc status when envelope.error mentions truncation", () => {
-    writeCache(
-      { model: "x", prompt: "p" },
-      { model: { modelId: "x" }, error: "response truncated at max tokens" },
-      "",
-    )
+    writeCache({ model: "x", prompt: "p" }, { model: { modelId: "x" }, error: "response truncated at max tokens" }, "")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
     expect(files[0]).toMatch(/,trunc\.json$/)
   })

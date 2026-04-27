@@ -155,9 +155,7 @@ export function withHotReload<T extends BaseTribe & WithSocketServer>(
       }
       if (existsSync(libTribeDir)) {
         try {
-          watchers.push(
-            watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename)),
-          )
+          watchers.push(watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename)))
         } catch {
           /* permission denied or similar */
         }

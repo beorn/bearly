@@ -333,9 +333,7 @@ describe("formatDecisionTable", () => {
   })
 
   it("escapes pipe characters in reasons", () => {
-    const out = formatDecisionTable([
-      { candidate, result: { decision: "no", reason: "has | pipe" } },
-    ])
+    const out = formatDecisionTable([{ candidate, result: { decision: "no", reason: "has | pipe" } }])
     expect(out).toContain("has \\| pipe")
   })
 })
@@ -354,13 +352,13 @@ describe("generateRegistryPatch", () => {
     "",
     "const SKUS_DATA: SkuConfig[] = [",
     "  {",
-    "    modelId: \"gpt-5\",",
-    "    displayName: \"GPT-5\",",
+    '    modelId: "gpt-5",',
+    '    displayName: "GPT-5",',
     "  },",
     "]",
     "",
     "const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {",
-    "  \"gpt-5\": { provider: \"openai\", capabilities: NO_CAPS },",
+    '  "gpt-5": { provider: "openai", capabilities: NO_CAPS },',
     "}",
     "",
     "// footer",

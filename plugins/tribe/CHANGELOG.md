@@ -23,9 +23,9 @@ becomes a derived value.
   (`yes` / `optional` / `no`) is no longer pushed on the wire and is no
   longer persisted on the row. The daemon derives it at delivery time from
   `(kind, recipient, senderRole)`:
-  - `kind: 'event'`              → `'no'`  (journal-only)
+  - `kind: 'event'` → `'no'` (journal-only)
   - `recipient: '*'` (broadcast) → `'optional'`
-  - sender `daemon` / `system`   → `'optional'`
+  - sender `daemon` / `system` → `'optional'`
   - direct DM from a peer member → `'yes'`
 - **`messages.response_expected`** column dropped (migration v11).
 - **`dismissals` table** dropped (migration v11).
@@ -112,7 +112,7 @@ Wire-protocol bumped v2 → v3.
 - **`tribe.dismiss({message_id, reason?})`** — audit-trail acknowledgement
   without replying. Used as classifier-training signal.
 - **Channel envelope** now carries `responseExpected: "yes" | "optional" |
-  "no"` and `plugin_kind` on every push notification.
+"no"` and `plugin_kind` on every push notification.
 
 ### Changed — delivery routing
 

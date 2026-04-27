@@ -188,9 +188,7 @@ export function parseOpenAIStyleRateLimitHeaders(
  * Anthropic ships `anthropic-ratelimit-*-{remaining,limit,reset}`. The
  * reset value is already ISO-8601 (not seconds-until-reset like OpenAI).
  */
-export function parseAnthropicRateLimitHeaders(
-  headers: HeaderBag,
-): Partial<QuotaSnapshot> & { provider: "anthropic" } {
+export function parseAnthropicRateLimitHeaders(headers: HeaderBag): Partial<QuotaSnapshot> & { provider: "anthropic" } {
   const remainingRequests = parseIntSafe(readHeader(headers, "anthropic-ratelimit-requests-remaining"))
   const requestsPerWindow = parseIntSafe(readHeader(headers, "anthropic-ratelimit-requests-limit"))
   const remainingTokens = parseIntSafe(readHeader(headers, "anthropic-ratelimit-tokens-remaining"))
@@ -252,10 +250,7 @@ export function parseResetHeader(raw: string | undefined): string | undefined {
  * Best-effort — failures are silently absorbed. Quota tracking must never
  * fail the actual model call.
  */
-export function captureRateLimitFromHeaders(
-  provider: Provider,
-  headers: HeaderBag,
-): QuotaSnapshot | undefined {
+export function captureRateLimitFromHeaders(provider: Provider, headers: HeaderBag): QuotaSnapshot | undefined {
   if (!headers) return undefined
   const partial =
     provider === "anthropic"
@@ -349,10 +344,10 @@ export async function getOpenAIQuota(signal?: AbortSignal): Promise<QuotaSnapsho
     start.setUTCDate(1)
     start.setUTCHours(0, 0, 0, 0)
     const startUnix = Math.floor(start.getTime() / 1000)
-    const resp = await fetch(
-      `https://api.openai.com/v1/organization/usage/completions?start_time=${startUnix}`,
-      { headers: { Authorization: `Bearer ${apiKey}` }, signal },
-    )
+    const resp = await fetch(`https://api.openai.com/v1/organization/usage/completions?start_time=${startUnix}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal,
+    })
     if (resp.ok) {
       const json = (await resp.json()) as {
         data?: Array<{ results?: Array<{ amount?: { value?: number } }> }>
@@ -438,8 +433,7 @@ function mergeFromCache(provider: Provider, fallback: QuotaSnapshot): QuotaSnaps
     resetRequestsAt: cached.resetRequestsAt,
     resetTokensAt: cached.resetTokensAt,
     fetchedAt: cached.fetchedAt,
-    error:
-      cached.remainingTokens != null || cached.remainingRequests != null ? undefined : fallback.error,
+    error: cached.remainingTokens != null || cached.remainingRequests != null ? undefined : fallback.error,
   }
 }
 

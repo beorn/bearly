@@ -74,10 +74,7 @@ export interface DispatcherRuntimeHooks {
  * registered by `withMCPServer()`). Returns the result data; the dispatcher
  * wraps it in a JSON-RPC response. Throw to surface a JSON-RPC error.
  */
-export type MethodHandler = (
-  params: Record<string, unknown>,
-  ctx: { connId: string },
-) => unknown | Promise<unknown>
+export type MethodHandler = (params: Record<string, unknown>, ctx: { connId: string }) => unknown | Promise<unknown>
 
 export interface Dispatcher {
   /** The accept-handler the socket server invokes. */
@@ -319,11 +316,7 @@ export function withDispatcher<
       return client
     }
 
-    function replayOrBootstrap(
-      connId: string,
-      client: ClientSession,
-      adopted: PriorSession | null,
-    ): void {
+    function replayOrBootstrap(connId: string, client: ClientSession, adopted: PriorSession | null): void {
       const priorCursor = stmts.getLastDelivered.get({ $id: client.ctx.sessionId }) as {
         last_delivered_ts: number | null
         last_delivered_seq: number | null
@@ -403,8 +396,7 @@ export function withDispatcher<
             let role = detectRole(db, { role: p.role as string | undefined })
             if (role === "daemon" || role === "pending") role = "member"
 
-            const isActive = (sid: string): boolean =>
-              Array.from(clients.values()).some((c) => c.ctx.sessionId === sid)
+            const isActive = (sid: string): boolean => Array.from(clients.values()).some((c) => c.ctx.sessionId === sid)
 
             const adopted = adoptIdentity(db, identityToken, isActive)
 
@@ -445,12 +437,7 @@ export function withDispatcher<
               onMessageInserted: broadcast.messageTap,
             })
 
-            registerSession(
-              clientCtx,
-              projectId,
-              (sid) => registry.getActiveSessionIds().has(sid),
-              identityToken,
-            )
+            registerSession(clientCtx, projectId, (sid) => registry.getActiveSessionIds().has(sid), identityToken)
 
             const client = applyClient(connId, {
               name,

@@ -27,7 +27,7 @@ wins reproduce instead of pure pool exploration).
   single `Promise.all` round trip. Total runtime is dominated by the slowest
   leg, not the sum.
 - **Slot D = correlated re-test**: `pickSplitTestSlots(pool, strategy,
-  counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
+counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
   picks the most-recent winner from `ab-pro.jsonl` history that is in the
   pool, NOT a mainstay, and NOT slot C. Cold start (no winners) falls back
   to "next pool entry after slot C in pool-list order" so the two slots
@@ -38,9 +38,9 @@ wins reproduce instead of pure pool exploration).
   sends only TWO responses to the judge. With Gemini 2.5 Flash judge at
   ~$0.001/call, ~$0.003 total — usually cheaper than one bloated 4-way prompt.
 - **`buildPairwiseJudgePrompt`** + **`parsePairwiseJudgeResponse`**: pairwise
-  prompt builder + tolerant parser (strips ```` ```json ```` fences, handles
+  prompt builder + tolerant parser (strips ` ```json ` fences, handles
   prepended prose). Output: `{ winner: "A" | "B" | "tie", scoreA, scoreB,
-  reasoning }`.
+reasoning }`.
 - **`synthesizePairwiseFromV2`**: v2 → v3 reader. Historical v2 ab-pro.jsonl
   entries with N-way `judge.{a,b,c,winner}` fields surface a synthesized
   `judge.ab`/`ac` to keep leaderboard / judge-history / backtest consumers

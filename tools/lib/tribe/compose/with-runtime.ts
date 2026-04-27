@@ -116,9 +116,7 @@ function defaultBuildPluginApi<T extends RuntimeShape>(t: T): TribeClientApi {
   }
 }
 
-export function withRuntime<T extends RuntimeShape>(
-  opts: RuntimeOpts<T>,
-): (t: T) => T & WithRuntime {
+export function withRuntime<T extends RuntimeShape>(opts: RuntimeOpts<T>): (t: T) => T & WithRuntime {
   return (t) => {
     const buildPluginApi = opts.buildPluginApi ?? defaultBuildPluginApi
     const cleanupIntervalMs = opts.cleanupIntervalMs ?? 6 * 60 * 60 * 1000
@@ -133,10 +131,9 @@ export function withRuntime<T extends RuntimeShape>(
     opts.publishStopPlugins(stopPlugins)
 
     // Cleanup tick — registers on root scope so disposal stops it.
-    const cleanupInterval = setInterval(
-      () => cleanupOldData(t.daemonCtx),
-      cleanupIntervalMs,
-    ) as unknown as { unref?: () => void }
+    const cleanupInterval = setInterval(() => cleanupOldData(t.daemonCtx), cleanupIntervalMs) as unknown as {
+      unref?: () => void
+    }
     cleanupInterval.unref?.()
     t.scope.defer(() => clearInterval(cleanupInterval as unknown as ReturnType<typeof setInterval>))
     cleanupOldData(t.daemonCtx)

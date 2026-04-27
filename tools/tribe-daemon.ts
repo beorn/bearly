@@ -149,7 +149,9 @@ const withHotReloadShape = withHotReload<typeof withMCPShape>({
   triggerShutdown: () => refs.shutdown(),
 })(withMCPShape)
 // Confirm withMCPShape carries the MCP server handle (for tests / status).
-log.debug?.(`MCP server ready: ${withMCPShape.mcpServer.toolNames.length} tools, protocol ${withMCPShape.mcpServer.protocolVersion}`)
+log.debug?.(
+  `MCP server ready: ${withMCPShape.mcpServer.toolNames.length} tools, protocol ${withMCPShape.mcpServer.protocolVersion}`,
+)
 
 const withSignalsShape = withSignals<typeof withHotReloadShape>({
   onShutdown: () => refs.shutdown(),

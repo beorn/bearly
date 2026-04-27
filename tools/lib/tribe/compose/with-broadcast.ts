@@ -23,10 +23,7 @@
  */
 
 import { addWriter, createLogger } from "loggily"
-import {
-  type MessageInsertedInfo,
-  type TribeContext,
-} from "../context.ts"
+import { type MessageInsertedInfo, type TribeContext } from "../context.ts"
 import { activityFromMessage, writeActivity } from "../activity-log.ts"
 import { createCoalescer, type PendingBroadcast } from "../broadcast-coalescer.ts"
 import { deriveReplyHint, sendMessage, type ReplyHint } from "../messaging.ts"
@@ -304,9 +301,7 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         // (mode + time-bounded mute + per-kind globs). Direct messages bypass
         // the kinds/until dimensions — only `mode: focus` filters DMs.
         if (info.kind !== "direct" && !isWatch) {
-          const sessionFilter = stmts.getSessionFilter.get({ $id: client.ctx.sessionId }) as
-            | SessionFilter
-            | undefined
+          const sessionFilter = stmts.getSessionFilter.get({ $id: client.ctx.sessionId }) as SessionFilter | undefined
           if (!shouldDeliver({ replyHint, pluginKind: info.pluginKind }, sessionFilter)) continue
         }
 

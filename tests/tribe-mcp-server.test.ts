@@ -101,10 +101,7 @@ async function callJsonRpc(
   params: Record<string, unknown> = {},
   id: number | string = 1,
 ): Promise<JsonRpcResponse> {
-  const line = await dispatcher.handleRequest(
-    { jsonrpc: "2.0" as const, id, method, params },
-    "test-conn",
-  )
+  const line = await dispatcher.handleRequest({ jsonrpc: "2.0" as const, id, method, params }, "test-conn")
   return JSON.parse(line.trimEnd()) as JsonRpcResponse
 }
 

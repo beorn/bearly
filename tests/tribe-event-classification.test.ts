@@ -320,9 +320,9 @@ describe("schema v11 — every row carries delivery; replyHint is derived not st
 
   it("dismissals table is gone (v11)", () => {
     const f = dbFixture()
-    const t = f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dismissals'").get() as
-      | { name: string }
-      | null
+    const t = f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dismissals'").get() as {
+      name: string
+    } | null
     expect(t).toBeNull()
     f.cleanup()
   })

@@ -184,10 +184,7 @@ function deriveMetadata(
   const env = (envelope ?? {}) as Record<string, unknown>
   // Prefer envelope.model.modelId, fall back to the cache key.
   const envModel = env.model as { modelId?: unknown } | undefined
-  const modelId =
-    typeof envModel?.modelId === "string" && envModel.modelId.length > 0
-      ? envModel.modelId
-      : key.model
+  const modelId = typeof envModel?.modelId === "string" && envModel.modelId.length > 0 ? envModel.modelId : key.model
   const usage = env.usage as { estimatedCost?: unknown } | undefined
   const cost = typeof usage?.estimatedCost === "number" ? usage.estimatedCost : 0
   const microUSD = Math.max(0, Math.round(cost * 1_000_000))
@@ -254,7 +251,10 @@ export function cacheStats(): CacheStats {
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
   let count = 0
   let bytes = 0
-  const byModel: Record<string, { calls: number; totalMicroUSD: number; totalMs: number; statuses: Partial<Record<CacheStatus, number>> }> = {}
+  const byModel: Record<
+    string,
+    { calls: number; totalMicroUSD: number; totalMs: number; statuses: Partial<Record<CacheStatus, number>> }
+  > = {}
   for (const f of files) {
     const parsed = parseFilename(f)
     if (!parsed) continue
