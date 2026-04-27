@@ -25,7 +25,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { existsSync, mkdirSync, unlinkSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { spawn } from "node:child_process"
-import { addWriterFor, createFileWriter } from "loggily"
+import { addWriter, createFileWriter } from "loggily"
 import { createBgRecallDaemon, type BgRecallDaemon, type ToolCallEvent, type QualityGate } from "@bearly/bg-recall"
 import { formatStatus, formatExplain } from "@bearly/bg-recall"
 import {
@@ -68,7 +68,7 @@ function installBgRecallFileWriter(): void {
     process.env.BG_RECALL_DEBUG_LOG
   if (!path) return
   const writer = createFileWriter(path)
-  addWriterFor("bg-recall:*", (_formatted, _level, _ns, event) => {
+  addWriter({ ns: "bg-recall:*" }, (_formatted, _level, _ns, event) => {
     if (event.kind !== "log") return
     // Re-emit as JSONL so consumers can `tail -f | jq .`. One namespace per
     // line, structured props (hintId, score, …) preserved verbatim.
