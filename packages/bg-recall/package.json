@@ -42,7 +42,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@bearly/daemon-spine": "workspace:*",
+    "@bearly/tribe-client": "workspace:*",
     "loggily": "^0.4.2"
   },
   "devDependencies": {

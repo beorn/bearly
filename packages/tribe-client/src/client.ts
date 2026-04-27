@@ -23,7 +23,7 @@ import { createLineParser } from "./parser.ts"
 import { isNotification, isResponse, makeNotification, makeRequest } from "./rpc.ts"
 import { createTimers } from "./timers.ts"
 
-const log = createLogger("daemon-spine:client")
+const log = createLogger("tribe-client:client")
 
 // ---------------------------------------------------------------------------
 // Daemon client

@@ -41,7 +41,7 @@ describe("connectToDaemon", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "daemon-spine-"))
+    tmpDir = mkdtempSync(join(tmpdir(), "tribe-client-"))
   })
 
   afterEach(() => {

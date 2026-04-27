@@ -7,7 +7,7 @@
 import { createLogger } from "loggily"
 import type { JsonRpcMessage } from "./rpc.ts"
 
-const log = createLogger("daemon-spine:parser")
+const log = createLogger("tribe-client:parser")
 
 export function createLineParser(onMessage: (msg: JsonRpcMessage) => void): (chunk: Buffer) => void {
   let buffer = ""

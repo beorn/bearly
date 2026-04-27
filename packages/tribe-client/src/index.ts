@@ -1,10 +1,12 @@
 /**
- * @bearly/daemon-spine
+ * @bearly/tribe-client
  *
- * Shared Unix-socket IPC primitives — JSON-RPC 2.0 wire, line parser,
- * daemon client, auto-start, reconnection, and deadline-bounded call.
+ * Tribe client library — Unix-socket IPC primitives, JSON-RPC 2.0 wire
+ * protocol, line parser, daemon client, auto-start, reconnection,
+ * deadline-bounded call, and composition primitives (pipe, Scope, tool
+ * registry).
  *
- * Consumers (tribe daemon, lore plugin, future per-domain daemons) import
+ * Consumers (tribe daemon, lore plugin, MCP proxy, agent shells) import
  * from here instead of duplicating the wire protocol per package.
  */
 

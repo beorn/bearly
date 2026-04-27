@@ -53,7 +53,7 @@
     "@ai-sdk/perplexity": "^3.0.25",
     "@ai-sdk/xai": "^3.0.72",
     "@bearly/bg-recall": "workspace:*",
-    "@bearly/daemon-spine": "workspace:*",
+    "@bearly/tribe-client": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@silvery/commander": "^0.6.0",
     "@termless/core": "^0.3.0",

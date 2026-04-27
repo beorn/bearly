@@ -1,5 +1,5 @@
 /**
- * Composition primitives — the structural layer of the daemon-spine stack.
+ * Composition primitives — the structural layer of the tribe-client stack.
  *
  * Exposes:
  *
