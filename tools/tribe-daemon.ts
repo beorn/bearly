@@ -64,6 +64,7 @@ import {
   withDatabase,
   withDispatcher,
   withHotReload,
+  withIdleQuit,
   withLore,
   withProjectRoot,
   withSignals,
@@ -163,25 +164,23 @@ if (partialShape.config.inheritFd === null) {
   }
 }
 
-// Refs for runtime hooks the dispatcher needs but that are wired up later
-// (idle-quit's markActive/markIdle, plugin names, quit-timeout). Each hook is
-// a thin lambda that reads through the ref so Phase 4 can land before
-// withIdleQuit / withRuntime / plugin loading move into the pipe.
+// Refs for hooks the dispatcher / hot-reload need but that other factories
+// supply later in the pipe (or that the runtime supplies once plugins load).
+// Each hook is a thin lambda that reads through the ref.
 const activePluginNamesRef: { current: string[] } = { current: [] }
-const markActiveRef: { current: () => void } = { current: () => {} }
-const markIdleRef: { current: () => void } = { current: () => {} }
-
-// Refs for shutdown / stopPlugins — wired up after the runtime constructs them.
 const stopPluginsRef: { current: () => void } = { current: () => {} }
 const shutdownRef: { current: () => void } = { current: () => {} }
 
 const withSocketShape = withSocketServer<typeof partialShape>()(partialShape)
-const withDispatcherShape = withDispatcher<typeof withSocketShape>({
-  onActiveClient: () => markActiveRef.current(),
-  onIdle: () => markIdleRef.current(),
+const withIdleQuitShape = withIdleQuit<typeof withSocketShape>({
+  triggerShutdown: () => shutdownRef.current(),
+})(withSocketShape)
+const withDispatcherShape = withDispatcher<typeof withIdleQuitShape>({
+  onActiveClient: () => withIdleQuitShape.idleQuit.markActive(),
+  onIdle: () => withIdleQuitShape.idleQuit.markIdle(),
   getActivePluginNames: () => activePluginNamesRef.current,
   getQuitTimeoutSec: () => withSocketShape.config.quitTimeoutSec,
-})(withSocketShape)
+})(withIdleQuitShape)
 const withHotReloadShape = withHotReload<typeof withDispatcherShape>({
   stopPlugins: () => stopPluginsRef.current(),
   triggerShutdown: () => shutdownRef.current(),
@@ -296,79 +295,10 @@ const stopPlugins = loadedPlugins.stop
 // Publish the plugin names through the dispatcher's runtime hook (cli_status).
 activePluginNamesRef.current = activePluginNames
 
-// 1-second tick: idle-liveness only. Messages are delivered synchronously via
-// the ctx.onMessageInserted fanout hook (km-tribe.event-bus), so there's no
-// polling drain in this tick anymore.
-const livenessInterval = timers.setInterval(() => {
-  checkLiveness()
-}, 1000)
-
-// Data cleanup every 6 hours
+// Data cleanup every 6 hours.
 const cleanupInterval = timers.setInterval(() => cleanupOldData(daemonCtx), 6 * 60 * 60 * 1000)
+void cleanupInterval
 cleanupOldData(daemonCtx)
-
-// withDispatcher already attached `handleConnection` to socket.server during
-// composition. The connection-as-lease idle hooks are wired via the
-// markActive/markIdle ref lambdas defined alongside the pipe.
-
-// ---------------------------------------------------------------------------
-// Auto-quit liveness — declarative deadline + periodic check
-// ---------------------------------------------------------------------------
-//
-// Liveness is a pure function of current state, not an event-driven timer:
-//   - markActive()   — clear the deadline (someone is using us)
-//   - markIdle()     — set the deadline (we may be done; checkLiveness decides)
-//   - checkLiveness() — runs from the existing 1s tick poller
-//
-// This eliminates the bug class where a code path forgets to start/cancel
-// a setTimeout. Adding a new "extends life" trigger is one line: markActive().
-
-let idleDeadline: number | null = null
-
-function markActive(): void {
-  idleDeadline = null
-}
-
-function markIdle(): void {
-  if (QUIT_TIMEOUT < 0) return // -1 = never auto-quit
-  if (idleDeadline !== null) return // already counting down
-  idleDeadline = Date.now() + QUIT_TIMEOUT * 1000
-  log(`No clients connected. Auto-quit in ${QUIT_TIMEOUT}s...`)
-}
-
-// Wire the dispatcher's runtime hooks now that markActive/markIdle exist.
-// Phase 8 (withIdleQuit) will fold these into a factory so the refs go away.
-markActiveRef.current = markActive
-markIdleRef.current = markIdle
-
-function checkLiveness(): void {
-  // Expire pending sessions that never sent a register message (>60s)
-  const now = Date.now()
-  for (const [connId, client] of clients) {
-    if (client.role === "pending" && now - client.registeredAt > 60_000) {
-      log(`Expiring stale pending session: ${client.name} (age=${Math.floor((now - client.registeredAt) / 1000)}s)`)
-      clients.delete(connId)
-      socketToClient.delete(client.socket)
-      try {
-        client.socket.destroy()
-      } catch {
-        /* already dead */
-      }
-    }
-  }
-
-  if (idleDeadline === null) return
-  // Defensive: if a client snuck in, abort the countdown
-  if (clients.size > 0) {
-    idleDeadline = null
-    return
-  }
-  if (now >= idleDeadline) {
-    log("Auto-quit: idle deadline reached")
-    shutdown()
-  }
-}
-
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -418,10 +348,8 @@ stopPluginsRef.current = stopPlugins
 
 log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)
 
-// Begin idle countdown immediately. If a client connects before the deadline,
-// markActive() in handleConnection clears it. This handles the case where a
-// daemon is spawned but no client ever connects (e.g. spawning test crashes).
-if (clients.size === 0) markIdle()
+// withIdleQuit started the idle countdown at composition time — markActive()
+// (called from withDispatcher's accept handler) clears it on first connect.
 
 // ---------------------------------------------------------------------------
 // Runtime entry — `await tribe.run()`

@@ -64,3 +64,6 @@ export type { SignalHooks, WithSignals } from "./with-signals.ts"
 
 export { withHotReload } from "./with-hot-reload.ts"
 export type { HotReload, HotReloadOpts, WithHotReload } from "./with-hot-reload.ts"
+
+export { withIdleQuit } from "./with-idle-quit.ts"
+export type { IdleQuit, IdleQuitOpts, WithIdleQuit } from "./with-idle-quit.ts"
