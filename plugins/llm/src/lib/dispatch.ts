@@ -1997,10 +1997,12 @@ async function appendAbProLog(entry: {
 
 /**
  * `bun llm pro --leaderboard` — print the current ranked leaderboard from
- * ab-pro.jsonl. Sorted by config-weighted rankScore; failure-rate is a
- * separate column for transparency. Empty log → friendly hint.
+ * ab-pro.jsonl. **Default sort is by raw quality (judge score)** — we
+ * optimize for raw intellect; cost surfaces as a column for context. Use
+ * `--rank-by-cost` to sort by cost-aware rank (quality minus log-cost
+ * penalty above $0.10). Speed and failure rate display only.
  */
-export async function runLeaderboard(): Promise<void> {
+export async function runLeaderboard(opts: { rankByCost?: boolean } = {}): Promise<void> {
   const dualPro = await import("./dual-pro")
   const cfg = await dualPro.loadConfig()
   const entries = await dualPro.readAbProLog()
@@ -2009,9 +2011,21 @@ export async function runLeaderboard(): Promise<void> {
     if (isJsonMode()) emitJson({ rows: [], status: "empty" })
     return
   }
+  // Always compute cost-aware rank for the Rank column. Sort order is what
+  // changes between modes.
   const rows = dualPro.buildLeaderboard(entries, cfg.scoreWeights)
+  if (!opts.rankByCost) {
+    // Default: sort by raw quality (avgScore desc, then calls desc as tiebreaker).
+    rows.sort((x, y) => y.avgScore - x.avgScore || y.calls - x.calls)
+  }
   if (isJsonMode()) {
-    emitJson({ rows, status: "ok", weights: cfg.scoreWeights, total: entries.length })
+    emitJson({
+      rows,
+      status: "ok",
+      weights: cfg.scoreWeights,
+      mode: opts.rankByCost ? "rank-by-cost" : "by-quality",
+      total: entries.length,
+    })
     return
   }
   // Plain-text table — column-aligned for skim-readability. Fixed widths.
@@ -2019,11 +2033,12 @@ export async function runLeaderboard(): Promise<void> {
   const fmtMs = (n: number) => `${(n / 1000).toFixed(1)}s`
   const fmtScore = (n: number) => n.toFixed(2)
   const fmtCost = (n: number) => `$${n.toFixed(3)}`
+  const headerNote = opts.rankByCost
+    ? `sorted by Rank (quality − log-cost penalty above $${cfg.scoreWeights.costThreshold.toFixed(2)})`
+    : `sorted by Quality — raw intellect (use --rank-by-cost for cost-aware sort)`
+  console.error(`\nLeaderboard (${entries.length} runs, ${headerNote})\n`)
   console.error(
-    `\nLeaderboard (${entries.length} runs, weights: score=${cfg.scoreWeights.score}, cost=${cfg.scoreWeights.cost}, time=${cfg.scoreWeights.time})\n`,
-  )
-  console.error(
-    `${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"AvgScore".padStart(9)} ${"FailRate".padStart(9)} ${"AvgCost".padStart(9)} ${"AvgTime".padStart(8)} ${"Rank".padStart(7)}`,
+    `${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Quality".padStart(9)} ${"FailRate".padStart(9)} ${"Cost".padStart(9)} ${"Speed".padStart(8)} ${"Rank".padStart(7)}`,
   )
   console.error("-".repeat(90))
   for (const r of rows) {
@@ -2568,8 +2583,13 @@ export async function runQuota(): Promise<void> {
  */
 export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise<void> {
   const fs = await import("fs")
-  const { loadNewModelsArtifact, classifyCandidates, formatDecisionTable, generateRegistryPatch, selectClassifierModel } =
-    await import("./discover")
+  const {
+    loadNewModelsArtifact,
+    classifyCandidates,
+    formatDecisionTable,
+    generateRegistryPatch,
+    selectClassifierModel,
+  } = await import("./discover")
 
   const artifact = loadNewModelsArtifact()
   if (!artifact || artifact.candidates.length === 0) {
@@ -2613,9 +2633,7 @@ export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise
   const approved = decisions.filter((d) => d.result.decision === "yes").map((d) => d.candidate)
   const rejected = decisions.filter((d) => d.result.decision === "no").length
 
-  console.error(
-    `\n  approved: ${approved.length}  needs-review: ${pending.length}  rejected: ${rejected}`,
-  )
+  console.error(`\n  approved: ${approved.length}  needs-review: ${pending.length}  rejected: ${rejected}`)
 
   if (opts.apply) {
     if (approved.length === 0) {

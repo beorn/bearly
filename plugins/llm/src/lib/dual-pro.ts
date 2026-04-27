@@ -40,19 +40,26 @@ const log = createLogger("bearly:llm:dual-pro")
 // --------------------------------------------------------------------
 
 /**
- * Score weights tune the leaderboard ranking. `score` is the judge's
- * weighted total (0–5). `cost` and `time` are penalties — set to 0 to
- * ignore them, raise to let leaderboard punish expensive/slow models.
+ * Leaderboard ranking weights.
  *
- * Default `cost: 0.5` is intentionally cost-aware — without it, the
- * leaderboard ranks purely by quality and would happily promote a $15
- * model over a $0.50 model that scores only marginally lower. Users who
- * have unlimited budget and care only about peak quality should set
- * `cost: 0.0` explicitly in their dual-pro-config.json.
+ * Rank optimizes for raw intellect (judge score), with a soft log-scale
+ * penalty so extreme priciness brings score down. Speed and failure rate
+ * are display-only — they do NOT enter the rank. Failures are assumed to
+ * be programming errors or transient API issues that we'd retry, not a
+ * model property.
+ *
+ *   rank = score * avgScore - cost * max(0, log10(avgCost / costThreshold))
+ *
+ * Defaults — costThreshold $0.10, cost 1.0:
+ *   $0.10 → 0pt   $1 → −1pt   $10 → −2pt   $100 → −3pt
+ *
+ * Set `cost: 0` to rank purely by quality (or pass `--by-quality`). `time`
+ * is preserved for back-compat but ignored in rank.
  */
 export const ScoreWeightsSchema = z.object({
   score: z.number().default(1.0),
-  cost: z.number().default(0.5),
+  cost: z.number().default(1.0),
+  costThreshold: z.number().default(0.1),
   time: z.number().default(0.0),
 })
 export type ScoreWeights = z.infer<typeof ScoreWeightsSchema>
@@ -83,7 +90,7 @@ export const DualProConfigSchema = z.object({
   challengerStrategy: ChallengerStrategySchema.default("round-robin-after-10-calls"),
   judge: z.string().default("gpt-5-mini"),
   rubric: RubricSchema.default("default"),
-  scoreWeights: ScoreWeightsSchema.default({ score: 1.0, cost: 0.5, time: 0.0 }),
+  scoreWeights: ScoreWeightsSchema.default({ score: 1.0, cost: 1.0, costThreshold: 0.1, time: 0.0 }),
 })
 export type DualProConfig = z.infer<typeof DualProConfigSchema>
 
@@ -182,10 +189,17 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   // "research" emphasizes depth; "code" emphasizes specificity.
   "rubric": ${JSON.stringify(cfg.rubric)},
 
-  // Leaderboard ranking weights. score is judge total (0-5); cost/time are
-  // penalties. Default cost: 0.5 keeps the leaderboard cost-aware — without
-  // it, a $15 model that scores 4.8 displaces a $0.50 model that scores 4.6.
-  // Set cost: 0.0 to rank purely by quality. Raise time to penalize slow models.
+  // Leaderboard ranking. Rank optimizes for raw intellect (judge score),
+  // with a log-scale cost penalty so extreme priciness brings score down.
+  // Speed and failure rate are display-only (failures assumed to be
+  // programming errors / retryable, not a model property).
+  //
+  //   rank = score * avgScore - cost * max(0, log10(avgCost / costThreshold))
+  //
+  // Defaults — costThreshold $0.10, cost 1.0:
+  //   $0.10 → 0pt    $1 → −1pt    $10 → −2pt    $100 → −3pt
+  //
+  // Set cost: 0 to rank purely by quality. Raise cost to punish pricey models harder.
   "scoreWeights": ${JSON.stringify(cfg.scoreWeights, null, 2).replace(/\n/g, "\n  ")}
 }
 `
@@ -494,8 +508,11 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
     const avgCost = s.success > 0 ? s.costSum / s.success : 0
     const avgTimeMs = s.success > 0 ? s.timeSum / s.success : 0
     const failureRate = s.calls > 0 ? (s.calls - s.success) / s.calls : 0
-    // Higher is better. Score is positive; cost/time are penalties scaled.
-    const rankScore = avgScore * weights.score - avgCost * weights.cost - (avgTimeMs / 1000) * weights.time
+    // Higher is better. Quality-first; log-scale cost penalty above threshold.
+    // Speed and failure rate are display-only — not in rank.
+    const threshold = weights.costThreshold > 0 ? weights.costThreshold : 0.1
+    const costPenalty = avgCost > threshold ? Math.log10(avgCost / threshold) : 0
+    const rankScore = avgScore * weights.score - costPenalty * weights.cost
     rows.push({
       model,
       calls: s.calls,

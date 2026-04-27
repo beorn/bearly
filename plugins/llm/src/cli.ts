@@ -106,7 +106,16 @@ const KEYWORDS = [
 // the prompt (e.g. --image screenshot.png → "describe this screenshot.png").
 // --models / --provider were aspirational and removed; resurrect here when
 // the CLI actually implements them.
-const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image", "--challenger", "--sample", "--limit"]
+const VALUE_FLAGS = [
+  "--model",
+  "--context",
+  "--context-file",
+  "--output",
+  "--image",
+  "--challenger",
+  "--sample",
+  "--limit",
+]
 
 /**
  * The canonical command keyword for this invocation — the FIRST positional
@@ -639,7 +648,7 @@ export async function main(): Promise<string | undefined> {
       // These short-circuit before the regular dispatch.
       if (hasFlag("--leaderboard")) {
         const { runLeaderboard } = await import("./lib/dispatch")
-        await runLeaderboard()
+        await runLeaderboard({ rankByCost: hasFlag("--rank-by-cost") })
         break
       }
       if (hasFlag("--promote-review")) {
