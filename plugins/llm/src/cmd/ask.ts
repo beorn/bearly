@@ -5,12 +5,7 @@
 
 import { ask } from "../lib/research"
 import { isProviderAvailable } from "../lib/providers"
-import {
-  getBestAvailableModel,
-  type Model,
-  type ModelMode,
-  type ModelResponse,
-} from "../lib/types"
+import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 

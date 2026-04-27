@@ -1,12 +1,56 @@
-# llm
+# @bearly/llm
 
-Multi-LLM research for Claude Code. Get second opinions, deep research with web search, and multi-model consensus from GPT, Gemini, Grok, and Perplexity.
+Multi-LLM research and dispatch. Get second opinions, deep research with web search, multi-model consensus, and a champion-challenger framework that pits frontier models against each other and tracks results in a leaderboard. Works with OpenAI, Anthropic, Google, xAI, OpenRouter (Kimi, DeepSeek, …), Perplexity, and local Ollama models.
+
+Originally built for Claude Code, now usable as a standalone CLI and library.
 
 ## Install
 
 ```bash
+# Standalone (npm)
+npm install @bearly/llm
+
+# As a Claude Code plugin
 claude plugin install llm@bearly
 ```
+
+## Use without Claude Code
+
+`@bearly/llm` works standalone — no Claude Code required.
+
+```bash
+npm install @bearly/llm
+export OPENAI_API_KEY=sk-...
+export OPENROUTER_API_KEY=sk-or-...
+
+npx bearly-llm "what's the capital of France"
+npx bearly-llm pro "review this code"        # multi-leg + pairwise judge
+npx bearly-llm --deep "TUI testing best practices 2026"
+```
+
+State (config + history) lives in `~/.config/llm/` by default. Override
+the location with `LLM_DIR=/path/to/dir` (or `BEARLY_LLM_MEMORY_DIR`).
+
+Output files (the per-call response transcript) land in `os.tmpdir()` by
+default. Override with `BEARLY_LLM_OUTPUT_DIR=/path/to/dir`.
+
+To install the skill markdowns into Claude Code's skill dir so the
+`/ask`, `/pro`, `/deep`, `/fresh`, `/big` slash commands work:
+
+```bash
+npx bearly-llm install-skills              # → ~/.claude/skills/
+npx bearly-llm install-skills --yes        # overwrite without prompting
+npx bearly-llm install-skills /custom/dir  # custom target
+```
+
+For the per-project Claude Code experience (where `ab-pro.jsonl` is
+scoped per project), set `CLAUDE_PROJECT_DIR=$PWD` and `@bearly/llm`
+follows the existing `~/.claude/projects/<encoded-cwd>/memory/`
+convention. This is the default Claude Code wires up.
+
+The `📚 Similar past queries` hint surfaces only when `@bearly/recall` is
+installed (`npm install @bearly/recall`). Without it, the hint is
+silently skipped — `@bearly/llm` runs standalone without crashing.
 
 ## Commands
 

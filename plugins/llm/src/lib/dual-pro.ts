@@ -248,14 +248,32 @@ export function applyEnvOverrides(cfg: DualProConfig, env: NodeJS.ProcessEnv = p
 // Config persistence
 // --------------------------------------------------------------------
 
-/** Project-scoped memory dir. Mirrors appendAbProLog so the config
- * travels with the Claude Code project context. */
+/**
+ * Resolve the memory directory where @bearly/llm reads/writes its state.
+ *
+ * Single dir per user — config (dual-pro-config.json) + data
+ * (ab-pro.jsonl, dual-pro-promotions.jsonl, backtest-runs.jsonl,
+ * challenger-counter) live together. Per user direction, we deliberately
+ * don't split into XDG_CONFIG_HOME + XDG_DATA_HOME — too much magic for
+ * tooling that already expects a single location. Set LLM_DIR (or
+ * BEARLY_LLM_MEMORY_DIR) to override.
+ *
+ * Resolution chain (priority order):
+ *   1. BEARLY_LLM_MEMORY_DIR env var (explicit override)
+ *   2. LLM_DIR env var (shorter alias — same semantic)
+ *   3. CLAUDE_PROJECT_DIR set? → ~/.claude/projects/<encoded-cwd>/memory
+ *      (Claude-Code back-compat: per-project state)
+ *   4. ~/.config/llm/  (default for standalone usage)
+ */
 export function getMemoryDir(env: NodeJS.ProcessEnv = process.env): string {
-  // Lazy-load to avoid hard-binding os.homedir for tests that override HOME.
-  const projectRoot = env.CLAUDE_PROJECT_DIR || process.cwd()
-  const encoded = projectRoot.replace(/\//g, "-")
+  if (env.BEARLY_LLM_MEMORY_DIR) return env.BEARLY_LLM_MEMORY_DIR
+  if (env.LLM_DIR) return env.LLM_DIR
   const home = env.HOME || ""
-  return `${home}/.claude/projects/${encoded}/memory`
+  if (env.CLAUDE_PROJECT_DIR) {
+    const encoded = env.CLAUDE_PROJECT_DIR.replace(/\//g, "-")
+    return `${home}/.claude/projects/${encoded}/memory`
+  }
+  return `${home}/.config/llm`
 }
 
 /**

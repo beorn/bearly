@@ -160,7 +160,10 @@ describe("--json mode end-to-end", () => {
 
     const envelope = JSON.parse(jsonLines[0]!) as Record<string, unknown>
     // Required fields per the bead schema.
-    expect(envelope.file).toMatch(/^\/tmp\/llm-.*\.txt$/)
+    // Output dir resolves via getOutputDir() — defaults to os.tmpdir() which
+    // is /var/folders/.../T on macOS, /tmp on Linux. Just match the trailing
+    // llm-…txt naming, not the prefix.
+    expect(envelope.file).toMatch(/llm-.*\.txt$/)
     expect(envelope.model).toBeTruthy()
     expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
     expect(envelope.status).toBe("completed")

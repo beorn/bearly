@@ -36,13 +36,7 @@
 
 import { ask } from "../lib/research"
 import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
-import {
-  estimateCost,
-  formatCost,
-  getModel,
-  type Model,
-  type ModelMode,
-} from "../lib/types"
+import { estimateCost, formatCost, getModel, type Model, type ModelMode } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
@@ -107,9 +101,7 @@ export async function runProDual(options: {
   // silently drop a model the user pinned.
   for (const id of cfg.mainstays) {
     if (effectiveExclude.includes(id)) {
-      console.error(
-        `⚠️  excluded model "${id}" is set as a mainstay — dispatching anyway. Fix dual-pro-config.json.`,
-      )
+      console.error(`⚠️  excluded model "${id}" is set as a mainstay — dispatching anyway. Fix dual-pro-config.json.`)
     }
   }
 
@@ -160,12 +152,7 @@ export async function runProDual(options: {
         slotD = getModel(picked.slotD ?? "")
         nextCounter = picked.nextCounter
       } else {
-        const picked = dualPro.pickNextChallenger(
-          filteredPool,
-          cfg.splitTestStrategy,
-          counter,
-          effectiveExclude,
-        )
+        const picked = dualPro.pickNextChallenger(filteredPool, cfg.splitTestStrategy, counter, effectiveExclude)
         slotC = getModel(picked.modelId ?? "")
         nextCounter = picked.nextCounter
       }
@@ -361,7 +348,12 @@ export async function runProDual(options: {
       const judgeOnce = async (
         pairId: "ab" | "ac" | "ad",
         contender: LegOutcome,
-      ): Promise<{ id: typeof pairId; result?: import("../lib/dual-pro").PairwiseJudgeResult; cost: number; error?: string }> => {
+      ): Promise<{
+        id: typeof pairId
+        result?: import("../lib/dual-pro").PairwiseJudgeResult
+        cost: number
+        error?: string
+      }> => {
         const prompt = dualPro.buildPairwiseJudgePrompt({
           question,
           pair: {
@@ -401,7 +393,9 @@ export async function runProDual(options: {
   // the AB/AC/AD pairs (each pair scored leg A on its own line — they should
   // agree but we average to reduce variance).
   const aScoreSamples = (
-    [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(Boolean) as import("../lib/dual-pro").JudgeBreakdown[]
+    [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(
+      Boolean,
+    ) as import("../lib/dual-pro").JudgeBreakdown[]
   ).map((s) => s.total)
   const aTotal = aScoreSamples.length > 0 ? aScoreSamples.reduce((s, x) => s + x, 0) / aScoreSamples.length : undefined
   const judgeTotals: Record<"a" | "b" | "c" | "d", number | undefined> = {
@@ -424,9 +418,9 @@ export async function runProDual(options: {
   })()
   // Average breakdown for leg A (used by the v2 reader synthesis).
   const aScoreAvg: import("../lib/dual-pro").JudgeBreakdown | undefined = (() => {
-    const samples = (
-      [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(Boolean) as import("../lib/dual-pro").JudgeBreakdown[]
-    )
+    const samples = [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(
+      Boolean,
+    ) as import("../lib/dual-pro").JudgeBreakdown[]
     if (samples.length === 0) return undefined
     const avg = (k: keyof import("../lib/dual-pro").JudgeBreakdown["scores"]) =>
       samples.reduce((s, x) => s + x.scores[k], 0) / samples.length
@@ -501,9 +495,12 @@ export async function runProDual(options: {
     parts.push("")
     // Surface the pairwise outcomes so the reader can see what each judge
     // call actually decided (not just the synthesized N-way winner).
-    if (pairwise.ab) parts.push(`- **AB**: ${pairwise.ab.winner}${pairwise.ab.reasoning ? ` — ${pairwise.ab.reasoning}` : ""}`)
-    if (pairwise.ac) parts.push(`- **AC**: ${pairwise.ac.winner}${pairwise.ac.reasoning ? ` — ${pairwise.ac.reasoning}` : ""}`)
-    if (pairwise.ad) parts.push(`- **AD**: ${pairwise.ad.winner}${pairwise.ad.reasoning ? ` — ${pairwise.ad.reasoning}` : ""}`)
+    if (pairwise.ab)
+      parts.push(`- **AB**: ${pairwise.ab.winner}${pairwise.ab.reasoning ? ` — ${pairwise.ab.reasoning}` : ""}`)
+    if (pairwise.ac)
+      parts.push(`- **AC**: ${pairwise.ac.winner}${pairwise.ac.reasoning ? ` — ${pairwise.ac.reasoning}` : ""}`)
+    if (pairwise.ad)
+      parts.push(`- **AD**: ${pairwise.ad.winner}${pairwise.ad.reasoning ? ` — ${pairwise.ad.reasoning}` : ""}`)
     parts.push(
       `\n**Overall winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`,
     )
@@ -606,12 +603,12 @@ export async function runProDual(options: {
       cost: legCosts.get(l.id) ?? 0,
       score:
         l.id === "a"
-          ? aScoreAvg ?? null
+          ? (aScoreAvg ?? null)
           : l.id === "b"
-            ? pairwise.ab?.scoreB ?? null
+            ? (pairwise.ab?.scoreB ?? null)
             : l.id === "c"
-              ? pairwise.ac?.scoreB ?? null
-              : pairwise.ad?.scoreB ?? null,
+              ? (pairwise.ac?.scoreB ?? null)
+              : (pairwise.ad?.scoreB ?? null),
     })),
     pairwise,
     judgeModel: judgeModelId,
@@ -782,8 +779,8 @@ async function appendAbProLog(entry: {
                 rubric: entry.rubric,
                 a: byId.get("a")?.score ?? null,
                 b: byId.get("b")?.score ?? null,
-                c: byId.has("c") ? byId.get("c")!.score ?? null : undefined,
-                d: byId.has("d") ? byId.get("d")!.score ?? null : undefined,
+                c: byId.has("c") ? (byId.get("c")!.score ?? null) : undefined,
+                d: byId.has("d") ? (byId.get("d")!.score ?? null) : undefined,
                 // v3 — pairwise results, the actual judge output.
                 ab: entry.pairwise.ab,
                 ac: entry.pairwise.ac,

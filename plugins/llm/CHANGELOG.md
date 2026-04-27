@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.0.0 (2026-04-27)
+
+First public release. Generalization sprint (Phase 5 of the @bearly/llm
+refactor) — package is now usable by non-Claude-Code consumers and
+publishable to npm under the `@bearly` scope.
+
+### Breaking — for internal consumers
+
+These changes are breaking only for callers that already depended on the
+0.x internal layout (km root + bearly monorepo siblings). Standalone
+consumers see them as the public 1.0 API.
+
+- **Memory dir resolution rewritten.** `getMemoryDir` now follows a 4-step
+  priority chain: `BEARLY_LLM_MEMORY_DIR` → `LLM_DIR` → (when
+  `CLAUDE_PROJECT_DIR` set) `~/.claude/projects/<encoded>/memory` →
+  `~/.config/llm/`. Existing Claude Code users keep their per-project
+  history (step 3); standalone consumers get a single combined
+  config+data dir at `~/.config/llm/`. Per user direction, we deliberately
+  don't split into XDG_CONFIG_HOME + XDG_DATA_HOME — too much magic.
+- **`@bearly/recall` is now an optional peer dependency.** Previously
+  imported via the relative path `../../recall/src/history/db`, which
+  coupled the package to the bearly monorepo layout. Now resolved at
+  runtime via `import("@bearly/recall/history/db")` with a fallback to
+  the sibling-source path for in-repo dev. Without recall installed, the
+  "📚 Similar past queries" hint is silently skipped — no crash.
+- **Output dir is configurable.** Previously hardcoded `/tmp/llm-*.txt`;
+  now derived from `BEARLY_LLM_OUTPUT_DIR` (default `os.tmpdir()`).
+  Affects `buildOutputPath` and the discover-models patch path.
+
+### Added
+
+- **`bearly-llm install-skills [<target-dir>]`** — copies the bundled
+  `skills/{ask,pro,deep,fresh,big}` markdowns into a Claude Code skills
+  directory. Default target: `process.env.CLAUDE_SKILLS_DIR` or
+  `~/.claude/skills`. Prompts before overwriting unless `--yes` is set.
+- **Bundled skill markdowns** under `skills/`. The 5 dispatch-related
+  skills (`/ask`, `/pro`, `/deep`, `/fresh`, `/big`) ship inside the npm
+  tarball so consumers don't need the km repo to use them.
+- **`bin: { "bearly-llm": "./src/cli.ts" }`** — installs as
+  `bearly-llm` on PATH (standalone consumers can invoke via `npx
+  bearly-llm` or after `npm i -g`).
+- **README "Use without Claude Code" section** — quickstart for
+  standalone usage covering env vars, install-skills, and CLAUDE_PROJECT_DIR
+  back-compat.
+
+### Changed
+
+- `package.json`: `private: true` → published. Version bumped to 1.0.0.
+  `files` now ships `src` + `skills` + `README.md` + `CHANGELOG.md`.
+  `peerDependencies.@bearly/recall` declared (optional).
+
 ## 0.8.0 (2026-04-27)
 
 dispatch.ts shatter (Phase 4 of the @bearly/llm refactor). The 3061-LOC
@@ -98,7 +149,7 @@ wins reproduce instead of pure pool exploration).
   single `Promise.all` round trip. Total runtime is dominated by the slowest
   leg, not the sum.
 - **Slot D = correlated re-test**: `pickSplitTestSlots(pool, strategy,
-  counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
+counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
   picks the most-recent winner from `ab-pro.jsonl` history that is in the
   pool, NOT a mainstay, and NOT slot C. Cold start (no winners) falls back
   to "next pool entry after slot C in pool-list order" so the two slots
@@ -109,9 +160,9 @@ wins reproduce instead of pure pool exploration).
   sends only TWO responses to the judge. With Gemini 2.5 Flash judge at
   ~$0.001/call, ~$0.003 total — usually cheaper than one bloated 4-way prompt.
 - **`buildPairwiseJudgePrompt`** + **`parsePairwiseJudgeResponse`**: pairwise
-  prompt builder + tolerant parser (strips ```` ```json ```` fences, handles
+  prompt builder + tolerant parser (strips ` ```json ` fences, handles
   prepended prose). Output: `{ winner: "A" | "B" | "tie", scoreA, scoreB,
-  reasoning }`.
+reasoning }`.
 - **`synthesizePairwiseFromV2`**: v2 → v3 reader. Historical v2 ab-pro.jsonl
   entries with N-way `judge.{a,b,c,winner}` fields surface a synthesized
   `judge.ab`/`ac` to keep leaderboard / judge-history / backtest consumers

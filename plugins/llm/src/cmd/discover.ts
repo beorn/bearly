@@ -5,9 +5,10 @@
  * Reads `~/.cache/bearly-llm/new-models.json` (written by `performPricingUpdate`),
  * runs the cheap classifier (gpt-5-nano) over each candidate, and prints a
  * markdown decision table. With `--apply`, writes a unified diff to
- * `/tmp/llm-new-models.patch` containing the `yes`-decisions formatted as
+ * `<outputDir>/llm-new-models.patch` (default os.tmpdir(); override with
+ * BEARLY_LLM_OUTPUT_DIR) containing the `yes`-decisions formatted as
  * SKUs_DATA + ENDPOINTS_DATA additions to types.ts. The user reviews and runs
- * `git apply /tmp/llm-new-models.patch` themselves — never auto-applied.
+ * `git apply <patchPath>` themselves — never auto-applied.
  *
  * Cost: ~$0.0005 × N candidates. For ~30 candidates that's ~$0.02. Run weekly
  * via `/sop infra` or cron.
@@ -79,7 +80,9 @@ export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise
       const typesTsPath = new URL("../lib/types.ts", import.meta.url).pathname
       const typesTsContent = fs.readFileSync(typesTsPath, "utf-8")
       const patch = generateRegistryPatch(approved, typesTsContent)
-      const outPath = "/tmp/llm-new-models.patch"
+      const path = await import("path")
+      const { getOutputDir } = await import("../lib/format")
+      const outPath = path.join(getOutputDir(), "llm-new-models.patch")
       fs.writeFileSync(outPath, patch)
       console.error(`\n✓ Wrote ${outPath} (${approved.length} approved entries)`)
       console.error(`  Review with: cat ${outPath}`)
@@ -88,13 +91,19 @@ export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise
   }
 
   if (isJsonMode()) {
+    let patchPath: string | undefined
+    if (opts.apply && approved.length > 0) {
+      const path = await import("path")
+      const { getOutputDir } = await import("../lib/format")
+      patchPath = path.join(getOutputDir(), "llm-new-models.patch")
+    }
     emitJson({
       status: "completed",
       candidates: artifact.candidates.length,
       approved: approved.length,
       pending: pending.length,
       rejected,
-      patchPath: opts.apply && approved.length > 0 ? "/tmp/llm-new-models.patch" : undefined,
+      patchPath,
     })
   }
 }

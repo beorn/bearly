@@ -28,11 +28,7 @@
  *       - stderr: progress + path line
  */
 
-import {
-  createDispatchContext,
-  _setDefaultDispatchContext,
-  _getDefaultDispatchContext,
-} from "./context"
+import { createDispatchContext, _setDefaultDispatchContext, _getDefaultDispatchContext } from "./context"
 
 /**
  * @deprecated Pass `DispatchContext` through dispatch chain instead.
