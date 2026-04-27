@@ -38,5 +38,5 @@ export {
 } from "./retrieve.ts"
 export type { RetrievedMemory, RetrieveFetcher } from "./retrieve.ts"
 
-export { emitInjectionDebugEvent } from "./debug.ts"
+export { emitInjectionDebugEvent, installInjectionFileWriter } from "./debug.ts"
 export type { InjectionDebugEvent } from "./debug.ts"

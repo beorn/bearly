@@ -108,3 +108,25 @@ $BEARLY_SESSIONS_DIR/turn-manifest-<sessionId>.json
 Default `BEARLY_SESSIONS_DIR` is `~/.claude/bearly-sessions/`.
 
 Schema: `TurnManifest` — see `src/manifest.ts`.
+
+## Observability
+
+Every `wrapInjectedContext()` decision flows through loggily under the
+`injection:*` namespace tree:
+
+- `injection:wrap` — successful framed-envelope emission
+- `injection:skip` — caller decided not to inject (no items, no recall hits, all_seen, …)
+
+Wire a JSONL file with one of:
+
+```bash
+# shared file (same stream as bg-recall, filter with jq)
+LOGGILY_FILE=/tmp/observability.log DEBUG='injection:*,bg-recall:*' claude
+
+# back-compat alias (one-release transition)
+INJECTION_DEBUG_LOG=/tmp/injection.log claude
+```
+
+Each line is a JSON object: `{ts, namespace, level, msg, source, sessionId,
+action, prompt, reason, itemCount, chars, additionalContext}`. `tail -f
+$LOG | jq 'select(.namespace == "injection:wrap")'` to filter.

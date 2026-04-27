@@ -24,5 +24,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "loggily": "^0.4.2"
   }
 }
