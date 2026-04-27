@@ -27,9 +27,9 @@ export function openDatabase(path: string): Database {
 		started_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		last_inbox_pull_seq INTEGER NOT NULL DEFAULT 0,
-		mode       TEXT NOT NULL DEFAULT 'normal',
-		snooze_until INTEGER,
-		snooze_kinds TEXT
+		filter_mode  TEXT NOT NULL DEFAULT 'normal',
+		filter_until INTEGER,
+		filter_kinds TEXT
 	)`)
 
   // Migrations table — tracks schema version so we can evolve the DB without
@@ -70,7 +70,6 @@ export function openDatabase(path: string): Database {
 		bead_id    TEXT,
 		ref        TEXT,
 		ts         INTEGER NOT NULL,
-		response_expected TEXT NOT NULL DEFAULT 'optional',
 		delivery   TEXT NOT NULL DEFAULT 'push',
 		plugin_kind TEXT,
 		room_id    TEXT
@@ -126,15 +125,9 @@ export function openDatabase(path: string): Database {
 		PRIMARY KEY (room_id, session_id)
 	)`)
 
-  // Dismissals — read-receipt-with-reason for actionable-but-ignored events.
-  // Insert via tribe.dismiss; query for audit / classifier-training signal.
-  db.run(`CREATE TABLE IF NOT EXISTS dismissals (
-		session_id TEXT NOT NULL,
-		message_id TEXT NOT NULL,
-		reason     TEXT,
-		ts         INTEGER NOT NULL,
-		PRIMARY KEY (session_id, message_id)
-	)`)
+  // `dismissals` table dropped by migration v11 (km-tribe.filter-collapse) —
+  // tribe.dismiss was an over-import; ambient classification + inbox cursor
+  // already cover the audit / "ignored event" use case.
 
   // `event_log` was merged into `messages WHERE kind='event'` by migration v8
   // (km-tribe.polish-sweep item 9). Fresh installs get only the messages table;
@@ -152,7 +145,6 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_delivery_ts ON messages(delivery, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_plugin_kind_ts ON messages(plugin_kind, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts)")
-  db.run("CREATE INDEX IF NOT EXISTS idx_dismissals_session ON dismissals(session_id, ts)")
 
   return db
 }
@@ -460,6 +452,58 @@ const MIGRATIONS: readonly Migration[] = [
 				SELECT 'room:' || COALESCE(project_id, 'default'), id, started_at, role FROM sessions`)
     },
   },
+  {
+    version: 11,
+    name: "filter-collapse",
+    up(db) {
+      // km-tribe.filter-collapse: collapse tribe.mode + tribe.snooze + tribe.dismiss
+      // into a single tribe.filter tool. Rename sessions.mode/snooze_until/snooze_kinds
+      // → filter_mode/filter_until/filter_kinds; drop messages.response_expected (the
+      // hint is derived from kind + sender at delivery time); drop the dismissals
+      // table outright.
+      //
+      // Fresh-install guard: openDatabase() runs migrations BEFORE the CREATE TABLE
+      // statements above, so on a fresh install the relevant tables don't yet exist
+      // and we have nothing to migrate. (The CREATE TABLE statements already use the
+      // post-v11 column names.)
+      const hasSessions = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get() as {
+        name: string
+      } | null
+      if (hasSessions) {
+        const sessionCols = new Set(
+          (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((r) => r.name),
+        )
+        if (sessionCols.has("mode") && !sessionCols.has("filter_mode")) {
+          db.run("ALTER TABLE sessions RENAME COLUMN mode TO filter_mode")
+        }
+        if (sessionCols.has("snooze_until") && !sessionCols.has("filter_until")) {
+          db.run("ALTER TABLE sessions RENAME COLUMN snooze_until TO filter_until")
+        }
+        if (sessionCols.has("snooze_kinds") && !sessionCols.has("filter_kinds")) {
+          db.run("ALTER TABLE sessions RENAME COLUMN snooze_kinds TO filter_kinds")
+        }
+      }
+
+      const hasMessages = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get() as {
+        name: string
+      } | null
+      if (hasMessages) {
+        const messageCols = new Set(
+          (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
+        )
+        if (messageCols.has("response_expected")) {
+          // Bun ships SQLite ≥3.45 (DROP COLUMN landed in 3.35), so the simple
+          // ALTER works without the legacy table-rebuild dance.
+          db.run("ALTER TABLE messages DROP COLUMN response_expected")
+        }
+      }
+
+      // Dismissals: drop outright. The audit/classifier-training rationale was
+      // never connected to anything that consumed the rows.
+      db.run("DROP INDEX IF EXISTS idx_dismissals_session")
+      db.run("DROP TABLE IF EXISTS dismissals")
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -481,13 +525,13 @@ export function createStatements(db: Database) {
 
     insertMessage: db.prepare(`
 		INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts,
-			response_expected, delivery, plugin_kind, room_id)
+			delivery, plugin_kind, room_id)
 		VALUES ($id, $type, $sender, $recipient, $kind, $content, $bead_id, $ref, $ts,
-			$response_expected, $delivery, $plugin_kind, $room_id)
+			$delivery, $plugin_kind, $room_id)
 	`),
 
     allSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at, mode, snooze_until, snooze_kinds, last_inbox_pull_seq FROM sessions",
+      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at, filter_mode, filter_until, filter_kinds, last_inbox_pull_seq FROM sessions",
     ),
 
     messageHistory: db.prepare(`
@@ -529,7 +573,7 @@ export function createStatements(db: Database) {
      *  exceeds the session's pull cursor and whose recipient matches. */
     getInboxRows: db.prepare(`
 		SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts,
-			response_expected, delivery, plugin_kind, room_id
+			delivery, plugin_kind, room_id
 		FROM messages
 		WHERE rowid > $since
 			AND (recipient = $name OR recipient = '*')
@@ -547,22 +591,20 @@ export function createStatements(db: Database) {
     /** Read-only fetch of the per-session pull cursor. */
     getInboxCursor: db.prepare("SELECT last_inbox_pull_seq FROM sessions WHERE id = $id"),
 
-    /** Per-session focus mode: 'focus' | 'normal' | 'ambient'. */
-    setSessionMode: db.prepare("UPDATE sessions SET mode = $mode, updated_at = $now WHERE id = $id"),
-
-    getSessionMode: db.prepare("SELECT mode, snooze_until, snooze_kinds FROM sessions WHERE id = $id"),
-
-    /** Set or clear the snooze window on a session. duration_sec=0 clears. */
-    setSessionSnooze: db.prepare(
-      "UPDATE sessions SET snooze_until = $until, snooze_kinds = $kinds, updated_at = $now WHERE id = $id",
+    /**
+     * Apply a session's filter — single update covering persistent mode +
+     * time-bounded mute + per-kind glob list. Replaces the old
+     * setSessionMode / setSessionSnooze pair.
+     *
+     * Pass any field as null to clear that dimension: `$until = null` makes the
+     * filter persistent, `$kinds = null` silences everything (when a snooze is
+     * active), `$mode = 'normal'` returns to default behavior.
+     */
+    setSessionFilter: db.prepare(
+      "UPDATE sessions SET filter_mode = $mode, filter_until = $until, filter_kinds = $kinds, updated_at = $now WHERE id = $id",
     ),
 
-    /** Insert a dismissal — INSERT OR REPLACE so a session can update reasoning. */
-    insertDismissal: db.prepare(
-      "INSERT OR REPLACE INTO dismissals (session_id, message_id, reason, ts) VALUES ($session_id, $message_id, $reason, $ts)",
-    ),
-
-    /** Snapshot of dismissals for a session (audit / classifier-training). */
-    listDismissals: db.prepare("SELECT message_id, reason, ts FROM dismissals WHERE session_id = $id ORDER BY ts DESC"),
+    /** Read the session's current filter (mode + optional until + optional kinds). */
+    getSessionFilter: db.prepare("SELECT filter_mode, filter_until, filter_kinds FROM sessions WHERE id = $id"),
   }
 }
