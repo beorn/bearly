@@ -7,6 +7,89 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.13.0 — Filter collapse, derived reply hint (km-tribe.filter-collapse)
+
+Wire-protocol bumped v3 → v4. Three tools become one; one persisted column
+becomes a derived value.
+
+### Removed (breaking — wire v4)
+
+- **`tribe.mode`**, **`tribe.snooze`**, **`tribe.dismiss`** — collapsed into
+  `tribe.filter`. The classifier-training rationale for `tribe.dismiss` (audit
+  rows of "agent saw the event but didn't reply") was never wired up to a
+  consumer; ambient classification + the inbox cursor cover the same intent
+  without the extra table.
+- **`responseExpected` channel-envelope field** — the per-event reply hint
+  (`yes` / `optional` / `no`) is no longer pushed on the wire and is no
+  longer persisted on the row. The daemon derives it at delivery time from
+  `(kind, recipient, senderRole)`:
+  - `kind: 'event'`              → `'no'`  (journal-only)
+  - `recipient: '*'` (broadcast) → `'optional'`
+  - sender `daemon` / `system`   → `'optional'`
+  - direct DM from a peer member → `'yes'`
+- **`messages.response_expected`** column dropped (migration v11).
+- **`dismissals` table** dropped (migration v11).
+
+### Added
+
+- **`tribe.filter({mode?, kinds?, until?})`** — single per-session event
+  filter. Combines persistent mode + time-bounded mute + per-kind glob list:
+  - `mode: 'focus' | 'normal' | 'ambient'` — persistent filter level
+  - `kinds: string[]` — `plugin_kind` globs to silence (e.g. `['github:*']`)
+  - `until: number` — unix-ms timestamp expiring the kind filter; absent =
+    persistent
+  - empty args clear the filter (mode → `'normal'`, kinds + until → null)
+  - direct messages bypass kinds/until — only `mode: 'focus'` filters DMs
+
+### Changed
+
+- Plugin emits no longer pass `responseExpected` on `EventClassification`
+  (the field was dropped from the type). The reply hint is computed at
+  delivery time, so the per-plugin matrix that v0.12.0 documented is now
+  derived from the (kind, recipient, sender role) tuple.
+
+### Schema (migration v11)
+
+- `sessions`: rename `mode` → `filter_mode`, `snooze_until` → `filter_until`,
+  `snooze_kinds` → `filter_kinds`. Single set of columns drives the unified
+  `tribe.filter` tool.
+- `messages`: drop `response_expected`.
+- Drop `dismissals` table + its index.
+
+Migration is a one-way ALTER — Bun ships SQLite ≥3.45 (DROP COLUMN landed in
+3.35), so no table-rebuild dance.
+
+### Migration guide for downstream callers
+
+```ts
+// v3 (0.12.x):
+await client.call("tribe.mode", { mode: "focus" })
+await client.call("tribe.snooze", { duration_sec: 600, kinds: ["github:*"] })
+await client.call("tribe.dismiss", { message_id, reason: "false positive" })
+
+// v4 (0.13.x):
+await client.call("tribe.filter", { mode: "focus" })
+await client.call("tribe.filter", { kinds: ["github:*"], until: Date.now() + 600_000 })
+// dismiss has no replacement — ambient classification covers the same intent
+```
+
+Plugin authors emitting events:
+
+```ts
+// v3 (0.12.x):
+api.broadcast("...", "git:commit", undefined, {
+  delivery: "pull",
+  responseExpected: "no",
+  pluginKind: "git:commit",
+})
+
+// v4 (0.13.x): drop responseExpected — derived at delivery time
+api.broadcast("...", "git:commit", undefined, {
+  delivery: "pull",
+  pluginKind: "git:commit",
+})
+```
+
 ## 0.12.0 — Event classification, focus mode, inbox cursor (km-tribe.event-classification)
 
 Wire-protocol bumped v2 → v3.

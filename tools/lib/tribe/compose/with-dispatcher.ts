@@ -230,7 +230,6 @@ export function withDispatcher<
     function logActivity(type: string, content: string): void {
       sendMessage(daemonCtx, "*", content, type, undefined, undefined, "broadcast", {
         delivery: "pull",
-        responseExpected: "no",
         pluginKind: `daemon:${type}`,
       })
     }
@@ -501,9 +500,7 @@ export function withDispatcher<
           case TRIBE_COORD_METHODS.releaseChief:
           case TRIBE_COORD_METHODS.debug:
           case TRIBE_COORD_METHODS.inbox:
-          case TRIBE_COORD_METHODS.mode:
-          case TRIBE_COORD_METHODS.snooze:
-          case TRIBE_COORD_METHODS.dismiss: {
+          case TRIBE_COORD_METHODS.filter: {
             const client = clients.get(connId)
             const ctx = client?.ctx ?? daemonCtx
             const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)

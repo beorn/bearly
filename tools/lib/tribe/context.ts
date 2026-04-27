@@ -5,7 +5,7 @@
 import type { Database } from "bun:sqlite"
 import type { TribeStatements } from "./database.ts"
 import type { TribeRole } from "./config.ts"
-import type { Delivery, MessageKind, ResponseExpected } from "./messaging.ts"
+import type { Delivery, MessageKind } from "./messaging.ts"
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -27,14 +27,16 @@ export type MessageInsertedInfo = {
    *  journal-only and must NOT be delivered to any client. */
   kind: MessageKind
   sender: string
+  /** Sender's TribeRole (`chief` / `member` / `watch` / `daemon` / `system` /
+   *  `pending`) — used by the broadcast pipeline to derive the channel-envelope
+   *  reply hint. Replaces the persisted responseExpected column dropped in v11. */
+  senderRole: string
   recipient: string
   content: string
   bead_id: string | null
   /** km-tribe.event-classification routing — `push` lands on the MCP channel,
    *  `pull` is inbox-only (read via `tribe.inbox`). */
   delivery: Delivery
-  /** Per-event reply hint surfaced on the channel envelope. */
-  responseExpected: ResponseExpected
   /** Originating plugin event id (e.g. `git:commit`); null for human messages. */
   pluginKind: string | null
   /** Matrix-shape room scope; null until populated by the room-aware path. */

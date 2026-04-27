@@ -53,7 +53,6 @@ export const gitPlugin: TribePluginApi = {
             // for the tribe but no agent needs to react. Land in inbox only.
             api.broadcast(`Committed: ${line}`, "status", undefined, {
               delivery: "pull",
-              responseExpected: "no",
               pluginKind: "git:commit",
             })
           }

@@ -1,13 +1,13 @@
 /**
- * km-tribe.event-classification — integration tests.
+ * km-tribe.event-classification — integration tests (post-filter-collapse v11).
  *
  * Covers:
- *   - Per-plugin classification (push vs pull, responseExpected hints)
- *   - Dual cursor: push delivery cursor + pull inbox cursor advance independently
- *   - Mode filter: focus drops everything except `responseExpected: "yes"`
- *   - Snooze: time-bounded suppression with auto-revert and kind globs
- *   - Dismiss: writes audit row
- *   - Channel envelope carries `responseExpected` + `pluginKind`
+ *   - Per-plugin classification (push vs pull) at sendMessage boundary
+ *   - tribe.inbox dual cursor + glob filter
+ *   - replyHint derivation at delivery time (kind + sender role + recipient)
+ *   - Schema invariant: every row carries delivery / pluginKind / no-NULL
+ *
+ * tribe.filter (mode + kinds + until) coverage lives in tribe-filter.test.ts.
  *
  * These are unit tests over the in-process daemon helpers (database, messaging,
  * handlers) — no socket, no spawn. Faster + deterministic vs spawning a daemon
@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto"
 
 import { openDatabase, createStatements } from "../tools/lib/tribe/database.ts"
 import { createTribeContext } from "../tools/lib/tribe/context.ts"
-import { sendMessage } from "../tools/lib/tribe/messaging.ts"
+import { sendMessage, deriveReplyHint } from "../tools/lib/tribe/messaging.ts"
 import { handleToolCall } from "../tools/lib/tribe/handlers.ts"
 import type { ActiveSessionInfo, HandlerOpts } from "../tools/lib/tribe/handlers.ts"
 
@@ -48,19 +48,24 @@ function makeOpts(): HandlerOpts {
   }
 }
 
-function ctxFor(db: ReturnType<typeof openDatabase>, stmts: ReturnType<typeof createStatements>, name: string) {
+function ctxFor(
+  db: ReturnType<typeof openDatabase>,
+  stmts: ReturnType<typeof createStatements>,
+  name: string,
+  role: "member" | "daemon" = "member",
+) {
   const sessionId = randomUUID()
   // Insert the session row so handlers that key off ctx.sessionId find a row.
   const now = Date.now()
   db.prepare(
     `INSERT INTO sessions (id, name, role, domains, pid, started_at, updated_at)
-     VALUES ($id, $name, 'member', '[]', 0, $now, $now)`,
-  ).run({ $id: sessionId, $name: name, $now: now })
+     VALUES ($id, $name, $role, '[]', 0, $now, $now)`,
+  ).run({ $id: sessionId, $name: name, $role: role, $now: now })
   return createTribeContext({
     db,
     stmts,
     sessionId,
-    sessionRole: "member",
+    sessionRole: role,
     initialName: name,
     domains: [],
     claudeSessionId: null,
@@ -78,98 +83,76 @@ describe("classification — per-plugin defaults via sendMessage", () => {
     f = dbFixture()
   })
 
-  it("git:commit broadcast lands as delivery=pull, response=no", () => {
+  it("git:commit broadcast lands as delivery=pull with the right pluginKind", () => {
     const ctx = ctxFor(f.db, f.stmts, "git-plugin")
     sendMessage(ctx, "*", "Committed: abc123 fix bug", "status", undefined, undefined, "broadcast", {
       delivery: "pull",
-      responseExpected: "no",
       pluginKind: "git:commit",
     })
-    const row = f.db.prepare("SELECT delivery, response_expected, plugin_kind FROM messages").get() as {
+    const row = f.db.prepare("SELECT delivery, plugin_kind FROM messages").get() as {
       delivery: string
-      response_expected: string
       plugin_kind: string
     }
     expect(row.delivery).toBe("pull")
-    expect(row.response_expected).toBe("no")
     expect(row.plugin_kind).toBe("git:commit")
   })
 
-  it("github:ci-alert DM lands as delivery=push, response=yes", () => {
+  it("github:ci-alert DM lands as delivery=push with the right pluginKind", () => {
     const ctx = ctxFor(f.db, f.stmts, "github-plugin")
     sendMessage(ctx, "alice", "Your repo X has CI failures", "github:ci-alert", undefined, undefined, "direct", {
       delivery: "push",
-      responseExpected: "yes",
       pluginKind: "github:ci-alert",
     })
-    const row = f.db.prepare("SELECT delivery, response_expected, plugin_kind FROM messages").get() as {
+    const row = f.db.prepare("SELECT delivery, plugin_kind FROM messages").get() as {
       delivery: string
-      response_expected: string
       plugin_kind: string
     }
     expect(row.delivery).toBe("push")
-    expect(row.response_expected).toBe("yes")
     expect(row.plugin_kind).toBe("github:ci-alert")
   })
 
-  it("health warning broadcast = pull/no; critical broadcast = push/yes", () => {
-    const ctx = ctxFor(f.db, f.stmts, "health")
-    sendMessage(ctx, "*", "CPU at 60%", "health:cpu:warning", undefined, undefined, "broadcast", {
-      delivery: "pull",
-      responseExpected: "no",
-      pluginKind: "health:cpu:warning",
-    })
-    sendMessage(
-      ctx,
-      "*",
-      "CPU at 95% — memory thrash imminent",
-      "health:cpu:critical",
-      undefined,
-      undefined,
-      "broadcast",
-      {
-        delivery: "push",
-        responseExpected: "yes",
-        pluginKind: "health:cpu:critical",
-      },
-    )
-    const rows = f.db.prepare("SELECT delivery, response_expected FROM messages ORDER BY rowid ASC").all() as Array<{
-      delivery: string
-      response_expected: string
-    }>
-    expect(rows[0]).toEqual({ delivery: "pull", response_expected: "no" })
-    expect(rows[1]).toEqual({ delivery: "push", response_expected: "yes" })
-  })
-
-  it("legacy sendMessage call without classification defaults to push/optional (back-compat)", () => {
+  it("legacy sendMessage call without classification defaults to push delivery", () => {
     const ctx = ctxFor(f.db, f.stmts, "legacy")
     // Note: NO 8th argument — exercises the default classification path.
     sendMessage(ctx, "*", "legacy broadcast", "notify")
-    const row = f.db.prepare("SELECT delivery, response_expected, plugin_kind FROM messages").get() as {
+    const row = f.db.prepare("SELECT delivery, plugin_kind FROM messages").get() as {
       delivery: string
-      response_expected: string
       plugin_kind: string | null
     }
     expect(row.delivery).toBe("push")
-    expect(row.response_expected).toBe("optional")
     expect(row.plugin_kind).toBeNull()
-  })
-
-  it("direct message defaults to response=yes (caller expects a reply)", () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    sendMessage(ctx, "bob", "hey can you check this?", "query")
-    const row = f.db.prepare("SELECT delivery, response_expected, kind FROM messages").get() as {
-      delivery: string
-      response_expected: string
-      kind: string
-    }
-    expect(row.kind).toBe("direct")
-    expect(row.response_expected).toBe("yes")
   })
 })
 
 // ---------------------------------------------------------------------------
-// 2. tribe.inbox — dual cursor
+// 2. deriveReplyHint — replaces the persisted column
+// ---------------------------------------------------------------------------
+
+describe("deriveReplyHint — derived from kind + recipient + senderRole", () => {
+  it("event rows are journal-only → 'no'", () => {
+    expect(deriveReplyHint({ kind: "event", recipient: "*", senderRole: "daemon" })).toBe("no")
+    expect(deriveReplyHint({ kind: "event", recipient: "alice", senderRole: "member" })).toBe("no")
+  })
+
+  it("broadcast '*' → 'optional' regardless of sender", () => {
+    expect(deriveReplyHint({ kind: "broadcast", recipient: "*", senderRole: "member" })).toBe("optional")
+    expect(deriveReplyHint({ kind: "broadcast", recipient: "*", senderRole: "daemon" })).toBe("optional")
+    expect(deriveReplyHint({ kind: "broadcast", recipient: "*", senderRole: "system" })).toBe("optional")
+  })
+
+  it("daemon / system DM → 'optional'", () => {
+    expect(deriveReplyHint({ kind: "direct", recipient: "alice", senderRole: "daemon" })).toBe("optional")
+    expect(deriveReplyHint({ kind: "direct", recipient: "alice", senderRole: "system" })).toBe("optional")
+  })
+
+  it("member-to-member DM → 'yes'", () => {
+    expect(deriveReplyHint({ kind: "direct", recipient: "alice", senderRole: "member" })).toBe("yes")
+    expect(deriveReplyHint({ kind: "direct", recipient: "bob", senderRole: "chief" })).toBe("yes")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. tribe.inbox — dual cursor
 // ---------------------------------------------------------------------------
 
 describe("tribe.inbox — pull cursor advances independently of push cursor", () => {
@@ -183,21 +166,12 @@ describe("tribe.inbox — pull cursor advances independently of push cursor", ()
     const reader = ctxFor(f.db, f.stmts, "alice")
 
     // Three ambient events.
-    sendMessage(sender, "*", "Committed: a1", "status", undefined, undefined, "broadcast", {
-      delivery: "pull",
-      responseExpected: "no",
-      pluginKind: "git:commit",
-    })
-    sendMessage(sender, "*", "Committed: b2", "status", undefined, undefined, "broadcast", {
-      delivery: "pull",
-      responseExpected: "no",
-      pluginKind: "git:commit",
-    })
-    sendMessage(sender, "*", "Committed: c3", "status", undefined, undefined, "broadcast", {
-      delivery: "pull",
-      responseExpected: "no",
-      pluginKind: "git:commit",
-    })
+    for (const tag of ["a1", "b2", "c3"]) {
+      sendMessage(sender, "*", `Committed: ${tag}`, "status", undefined, undefined, "broadcast", {
+        delivery: "pull",
+        pluginKind: "git:commit",
+      })
+    }
 
     // First pull — all three.
     const r1 = (await handleToolCall(reader, "tribe.inbox", { limit: 50 }, makeOpts())) as {
@@ -217,7 +191,6 @@ describe("tribe.inbox — pull cursor advances independently of push cursor", ()
     // New event after cursor — visible on next pull.
     sendMessage(sender, "*", "Committed: d4", "status", undefined, undefined, "broadcast", {
       delivery: "pull",
-      responseExpected: "no",
       pluginKind: "git:commit",
     })
     const r3 = (await handleToolCall(reader, "tribe.inbox", { limit: 50 }, makeOpts())) as {
@@ -258,12 +231,10 @@ describe("tribe.inbox — pull cursor advances independently of push cursor", ()
     // Push event.
     sendMessage(sender, "*", "important DM", "notify", undefined, undefined, "broadcast", {
       delivery: "push",
-      responseExpected: "yes",
     })
     // Pull event.
     sendMessage(sender, "*", "ambient FYI", "status", undefined, undefined, "broadcast", {
       delivery: "pull",
-      responseExpected: "no",
     })
 
     // Pull-side cursor empty before tribe.inbox call.
@@ -314,138 +285,45 @@ describe("tribe.inbox — pull cursor advances independently of push cursor", ()
 })
 
 // ---------------------------------------------------------------------------
-// 3. tribe.mode — focus / normal / ambient
+// 4. Schema invariants — every row carries delivery; v11 dropped the
+//    response_expected column entirely.
 // ---------------------------------------------------------------------------
 
-describe("tribe.mode — persists, validates, drives delivery filter", () => {
-  let f: ReturnType<typeof dbFixture>
-  beforeEach(() => {
-    f = dbFixture()
-  })
-
-  it("sets and persists per-session mode", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    await handleToolCall(ctx, "tribe.mode", { mode: "focus" }, makeOpts())
-    const row = f.db.prepare("SELECT mode FROM sessions WHERE id = ?").get(ctx.sessionId) as { mode: string }
-    expect(row.mode).toBe("focus")
-  })
-
-  it("rejects invalid mode", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    const r = (await handleToolCall(ctx, "tribe.mode", { mode: "screaming" }, makeOpts())) as {
-      content: Array<{ type: string; text: string }>
-    }
-    const parsed = JSON.parse(r.content[0]!.text) as { error?: string }
-    expect(parsed.error).toContain("Invalid mode")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 4. tribe.snooze — duration, auto-revert, kinds
-// ---------------------------------------------------------------------------
-
-describe("tribe.snooze — time-bounded suppression", () => {
-  let f: ReturnType<typeof dbFixture>
-  beforeEach(() => {
-    f = dbFixture()
-  })
-
-  it("sets snooze_until and snooze_kinds", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    await handleToolCall(ctx, "tribe.snooze", { duration_sec: 600, kinds: ["github:*"] }, makeOpts())
-    const row = f.db.prepare("SELECT snooze_until, snooze_kinds FROM sessions WHERE id = ?").get(ctx.sessionId) as {
-      snooze_until: number
-      snooze_kinds: string
-    }
-    expect(row.snooze_until).toBeGreaterThan(Date.now())
-    expect(JSON.parse(row.snooze_kinds)).toEqual(["github:*"])
-  })
-
-  it("duration_sec=0 cancels active snooze (explicit wake)", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    await handleToolCall(ctx, "tribe.snooze", { duration_sec: 600 }, makeOpts())
-    await handleToolCall(ctx, "tribe.snooze", { duration_sec: 0 }, makeOpts())
-    const row = f.db.prepare("SELECT snooze_until FROM sessions WHERE id = ?").get(ctx.sessionId) as {
-      snooze_until: number | null
-    }
-    expect(row.snooze_until).toBeNull()
-  })
-
-  it("snooze auto-reverts after duration elapses (cursor not modified)", async () => {
-    // Set snooze for 1ms in the past — already expired.
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    f.stmts.setSessionSnooze.run({
-      $id: ctx.sessionId,
-      $until: Date.now() - 1,
-      $kinds: null,
-      $now: Date.now(),
-    })
-    const row = f.db.prepare("SELECT snooze_until FROM sessions WHERE id = ?").get(ctx.sessionId) as {
-      snooze_until: number
-    }
-    // Snooze persisted but is in the past — delivery filter (in daemon) will
-    // see snooze_until <= now and pass through. The handler doesn't auto-clear
-    // the timestamp; it's a timestamp comparison at delivery time.
-    expect(row.snooze_until).toBeLessThan(Date.now())
-  })
-
-  it("rejects invalid duration", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    const r = (await handleToolCall(ctx, "tribe.snooze", { duration_sec: -1 }, makeOpts())) as {
-      content: Array<{ type: string; text: string }>
-    }
-    const parsed = JSON.parse(r.content[0]!.text) as { error?: string }
-    expect(parsed.error).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 5. tribe.dismiss — audit trail
-// ---------------------------------------------------------------------------
-
-describe("tribe.dismiss — audit-trail row", () => {
-  let f: ReturnType<typeof dbFixture>
-  beforeEach(() => {
-    f = dbFixture()
-  })
-
-  it("inserts a dismissals row keyed by (session, message)", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    const messageId = randomUUID()
-    await handleToolCall(ctx, "tribe.dismiss", { message_id: messageId, reason: "false positive" }, makeOpts())
-    const row = f.db.prepare("SELECT message_id, reason, ts FROM dismissals WHERE session_id = ?").get(ctx.sessionId) as
-      | { message_id: string; reason: string; ts: number }
-      | undefined
-    expect(row).toBeDefined()
-    expect(row!.message_id).toBe(messageId)
-    expect(row!.reason).toBe("false positive")
-  })
-
-  it("rejects when message_id missing", async () => {
-    const ctx = ctxFor(f.db, f.stmts, "alice")
-    const r = (await handleToolCall(ctx, "tribe.dismiss", {}, makeOpts())) as {
-      content: Array<{ type: string; text: string }>
-    }
-    const parsed = JSON.parse(r.content[0]!.text) as { error?: string }
-    expect(parsed.error).toContain("required")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 6. Schema invariants — every push row carries the new columns
-// ---------------------------------------------------------------------------
-
-describe("schema — every row carries delivery + response_expected", () => {
-  it("legacy sendMessage rows are populated by defaults, never NULL", () => {
+describe("schema v11 — every row carries delivery; replyHint is derived not stored", () => {
+  it("legacy sendMessage rows are populated by defaults, never NULL on delivery", () => {
     const f = dbFixture()
     const ctx = ctxFor(f.db, f.stmts, "alice")
     sendMessage(ctx, "*", "no-classification", "notify")
-    const row = f.db.prepare("SELECT delivery, response_expected FROM messages").get() as {
-      delivery: string
-      response_expected: string
-    }
+    const row = f.db.prepare("SELECT delivery FROM messages").get() as { delivery: string }
     expect(row.delivery).not.toBeNull()
-    expect(row.response_expected).not.toBeNull()
+    f.cleanup()
+  })
+
+  it("messages table has no response_expected column (v11)", () => {
+    const f = dbFixture()
+    const cols = (f.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name)
+    expect(cols).not.toContain("response_expected")
+    f.cleanup()
+  })
+
+  it("sessions table uses filter_* columns (renamed from mode/snooze_*)", () => {
+    const f = dbFixture()
+    const cols = (f.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((r) => r.name)
+    expect(cols).toContain("filter_mode")
+    expect(cols).toContain("filter_until")
+    expect(cols).toContain("filter_kinds")
+    expect(cols).not.toContain("mode")
+    expect(cols).not.toContain("snooze_until")
+    expect(cols).not.toContain("snooze_kinds")
+    f.cleanup()
+  })
+
+  it("dismissals table is gone (v11)", () => {
+    const f = dbFixture()
+    const t = f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dismissals'").get() as
+      | { name: string }
+      | null
+    expect(t).toBeNull()
     f.cleanup()
   })
 })

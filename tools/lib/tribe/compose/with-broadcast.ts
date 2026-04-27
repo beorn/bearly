@@ -29,7 +29,7 @@ import {
 } from "../context.ts"
 import { activityFromMessage, writeActivity } from "../activity-log.ts"
 import { createCoalescer, type PendingBroadcast } from "../broadcast-coalescer.ts"
-import { sendMessage } from "../messaging.ts"
+import { deriveReplyHint, sendMessage, type ReplyHint } from "../messaging.ts"
 import { makeNotification } from "../socket.ts"
 import { hasInjectionTrigger, rewriteViaHaiku, scrubInjectionShape } from "../broadcast-scrubber.ts"
 import type { BaseTribe } from "./base.ts"
@@ -65,9 +65,6 @@ function singleEventNotification(ev: PendingBroadcast): string {
     content: ev.content,
     bead_id: ev.bead_id,
     message_id: ev.id,
-    // km-tribe.event-classification: surfaced on every channel envelope so the
-    // receiving LLM can decide whether to reply at all.
-    responseExpected: ev.responseExpected,
     plugin_kind: ev.pluginKind,
   })
 }
@@ -79,11 +76,6 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
   const header = `${total} tribe event${total === 1 ? "" : "s"}`
   const content = `${header}\n${lines.join("\n")}`
   const last = events[events.length - 1]
-  // For a coalesced batch, the per-event responseExpected can vary. The safest
-  // aggregation is the strongest signal: if any event in the batch expected a
-  // reply ("yes"), the batch envelope says "yes"; otherwise fall back to
-  // "optional" (avoids pretending an entire batch is "no").
-  const aggResp: "yes" | "optional" = events.some((e) => e.responseExpected === "yes") ? "yes" : "optional"
   return makeNotification("channel", {
     from: "daemon",
     type: markedType("delta"),
@@ -91,7 +83,6 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
     bead_id: null,
     message_id: last?.id ?? null,
     events_count: total,
-    responseExpected: aggResp,
     plugin_kind: null,
   })
 }
@@ -104,24 +95,32 @@ function broadcastBatchMs(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session delivery filter — focus / normal / ambient + snooze.
+// Per-session delivery filter — unified focus mode + time-bounded mute +
+// per-kind glob list (km-tribe.filter-collapse). Reads the filter shape that
+// `tribe.filter` writes (sessions.filter_mode/filter_until/filter_kinds).
 // ---------------------------------------------------------------------------
 
+type SessionFilter = {
+  filter_mode: string
+  filter_until: number | null
+  filter_kinds: string | null
+}
+
 function shouldDeliver(
-  info: { responseExpected: "yes" | "no" | "optional"; pluginKind: string | null },
-  filter: { mode: string; snooze_until: number | null; snooze_kinds: string | null } | undefined,
+  info: { replyHint: ReplyHint; pluginKind: string | null },
+  filter: SessionFilter | undefined,
 ): boolean {
   if (!filter) return true // No session row yet — default-allow
-  const mode = filter.mode || "normal"
+  const mode = filter.filter_mode || "normal"
   if (mode === "ambient") return true
   if (mode === "focus") {
-    return info.responseExpected === "yes"
+    return info.replyHint === "yes"
   }
-  // mode === 'normal' — apply snooze if active
+  // mode === 'normal' — apply the time-bounded mute when active
   const now = Date.now()
-  if (!filter.snooze_until || filter.snooze_until <= now) return true
-  const kinds = filter.snooze_kinds ? safeJsonArray(filter.snooze_kinds) : null
-  if (!kinds || kinds.length === 0) return false // snooze covers all kinds
+  if (!filter.filter_until || filter.filter_until <= now) return true
+  const kinds = filter.filter_kinds ? safeJsonArray(filter.filter_kinds) : null
+  if (!kinds || kinds.length === 0) return false // mute covers all kinds
   if (!info.pluginKind) return true
   return !kinds.some((g) => globMatch(g, info.pluginKind!))
 }
@@ -270,6 +269,16 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         cleaned = await rewriteViaHaiku(cleaned)
       }
 
+      // Derive the channel-envelope reply hint from durable metadata
+      // (km-tribe.filter-collapse: the response_expected column was dropped).
+      // Used only by the `focus` mode of tribe.filter — the wire envelope no
+      // longer carries the hint.
+      const replyHint = deriveReplyHint({
+        kind: info.kind,
+        recipient: info.recipient,
+        senderRole: info.senderRole,
+      })
+
       const pending: PendingBroadcast = {
         id: info.id,
         ts: info.ts,
@@ -278,7 +287,7 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         sender: info.sender,
         content: cleaned,
         bead_id: info.bead_id,
-        responseExpected: info.responseExpected,
+        replyHint,
         pluginKind: info.pluginKind,
       }
 
@@ -291,13 +300,14 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         }
         if (client.role === "pending") continue
 
-        // km-tribe.event-classification: per-session mode + snooze filter.
-        // Direct messages always bypass these.
+        // km-tribe.filter-collapse: per-session unified filter
+        // (mode + time-bounded mute + per-kind globs). Direct messages bypass
+        // the kinds/until dimensions — only `mode: focus` filters DMs.
         if (info.kind !== "direct" && !isWatch) {
-          const sessionFilter = stmts.getSessionMode.get({ $id: client.ctx.sessionId }) as
-            | { mode: string; snooze_until: number | null; snooze_kinds: string | null }
+          const sessionFilter = stmts.getSessionFilter.get({ $id: client.ctx.sessionId }) as
+            | SessionFilter
             | undefined
-          if (!shouldDeliver(info, sessionFilter)) continue
+          if (!shouldDeliver({ replyHint, pluginKind: info.pluginKind }, sessionFilter)) continue
         }
 
         // Direct messages bypass coalescing — they're time-sensitive.
@@ -318,7 +328,6 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
     const broadcastLogFn = (msg: string, type: string): void => {
       sendMessage(daemonCtx, "*", msg, type, undefined, undefined, "broadcast", {
         delivery: "pull",
-        responseExpected: "no",
         pluginKind: type,
       })
     }

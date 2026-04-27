@@ -23,13 +23,16 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Wire-protocol version. Bump on any payload-shape change a client cares about:
- *   v2 — baseline (post-event-bus daemon)
- *   v3 — km-tribe.event-classification: channel notifications now carry
- *        `responseExpected: "yes" | "optional" | "no"` and `pluginKind`;
- *        new RPCs `tribe.inbox`, `tribe.mode`, `tribe.snooze`, `tribe.dismiss`.
+ * Wire-protocol version. Bump on any payload-shape change a client cares about.
+ * v4 (current) carries channel notifications with `pluginKind` only — the
+ * per-event reply hint is derived at delivery time, not pushed on the wire.
+ * RPCs: `tribe.send` / `tribe.broadcast` / `tribe.members` / `tribe.history` /
+ * `tribe.rename` / `tribe.health` / `tribe.join` / `tribe.reload` /
+ * `tribe.retro` / `tribe.chief` / `tribe.claim-chief` / `tribe.release-chief` /
+ * `tribe.debug` / `tribe.inbox` / `tribe.filter`. See plugins/tribe/CHANGELOG.md
+ * for the full history (v3 → v4 was the filter-collapse breaking change).
  */
-export const TRIBE_PROTOCOL_VERSION = 3
+export const TRIBE_PROTOCOL_VERSION = 4
 
 // ---------------------------------------------------------------------------
 // Re-exports from @bearly/tribe-client
