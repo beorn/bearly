@@ -112,7 +112,7 @@ Wire-protocol bumped v2 → v3.
 - **`tribe.dismiss({message_id, reason?})`** — audit-trail acknowledgement
   without replying. Used as classifier-training signal.
 - **Channel envelope** now carries `responseExpected: "yes" | "optional" |
-"no"` and `plugin_kind` on every push notification.
+  "no"` and `plugin_kind` on every push notification.
 
 ### Changed — delivery routing
 
