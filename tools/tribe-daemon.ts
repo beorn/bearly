@@ -35,7 +35,6 @@ import {
   resolveProjectId,
   type TribeRole,
 } from "./lib/tribe/config.ts"
-import { openDatabase, createStatements } from "./lib/tribe/database.ts"
 import { createTribeContext, type TribeContext } from "./lib/tribe/context.ts"
 import { handleToolCall, TRIBE_COORD_METHODS } from "./lib/tribe/handlers.ts"
 import { logEvent, sendMessage } from "./lib/tribe/messaging.ts"
@@ -52,9 +51,24 @@ import { accountlyPlugin } from "./lib/tribe/accountly-plugin.ts"
 import { doltReaperPlugin } from "./lib/tribe/dolt-reaper-plugin.ts"
 import { createLogger, addWriter } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
-import { createLoreHandlers, resolveSummarizerMode, type LoreConnState } from "./lib/tribe/lore-handlers.ts"
-import { resolveLoreDbPath } from "../plugins/tribe/lore/lib/config.ts"
+import { type LoreConnState } from "./lib/tribe/lore-handlers.ts"
 import { createCoalescer, type PendingBroadcast } from "./lib/tribe/broadcast-coalescer.ts"
+// Composition layer — pipe + with* factories. The boot sequence below uses
+// these to assemble config, db, daemonCtx, lore, and the protocol-agnostic
+// tool registry. Reading top-down through the pipe() call IS the boot order
+// (see hub/composition.md). The still-imperative socket / dispatch / hot-reload
+// parts attach to the assembled value below the pipe.
+import { pipe, withTool, withTools, createScope } from "@bearly/daemon-spine"
+import {
+  createBaseTribe,
+  loreTools,
+  messagingTools,
+  withConfig,
+  withDaemonContext,
+  withDatabase,
+  withLore,
+  withProjectRoot,
+} from "./lib/tribe/compose/index.ts"
 
 const ac = new AbortController()
 const timers = createTimers(ac.signal)
@@ -105,65 +119,70 @@ const { values: daemonArgs } = parseArgs({
   strict: false,
 })
 
-const SOCKET_PATH = resolveSocketPath(daemonArgs.socket as string | undefined)
-const QUIT_TIMEOUT = parseInt(String(daemonArgs["quit-timeout"]), 10)
-const INHERIT_FD = daemonArgs.fd ? parseInt(String(daemonArgs.fd), 10) : null
-
 // ---------------------------------------------------------------------------
-// Database bootstrap
+// Compose the tribe value (km-tribe.composition-pipe). Each withX factory
+// extends the value with one capability; cleanup registers on the daemon's
+// root scope. Reading top-down is the boot story:
+//
+//   createBaseTribe   — scope, daemonSessionId, startedAt, daemonVersion, pid
+//   withConfig        — argv + env → TribeConfig (socket path, db paths, …)
+//   withProjectRoot   — process.cwd() (filesystem scope = "one tribe per root")
+//   withDatabase      — open SQLite, register close on scope
+//   withDaemonContext — daemon-role TribeContext bound to daemonSessionId
+//   withLore          — memory/recall RPC surface (closed via scope.signal)
+//   withTools         — establish protocol-agnostic tool registry
+//   withTool(messagingTools()) — tribe.send/broadcast/members/history/…
+//   withTool(loreTools(lore))  — tribe.ask/brief/plan/session_*/inject_delta
+//
+// The remaining imperative blocks (client registry, chief derivation, broadcast
+// pipeline, socket server, JSON-RPC dispatcher, hot-reload, idle-quit, signal
+// handlers) destructure the assembled value below and operate on it. Once that
+// state is decomposed into withX factories of its own (follow-on bead
+// km-tribe.composition-pipe-runtime), the destructuring goes away.
 // ---------------------------------------------------------------------------
 
-const tribeArgs = parseTribeArgs()
-// --db from daemon args takes priority over parseTribeArgs
-if (daemonArgs.db) tribeArgs.db = daemonArgs.db as string
-const DB_PATH = resolveDbPath(tribeArgs)
-const db = openDatabase(String(DB_PATH))
-const stmts = createStatements(db)
-
-// Daemon always acts as "daemon" role — it doesn't participate as chief/member
-const DAEMON_SESSION_ID = randomUUID()
-const daemonCtx = createTribeContext({
-  db,
-  stmts,
-  sessionId: DAEMON_SESSION_ID,
-  sessionRole: "daemon", // Typed role — never chief-eligible (see isChiefEligible)
-  initialName: "daemon",
-  domains: [],
-  claudeSessionId: null,
-  claudeSessionName: null,
-  // Fanout hook — installed below once broadcastToConnected is defined.
-  // (set via `daemonCtx.onMessageInserted = ...` after the function body.)
+// Build a Scope linked to the existing AbortController so shutdown() and the
+// pipe's scope cascade stay in sync (closing either fires the other's cleanup).
+const rootScope = createScope("tribe-daemon")
+ac.signal.addEventListener("abort", () => {
+  void rootScope[Symbol.asyncDispose]().catch(() => {})
 })
+
+const tribeShape = pipe(
+  createBaseTribe({ scope: rootScope, daemonVersion: "0.10.0" }),
+  withConfig(),
+  withProjectRoot(),
+  withDatabase(),
+  withDaemonContext(),
+  withLore(),
+  withTools(),
+  withTool(messagingTools()),
+)
+
+// Lore tools are conditional on lore being enabled — register them after the
+// pipe so the registry stays append-only when --no-lore is set.
+if (tribeShape.lore) {
+  for (const t of loreTools(tribeShape.lore)) tribeShape.tools.set(t.name, t)
+}
+
+// Destructure into the locals the rest of this module uses. The names match
+// the historical imperative versions so the transition is mechanical.
+const SOCKET_PATH = tribeShape.config.socketPath
+const QUIT_TIMEOUT = tribeShape.config.quitTimeoutSec
+const INHERIT_FD = tribeShape.config.inheritFd
+const DB_PATH = tribeShape.config.dbPath
+const LORE_DB_PATH = tribeShape.config.loreDbPath
+const db = tribeShape.db
+const stmts = tribeShape.stmts
+const DAEMON_SESSION_ID = tribeShape.daemonSessionId
+const daemonCtx = tribeShape.daemonCtx
+const loreHandlers = tribeShape.lore
+const TOOL_REGISTRY = tribeShape.tools
 
 log(`Starting tribe daemon`)
 log(`Socket: ${SOCKET_PATH}`)
 log(`DB: ${DB_PATH}`)
 log(`PID: ${process.pid}`)
-
-// ---------------------------------------------------------------------------
-// Lore handlers — memory/recall RPC surface absorbed from the former standalone
-// lore daemon (km-bear.unified-daemon Phase 5a). Opens a second SQLite file
-// (lore.db) in the same process; handlers run on the same event loop.
-// ---------------------------------------------------------------------------
-
-const LORE_DB_PATH = resolveLoreDbPath(daemonArgs["lore-db"] as string | undefined)
-const FOCUS_POLL_MS = Math.max(100, parseInt(String(daemonArgs["focus-poll-ms"]), 10) || 60_000)
-const SUMMARY_POLL_MS = Math.max(500, parseInt(String(daemonArgs["summary-poll-ms"]), 10) || 120_000)
-const SUMMARIZER_MODE = resolveSummarizerMode(String(daemonArgs["summarizer-model"]))
-const LORE_ENABLED = !daemonArgs["no-lore"]
-
-const loreHandlers = LORE_ENABLED
-  ? createLoreHandlers({
-      dbPath: LORE_DB_PATH,
-      socketPath: SOCKET_PATH,
-      daemonVersion: "0.10.0",
-      focusPollMs: FOCUS_POLL_MS,
-      summaryPollMs: SUMMARY_POLL_MS,
-      summarizerMode: SUMMARIZER_MODE,
-      signal: ac.signal,
-    })
-  : null
-
 if (loreHandlers) log(`Lore DB: ${LORE_DB_PATH}`)
 
 // ---------------------------------------------------------------------------
@@ -1217,7 +1236,11 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
       case TRIBE_COORD_METHODS.chief:
       case TRIBE_COORD_METHODS.claimChief:
       case TRIBE_COORD_METHODS.releaseChief:
-      case TRIBE_COORD_METHODS.debug: {
+      case TRIBE_COORD_METHODS.debug:
+      case TRIBE_COORD_METHODS.inbox:
+      case TRIBE_COORD_METHODS.mode:
+      case TRIBE_COORD_METHODS.snooze:
+      case TRIBE_COORD_METHODS.dismiss: {
         const client = clients.get(connId)
         const ctx = client?.ctx ?? daemonCtx
 
@@ -1872,3 +1895,39 @@ log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)
 // markActive() in handleConnection clears it. This handles the case where a
 // daemon is spawned but no client ever connects (e.g. spawning test crashes).
 if (clients.size === 0) markIdle()
+
+// ---------------------------------------------------------------------------
+// Runtime entry — `await tribe.run()`
+//
+// The composition pipe at the top of this file builds the daemon value; this
+// section attaches the still-imperative socket / dispatch / hot-reload /
+// idle-quit behavior to it. The historical entry point is "module-load
+// runs everything"; `tribe.run()` formalises that into an awaitable that
+// resolves when the daemon shuts down (SIGTERM, SIGINT, idle quit, fatal
+// error). Aligns with silvery's `run(view, …)` and the era2 lifecycle.
+//
+// Today this is a thin wait-for-abort. Once the runtime decomposes into
+// withSocketServer / withDispatcher / withSignals / withHotReload factories
+// (follow-on bead km-tribe.composition-pipe-runtime), `run()` moves into
+// `withRuntime()` and becomes the proper apply-and-emit loop.
+// ---------------------------------------------------------------------------
+
+const tribe = {
+  ...tribeShape,
+  /** Resolves when the daemon shuts down. The Scope cascade fires before resolve. */
+  run(): Promise<void> {
+    return new Promise((resolve) => {
+      if (ac.signal.aborted) {
+        resolve()
+        return
+      }
+      ac.signal.addEventListener("abort", () => resolve(), { once: true })
+    })
+  },
+} as const
+
+// Top-level await — the module's last act is the run loop.
+// Since the daemon installs SIGINT/SIGTERM handlers that call shutdown() →
+// process.exit(0), this await typically doesn't return; it's a clean entry
+// point for callers that need to know the daemon is exiting.
+await tribe.run()
