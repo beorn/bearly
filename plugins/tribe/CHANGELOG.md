@@ -7,6 +7,93 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.12.0 — Event classification, focus mode, inbox cursor (km-tribe.event-classification)
+
+Wire-protocol bumped v2 → v3.
+
+### Added
+
+- **`tribe.inbox({since?, kinds?, limit?})`** — pull pending events that did
+  NOT push to the channel (ambient: commits, joins/leaves, routine github
+  events, low-severity health warnings). Returns events newer than the
+  per-session pull cursor; advances the cursor on call. Tool description
+  explicitly normalizes silent consumption: "Empty response is the correct
+  behavior for most tribe channel events."
+- **`tribe.mode({mode})`** — per-session focus filter:
+  - `focus` — only `responseExpected="yes"` reaches the channel
+  - `normal` — kind-based default
+  - `ambient` — everything to channel (escape hatch)
+- **`tribe.snooze({duration_sec, kinds?})`** — time-bounded silence;
+  `duration_sec=0` cancels. Optional `kinds` is a list of `plugin_kind` globs
+  to silence selectively. Direct DMs always bypass snooze.
+- **`tribe.dismiss({message_id, reason?})`** — audit-trail acknowledgement
+  without replying. Used as classifier-training signal.
+- **Channel envelope** now carries `responseExpected: "yes" | "optional" |
+  "no"` and `plugin_kind` on every push notification.
+
+### Changed — delivery routing
+
+Every event row now carries `delivery: "push" | "pull"` and
+`responseExpected`. The daemon's broadcast path drops `pull` rows BEFORE
+the Haiku rewrite (so ambient bulk pays no LLM cost) and applies a
+per-session mode + snooze filter at delivery time (persisted rows are
+never re-classified).
+
+Plugin-by-plugin matrix (`delivery | responseExpected`):
+
+- `git:commit`                            → pull | no
+- `bead:claimed/closed/progress/status`   → pull | no
+- `bead:new (P0/P1)`                      → push | optional
+- `github:push/pr/issue/release`          → pull | no
+- `github:workflow (success)`             → pull | no
+- `github:workflow (failure, single)`     → pull | optional
+- `github:ci-alert (broadcast)`           → push | optional
+- `github:ci-alert (DM responsible)`      → push | yes
+- `github:ci-recovered`                   → push | no
+- `health:* warning broadcast`            → pull | no
+- `health:* critical broadcast`           → push | yes
+- `health:* DM (warning)`                 → push | optional
+- `health:* DM (critical)`                → push | yes
+- `health:git-lock first-detect`          → pull | no
+  - DM holder                             → push | optional
+- `health:git-lock stale (>30s)`          → push | yes
+- `health:reaper:query`                   → push | yes
+- `health:reaper:killed`                  → pull | no
+- `health:disk-io:warning`                → pull | no
+- `health:gh-rate-limit:warning`          → push | optional
+- `health:account:status`                 → pull | no
+- `health:account:rate-limit`             → pull | no
+- `health:account:unavailable`            → push | yes
+- `health:account:switched`               → pull | no
+- `health:account:switch-failed`          → push | yes
+- daemon log activity (join/leave)        → pull | no
+- daemon warn/error logs                  → pull | no
+
+Direct human messages (`tribe.send` without classification) keep the prior
+default — `push | yes` unless the caller overrides.
+
+### Schema (migration v10)
+
+- `messages` adds `response_expected`, `delivery`, `plugin_kind`, `room_id`.
+- `sessions` adds `last_inbox_pull_seq`, `mode`, `snooze_until`, `snooze_kinds`.
+- New tables: `rooms`, `room_members`, `dismissals` (Matrix-shape primitives —
+  one synthetic room per project today; multi-room is the natural extension).
+
+Backfill: existing messages get `delivery='push'` / `response_expected='optional'`;
+sessions get `mode='normal'`; one default room per project_id; every existing
+session joins its project room.
+
+### Why
+
+When many tribe plugins fire (commits, pushes, joins/leaves, git-lock
+warnings, CI alerts), every broadcast lands as an MCP channel message.
+Claude Code renders these as `Human:` turns; the turn-taking reflex drives
+the agent to respond — even when there's nothing to say. The pro review
+2026-04-20 documented an 80-message ack-spam cascade. Promoting the
+"silent by default" rule from CLAUDE.md memory to a daemon-side delivery
+filter mechanically eliminates the channel pressure while preserving
+durability (everything still lands in inbox + activity log).
+
 ### Changed — `event_log` merged into `messages WHERE kind='event'` (km-tribe.polish-sweep item 9)
 
 The `event_log` table has been removed. Event rows now live exclusively in

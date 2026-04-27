@@ -474,41 +474,41 @@ describe("tribe daemon integration", () => {
       expect(result.chief).toBe("the-chief")
     }, 10_000)
 
-    it("broadcasts session.joined notification to other clients", async () => {
+    it("session.joined lands in inbox (ambient — no channel push)", async () => {
+      // km-tribe.event-classification: session join is ambient — the row lands
+      // in the inbox via tribe.inbox, not on the channel. Sessions that care
+      // (e.g. the proxy's auto-rename hook) pull the inbox cursor instead of
+      // listening on the channel.
       daemon = await spawnDaemon(socketPath)
 
-      // Set up notification listener BEFORE registering so no notifications are missed
       const chief = await connect()
-      const notifications: Array<{ method: string; params?: Record<string, unknown> }> = []
+      const channelNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
       chief.onNotification((method, params) => {
-        notifications.push({ method, params })
+        if (method === "channel") channelNotifs.push({ method, params })
       })
       await chief.call("register", { name: "chief", role: "chief" })
 
-      // Register a member — chief should get a session.joined notification
       const member = await connect()
       await member.call("register", { name: "new-worker", role: "member" })
 
-      // Wait for the new-worker join notification (not the chief's own join)
-      await waitFor(
-        () =>
-          notifications.some(
-            (n) =>
-              n.method === "channel" &&
-              String(n.params?.content ?? "").includes("joined") &&
-              String(n.params?.content ?? "").includes("new-worker"),
-          ),
-        5000,
-      )
+      // Pull chief's inbox — the new-worker join must be there.
+      await waitFor(async () => {
+        const result = (await chief.call("tribe.inbox", { limit: 100, since: 0 })) as {
+          content: Array<{ type: string; text: string }>
+        }
+        const parsed = JSON.parse(result.content[0]!.text) as {
+          events: Array<{ content: string; type: string; delivery: string }>
+        }
+        return parsed.events.some(
+          (e) => e.delivery === "pull" && e.content.includes("joined") && e.content.includes("new-worker"),
+        )
+      }, 5000)
 
-      const joinNotif = notifications.find(
-        (n) =>
-          n.method === "channel" &&
-          String(n.params?.content ?? "").includes("joined") &&
-          String(n.params?.content ?? "").includes("new-worker"),
+      // Channel must NOT have received the join — it is inbox-only now.
+      const joinOnChannel = channelNotifs.find(
+        (n) => String(n.params?.content ?? "").includes("joined") && String(n.params?.content ?? "").includes("new-worker"),
       )
-      expect(joinNotif).toBeDefined()
-      expect(String(joinNotif!.params?.content)).toContain("new-worker")
+      expect(joinOnChannel).toBeUndefined()
     }, 10_000)
   })
 
@@ -639,59 +639,52 @@ describe("tribe daemon integration", () => {
   // -------------------------------------------------------------------------
 
   describe("disconnect handling", () => {
-    it("broadcasts session.left when a registered client disconnects", async () => {
+    it("session.left lands in inbox when a client disconnects (ambient)", async () => {
+      // km-tribe.event-classification: leave is ambient, same as join — pulled
+      // via tribe.inbox, not pushed on the channel.
       daemon = await spawnDaemon(socketPath)
 
-      // Set up notification listener BEFORE registering so no notifications are missed
       const chief = await connect()
-      const notifications: Array<{ method: string; params?: Record<string, unknown> }> = []
+      const channelNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
       chief.onNotification((method, params) => {
-        notifications.push({ method, params })
+        if (method === "channel") channelNotifs.push({ method, params })
       })
       await chief.call("register", { name: "watcher", role: "chief" })
 
-      // Register and then disconnect a member
       const member = await connect()
       await member.call("register", { name: "leaver", role: "member" })
 
-      // Wait for leaver's join notification before disconnecting
-      await waitFor(
-        () =>
-          notifications.some(
-            (n) =>
-              n.method === "channel" &&
-              String(n.params?.content ?? "").includes("joined") &&
-              String(n.params?.content ?? "").includes("leaver"),
-          ),
-        5000,
-      )
+      // Wait for leaver's join in inbox before disconnecting (proves the row is durable).
+      await waitFor(async () => {
+        const result = (await chief.call("tribe.inbox", { limit: 100, since: 0 })) as {
+          content: Array<{ type: string; text: string }>
+        }
+        const parsed = JSON.parse(result.content[0]!.text) as {
+          events: Array<{ content: string }>
+        }
+        return parsed.events.some((e) => e.content.includes("joined") && e.content.includes("leaver"))
+      }, 5000)
 
-      // Disconnect the member
       member.close()
-      // Remove from our tracked clients so afterEach doesn't double-close
       const idx = clients.indexOf(member)
       if (idx !== -1) clients.splice(idx, 1)
 
-      // Wait for leave notification
-      await waitFor(
-        () =>
-          notifications.some(
-            (n) =>
-              n.method === "channel" &&
-              String(n.params?.content ?? "").includes("left") &&
-              String(n.params?.content ?? "").includes("leaver"),
-          ),
-        5000,
-      )
+      // Wait for leave row to land in inbox.
+      await waitFor(async () => {
+        const result = (await chief.call("tribe.inbox", { limit: 100, since: 0 })) as {
+          content: Array<{ type: string; text: string }>
+        }
+        const parsed = JSON.parse(result.content[0]!.text) as {
+          events: Array<{ content: string }>
+        }
+        return parsed.events.some((e) => e.content.includes("left") && e.content.includes("leaver"))
+      }, 5000)
 
-      const leftNotif = notifications.find(
-        (n) =>
-          n.method === "channel" &&
-          String(n.params?.content ?? "").includes("left") &&
-          String(n.params?.content ?? "").includes("leaver"),
+      // No leave notification on the channel.
+      const leftOnChannel = channelNotifs.find(
+        (n) => String(n.params?.content ?? "").includes("left") && String(n.params?.content ?? "").includes("leaver"),
       )
-      expect(leftNotif).toBeDefined()
-      expect(String(leftNotif!.params?.content)).toContain("leaver")
+      expect(leftOnChannel).toBeUndefined()
     }, 15_000)
 
     it("cli_status reflects reduced client count after disconnect", async () => {
