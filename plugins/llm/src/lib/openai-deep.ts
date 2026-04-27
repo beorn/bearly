@@ -19,6 +19,7 @@
 import OpenAI from "openai"
 import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
+import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
 
 const log = createLogger("bearly:llm:openai")
@@ -32,6 +33,16 @@ function getClient(): OpenAI {
     client = new OpenAI({ apiKey })
   }
   return client
+}
+
+/** Resolve the string sent as `model:` to the OpenAI API. Endpoint's
+ *  `apiModelId` (e.g. "gpt-5-pro" for our internal "gpt-5.4-pro") wins over
+ *  the legacy `Model.apiModelId` field, which itself wins over the SKU id.
+ *  Synthetic models (CLI-injected OpenRouter SKUs not in the registry) hit
+ *  the legacy field. */
+function resolveApiModelId(model: Model): string {
+  const endpoint = getEndpoint(model.modelId)
+  return endpoint?.apiModelId ?? model.apiModelId ?? model.modelId
 }
 
 export interface DeepResearchOptions {
@@ -154,7 +165,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     // default to the background+poll path.
     if (!background) {
       const response = await openai.responses.create({
-        model: model.apiModelId ?? model.modelId,
+        model: resolveApiModelId(model),
         input: researchPrompt,
         tools: [{ type: "web_search_preview" }],
         background: false,
@@ -178,7 +189,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
 
     // Background path: create → persist ID → (fire-and-forget | poll).
     const initialResponse = await openai.responses.create({
-      model: model.apiModelId ?? model.modelId,
+      model: resolveApiModelId(model),
       input: researchPrompt,
       tools: [{ type: "web_search_preview" }],
       stream: false,
@@ -307,7 +318,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     // the whole point: even if the process dies on the next tick, the work
     // continues server-side and is recoverable via the persisted ID.
     const initialResponse = await openai.responses.create({
-      model: model.apiModelId ?? model.modelId,
+      model: resolveApiModelId(model),
       input: prompt,
       stream: false,
       background: true,
@@ -413,14 +424,15 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
 
 /**
  * Whether a model can be routed through the Responses API for recoverable
- * background execution. Every OpenAI model supports the Responses API;
- * other providers don't (OpenRouter/K2.6 routes through a Chat Completions
- * shim, Anthropic/Google have their own APIs). Deep-research models use
- * `queryOpenAIDeepResearch` which injects `web_search_preview` — they're
- * covered by `isOpenAIDeepResearch` and NOT by this predicate.
+ * background execution. Capability-driven: the endpoint map flags every
+ * non-deep-research OpenAI SKU with `backgroundApi: true`. Other providers
+ * default to false until they ship a comparable mechanism. Deep-research
+ * models go through `queryOpenAIDeepResearch` (web_search_preview path) and
+ * are intentionally NOT flagged here — they're covered by `isOpenAIDeepResearch`.
  */
 export function isOpenAIBackgroundCapable(model: Model): boolean {
-  return model.provider === "openai" && !model.isDeepResearch
+  const endpoint = getEndpoint(model.modelId)
+  return Boolean(endpoint?.capabilities.backgroundApi) && !model.isDeepResearch
 }
 
 /** Extract concatenated output_text from a Responses API result. */
@@ -579,8 +591,14 @@ export async function retrieveResponse(responseId: string): Promise<{
 }
 
 /**
- * Check if a model is an OpenAI deep research model
+ * Check if a model is an OpenAI deep research model. Capability-driven:
+ * `webSearch` flags routing through the OpenAI Responses API web_search_preview
+ * tool, `deepResearch` flags dedicated DR SKUs (slow, expensive). The combined
+ * check picks exactly the OpenAI DR SKUs — Perplexity / Gemini DR variants
+ * are flagged `deepResearch: true` but `webSearch: false` (they use their
+ * own provider APIs) and correctly fall through.
  */
 export function isOpenAIDeepResearch(model: Model): boolean {
-  return model.provider === "openai" && model.isDeepResearch
+  const endpoint = getEndpoint(model.modelId)
+  return Boolean(endpoint?.capabilities.deepResearch && endpoint?.capabilities.webSearch)
 }

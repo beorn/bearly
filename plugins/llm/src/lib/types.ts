@@ -1,82 +1,147 @@
 /**
- * LLM types and schemas for multi-model research
+ * LLM types and schemas for multi-model research.
+ *
+ * The registry is split into two frozen tables:
+ *
+ *   1. SKUS (user-facing identity) — modelId, displayName, costTier, pricing,
+ *      latency, isDeepResearch, reasoning config. Stable across provider API
+ *      churn — our `gpt-5.4-pro` outlives OpenAI's `gpt-5-pro-2025-10-06`
+ *      snapshots rolling forward.
+ *
+ *   2. PROVIDER_ENDPOINTS (dispatch contract) — { provider, apiModelId,
+ *      capabilities }. Capabilities (webSearch, backgroundApi, vision,
+ *      deepResearch) replace `provider === "openai"` magic strings in the
+ *      routing layer — adding a new provider with the same capabilities
+ *      doesn't require editing dispatch logic.
+ *
+ * Public surface:
+ *   - getSku(id)              → SkuConfig | undefined
+ *   - getEndpoint(id)         → ProviderEndpoint | undefined
+ *   - getModel(id)            → Model | undefined  (legacy facade; SKU + endpoint flattened)
+ *   - MODELS                  → readonly Model[]  (legacy view; do not mutate)
+ *
+ * `Model.apiModelId` is a deprecated alias preserved for one release window —
+ * computed from the endpoint at facade-build time. New routing code should
+ * read endpoint capabilities; new providers don't need a name match.
+ *
+ * Pricing is overlaid at process start by `applyCachedPricing()` — the SKU
+ * defaults are frozen, the cache provides current values without mutating
+ * the source-of-truth array.
  */
 
 import { z } from "zod"
 
+// ============================================================================
 // Provider identifiers
+// ============================================================================
+
 export const ProviderSchema = z.enum(["openai", "anthropic", "google", "xai", "perplexity", "ollama", "openrouter"])
 export type Provider = z.infer<typeof ProviderSchema>
 
-// Model identifiers by provider
-export const ModelSchema = z.object({
-  provider: ProviderSchema,
-  // Internal alias used by the CLI and across the codebase. Stable across
-  // OpenAI's API-version churn — e.g. our `gpt-5.4-pro` outlives OpenAI's
-  // `gpt-5-pro-2025-10-06` snapshot rolling forward.
+// ============================================================================
+// SKU — user-facing model identity (stable across provider API churn)
+// ============================================================================
+
+/** Reasoning-model knobs. See SkuConfig.reasoning JSDoc for field semantics. */
+export const ReasoningConfigSchema = z.object({
+  // Max total output tokens (reasoning + content). Used as a static ceiling.
+  maxOutputTokens: z.number().optional(),
+  // Combined context window (input + output) in tokens. When set, queryModel
+  // computes max_tokens at call time as `contextWindow − estimatedInput −
+  // safetyMargin`, eliminating the static-cap tradeoff.
+  contextWindow: z.number().optional(),
+  // OpenAI o-series `reasoning_effort`: low | medium | high.
+  openaiEffort: z.enum(["low", "medium", "high"]).optional(),
+  // Anthropic Claude 4.5+ extended-thinking `budget_tokens`.
+  anthropicBudget: z.number().optional(),
+})
+export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>
+
+export const SkuSchema = z.object({
+  /** Internal alias used by the CLI and across the codebase. Stable across
+   *  provider API churn — e.g. `gpt-5.4-pro` outlives OpenAI's
+   *  `gpt-5-pro-2025-10-06` snapshot rolling forward. */
   modelId: z.string(),
-  // Optional override for the string sent to the provider API. When unset,
-  // the provider receives `modelId`. Use this for OpenAI Pro tiers where
-  // our internal version (`gpt-5.4-pro`) doesn't match OpenAI's API IDs
-  // (`gpt-5-pro` / `gpt-5-pro-2025-10-06`).
-  apiModelId: z.string().optional(),
   displayName: z.string(),
   isDeepResearch: z.boolean().default(false),
   costTier: z.enum(["local", "low", "medium", "high", "very-high"]),
-  // Pricing per 1M tokens (USD)
+  // Pricing per 1M tokens (USD). Defaults are frozen; runtime cache overlay
+  // provides current values without mutating this array.
   inputPricePerM: z.number().optional(),
   outputPricePerM: z.number().optional(),
   // Typical response time
   typicalLatencyMs: z.number().optional(),
-  // Reasoning-model metadata. Thinking models burn tokens on chain-of-thought
-  // before emitting visible output — different providers expose different
-  // knobs for controlling that. Fields are composable (a model can declare
-  // both a cap AND an effort level). Absent field means the feature isn't
-  // used for this model.
-  //
-  // History: originally a single field `minCompletionTokens` (intended as
-  // "floor", actually used as a cap on maxOutputTokens); replaced by this
-  // structure so future providers can plug in without bolting on more one-off
-  // fields. See km-infra.llm-review-fixes for context.
-  reasoning: z
-    .object({
-      // Max total output tokens (reasoning + content). Required for models
-      // where reasoning counts against the output budget — Kimi K2.6 and
-      // OpenAI o-series behave this way. Sized generously so a long-context
-      // review has room for ~20K+ reasoning tokens plus a full answer.
-      //   - Short queries (<5K input): 16384 is typical
-      //   - Long queries (>30K input): 65536 is safe
-      // Non-reasoning chat models leave this unset and fall through to the
-      // provider default.
-      //
-      // Used as a static ceiling. For models where the provider enforces a
-      // COMBINED context limit (input + output ≤ N), prefer `contextWindow`
-      // below — queryModel derives max_tokens dynamically as
-      // `contextWindow − estimatedInput − safetyMargin`, giving every query
-      // the maximum usable headroom without ever tripping the limit.
-      maxOutputTokens: z.number().optional(),
-      // Combined context window (input + output) in tokens. When set,
-      // queryModel computes max_tokens at call time rather than using a
-      // fixed ceiling — useful for models like Kimi K2.6 that reject
-      // `max_tokens + input_tokens > contextWindow`. Fixed-ceiling values
-      // are always a compromise between small-query headroom and
-      // large-review safety; dynamic sizing eliminates the tradeoff.
-      contextWindow: z.number().optional(),
-      // OpenAI o-series `reasoning_effort`: low | medium | high. Controls
-      // how many reasoning tokens the model spends before answering.
-      // Plumbing into queryModel is TODO — add when an o-series model is
-      // actually routed through the Chat Completions API from here.
-      openaiEffort: z.enum(["low", "medium", "high"]).optional(),
-      // Anthropic Claude 4.5+ extended-thinking `budget_tokens`. Plumbing
-      // into the @ai-sdk/anthropic provider call is TODO — same reason as
-      // openaiEffort: add when a thinking-enabled Claude model ships here.
-      anthropicBudget: z.number().optional(),
-    })
-    .optional(),
+  /** Reasoning-model metadata. Thinking models burn tokens on chain-of-thought
+   *  before emitting visible output — fields are composable (a model can declare
+   *  both a cap AND an effort level). Absent field means the feature isn't
+   *  used for this model. */
+  reasoning: ReasoningConfigSchema.optional(),
+})
+export type SkuConfig = z.infer<typeof SkuSchema>
+
+// ============================================================================
+// Provider endpoint — how a SKU is dispatched and what it can do
+// ============================================================================
+
+/** Capabilities that drive routing decisions. Adding a new capability is a
+ *  one-line schema change + a routing branch — never a name-match. */
+export const CapabilitiesSchema = z.object({
+  /** Routes through the OpenAI Responses API with `web_search_preview` for
+   *  research-style queries. NOT a generic "model has web search" flag —
+   *  Perplexity Sonar has internal web search but routes through plain
+   *  `generateText`, so it stays false here. Adding a second provider that
+   *  implements an analogous tool-based search route would extend this to
+   *  a routing table; for now it's effectively "OpenAI Responses API". */
+  webSearch: z.boolean().default(false),
+  /** Supports background create + poll for recoverability. Routing:
+   *  `askAndFinish` (and dual-pro) uses queryOpenAIBackground for these so a
+   *  long Pro call survives SIGINT. Currently OpenAI-only — when other
+   *  providers ship comparable mechanisms, the dispatch function selection
+   *  becomes a per-endpoint table. */
+  backgroundApi: z.boolean().default(false),
+  /** Accepts image inputs (multimodal). */
+  vision: z.boolean().default(false),
+  /** Dedicated deep-research model (slow, heavy, expensive). Marks
+   *  isDeepResearch SKUs that go through provider-specific deep-research
+   *  dispatch (queryOpenAIDeepResearch / queryGeminiDeepResearch). */
+  deepResearch: z.boolean().default(false),
+})
+export type Capabilities = z.infer<typeof CapabilitiesSchema>
+
+export const ProviderEndpointSchema = z.object({
+  provider: ProviderSchema,
+  /** Override for the string sent to the provider API. When unset, the
+   *  provider receives the SKU's `modelId`. Used for OpenAI Pro tiers where
+   *  our internal alias (`gpt-5.4-pro`) doesn't match OpenAI's API ID
+   *  (`gpt-5-pro` / `gpt-5-pro-2025-10-06`). */
+  apiModelId: z.string().optional(),
+  capabilities: CapabilitiesSchema,
+})
+export type ProviderEndpoint = z.infer<typeof ProviderEndpointSchema>
+
+// ============================================================================
+// Legacy facade — flattened SKU + endpoint, used by call sites that haven't
+// migrated to capability-based dispatch yet.
+// ============================================================================
+
+/** Legacy `Model` shape. Composed from SkuConfig + ProviderEndpoint at
+ *  registry-build time. New routing code should prefer `getEndpoint(id)` and
+ *  inspect `endpoint.capabilities` directly — `apiModelId` and `provider` are
+ *  preserved here for one release window so callers can migrate incrementally. */
+export const ModelSchema = SkuSchema.extend({
+  provider: ProviderSchema,
+  /** @deprecated Read via `getEndpoint(id).apiModelId` — kept as a runtime
+   *  alias so existing call sites (research.ts, openai-deep.ts) keep working
+   *  without per-call lookups. Will be removed once all callers go through
+   *  `getEndpoint`. */
+  apiModelId: z.string().optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 
+// ============================================================================
 // Thinking levels (tiered cost/quality)
+// ============================================================================
+
 export const ThinkingLevelSchema = z.enum([
   "quick", // Level 1: Single fast model (~$0.01)
   "standard", // Level 2: Single strong model (~$0.10)
@@ -86,12 +151,15 @@ export const ThinkingLevelSchema = z.enum([
 ])
 export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>
 
-// Response from a single model
+// ============================================================================
+// Response & options schemas
+// ============================================================================
+
 export const ModelResponseSchema = z.object({
   model: ModelSchema,
   content: z.string(),
-  responseId: z.string().optional(), // API response ID for recovery
-  reasoning: z.string().optional(), // Extended thinking/chain-of-thought
+  responseId: z.string().optional(),
+  reasoning: z.string().optional(),
   citations: z
     .array(
       z.object({
@@ -106,7 +174,7 @@ export const ModelResponseSchema = z.object({
       promptTokens: z.number(),
       completionTokens: z.number(),
       totalTokens: z.number(),
-      estimatedCost: z.number().optional(), // USD
+      estimatedCost: z.number().optional(),
     })
     .optional(),
   durationMs: z.number(),
@@ -114,28 +182,26 @@ export const ModelResponseSchema = z.object({
 })
 export type ModelResponse = z.infer<typeof ModelResponseSchema>
 
-// Consensus result from multiple models
 export const ConsensusResultSchema = z.object({
   level: ThinkingLevelSchema,
   question: z.string(),
   responses: z.array(ModelResponseSchema),
-  synthesis: z.string().optional(), // Combined answer
-  agreements: z.array(z.string()).optional(), // Points of agreement
-  disagreements: z.array(z.string()).optional(), // Points of disagreement
+  synthesis: z.string().optional(),
+  agreements: z.array(z.string()).optional(),
+  disagreements: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
   totalCost: z.number().optional(),
   totalDurationMs: z.number(),
 })
 export type ConsensusResult = z.infer<typeof ConsensusResultSchema>
 
-// CLI command options
 export const AskOptionsSchema = z.object({
   question: z.string(),
   level: ThinkingLevelSchema.default("standard"),
-  models: z.array(z.string()).optional(), // Override default models
-  maxCost: z.number().default(5), // USD - require confirmation above this
+  models: z.array(z.string()).optional(),
+  maxCost: z.number().default(5),
   stream: z.boolean().default(true),
-  json: z.boolean().default(false), // Output as JSON
+  json: z.boolean().default(false),
 })
 export type AskOptions = z.infer<typeof AskOptionsSchema>
 
@@ -151,7 +217,7 @@ export type ResearchOptions = z.infer<typeof ResearchOptionsSchema>
 export const ConsensusOptionsSchema = z.object({
   question: z.string(),
   models: z.array(z.string()).optional(),
-  synthesize: z.boolean().default(true), // Generate synthesis
+  synthesize: z.boolean().default(true),
   maxCost: z.number().default(5),
   stream: z.boolean().default(true),
   json: z.boolean().default(false),
@@ -166,12 +232,13 @@ export const CompareOptionsSchema = z.object({
 })
 export type CompareOptions = z.infer<typeof CompareOptionsSchema>
 
-// Available models registry with pricing (per 1M tokens, USD)
-export const MODELS: Model[] = [
+// ============================================================================
+// SKU registry — frozen, user-facing model identities
+// ============================================================================
+
+const SKUS_DATA: SkuConfig[] = [
   // OpenAI - GPT-5.5 "Spud" series (announced 2026-04-23)
-  // API access rolling out after launch; ChatGPT/Codex first. Pricing from OpenAI announcement.
   {
-    provider: "openai",
     modelId: "gpt-5.5",
     displayName: "GPT-5.5",
     isDeepResearch: false,
@@ -181,7 +248,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5.5-pro",
     displayName: "GPT-5.5 Pro",
     isDeepResearch: false,
@@ -192,9 +258,7 @@ export const MODELS: Model[] = [
   },
   // OpenAI - GPT-5.4 series (2026-03-05)
   {
-    provider: "openai",
     modelId: "gpt-5.4",
-    apiModelId: "gpt-5", // OpenAI API exposes the standard tier as "gpt-5"
     displayName: "GPT-5.4",
     isDeepResearch: false,
     costTier: "high",
@@ -203,9 +267,7 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5.4-pro",
-    apiModelId: "gpt-5-pro", // OpenAI API ID — our internal "5.4-pro" maps to OpenAI's current Pro tier
     displayName: "GPT-5.4 Pro",
     isDeepResearch: false,
     costTier: "very-high",
@@ -215,7 +277,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - GPT-5.3 series
   {
-    provider: "openai",
     modelId: "gpt-5.3-codex",
     displayName: "GPT-5.3 Codex",
     isDeepResearch: false,
@@ -226,7 +287,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - GPT-5.2 series
   {
-    provider: "openai",
     modelId: "gpt-5.2",
     displayName: "GPT-5.2",
     isDeepResearch: false,
@@ -236,7 +296,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5.2-pro",
     displayName: "GPT-5.2 Pro",
     isDeepResearch: false,
@@ -247,7 +306,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - GPT-5.1 series
   {
-    provider: "openai",
     modelId: "gpt-5.1-codex-max",
     displayName: "GPT-5.1 Codex Max",
     isDeepResearch: false,
@@ -257,7 +315,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 10000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5.1-codex",
     displayName: "GPT-5.1 Codex",
     isDeepResearch: false,
@@ -267,7 +324,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5.1-codex-mini",
     displayName: "GPT-5.1 Codex Mini",
     isDeepResearch: false,
@@ -277,7 +333,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 2000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5",
     displayName: "GPT-5",
     isDeepResearch: false,
@@ -287,7 +342,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5-codex",
     displayName: "GPT-5 Codex",
     isDeepResearch: false,
@@ -297,7 +351,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5-mini",
     displayName: "GPT-5 Mini",
     isDeepResearch: false,
@@ -307,7 +360,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 2000,
   },
   {
-    provider: "openai",
     modelId: "gpt-5-nano",
     displayName: "GPT-5 Nano",
     isDeepResearch: false,
@@ -318,7 +370,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - GPT-4 series
   {
-    provider: "openai",
     modelId: "gpt-4o-mini",
     displayName: "GPT-4o Mini",
     isDeepResearch: false,
@@ -328,7 +379,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 1500,
   },
   {
-    provider: "openai",
     modelId: "gpt-4o",
     displayName: "GPT-4o",
     isDeepResearch: false,
@@ -338,7 +388,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 3000,
   },
   {
-    provider: "openai",
     modelId: "gpt-4.1",
     displayName: "GPT-4.1",
     isDeepResearch: false,
@@ -349,7 +398,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - O-series reasoning
   {
-    provider: "openai",
     modelId: "o3",
     displayName: "O3",
     isDeepResearch: false,
@@ -360,7 +408,6 @@ export const MODELS: Model[] = [
     reasoning: { openaiEffort: "medium" },
   },
   {
-    provider: "openai",
     modelId: "o3-pro",
     displayName: "O3 Pro",
     isDeepResearch: false,
@@ -368,12 +415,9 @@ export const MODELS: Model[] = [
     inputPricePerM: 10.0,
     outputPricePerM: 40.0,
     typicalLatencyMs: 20000,
-    // Pro is paid for deep thought — high effort + generous output cap so
-    // long reasoning traces don't truncate the final answer.
     reasoning: { openaiEffort: "high", maxOutputTokens: 32768 },
   },
   {
-    provider: "openai",
     modelId: "o3-mini",
     displayName: "O3 Mini",
     isDeepResearch: false,
@@ -384,7 +428,6 @@ export const MODELS: Model[] = [
     reasoning: { openaiEffort: "medium" },
   },
   {
-    provider: "openai",
     modelId: "o4-mini",
     displayName: "O4 Mini",
     isDeepResearch: false,
@@ -396,7 +439,6 @@ export const MODELS: Model[] = [
   },
   // OpenAI - Deep Research
   {
-    provider: "openai",
     modelId: "o3-deep-research-2025-06-26",
     displayName: "O3 Deep Research",
     isDeepResearch: true,
@@ -406,7 +448,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 180000,
   },
   {
-    provider: "openai",
     modelId: "o4-mini-deep-research-2025-06-26",
     displayName: "O4 Mini Deep Research",
     isDeepResearch: true,
@@ -418,7 +459,6 @@ export const MODELS: Model[] = [
 
   // Anthropic - Claude 4.6 series (latest)
   {
-    provider: "anthropic",
     modelId: "claude-opus-4-6",
     displayName: "Claude Opus 4.6",
     isDeepResearch: false,
@@ -426,12 +466,9 @@ export const MODELS: Model[] = [
     inputPricePerM: 15.0,
     outputPricePerM: 75.0,
     typicalLatencyMs: 15000,
-    // Extended thinking for the heaviest Claude — 16K budget covers most
-    // complex reasoning chains without blowing the latency budget.
     reasoning: { anthropicBudget: 16384 },
   },
   {
-    provider: "anthropic",
     modelId: "claude-sonnet-4-6",
     displayName: "Claude Sonnet 4.6",
     isDeepResearch: false,
@@ -439,13 +476,10 @@ export const MODELS: Model[] = [
     inputPricePerM: 3.0,
     outputPricePerM: 15.0,
     typicalLatencyMs: 5000,
-    // Lighter budget for mid-tier — enough for meaningful thinking, half
-    // the budget of Opus to match the tier's cost/latency profile.
     reasoning: { anthropicBudget: 8192 },
   },
   // Anthropic - Claude 4.5 series
   {
-    provider: "anthropic",
     modelId: "claude-opus-4-5-20251101",
     displayName: "Claude Opus 4.5",
     isDeepResearch: false,
@@ -455,7 +489,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 15000,
   },
   {
-    provider: "anthropic",
     modelId: "claude-sonnet-4-5-20250929",
     displayName: "Claude Sonnet 4.5",
     isDeepResearch: false,
@@ -466,7 +499,6 @@ export const MODELS: Model[] = [
   },
   // Anthropic - Claude 4.1 / 4 series
   {
-    provider: "anthropic",
     modelId: "claude-opus-4-1-20250805",
     displayName: "Claude Opus 4.1",
     isDeepResearch: false,
@@ -476,7 +508,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 12000,
   },
   {
-    provider: "anthropic",
     modelId: "claude-opus-4-20250514",
     displayName: "Claude Opus 4",
     isDeepResearch: false,
@@ -486,7 +517,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 12000,
   },
   {
-    provider: "anthropic",
     modelId: "claude-sonnet-4-20250514",
     displayName: "Claude Sonnet 4",
     isDeepResearch: false,
@@ -497,7 +527,6 @@ export const MODELS: Model[] = [
   },
   // Anthropic - Claude Haiku
   {
-    provider: "anthropic",
     modelId: "claude-haiku-4-5-20251001",
     displayName: "Claude Haiku 4.5",
     isDeepResearch: false,
@@ -507,7 +536,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 1500,
   },
   {
-    provider: "anthropic",
     modelId: "claude-3-haiku-20240307",
     displayName: "Claude 3 Haiku",
     isDeepResearch: false,
@@ -519,7 +547,6 @@ export const MODELS: Model[] = [
 
   // Google
   {
-    provider: "google",
     modelId: "gemini-3-pro-preview",
     displayName: "Gemini 3 Pro",
     isDeepResearch: false,
@@ -529,7 +556,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "google",
     modelId: "gemini-2.5-pro",
     displayName: "Gemini 2.5 Pro",
     isDeepResearch: false,
@@ -539,7 +565,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 4000,
   },
   {
-    provider: "google",
     modelId: "gemini-2.5-flash",
     displayName: "Gemini 2.5 Flash",
     isDeepResearch: false,
@@ -549,7 +574,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 1500,
   },
   {
-    provider: "google",
     modelId: "gemini-2.0-flash",
     displayName: "Gemini 2.0 Flash",
     isDeepResearch: false,
@@ -559,7 +583,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 1000,
   },
   {
-    provider: "google",
     modelId: "gemini-2.0-flash-lite",
     displayName: "Gemini 2.0 Flash Lite",
     isDeepResearch: false,
@@ -570,7 +593,6 @@ export const MODELS: Model[] = [
   },
   // Google - Deep Research
   {
-    provider: "google",
     modelId: "deep-research-pro-preview-12-2025",
     displayName: "Gemini Deep Research",
     isDeepResearch: true,
@@ -582,7 +604,6 @@ export const MODELS: Model[] = [
 
   // xAI (Grok)
   {
-    provider: "xai",
     modelId: "grok-4",
     displayName: "Grok 4",
     isDeepResearch: false,
@@ -592,7 +613,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "xai",
     modelId: "grok-4-1-fast-reasoning",
     displayName: "Grok 4.1 Fast",
     isDeepResearch: false,
@@ -602,7 +622,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 3000,
   },
   {
-    provider: "xai",
     modelId: "grok-3",
     displayName: "Grok 3",
     isDeepResearch: false,
@@ -612,7 +631,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 3000,
   },
   {
-    provider: "xai",
     modelId: "grok-3-fast",
     displayName: "Grok 3 Fast",
     isDeepResearch: false,
@@ -624,12 +642,11 @@ export const MODELS: Model[] = [
 
   // OpenRouter — Moonshot Kimi
   // Kimi K2.6 released 2026-04-13: 1T MoE (32B active), 262K context, reasoning model.
-  // Pricing via OpenRouter (routes to Moonshot direct); launch-day promo may make it free.
-  // Reasoning is heavy and counts against the output cap — reasoning.maxOutputTokens
-  // is sized generously (64K) so large-context reviews have room for thinking
-  // plus a complete answer. Short queries only bill for what they use.
+  // Reasoning is heavy and counts against the output cap — `reasoning.contextWindow`
+  // (262K) lets queryModel compute max_tokens dynamically as
+  // `contextWindow − estimatedInput − safetyMargin`, eliminating the static-cap
+  // tradeoff between short-query headroom and long-review safety.
   {
-    provider: "openrouter",
     modelId: "moonshotai/kimi-k2.6",
     displayName: "Kimi K2.6",
     isDeepResearch: false,
@@ -637,21 +654,11 @@ export const MODELS: Model[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    // Dynamic sizing via contextWindow — queryModel computes max_tokens at
-    // call time as `contextWindow − estimatedInputTokens − 2048` (safety
-    // margin for tokenizer estimation error). A trivial prompt gets ~260K
-    // output room; a 50K-token review gets ~210K; an 80K-token review
-    // gets ~180K. Eliminates the static-cap tradeoff — no value works for
-    // both "tiny queries want all the room" and "big reviews don't want
-    // reject".
-    // History: 8K (empty on 60K input), 64K (truncated at 89K output),
-    // 128K, 220K (static ceiling, always a compromise), now dynamic.
     reasoning: { contextWindow: 262144 },
   },
 
   // Perplexity
   {
-    provider: "perplexity",
     modelId: "sonar",
     displayName: "Perplexity Sonar",
     isDeepResearch: false,
@@ -661,7 +668,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 2000,
   },
   {
-    provider: "perplexity",
     modelId: "sonar-pro",
     displayName: "Perplexity Sonar Pro",
     isDeepResearch: true,
@@ -671,7 +677,6 @@ export const MODELS: Model[] = [
     typicalLatencyMs: 5000,
   },
   {
-    provider: "perplexity",
     modelId: "sonar-deep-research",
     displayName: "Perplexity Deep Research",
     isDeepResearch: true,
@@ -682,16 +687,267 @@ export const MODELS: Model[] = [
   },
 ]
 
-// Model lookup helpers
-export function getModel(idOrName: string): Model | undefined {
-  const lower = idOrName.toLowerCase()
-  return MODELS.find(
-    (m) =>
-      m.modelId.toLowerCase() === lower ||
-      m.displayName.toLowerCase() === lower ||
-      m.displayName.toLowerCase().replace(/\s+/g, "-") === lower,
-  )
+/** Frozen SKU registry. Source-of-truth identity for every supported model.
+ *  Pricing values are defaults — `applyCachedPricing()` overlays the runtime
+ *  cache for current values without mutating this array. */
+export const SKUS: readonly SkuConfig[] = Object.freeze(SKUS_DATA.map((s) => Object.freeze({ ...s })))
+
+// ============================================================================
+// Provider-endpoint registry — capability-keyed dispatch contract
+// ============================================================================
+
+/** Defaults: all-false. We override only the capabilities a SKU actually has,
+ *  so adding a new endpoint is a one-liner that explicitly enumerates what
+ *  the SKU can do. */
+const NO_CAPS: Capabilities = { webSearch: false, backgroundApi: false, vision: false, deepResearch: false }
+
+const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
+  // OpenAI — GPT-5.5
+  "gpt-5.5": { provider: "openai", capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true } },
+  "gpt-5.5-pro": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  // OpenAI — GPT-5.4 (apiModelId override: our internal alias → OpenAI's API ID)
+  "gpt-5.4": {
+    provider: "openai",
+    apiModelId: "gpt-5",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  "gpt-5.4-pro": {
+    provider: "openai",
+    apiModelId: "gpt-5-pro",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  // OpenAI — GPT-5.3 / 5.2 / 5.1 / 5 / 4.x
+  "gpt-5.3-codex": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-5.2": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  "gpt-5.2-pro": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  "gpt-5.1-codex-max": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-5.1-codex": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-5.1-codex-mini": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-5": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  "gpt-5-codex": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-5-mini": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, backgroundApi: true, vision: true },
+  },
+  "gpt-5-nano": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "gpt-4o-mini": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, backgroundApi: true, vision: true },
+  },
+  "gpt-4o": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true, vision: true } },
+  "gpt-4.1": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true, vision: true } },
+  // OpenAI — O-series (reasoning, supports background API)
+  o3: { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "o3-pro": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "o3-mini": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  "o4-mini": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  // OpenAI — Deep Research (uses queryOpenAIDeepResearch with web_search_preview)
+  "o3-deep-research-2025-06-26": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, deepResearch: true },
+  },
+  "o4-mini-deep-research-2025-06-26": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, webSearch: true, deepResearch: true },
+  },
+
+  // Anthropic
+  "claude-opus-4-6": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-sonnet-4-6": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-opus-4-5-20251101": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-sonnet-4-5-20250929": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-opus-4-1-20250805": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-opus-4-20250514": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-sonnet-4-20250514": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-haiku-4-5-20251001": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  "claude-3-haiku-20240307": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+
+  // Google
+  "gemini-3-pro-preview": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  "gemini-2.5-pro": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  "gemini-2.5-flash": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  "gemini-2.0-flash": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  "gemini-2.0-flash-lite": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  // Gemini Deep Research has its own search tool, but it routes through the
+  // Gemini Interactions API (queryGeminiDeepResearch), NOT the OpenAI
+  // Responses API. `webSearch` capability flags the latter — leaving it false
+  // here is what tells the dispatcher to pick the Gemini deep path instead of
+  // the OpenAI one. `deepResearch + provider==='google'` is the routing key.
+  "deep-research-pro-preview-12-2025": {
+    provider: "google",
+    capabilities: { ...NO_CAPS, deepResearch: true },
+  },
+
+  // xAI
+  "grok-4": { provider: "xai", capabilities: NO_CAPS },
+  "grok-4-1-fast-reasoning": { provider: "xai", capabilities: NO_CAPS },
+  "grok-3": { provider: "xai", capabilities: NO_CAPS },
+  "grok-3-fast": { provider: "xai", capabilities: NO_CAPS },
+
+  // OpenRouter
+  "moonshotai/kimi-k2.6": { provider: "openrouter", capabilities: NO_CAPS },
+
+  // Perplexity Sonar has internal web search, but dispatch goes through the
+  // standard Vercel AI SDK path (generateText) — `webSearch` capability flags
+  // models that route through the OpenAI Responses API web_search_preview tool,
+  // which Sonar doesn't use. Tagging deep-research variants so the deep path
+  // can pick them up; non-deep Sonar stays on the plain chat route.
+  sonar: { provider: "perplexity", capabilities: NO_CAPS },
+  "sonar-pro": { provider: "perplexity", capabilities: { ...NO_CAPS, deepResearch: true } },
+  "sonar-deep-research": {
+    provider: "perplexity",
+    capabilities: { ...NO_CAPS, deepResearch: true },
+  },
 }
+
+/** Frozen provider-endpoint registry. */
+export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(ENDPOINTS_DATA).map(([k, v]) => [
+      k,
+      Object.freeze({ ...v, capabilities: Object.freeze({ ...v.capabilities }) }),
+    ]),
+  ),
+)
+
+// ============================================================================
+// Pricing overlay — runtime cache merged with frozen SKU defaults
+// ============================================================================
+
+/** Per-modelId pricing overlay. Set via `setPricingOverlay()` (called by
+ *  pricing.ts at startup with the JSON cache contents). Reads merge over
+ *  the frozen SKUS values without mutating them.
+ *
+ *  Keeping this private + module-scoped (no global) avoids the previous
+ *  in-place-mutation pattern and gives tests a clean reset hook
+ *  (`resetPricingOverlay()`).
+ */
+const pricingOverlay = new Map<string, { inputPricePerM?: number; outputPricePerM?: number; typicalLatencyMs?: number }>()
+
+export function setPricingOverlay(
+  entries: Record<string, { inputPricePerM: number; outputPricePerM: number; typicalLatencyMs?: number }>,
+): void {
+  pricingOverlay.clear()
+  for (const [id, v] of Object.entries(entries)) {
+    pricingOverlay.set(id, { ...v })
+  }
+}
+
+/** @internal — for tests. */
+export function resetPricingOverlay(): void {
+  pricingOverlay.clear()
+}
+
+function applyOverlay(sku: SkuConfig): SkuConfig {
+  const o = pricingOverlay.get(sku.modelId)
+  if (!o) return sku
+  return {
+    ...sku,
+    inputPricePerM: o.inputPricePerM ?? sku.inputPricePerM,
+    outputPricePerM: o.outputPricePerM ?? sku.outputPricePerM,
+    typicalLatencyMs: o.typicalLatencyMs ?? sku.typicalLatencyMs,
+  }
+}
+
+// ============================================================================
+// Public lookup API
+// ============================================================================
+
+/** Look up a SKU by id or display-name (case-insensitive, kebab variants). */
+export function getSku(idOrName: string): SkuConfig | undefined {
+  const lower = idOrName.toLowerCase()
+  const sku = SKUS.find(
+    (s) =>
+      s.modelId.toLowerCase() === lower ||
+      s.displayName.toLowerCase() === lower ||
+      s.displayName.toLowerCase().replace(/\s+/g, "-") === lower,
+  )
+  return sku ? applyOverlay(sku) : undefined
+}
+
+/** Look up the dispatch endpoint for a SKU id. */
+export function getEndpoint(idOrName: string): ProviderEndpoint | undefined {
+  const sku = SKUS.find(
+    (s) =>
+      s.modelId.toLowerCase() === idOrName.toLowerCase() ||
+      s.displayName.toLowerCase() === idOrName.toLowerCase() ||
+      s.displayName.toLowerCase().replace(/\s+/g, "-") === idOrName.toLowerCase(),
+  )
+  if (!sku) return undefined
+  return PROVIDER_ENDPOINTS[sku.modelId]
+}
+
+/** Build the legacy `Model` facade (SKU + endpoint flattened). */
+function buildModel(sku: SkuConfig, endpoint: ProviderEndpoint): Model {
+  return {
+    ...applyOverlay(sku),
+    provider: endpoint.provider,
+    apiModelId: endpoint.apiModelId,
+  }
+}
+
+/** Legacy lookup — flattens SKU + endpoint into the historical `Model` shape. */
+export function getModel(idOrName: string): Model | undefined {
+  const sku = getSku(idOrName)
+  if (!sku) return undefined
+  const endpoint = PROVIDER_ENDPOINTS[sku.modelId]
+  if (!endpoint) return undefined
+  return buildModel(sku, endpoint)
+}
+
+/** Legacy view of the registry — flattened SKU + endpoint per row. Built once
+ *  at module load; pricing-overlay reads happen at access via
+ *  `Object.defineProperty` so callers always see current overlay values
+ *  without rebuild.
+ *
+ *  Marked `readonly` at the type level — mutation is a runtime no-op (entries
+ *  are frozen objects), and assignment through the type is rejected by tsc.
+ *  Use `setPricingOverlay()` to update runtime pricing. */
+export const MODELS: readonly Model[] = Object.freeze(
+  SKUS.filter((s) => PROVIDER_ENDPOINTS[s.modelId]).map((s) => {
+    const endpoint = PROVIDER_ENDPOINTS[s.modelId]!
+    // Build a getter-backed Model so reads of inputPricePerM / etc. always see
+    // the current overlay. Avoids "frozen at module load" pricing while
+    // keeping the surface immutable to writes.
+    const target: Model = {
+      ...s,
+      provider: endpoint.provider,
+      apiModelId: endpoint.apiModelId,
+    }
+    Object.defineProperty(target, "inputPricePerM", {
+      get: () => pricingOverlay.get(s.modelId)?.inputPricePerM ?? s.inputPricePerM,
+      enumerable: true,
+      configurable: false,
+    })
+    Object.defineProperty(target, "outputPricePerM", {
+      get: () => pricingOverlay.get(s.modelId)?.outputPricePerM ?? s.outputPricePerM,
+      enumerable: true,
+      configurable: false,
+    })
+    Object.defineProperty(target, "typicalLatencyMs", {
+      get: () => pricingOverlay.get(s.modelId)?.typicalLatencyMs ?? s.typicalLatencyMs,
+      enumerable: true,
+      configurable: false,
+    })
+    return Object.freeze(target)
+  }),
+)
+
+// ============================================================================
+// Selection helpers
+// ============================================================================
 
 export function getModelsForLevel(level: ThinkingLevel): Model[] {
   switch (level) {
@@ -702,7 +958,6 @@ export function getModelsForLevel(level: ThinkingLevel): Model[] {
     case "research":
       return MODELS.filter((m) => m.isDeepResearch).slice(0, 1)
     case "consensus":
-      // One model per provider (non-deep-research)
       return MODELS.filter((m) => !m.isDeepResearch && m.costTier !== "low").reduce((acc, m) => {
         if (!acc.find((x) => x.provider === m.provider)) acc.push(m)
         return acc
@@ -722,45 +977,29 @@ export function getDeepResearchModels(): Model[] {
   return MODELS.filter((m) => m.isDeepResearch)
 }
 
-/**
- * Estimate cost for a query (USD)
- * Assumes ~500 input tokens and ~1000 output tokens for a typical query
- */
-export function estimateCost(model: Model, inputTokens = 500, outputTokens = 1000): number {
+/** Estimate cost for a query (USD) — assumes ~500 input / ~1000 output tokens. */
+export function estimateCost(model: Model | SkuConfig, inputTokens = 500, outputTokens = 1000): number {
   const inputCost = (model.inputPricePerM ?? 0) * (inputTokens / 1_000_000)
   const outputCost = (model.outputPricePerM ?? 0) * (outputTokens / 1_000_000)
   return inputCost + outputCost
 }
 
-/**
- * Format cost for display
- */
 export function formatCost(cost: number): string {
   if (cost < 0.01) return `$${(cost * 100).toFixed(2)}¢`
   if (cost < 1) return `$${cost.toFixed(3)}`
   return `$${cost.toFixed(2)}`
 }
 
-/**
- * Format latency for display
- */
 export function formatLatency(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60000) return `${(ms / 1000).toFixed(0)}s`
   return `${(ms / 60000).toFixed(1)}min`
 }
 
-/**
- * Get cheap model for question refinement
- */
 export function getCheapModel(): Model | undefined {
   return MODELS.find((m) => m.costTier === "low" && m.provider === "openai") || MODELS.find((m) => m.costTier === "low")
 }
 
-/**
- * Get cheap models from distinct available providers (for racing).
- * Returns up to `max` models, one per provider, preferring openai first.
- */
 export function getCheapModels(max = 2): Model[] {
   const seen = new Set<string>()
   const result: Model[] = []
@@ -773,46 +1012,31 @@ export function getCheapModels(max = 2): Model[] {
   return result
 }
 
-/**
- * Check if model requires cost confirmation (expensive)
- */
-export function requiresConfirmation(model: Model, threshold = 0.1): boolean {
+export function requiresConfirmation(model: Model | SkuConfig, threshold = 0.1): boolean {
   const estimatedCost = estimateCost(model)
   return estimatedCost > threshold || model.costTier === "very-high" || model.isDeepResearch
 }
 
-/**
- * Best models for each mode (in priority order)
- */
+// ============================================================================
+// Best-models curation per mode
+// ============================================================================
+
 export const BEST_MODELS = {
-  // Default query - best general-purpose models
   default: ["gpt-5.4", "gemini-3-pro-preview", "claude-sonnet-4-6", "grok-4"],
-  // Deep research — GPT-5.4 via Responses API + web_search is the best deep research model.
-  // (2026-03-12) Tested GPT-5.4 vs O3 Deep Research on 19K lines of silvery+flexily source:
-  //   GPT-5.4: $0.57, 182K tokens, comprehensive findings
-  //   O3 Deep Research: $2.27, 14KB output, much worse quality
-  // (2026-03-20) GPT-5.4 Pro also works via --model gpt-5.4-pro but takes 2-3 min (background+poll).
-  // The "dedicated" deep research models (o3, gemini) are kept as fallbacks only.
+  // Deep research — GPT-5.4 via Responses API + web_search is the best deep
+  // research model. The "dedicated" deep research models (o3, gemini) are
+  // kept as fallbacks only.
   deep: ["gpt-5.4", "o3-deep-research-2025-06-26", "deep-research-pro-preview-12-2025", "sonar-deep-research"],
-  // Second opinion - prefer different provider than default
   opinion: ["gemini-3-pro-preview", "gemini-2.5-pro", "gpt-5.4", "grok-4"],
-  // Debate - one from each major provider
   debate: ["gpt-5.4", "gemini-3-pro-preview", "grok-4", "claude-sonnet-4-6"],
-  // Quick/cheap - fast and cheap
   quick: ["gpt-5-nano", "gemini-2.0-flash-lite", "grok-3-fast", "claude-haiku-4-5-20251001"],
-  // Pro - most capable models (very-high cost tier, ~10x standard)
-  // Dual-pro mode (CLI `pro` keyword, no --model override) runs the first two
-  // entries in parallel: GPT-5.4 Pro + Kimi K2.6 — A/B test + 2-is-better-than-one.
-  // (2026-04-23) GPT-5.5 Pro announced — API rollout pending. Switch default to
-  //   "gpt-5.5-pro" once the API is confirmed live; the registry entry is ready.
+  // Pro - dual-pro mode (CLI `pro` keyword, no --model override) runs the
+  // first two entries in parallel: GPT-5.4 Pro + Kimi K2.6.
   pro: ["gpt-5.4-pro", "moonshotai/kimi-k2.6", "gpt-5.5-pro", "o3-pro", "claude-opus-4-6", "gpt-5.2-pro"],
 }
 
 export type ModelMode = keyof typeof BEST_MODELS
 
-/**
- * Get the best available model for a mode, with unavailability warnings
- */
 export function getBestAvailableModel(
   mode: ModelMode,
   isProviderAvailable: (provider: Provider) => boolean,
@@ -820,11 +1044,9 @@ export function getBestAvailableModel(
   const candidates = BEST_MODELS[mode]
   const globalBest = getModel(candidates[0]!)
 
-  // Find first available model
   for (const modelId of candidates) {
     const model = getModel(modelId)
     if (model && isProviderAvailable(model.provider)) {
-      // Check if we're not using the global best
       let warning: string | undefined
       if (globalBest && model.modelId !== globalBest.modelId) {
         const envVar = getProviderEnvVar(globalBest.provider)
@@ -834,7 +1056,6 @@ export function getBestAvailableModel(
     }
   }
 
-  // No available model
   const envVars = candidates
     .map((id) => getModel(id))
     .filter(Boolean)
@@ -848,9 +1069,6 @@ export function getBestAvailableModel(
   }
 }
 
-/**
- * Get multiple best available models (for debate mode)
- */
 export function getBestAvailableModels(
   mode: ModelMode,
   isProviderAvailable: (provider: Provider) => boolean,
@@ -865,7 +1083,6 @@ export function getBestAvailableModels(
     if (!model) continue
 
     if (isProviderAvailable(model.provider)) {
-      // Avoid duplicate providers for diversity
       if (!available.find((m) => m.provider === model.provider)) {
         available.push(model)
       }
@@ -876,7 +1093,6 @@ export function getBestAvailableModels(
     if (available.length >= count) break
   }
 
-  // Build warning for unavailable better models
   let warning: string | undefined
   if (unavailable.length > 0 && available.length < count) {
     const missing = unavailable
@@ -889,8 +1105,7 @@ export function getBestAvailableModels(
   return { models: available, warning }
 }
 
-/** Map a Provider to the env var name that activates it. Single source of
- *  truth — re-exported from providers.ts so callers can import from either. */
+/** Map a Provider to the env var name that activates it. */
 export function getProviderEnvVar(provider: Provider): string {
   switch (provider) {
     case "openai":

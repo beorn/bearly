@@ -85,7 +85,10 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     // a mid-call crash loses the work.
     const createArgs = responsesCreateMock.mock.calls[0]![0]
     expect(createArgs.background).toBe(true)
-    expect(createArgs.model).toBe("gpt-5.4-pro")
+    // The string sent to OpenAI is resolved via the endpoint's apiModelId —
+    // our internal SKU "gpt-5.4-pro" maps to OpenAI's API ID "gpt-5-pro".
+    // (See PROVIDER_ENDPOINTS in types.ts.)
+    expect(createArgs.model).toBe("gpt-5-pro")
     // Responses-API background path should NOT inject the web_search_preview
     // tool — that's for deep research only. Standard pro is a plain completion.
     expect(createArgs.tools).toBeUndefined()

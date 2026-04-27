@@ -204,22 +204,37 @@ if (modelOverrideId) {
     modelOverride = parseOllamaModel(modelOverrideId.slice("ollama:".length))
   } else {
     modelOverride = getModel(modelOverrideId)
-    // OpenRouter hosts thousands of models (qwen3, deepseek, llama variants,
-    // …) — we shouldn't have to hardcode every one in types.ts. IDs in the
-    // `owner/model` shape are the OpenRouter convention; synthesize a
-    // transient Model on the fly so the caller can reach any of them without
-    // editing source. Pricing is unknown for synthetics (cost display will
-    // show "$0.00"), costTier falls back to "medium" so requiresConfirmation
-    // behaves reasonably.
+    // OpenRouter hosts thousands of models in the `owner/model` shape. We
+    // can't hardcode every one in the registry — but silently minting a
+    // synthetic SKU with "medium" costTier and unknown pricing defeats
+    // requiresConfirmation and produces "$0.00" cost estimates that
+    // pre-pay-glamour the user. Two safe paths:
+    //   1. `--force` opt-in: caller acknowledges they're about to pay
+    //      unknown amounts. Mint a synthetic SKU with "very-high" costTier
+    //      so requiresConfirmation always fires, and tag the displayName
+    //      with [unverified] so the cost display makes the unknown
+    //      explicit.
+    //   2. (Not yet wired) `listModels()` runtime lookup at OpenRouter to
+    //      hydrate pricing. Tracked as a follow-up.
+    // Without --force, refuse to mint and tell the user how to opt in.
     if (!modelOverride && modelOverrideId.includes("/")) {
       const { isProviderAvailable: checkProvider } = await import("./lib/providers")
       if (checkProvider("openrouter")) {
+        if (!hasFlag("--force")) {
+          error(
+            `Unverified OpenRouter model: ${modelOverrideId}. ` +
+              `Pricing is unknown — cost estimation and confirmation gates won't work. ` +
+              `Re-run with --force to dispatch anyway (treated as very-high cost so confirmation will fire).`,
+          )
+        }
         modelOverride = {
           provider: "openrouter",
           modelId: modelOverrideId,
-          displayName: modelOverrideId,
+          displayName: `${modelOverrideId} [unverified]`,
           isDeepResearch: false,
-          costTier: "medium",
+          // very-high so requiresConfirmation always returns true; pricing
+          // is left undefined so estimateCost reports $0 (transparent unknown).
+          costTier: "very-high",
         }
       }
     }

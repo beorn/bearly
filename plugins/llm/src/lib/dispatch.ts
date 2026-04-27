@@ -12,7 +12,14 @@ import { consensus } from "./consensus"
 import { isProviderAvailable, getProviderEnvVar } from "./providers"
 import { getDb, closeDb, ftsSearchWithSnippet } from "../../../recall/src/history/db"
 import { estimateCost, formatCost, getBestAvailableModel, getModel, MODELS, type Model, type ModelMode } from "./types"
-import { isPricingStale, cacheCurrentPricing, PRICING_SOURCES } from "./pricing"
+import {
+  isPricingStale,
+  cacheCurrentPricing,
+  buildPricingSnapshot,
+  savePricingCache,
+  applyCachedPricing,
+  PRICING_SOURCES,
+} from "./pricing"
 import { emitContent, emitJson, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
@@ -176,8 +183,12 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
     return { priceChanges: [], error: "Could not parse LLM response. Pricing cache unchanged." }
   }
 
-  // Apply changes
+  // Compute changes — pure, no mutation. The accepted updates feed into
+  // `buildPricingSnapshot` which writes a fresh JSON cache; `applyCachedPricing`
+  // then overlays it onto the frozen registry so subsequent reads see the new
+  // values without any in-place mutation of MODELS.
   const priceChanges: PricingUpdateResult["priceChanges"] = []
+  const acceptedUpdates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }> = []
   for (const u of priceUpdates) {
     const current = currentPrices.get(u.modelId)
     if (!current) continue
@@ -208,16 +219,26 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
         newInput: u.inputPricePerM,
         newOutput: u.outputPricePerM,
       })
-      const model = MODELS.find((m) => m.modelId === u.modelId)
-      if (model) {
-        model.inputPricePerM = u.inputPricePerM
-        model.outputPricePerM = u.outputPricePerM
-      }
+      acceptedUpdates.push({
+        modelId: u.modelId,
+        inputPricePerM: u.inputPricePerM,
+        outputPricePerM: u.outputPricePerM,
+      })
     }
   }
 
-  // Save cache (resets stale timer)
-  cacheCurrentPricing()
+  // Persist the snapshot and refresh the runtime overlay. `cacheCurrentPricing`
+  // is preserved as the "snapshot current effective pricing" entry point — it
+  // resets the stale timer regardless of whether we had updates (matching the
+  // previous behaviour). When we have accepted updates, we build the snapshot
+  // explicitly so the cache contains the new values; `applyCachedPricing()`
+  // then makes them effective immediately for the rest of this process.
+  if (acceptedUpdates.length > 0) {
+    savePricingCache(buildPricingSnapshot(acceptedUpdates))
+    applyCachedPricing()
+  } else {
+    cacheCurrentPricing()
+  }
 
   // Extraction cost
   let extractionCost: string | undefined

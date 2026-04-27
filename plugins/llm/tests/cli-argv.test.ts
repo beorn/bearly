@@ -130,17 +130,36 @@ describe("cli argv parsing", () => {
     expect(equalsForm!.displayName).toBe(spaceForm!.displayName)
   }, 10_000)
 
-  it("--model owner/custom-model with OPENROUTER_API_KEY → synthesized openrouter Model", async () => {
+  it("--model owner/custom-model with OPENROUTER_API_KEY + --force → synthesized openrouter Model (unverified)", async () => {
     makeTestEnv()
     mockOk()
 
-    await runWithArgv(["--model", "acme/custom-7b", "hello"])
+    // Synthetic openrouter SKUs require `--force` — pricing is unknown so
+    // confirmation gates and cost estimates can't work. The synthesized
+    // model is tagged "[unverified]" in the displayName and uses very-high
+    // cost tier so requiresConfirmation always fires.
+    await runWithArgv(["--model", "acme/custom-7b", "--force", "hello"])
 
     const modelArg = lastAskAndFinishArgs()?.modelOverride
     expect(modelArg).toBeDefined()
     expect(modelArg!.provider).toBe("openrouter")
     expect(modelArg!.modelId).toBe("acme/custom-7b")
-    expect(modelArg!.displayName).toBe("acme/custom-7b")
+    expect(modelArg!.displayName).toContain("acme/custom-7b")
+    expect(modelArg!.displayName).toContain("unverified")
+    expect(modelArg!.costTier).toBe("very-high")
+  }, 10_000)
+
+  it("--model owner/custom-model with OPENROUTER_API_KEY but no --force → error + exit(1)", async () => {
+    const env = makeTestEnv()
+    mockOk()
+
+    // Without --force, refuse to mint a synthetic SKU. Cost estimation and
+    // confirmation gates would silently break otherwise.
+    await runWithArgv(["--model", "acme/custom-7b", "hello"])
+
+    expect(env.exitCodes).toContain(1)
+    const stderrAll = env.stderr.join("\n")
+    expect(stderrAll).toMatch(/Unverified OpenRouter model.*--force/s)
   }, 10_000)
 
   it("--model owner/custom-model without OPENROUTER_API_KEY → error + exit(1)", async () => {

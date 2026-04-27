@@ -10,7 +10,7 @@ import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import type { Model, ModelResponse, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, MODELS } from "./types"
+import { getModelsForLevel, getModel, getEndpoint, MODELS } from "./types"
 
 export interface QueryOptions {
   question: string
@@ -479,11 +479,17 @@ export async function research(topic: string, options: ResearchCallOptions = {})
     }
   }
 
-  // OpenAI models: always use Responses API with web_search_preview for deep research.
-  // GPT-5.4 is the preferred deep model but isn't flagged isDeepResearch (that flag marks
-  // dedicated slow models like O3 Deep Research). The Responses API handles fast models
-  // fine — if the response completes immediately, background+poll returns instantly.
-  if (model.provider === "openai") {
+  // Models with the `webSearch` capability: route through the OpenAI Responses
+  // API with web_search_preview. GPT-5.4 isn't flagged isDeepResearch (that flag
+  // marks dedicated slow models like O3 Deep Research), but it has webSearch
+  // capability and the Responses API handles fast models fine — if the
+  // response completes immediately, background+poll returns instantly.
+  // Capability-based routing replaces the previous `model.provider === "openai"`
+  // name match — Perplexity Sonar (which has internal web search but goes
+  // through generateText) is correctly tagged webSearch=false in the endpoint
+  // map and falls through to the standard Vercel AI SDK path below.
+  const endpoint = getEndpoint(model.modelId)
+  if (endpoint?.capabilities.webSearch) {
     const response = await queryOpenAIDeepResearch({
       topic,
       model,

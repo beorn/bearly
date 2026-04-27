@@ -13,6 +13,7 @@
 
 import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
+import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
 
 const log = createLogger("bearly:llm:gemini")
@@ -376,8 +377,13 @@ export async function pollForGeminiCompletion(
 }
 
 /**
- * Check if a model is a Gemini deep research model
+ * Check if a model is a Gemini deep research model. Capability-driven:
+ * Gemini DR SKUs are flagged `deepResearch: true` (no `webSearch` — that
+ * flag is reserved for the OpenAI Responses API path). Combined with the
+ * provider check (Gemini has its own Interactions API for DR), this picks
+ * the right dispatch.
  */
 export function isGeminiDeepResearch(model: Model): boolean {
-  return model.provider === "google" && model.isDeepResearch
+  const endpoint = getEndpoint(model.modelId)
+  return Boolean(endpoint?.capabilities.deepResearch && endpoint?.provider === "google")
 }

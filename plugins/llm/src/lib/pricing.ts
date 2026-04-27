@@ -1,12 +1,20 @@
 /**
- * Pricing cache and auto-update functionality
+ * Pricing cache and runtime overlay.
  *
- * Caches model pricing info and auto-updates when stale (>5 days old)
+ * The SKU registry in types.ts is frozen — pricing values there are baseline
+ * defaults. This module manages a JSON cache (`~/.cache/tools/llm-pricing.json`)
+ * containing current pricing, and overlays it onto the registry at process
+ * start via `setPricingOverlay()`. Reads of `model.inputPricePerM` /
+ * `outputPricePerM` always see the current overlay (the legacy `MODELS` rows
+ * use property getters that consult the overlay map).
+ *
+ * The cache becomes stale after 5 days; `performPricingUpdate()` in dispatch.ts
+ * refreshes it (and returns the snapshot for callers to write).
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
-import { join, dirname } from "path"
-import { MODELS, type Model } from "./types"
+import { join } from "path"
+import { MODELS, SKUS, setPricingOverlay } from "./types"
 
 // Cache location (in user's home directory)
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
@@ -75,26 +83,24 @@ export function getDaysSinceUpdate(): number | null {
 }
 
 /**
- * Apply cached pricing to models (mutates MODELS array)
+ * Apply cached pricing to the runtime overlay (registry stays frozen).
+ *
+ * After this call, every read of `model.inputPricePerM` / `outputPricePerM` /
+ * `typicalLatencyMs` reflects the cache values where present, falling through
+ * to the SKU defaults otherwise.
  */
 export function applyCachedPricing(): void {
   const cache = loadPricingCache()
   if (!cache) return
-
-  for (const model of MODELS) {
-    const cached = cache.models[model.modelId]
-    if (cached) {
-      model.inputPricePerM = cached.inputPricePerM
-      model.outputPricePerM = cached.outputPricePerM
-      if (cached.typicalLatencyMs) {
-        model.typicalLatencyMs = cached.typicalLatencyMs
-      }
-    }
-  }
+  setPricingOverlay(cache.models)
 }
 
 /**
- * Save current model pricing to cache
+ * Snapshot the current effective pricing (SKU defaults + overlay) into the cache.
+ *
+ * Use after a successful pricing-update extraction to persist the new values.
+ * This does NOT mutate the registry — it writes the JSON cache; subsequent
+ * processes will pick the values up via `applyCachedPricing()` at startup.
  */
 export function cacheCurrentPricing(): void {
   const models: PricingCache["models"] = {}
@@ -113,6 +119,48 @@ export function cacheCurrentPricing(): void {
     updatedAt: new Date().toISOString(),
     models,
   })
+}
+
+/**
+ * Build a fresh snapshot from a set of price updates, merging on top of the
+ * current effective pricing. Returns the snapshot the caller can persist via
+ * `savePricingCache(snapshot)` or `cacheCurrentPricing()` after applying the
+ * overlay first.
+ *
+ * Pure — does not mutate any registry or cache. The dispatch-side updater
+ * uses this so the registry never has to be mutated in-place.
+ */
+export function buildPricingSnapshot(
+  updates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }>,
+): PricingCache {
+  const models: PricingCache["models"] = {}
+  // Seed with SKU defaults so the snapshot is always full.
+  for (const sku of SKUS) {
+    if (sku.inputPricePerM !== undefined && sku.outputPricePerM !== undefined) {
+      models[sku.modelId] = {
+        inputPricePerM: sku.inputPricePerM,
+        outputPricePerM: sku.outputPricePerM,
+        typicalLatencyMs: sku.typicalLatencyMs,
+      }
+    }
+  }
+  // Layer the existing cache (if any) on top — preserves prior overrides.
+  const existing = loadPricingCache()
+  if (existing) {
+    for (const [id, v] of Object.entries(existing.models)) {
+      models[id] = { ...models[id], ...v }
+    }
+  }
+  // Apply the new updates last.
+  for (const u of updates) {
+    const prev = models[u.modelId]
+    models[u.modelId] = {
+      inputPricePerM: u.inputPricePerM,
+      outputPricePerM: u.outputPricePerM,
+      typicalLatencyMs: prev?.typicalLatencyMs,
+    }
+  }
+  return { updatedAt: new Date().toISOString(), models }
 }
 
 /**
@@ -154,10 +202,11 @@ export function getStaleWarning(): string | null {
  * Initialize pricing on startup
  */
 export function initializePricing(): void {
-  // First, try to apply cached pricing
+  // Apply cached pricing as an overlay on the frozen registry.
   applyCachedPricing()
 
-  // If no cache exists, create one from hardcoded values
+  // If no cache exists, seed one from the SKU defaults so the stale-timer
+  // tracks "since first run" rather than perpetually firing.
   const cache = loadPricingCache()
   if (!cache) {
     cacheCurrentPricing()
