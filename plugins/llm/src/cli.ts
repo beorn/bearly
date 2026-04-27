@@ -113,6 +113,7 @@ const VALUE_FLAGS = [
   "--output",
   "--image",
   "--challenger",
+  "--exclude",
   "--sample",
   "--limit",
 ]
@@ -386,6 +387,7 @@ KEYWORDS
                          Use --no-challenger / --no-judge to dial down cost.
                          (falls back to single GPT-5.4 Pro if OPENROUTER_API_KEY unset)
   pro --leaderboard      Print ranked model leaderboard from ab-pro.jsonl
+  pro --diagnostics      Speed / failure rate / cost distribution per model
   pro --promote-review   Show leaderboard + interactive promotion flow
   pro --backtest         Replay history to compare OLD vs NEW config
   pro --judge-history    Retroactively score historical ab-pro.jsonl entries
@@ -643,6 +645,7 @@ export async function main(): Promise<string | undefined> {
     case "pro": {
       // Sub-commands inside `pro` (km-bearly.llm-dual-pro-shadow-test):
       //   --leaderboard      Print ab-pro.jsonl leaderboard table
+      //   --diagnostics      Speed / failure-rate / cost-distribution surface
       //   --promote-review   Show leaderboard + interactive promotion flow
       //   --backtest         Replay history to compare OLD vs NEW config
       // These short-circuit before the regular dispatch.
@@ -683,6 +686,11 @@ export async function main(): Promise<string | undefined> {
         await runDiscoverModels({ apply: hasFlag("--apply") })
         break
       }
+      if (hasFlag("--diagnostics")) {
+        const { runDiagnostics } = await import("./lib/dispatch")
+        await runDiagnostics()
+        break
+      }
       const q = getQuestion()
       if (!q) error("Usage: llm pro <question>")
       const outputFile = resolveOutputFile(q)
@@ -692,6 +700,20 @@ export async function main(): Promise<string | undefined> {
       // auto-falls-back to single-model mode inside runProDual.
       // --no-challenger reverts to legacy 2-leg behavior; --no-judge skips
       // the judge call (saves cost, loses scoring).
+      // --exclude <model> drops a model from challenger rotation for THIS
+      // call only. Joins (union) with `exclude` in dual-pro-config.json.
+      // Repeat the flag or comma-separate ids: --exclude foo --exclude bar
+      // or --exclude foo,bar.
+      const excludeArgs: string[] = []
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i]!
+        if (a === "--exclude" && i + 1 < args.length) {
+          for (const id of args[i + 1]!.split(",").map((s) => s.trim()).filter(Boolean)) excludeArgs.push(id)
+        } else if (a.startsWith("--exclude=")) {
+          for (const id of a.slice("--exclude=".length).split(",").map((s) => s.trim()).filter(Boolean))
+            excludeArgs.push(id)
+        }
+      }
       await runProDual({
         question: q,
         modelOverride,
@@ -703,6 +725,7 @@ export async function main(): Promise<string | undefined> {
         skipConfirm,
         noChallenger: hasFlag("--no-challenger"),
         noJudge: hasFlag("--no-judge"),
+        extraExclude: excludeArgs,
         challengerOverride: getArg("--challenger"),
       })
       break
