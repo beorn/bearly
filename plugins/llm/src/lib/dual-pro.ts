@@ -416,6 +416,9 @@ export interface AbProLegEntry {
   score?: JudgeBreakdown | null
   cost?: number
   durationMs?: number
+  /** Inline response content (added 2026-04-27 for retroactive judging).
+   * Pre-existing entries lack this and must fall back to entry.outputFile. */
+  content?: string
 }
 
 /** Schema-aware reader for ab-pro.jsonl entries — tolerates v1 (gpt/kimi)

@@ -105,7 +105,7 @@ const KEYWORDS = [
 // the prompt (e.g. --image screenshot.png → "describe this screenshot.png").
 // --models / --provider were aspirational and removed; resurrect here when
 // the CLI actually implements them.
-const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image", "--challenger", "--sample"]
+const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image", "--challenger", "--sample", "--limit"]
 
 /**
  * The canonical command keyword for this invocation — the FIRST positional
@@ -378,6 +378,8 @@ KEYWORDS
   pro --leaderboard      Print ranked model leaderboard from ab-pro.jsonl
   pro --promote-review   Show leaderboard + interactive promotion flow
   pro --backtest         Replay history to compare OLD vs NEW config
+  pro --judge-history    Retroactively score historical ab-pro.jsonl entries
+                         (--limit N, --quick for cheap judge, --apply to write)
                          (--quick smoke-test mode; --no-old-fire skips OLD)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
@@ -639,6 +641,16 @@ export async function main(): Promise<string | undefined> {
           noOldFire: hasFlag("--no-old-fire"),
           noChallenger: hasFlag("--no-challenger"),
           challengerOverride: getArg("--challenger"),
+          skipConfirm,
+        })
+        break
+      }
+      if (hasFlag("--judge-history")) {
+        const { runJudgeHistory } = await import("./lib/dispatch")
+        await runJudgeHistory({
+          limit: getArg("--limit") ? parseInt(getArg("--limit")!, 10) : undefined,
+          quick: hasFlag("--quick"),
+          apply: hasFlag("--apply"),
           skipConfirm,
         })
         break
