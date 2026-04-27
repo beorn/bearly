@@ -58,3 +58,9 @@ export type { SocketServer, WithSocketServer } from "./with-socket-server.ts"
 
 export { withDispatcher } from "./with-dispatcher.ts"
 export type { Dispatcher, DispatcherRuntimeHooks, WithDispatcher } from "./with-dispatcher.ts"
+
+export { withSignals } from "./with-signals.ts"
+export type { SignalHooks, WithSignals } from "./with-signals.ts"
+
+export { withHotReload } from "./with-hot-reload.ts"
+export type { HotReload, HotReloadOpts, WithHotReload } from "./with-hot-reload.ts"

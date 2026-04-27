@@ -9,12 +9,8 @@
  *   bun tribe-daemon.ts --fd 3             # Inherit socket fd (for hot-reload re-exec)
  */
 
-import { type Socket as NetSocket } from "node:net"
-import { existsSync, unlinkSync, readdirSync, readFileSync, watch } from "node:fs"
+import { unlinkSync } from "node:fs"
 import { parseArgs } from "node:util"
-import { spawn } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
-import { dirname as pathDirname, resolve as pathResolve } from "node:path"
 import {
   resolveSocketPath,
   createLineParser,
@@ -67,10 +63,11 @@ import {
   withDaemonContext,
   withDatabase,
   withDispatcher,
+  withHotReload,
   withLore,
   withProjectRoot,
+  withSignals,
   withSocketServer,
-  type ClientSession,
 } from "./lib/tribe/compose/index.ts"
 
 const ac = new AbortController()
@@ -174,13 +171,25 @@ const activePluginNamesRef: { current: string[] } = { current: [] }
 const markActiveRef: { current: () => void } = { current: () => {} }
 const markIdleRef: { current: () => void } = { current: () => {} }
 
+// Refs for shutdown / stopPlugins — wired up after the runtime constructs them.
+const stopPluginsRef: { current: () => void } = { current: () => {} }
+const shutdownRef: { current: () => void } = { current: () => {} }
+
 const withSocketShape = withSocketServer<typeof partialShape>()(partialShape)
-const tribeShape = withDispatcher<typeof withSocketShape>({
+const withDispatcherShape = withDispatcher<typeof withSocketShape>({
   onActiveClient: () => markActiveRef.current(),
   onIdle: () => markIdleRef.current(),
   getActivePluginNames: () => activePluginNamesRef.current,
   getQuitTimeoutSec: () => withSocketShape.config.quitTimeoutSec,
 })(withSocketShape)
+const withHotReloadShape = withHotReload<typeof withDispatcherShape>({
+  stopPlugins: () => stopPluginsRef.current(),
+  triggerShutdown: () => shutdownRef.current(),
+})(withDispatcherShape)
+const tribeShape = withSignals<typeof withHotReloadShape>({
+  onShutdown: () => shutdownRef.current(),
+  onReload: () => withHotReloadShape.hotReload.reload(),
+})(withHotReloadShape)
 
 // Lore tools are conditional on lore being enabled — register them after the
 // pipe so the registry stays append-only when --no-lore is set.
@@ -205,9 +214,7 @@ const registry = tribeShape.registry
 const clients = registry.clients
 const socketToClient = registry.socketToClient
 const broadcast = tribeShape.broadcast
-const messageTap = broadcast.messageTap
-const server = tribeShape.socket.server
-const startedAt = tribeShape.socket.startedAt
+void broadcast
 
 /** Single entry point for all observable activities. Writes to DB; the messaging
  *  layer's fanout hook delivers to connected clients synchronously (see
@@ -362,106 +369,6 @@ function checkLiveness(): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Hot-reload (SIGHUP)
-// ---------------------------------------------------------------------------
-
-process.on("SIGHUP", () => {
-  log("SIGHUP received — re-exec for hot-reload")
-  // Don't broadcast reload — sessions reconnect automatically and don't need to know
-
-  // Stop plugins BEFORE spawning — ensures cursor/state is flushed to disk
-  // so the new process reads up-to-date state (prevents duplicate event delivery)
-  stopPlugins()
-
-  // Pass the socket fd to the new process
-  const socketFd = (server as any)._handle?.fd
-  if (socketFd == null) {
-    log("Cannot hot-reload: no socket fd available")
-    return
-  }
-
-  // Stop accepting new connections on old server
-  // But don't close existing connections — let them drain
-
-  const argv = process.argv.slice(1).filter((a) => !a.startsWith("--fd"))
-  argv.push(`--fd=${socketFd}`)
-
-  const child = spawn(process.execPath, argv, {
-    stdio: ["ignore", "inherit", "inherit", socketFd],
-    detached: false,
-    env: process.env,
-  })
-
-  // Give new process time to start, then exit
-  child.on("error", (err) => {
-    log(`Hot-reload spawn failed: ${err.message}`)
-  })
-
-  timers.setTimeout(() => {
-    log("Hot-reload: old process exiting, new process taking over")
-    ac.abort()
-    // Don't close server — fd is inherited by child
-    process.exit(0)
-  }, 1000)
-})
-
-// ---------------------------------------------------------------------------
-// Source file watcher — auto-SIGHUP on code changes
-// ---------------------------------------------------------------------------
-
-const sourceDir = pathDirname(new URL(import.meta.url).pathname)
-const libTribeDir = pathResolve(sourceDir, "lib/tribe")
-
-function computeSourceHash(): string {
-  const files = [
-    pathResolve(sourceDir, "tribe-daemon.ts"),
-    pathResolve(sourceDir, "tribe-proxy.ts"),
-    ...(() => {
-      try {
-        return readdirSync(libTribeDir)
-          .filter((f) => f.endsWith(".ts"))
-          .sort()
-          .map((f) => pathResolve(libTribeDir, f))
-      } catch {
-        return []
-      }
-    })(),
-  ]
-  const hash = createHash("md5")
-  for (const f of files) {
-    try {
-      hash.update(readFileSync(f))
-    } catch {
-      /* missing */
-    }
-  }
-  return hash.digest("hex").slice(0, 12)
-}
-
-let sourceHash = computeSourceHash()
-let reloadDebounce: ReturnType<typeof setTimeout> | null = null
-
-function onSourceChange(filename: string | null): void {
-  if (filename && !filename.endsWith(".ts")) return
-  if (reloadDebounce) timers.clearTimeout(reloadDebounce)
-  reloadDebounce = timers.setTimeout(() => {
-    const newHash = computeSourceHash()
-    if (newHash === sourceHash) return // No actual change
-    log(`Source changed (${sourceHash} → ${newHash}), triggering hot-reload`)
-    sourceHash = newHash
-    process.emit("SIGHUP")
-  }, 500)
-}
-
-// Watch both the tools dir (tribe-daemon.ts, tribe-proxy.ts) and lib/tribe/
-const watchers = [
-  watch(sourceDir, { persistent: false }, (_event, filename) => onSourceChange(filename)),
-  ...(existsSync(libTribeDir)
-    ? [watch(libTribeDir, { persistent: false }, (_event, filename) => onSourceChange(filename))]
-    : []),
-]
-log(`Watching source files for auto-reload`)
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -475,7 +382,9 @@ function shutdown(): void {
   // `ac.abort()` above already triggers this via the AbortSignal hook, but
   // call explicitly for clarity and pre-abort ordering.
   void loreHandlers?.close()
-  for (const w of watchers) w.close()
+  // Watchers, server, socket file unlink, and db close are all registered on
+  // the root scope by withHotReload / withSocketServer / withDatabase — the
+  // ac.abort() above triggers rootScope's asyncDispose, which cascades them.
 
   // Close all client connections
   for (const [, client] of clients) {
@@ -487,7 +396,8 @@ function shutdown(): void {
   }
   clients.clear()
 
-  server.close()
+  // Belt-and-braces unlink — Hot-reload + scope close handle this normally,
+  // but a SIGINT during a wedged dispose path benefits from the explicit call.
   try {
     unlinkSync(SOCKET_PATH)
   } catch {
@@ -501,8 +411,10 @@ function shutdown(): void {
   process.exit(0)
 }
 
-process.on("SIGINT", shutdown)
-process.on("SIGTERM", shutdown)
+// SIGINT / SIGTERM / SIGHUP are routed via withSignals → shutdownRef /
+// hotReload.reload(). Wire shutdownRef + stopPluginsRef now that they exist.
+shutdownRef.current = shutdown
+stopPluginsRef.current = stopPlugins
 
 log(`Daemon ready (pid=${process.pid}, clients=${clients.size})`)
 
