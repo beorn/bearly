@@ -49,3 +49,6 @@ export type { WithPlugins } from "./with-plugin.ts"
 
 export { withClientRegistry } from "./with-client-registry.ts"
 export type { ClientRegistry, ClientSession, WithClientRegistry } from "./with-client-registry.ts"
+
+export { withBroadcast } from "./with-broadcast.ts"
+export type { Broadcast, WithBroadcast } from "./with-broadcast.ts"
