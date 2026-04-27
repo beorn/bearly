@@ -25,3 +25,7 @@ export { withDaemonCall } from "./util.ts"
 
 // Socket path discovery
 export { resolvePeerSocketPath, resolveSocketPath } from "./paths.ts"
+
+// Composition — pipe + Scope + tool registry. See `hub/composition.md`.
+export type { Plugin, Tool, ToolContext, ToolHandler, ToolRegistry, WithTools } from "./composition/index.ts"
+export { Scope, createScope, disposable, pipe, withTool, withTools } from "./composition/index.ts"
