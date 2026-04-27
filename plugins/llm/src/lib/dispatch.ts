@@ -403,6 +403,9 @@ export async function askAndFinish(options: {
   buildContext: (topic: string) => Promise<string | undefined>
   outputFile: string
   sessionTag: string
+  /** When true, include captured rate-limit headers in the JSON envelope
+   *  under `quota`. Cache update is unconditional regardless of this flag. */
+  includeQuota?: boolean
 }): Promise<void> {
   const {
     question,
@@ -481,6 +484,7 @@ export async function askAndFinish(options: {
     response.durationMs,
     question,
     response.responseId,
+    options.includeQuota ? response.quota : undefined,
   )
 }
 
@@ -2503,4 +2507,34 @@ export async function runJudgeHistory(opts: {
       applied: !!opts.apply && judgedCount > 0,
     })
   }
+}
+
+// ============================================================================
+// `bun llm quota` — provider quota / balance / rate-limit snapshot
+// ============================================================================
+
+/**
+ * Print a unified quota snapshot for every configured provider.
+ *
+ * Hits each provider's quota endpoint where one exists (OpenRouter, OpenAI
+ * org-usage), falls back to cached `x-ratelimit-*` headers from a recent call
+ * for providers without a balance API (Anthropic), and prints a one-line
+ * "no quota API" row for the rest (Google, xAI, Perplexity).
+ *
+ * `--json` flag emits a structured envelope; default mode prints a fixed-
+ * width table to stderr (so the JSON envelope is always the only thing on
+ * stdout — matches the rest of the CLI contract).
+ */
+export async function runQuota(): Promise<void> {
+  const { getAllQuotas, renderQuotaTable, buildQuotaEnvelope } = await import("./quota")
+  const snapshots = await getAllQuotas()
+  const envelope = buildQuotaEnvelope(snapshots)
+  if (isJsonMode()) {
+    emitJson(envelope)
+    return
+  }
+  // Legacy mode: human table on stderr, envelope on stdout (consistent with
+  // the rest of the CLI — JSON is always available; stderr is human-readable).
+  process.stderr.write(renderQuotaTable(snapshots))
+  emitJson(envelope)
 }

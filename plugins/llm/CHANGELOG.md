@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.0 (2026-04-27)
+
+Quota + balance tracking — surface remaining credit / rate limits per provider
+after each call (km-bearly.llm-quota-tracking). User's $700/month spend signal
+made this urgent: today the only feedback for "am I about to blow the rate
+limit" is a hard `insufficient_quota` error AFTER the call fails.
+
+### Added
+
+- **`bun llm quota` subcommand** — one-shot snapshot. Hits each provider's
+  quota / balance endpoint where one exists (live OpenRouter
+  `/api/v1/auth/key`; OpenAI `/v1/organization/usage/completions` with admin
+  keys), falls back to cached `x-ratelimit-*` headers from a recent call for
+  Anthropic, prints "no quota API" for Google / xAI / Perplexity. Renders a
+  fixed-width table by default; `--json` emits a structured envelope.
+- **`--quota` flag** on `ask` / `pro` / `--deep` / `opinion` / `debate` /
+  `research` — surfaces the rate-limit headers from THE call you just made
+  in the JSON envelope under `quota`. Zero extra HTTP. Headers were already
+  on the response.
+- **Runtime quota cache** at `~/.cache/bearly-llm/last-quota-by-provider.json`
+  (override via `XDG_CACHE_HOME`) — updated unconditionally on every call,
+  so `bun llm quota` always has fresh fallback data even when `--quota`
+  wasn't passed. Atomic write (temp + rename) so a crash mid-write can't
+  corrupt the cache.
+
+### Changed
+
+- **`ModelResponse.quota`** — new optional field. Captured from
+  `result.response.headers` in `queryModel`, parsed via the right provider
+  prefix (Anthropic uses `anthropic-ratelimit-*`; everyone else uses
+  `x-ratelimit-*`). Best-effort — silent when headers aren't present.
+
+### Why P1
+
+User's $700/month OpenAI spend without visibility was a trust risk. Smallest
+meaningful feature to convert that into a managed signal. Lands before the
+next /pro-heavy session so cost-aware decisions become possible (including
+agent-side: "am I blowing the rate limit, should I back off").
+
 ## 0.3.0 (2026-04-27)
 
 Cost-aware promotion default + defensive tests for /pro review findings.

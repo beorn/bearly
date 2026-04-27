@@ -91,6 +91,7 @@ const KEYWORDS = [
   "await",
   "update-pricing",
   "list-models",
+  "quota",
   // Slash-prefixed synonyms for --deep / --ask. Without these in the list,
   // resolveCommand would return undefined and `llm /deep "topic"` would
   // fall through to the default-ask path instead of entering deep research.
@@ -384,6 +385,8 @@ KEYWORDS
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
+  quota                  Show provider balance + rate limits + last-call cache
+                         (--json for machine-readable envelope)
   update-pricing         Fetch latest model pricing from provider pages
 
 FLAGS
@@ -405,6 +408,10 @@ FLAGS
                          {file, model, tokens:{prompt,completion,total}, cost,
                          durationMs, responseId, status, ...}. Use with jq:
                          bun llm pro --json "Q" | jq .file
+  --quota                Surface rate-limit headers from THIS call in the JSON
+                         envelope (under the "quota" key). Zero extra HTTP.
+                         The runtime quota cache is always updated regardless;
+                         this flag just gates the per-call envelope surface.
 
 ENVIRONMENT VARIABLES
   LLM_CHALLENGER_POOL=id1,id2,…    Override the dual-pro shadow challenger pool.
@@ -475,6 +482,10 @@ function askOpts(
     buildContext: buildContextFromFlags,
     outputFile,
     sessionTag,
+    // `--quota` opts in to surfacing rate-limit headers in the JSON envelope.
+    // The runtime quota cache (~/.cache/bearly-llm/last-quota-by-provider.json)
+    // is updated regardless — `bun llm quota` always sees fresh fallback data.
+    includeQuota: hasFlag("--quota"),
   }
 }
 
@@ -706,6 +717,11 @@ export async function main(): Promise<string | undefined> {
     }
     case "await": {
       await runAwait({ responseId: getQuestion() || undefined })
+      break
+    }
+    case "quota": {
+      const { runQuota } = await import("./lib/dispatch")
+      await runQuota()
       break
     }
     case "update-pricing": {

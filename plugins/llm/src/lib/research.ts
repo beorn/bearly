@@ -9,8 +9,59 @@ import { getLanguageModel, isProviderAvailable } from "./providers"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
+import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
 import type { Model, ModelResponse, ThinkingLevel } from "./types"
 import { getModelsForLevel, getModel, getEndpoint, MODELS } from "./types"
+
+/**
+ * Extract `x-ratelimit-*` / `anthropic-ratelimit-*` headers from a Vercel AI
+ * SDK `generateText` result and update the runtime quota cache. Returns the
+ * per-call envelope fragment (suitable for `ModelResponse.quota`) or
+ * `undefined` if no rate-limit data was on the response.
+ *
+ * The AI SDK exposes the underlying response via `result.response` —
+ * `headers` is on the response object. Provider availability of
+ * rate-limit headers varies (Google Gemini doesn't ship them; OpenAI /
+ * Anthropic / OpenRouter do). The capture is best-effort — silent when
+ * the headers aren't present.
+ */
+function captureQuotaFromGenerateResult(
+  result: unknown,
+  provider: import("./types").Provider,
+): Record<string, unknown> | undefined {
+  const headers = extractHeaders(result)
+  if (!headers) return undefined
+  const snapshot = captureRateLimitFromHeaders(provider, headers)
+  return buildPerCallQuota(snapshot)
+}
+
+/** Same as above, but for `streamText` — `result.response` is a Promise. */
+async function captureQuotaFromResult(
+  result: unknown,
+  provider: import("./types").Provider,
+): Promise<Record<string, unknown> | undefined> {
+  let headers
+  try {
+    const r = result as { response?: unknown }
+    const resp = r.response && typeof (r.response as Promise<unknown>).then === "function"
+      ? await (r.response as Promise<unknown>)
+      : r.response
+    headers = extractHeaders({ response: resp })
+  } catch {
+    return undefined
+  }
+  if (!headers) return undefined
+  const snapshot = captureRateLimitFromHeaders(provider, headers)
+  return buildPerCallQuota(snapshot)
+}
+
+function extractHeaders(result: unknown): Record<string, string> | undefined {
+  if (!result || typeof result !== "object") return undefined
+  const r = result as { response?: { headers?: unknown } }
+  const headers = r.response?.headers
+  if (!headers || typeof headers !== "object") return undefined
+  return headers as Record<string, string>
+}
 
 export interface QueryOptions {
   question: string
@@ -247,6 +298,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       }
 
       const usage = await result.usage
+      const quota = await captureQuotaFromResult(result, model.provider)
 
       return {
         response: {
@@ -260,6 +312,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
               }
             : undefined,
           durationMs: Date.now() - startTime,
+          ...(quota ? { quota } : {}),
         },
       }
     } else {
@@ -270,6 +323,8 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
       })
+
+      const quota = captureQuotaFromGenerateResult(result, model.provider)
 
       return {
         response: {
@@ -287,6 +342,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
               }
             : undefined,
           durationMs: Date.now() - startTime,
+          ...(quota ? { quota } : {}),
         },
       }
     }

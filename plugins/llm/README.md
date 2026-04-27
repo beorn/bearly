@@ -48,6 +48,57 @@ all progress on stderr:
 bun tools/llm.ts "ping" --json | jq .file
 ```
 
+## Quota tracking
+
+Surface remaining credit + rate limits per provider so spending decisions
+are visible. Two layers, both opt-in.
+
+### `bun tools/llm.ts quota` — one-shot snapshot
+
+```
+Provider         Balance / Used      Rate Limit         Last Used
+---------------------------------------------------------------
+OpenAI           $300 / $700/mo     50K TPM, 500 RPM   2026-04-27 07:43
+OpenRouter       $48 credit          100 RPM            (live)
+Anthropic        (header-only)       100K TPM           2026-04-27 02:30
+Google Gemini    (no quota API)      —                  —
+xAI (Grok)       (no quota API)      —                  —
+```
+
+- **OpenRouter** — live `GET /api/v1/auth/key` (no admin key needed)
+- **OpenAI** — tries `/v1/organization/usage/completions` (admin key required); falls back to cached rate-limit headers
+- **Anthropic** — header-only (no balance endpoint); shows the most recent `anthropic-ratelimit-*` headers from cache
+- **Google / xAI / Perplexity** — no quota API; row says so
+- **Ollama** — skipped (local)
+
+`--json` emits a structured envelope:
+
+```bash
+bun tools/llm.ts quota --json | jq .snapshots
+```
+
+### `--quota` flag on existing commands
+
+Captures rate-limit headers from THE call you just made and drops them into
+the JSON envelope. Zero extra HTTP — the headers were already on the
+response. The runtime cache (`~/.cache/bearly-llm/last-quota-by-provider.json`)
+is updated unconditionally so `bun llm quota` always has fresh fallback data
+even when `--quota` wasn't set.
+
+```bash
+bun tools/llm.ts "ping" --model gpt-5-nano --json --quota | jq .quota
+# {
+#   "remainingRequests": 487,
+#   "remainingTokens": 145000,
+#   "resetRequestsAt": "2026-04-27T08:00:00Z",
+#   "resetTokensAt": "2026-04-27T07:45:00Z"
+# }
+```
+
+**Why opt-in**: rate-limit headers bloat default JSON output for callers
+that don't care. `--quota` keeps the canonical envelope tidy; the cache
+update is unconditional for the on-demand `bun llm quota` view.
+
 ## Context
 
 ```bash

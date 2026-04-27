@@ -51,6 +51,18 @@ export interface OutputMeta {
   judge?: Record<string, unknown>
   /** Dual-pro: top-N leaderboard snapshot at write time. */
   leaderboardSnapshot?: ReadonlyArray<Record<string, unknown>>
+  /** Per-call rate-limit headers from THIS request (km-bearly.llm-quota-tracking).
+   *  Surface gated by the `--quota` flag in the CLI — when unset, this is
+   *  excluded from the JSON envelope to avoid bloating default output. The
+   *  runtime quota cache is updated regardless of this flag. */
+  quota?: {
+    remainingRequests?: number
+    requestsPerWindow?: number
+    remainingTokens?: number
+    tokensPerWindow?: number
+    resetRequestsAt?: string
+    resetTokensAt?: string
+  }
 }
 
 /** Format a timestamp as relative time (e.g., "5m ago", "2h ago") */
@@ -149,6 +161,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.c) result.c = legToEnvelope(meta.c)
   if (meta?.judge) result.judge = meta.judge
   if (meta?.leaderboardSnapshot) result.leaderboardSnapshot = meta.leaderboardSnapshot
+  if (meta?.quota) result.quota = meta.quota
   return result
 }
 
@@ -302,6 +315,9 @@ export async function finishResponse(
   durationMs?: number,
   query?: string,
   responseId?: string,
+  /** Per-call rate-limit headers to include in the JSON envelope. Surface
+   *  is gated by the caller — pass only when `--quota` was set. */
+  quota?: OutputMeta["quota"],
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
     // Write error to stderr (visible in interactive mode)
@@ -370,6 +386,7 @@ export async function finishResponse(
     durationMs,
     responseId,
     status: "completed",
+    ...(quota ? { quota } : {}),
   })
 }
 

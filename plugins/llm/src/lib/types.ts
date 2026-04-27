@@ -179,6 +179,21 @@ export const ModelResponseSchema = z.object({
     .optional(),
   durationMs: z.number(),
   error: z.string().optional(),
+  /** Rate-limit headers from this call (km-bearly.llm-quota-tracking).
+   *  Captured opportunistically — `undefined` when the provider didn't
+   *  ship `x-ratelimit-*` headers on the response. The CLI exposes this
+   *  via the `--quota` flag on the JSON envelope; the runtime cache is
+   *  updated unconditionally so `bun llm quota` always has fresh data. */
+  quota: z
+    .object({
+      remainingRequests: z.number().optional(),
+      requestsPerWindow: z.number().optional(),
+      remainingTokens: z.number().optional(),
+      tokensPerWindow: z.number().optional(),
+      resetRequestsAt: z.string().optional(),
+      resetTokensAt: z.string().optional(),
+    })
+    .optional(),
 })
 export type ModelResponse = z.infer<typeof ModelResponseSchema>
 
