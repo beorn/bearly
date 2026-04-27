@@ -412,8 +412,38 @@ export async function selectClassifierModel(): Promise<Model | null> {
 // ============================================================================
 
 /**
+ * Format a raw discovery markdown table — every candidate, no LLM filter.
+ * Used when `--classify` is NOT passed (default). Cheaper, faster, and lets
+ * the human reviewer see the full set without paying classifier tokens.
+ *
+ * Phase 6 over-engineering review (2026-04-27): the classifier pre-filter
+ * had unproven empirical value. Default mode is now raw discovery; the
+ * classifier-driven `formatDecisionTable` is opt-in via `--classify`.
+ */
+export function formatRawDiscoveryTable(candidates: readonly DiscoveredCandidate[]): string {
+  if (candidates.length === 0) return "_(no candidates)_\n"
+  const header =
+    "| Provider | ID | Display | Pricing in/out | Capabilities |\n" +
+    "| --- | --- | --- | --- | --- |\n"
+  const body = candidates
+    .map((c) => {
+      const caps =
+        Object.entries(c.capabilityHints)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join(", ") || "—"
+      const price =
+        c.inputPricePerM != null && c.outputPricePerM != null ? `$${c.inputPricePerM}/$${c.outputPricePerM}` : "?"
+      return `| ${c.provider} | \`${c.id}\` | ${c.displayName} | ${price} | ${caps} |`
+    })
+    .join("\n")
+  return header + body + "\n"
+}
+
+/**
  * Format a markdown table summarizing classifier decisions. Stable column
- * order so the output is diffable.
+ * order so the output is diffable. Used when `--classify` is passed; for
+ * the default raw view, see `formatRawDiscoveryTable`.
  */
 export function formatDecisionTable(rows: Array<{ candidate: DiscoveredCandidate; result: ClassifierResult }>): string {
   if (rows.length === 0) return "_(no candidates)_\n"

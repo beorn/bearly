@@ -1,16 +1,12 @@
 # Changelog
 
-## 1.0.0 (2026-04-27)
+## 0.9.0 (2026-04-27)
 
-First public release. Generalization sprint (Phase 5 of the @bearly/llm
-refactor) — package is now usable by non-Claude-Code consumers and
-publishable to npm under the `@bearly` scope.
+Generalization sprint (Phase 5 of the @bearly/llm refactor). Package is now
+shaped to be usable by non-Claude-Code consumers, but stays `private: true`
+until a 1.0 release is explicitly approved.
 
-### Breaking — for internal consumers
-
-These changes are breaking only for callers that already depended on the
-0.x internal layout (km root + bearly monorepo siblings). Standalone
-consumers see them as the public 1.0 API.
+### Changed — internal layout
 
 - **Memory dir resolution rewritten.** `getMemoryDir` now follows a 4-step
   priority chain: `BEARLY_LLM_MEMORY_DIR` → `LLM_DIR` → (when
@@ -47,9 +43,24 @@ consumers see them as the public 1.0 API.
 
 ### Changed
 
-- `package.json`: `private: true` → published. Version bumped to 1.0.0.
-  `files` now ships `src` + `skills` + `README.md` + `CHANGELOG.md`.
+- `package.json`: still `private: true` (kept until 1.0 is explicitly approved
+  — major-version releases require user sign-off). `files` now ships `src` +
+  `skills` + `README.md` + `CHANGELOG.md` so the package shape is publish-ready.
   `peerDependencies.@bearly/recall` declared (optional).
+
+### Changed — Phase 6 over-engineering review
+
+- **`pro --discover-models` classifier is now opt-in.** Previously the
+  command always fired the cheap classifier (`gpt-5-nano`) over each
+  candidate to produce yes/no/needs-review decisions — ~$0.0005 × N
+  candidates (~$0.02 for 30). The empirical value of the LLM pre-filter
+  vs. raw discovery + human review was unproven. New default: emit a raw
+  discovery table (provider, id, pricing, capability hints) — free, fast,
+  same actionable info for someone reviewing manually. Pass `--classify`
+  to opt in to the LLM-driven decision table when you want a pre-filter
+  for a large candidate set.
+- `formatRawDiscoveryTable` exported from `lib/discover.ts` for the new
+  default render. `formatDecisionTable` retained for `--classify` mode.
 
 ## 0.8.0 (2026-04-27)
 

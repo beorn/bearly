@@ -174,12 +174,21 @@ describe("bundled skills directory", () => {
     expect(pkg.files).toContain("src")
   })
 
-  it("package.json is no longer private and version is 1.0.0+", () => {
+  it("package.json is publish-ready: bin entry, version is 0.9.0+, files include skills", () => {
     const pkgPath = path.resolve(import.meta.dirname ?? __dirname, "..", "package.json")
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { private?: boolean; version?: string; bin?: Record<string, string> }
-    expect(pkg.private).not.toBe(true)
-    expect(pkg.version).toMatch(/^1\.\d+\.\d+/)
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+      private?: boolean
+      version?: string
+      bin?: Record<string, string>
+      files?: string[]
+    }
+    // Stays `private: true` until 1.0 is explicitly approved (no major
+    // versions without user sign-off — see project memory). The package
+    // shape is publish-ready (bin, files, exports, peerDeps), so flipping
+    // private:false at 1.0 release time is a one-line change.
+    expect(pkg.version).toMatch(/^0\.[9-9]\.\d+|^[1-9]\d*\.\d+\.\d+/)
     expect(pkg.bin?.["bearly-llm"]).toBeTruthy()
+    expect(pkg.files).toContain("skills")
   })
 })
 

@@ -395,8 +395,10 @@ KEYWORDS
   pro --judge-history    Retroactively score historical ab-pro.jsonl entries
                          (--limit N, --quick for cheap judge, --apply to write)
                          (--quick smoke-test mode; --no-old-fire skips OLD)
-  pro --discover-models  Classify auto-discovered models from new-models.json
-                         and (with --apply) emit /tmp/llm-new-models.patch
+  pro --discover-models  Show auto-discovered model candidates (raw, free).
+                         Add --classify to pre-filter via gpt-5-nano (~$0.02 / 30
+                         candidates). Add --apply to emit a unified diff at
+                         <outputDir>/llm-new-models.patch for manual git apply.
                          (run update-pricing first to populate the cache)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
@@ -706,7 +708,7 @@ export async function main(): Promise<string | undefined> {
       }
       if (hasFlag("--discover-models")) {
         const { runDiscoverModels } = await import("./lib/dispatch")
-        await runDiscoverModels({ apply: hasFlag("--apply") })
+        await runDiscoverModels({ apply: hasFlag("--apply"), classify: hasFlag("--classify") })
         break
       }
       if (hasFlag("--diagnostics")) {

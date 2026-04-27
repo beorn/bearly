@@ -1,27 +1,37 @@
 /**
- * `bun llm pro --discover-models [--apply]` — Stage 2 of the auto-discovery
- * pipeline (km-bearly.llm-registry-auto-update).
+ * `bun llm pro --discover-models [--classify] [--apply]` — Stage 2 of the
+ * auto-discovery pipeline (km-bearly.llm-registry-auto-update).
  *
- * Reads `~/.cache/bearly-llm/new-models.json` (written by `performPricingUpdate`),
- * runs the cheap classifier (gpt-5-nano) over each candidate, and prints a
- * markdown decision table. With `--apply`, writes a unified diff to
- * `<outputDir>/llm-new-models.patch` (default os.tmpdir(); override with
- * BEARLY_LLM_OUTPUT_DIR) containing the `yes`-decisions formatted as
- * SKUs_DATA + ENDPOINTS_DATA additions to types.ts. The user reviews and runs
- * `git apply <patchPath>` themselves — never auto-applied.
+ * Reads `~/.cache/bearly-llm/new-models.json` (written by `performPricingUpdate`).
  *
- * Cost: ~$0.0005 × N candidates. For ~30 candidates that's ~$0.02. Run weekly
- * via `/sop infra` or cron.
+ * **Default mode**: emit raw discovery list — every candidate with its
+ * regex-detected capability hints, grouped by provider. Free, fast.
+ *
+ * **`--classify` mode**: also fire the cheap classifier (gpt-5-nano) per
+ * candidate to produce yes/no/needs-review decisions in a markdown table.
+ * Cost: ~$0.0005 × N candidates (~$0.02 for ~30). Use when you want a
+ * pre-filtered table to feed into review.
+ *
+ * **`--apply` mode**: write a unified diff to `<outputDir>/llm-new-models.patch`
+ * (default os.tmpdir()). Without `--classify`, includes ALL candidates;
+ * with `--classify`, only the `yes` decisions. Either way the user reviews
+ * and runs `git apply <patchPath>` themselves — never auto-applied.
+ *
+ * The classifier is opt-in (Phase 6 over-engineering review, 2026-04-27):
+ * its yes/no decisions had unproven empirical value vs. raw discovery +
+ * human review, so default behavior is now "show me the candidates" with
+ * `--classify` for the LLM-pre-filter when actually wanted.
  */
 
 import { emitJson, isJsonMode } from "../lib/output-mode"
 
-export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise<void> {
+export async function runDiscoverModels(opts: { apply?: boolean; classify?: boolean } = {}): Promise<void> {
   const fs = await import("fs")
   const {
     loadNewModelsArtifact,
     classifyCandidates,
     formatDecisionTable,
+    formatRawDiscoveryTable,
     generateRegistryPatch,
     selectClassifierModel,
   } = await import("../lib/discover")
@@ -37,6 +47,40 @@ export async function runDiscoverModels(opts: { apply?: boolean } = {}): Promise
 
   console.error(`📋 Auto-discovery — ${artifact.candidates.length} candidates from ${artifact.discoveredAt}`)
 
+  // Raw mode (default): no classifier — emit the candidate list and stop.
+  if (!opts.classify) {
+    console.log("# Auto-discovered model candidates (raw)\n")
+    console.log(`Discovered: ${artifact.discoveredAt}`)
+    console.log(`Classifier: disabled (use --classify to pre-filter via LLM, ~$0.02 / 30 candidates)\n`)
+    console.log(formatRawDiscoveryTable(artifact.candidates))
+
+    if (opts.apply) {
+      const typesTsPath = new URL("../lib/types.ts", import.meta.url).pathname
+      const typesTsContent = fs.readFileSync(typesTsPath, "utf-8")
+      const patch = generateRegistryPatch(artifact.candidates, typesTsContent)
+      const path = await import("path")
+      const { getOutputDir } = await import("../lib/format")
+      const outPath = path.join(getOutputDir(), "llm-new-models.patch")
+      fs.writeFileSync(outPath, patch)
+      console.error(
+        `\n✓ Wrote ${outPath} (${artifact.candidates.length} entries — ALL candidates, no LLM filter)`,
+      )
+      console.error(`  Review with: cat ${outPath}`)
+      console.error(`  Apply with:  git apply ${outPath}`)
+    }
+
+    if (isJsonMode()) {
+      emitJson({
+        status: "completed",
+        mode: "raw",
+        candidates: artifact.candidates.length,
+        classified: false,
+      })
+    }
+    return
+  }
+
+  // Classify mode: opt-in via --classify flag.
   const classifierModel = await selectClassifierModel()
   if (!classifierModel) {
     console.error("⚠️  No classifier model available — set OPENAI_API_KEY for gpt-5-nano (or any quick-tier provider).")
