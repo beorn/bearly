@@ -63,11 +63,13 @@ import {
   createBaseTribe,
   loreTools,
   messagingTools,
+  withClientRegistry,
   withConfig,
   withDaemonContext,
   withDatabase,
   withLore,
   withProjectRoot,
+  type ClientSession,
 } from "./lib/tribe/compose/index.ts"
 
 const ac = new AbortController()
@@ -157,6 +159,7 @@ const tribeShape = pipe(
   withLore(),
   withTools(),
   withTool(messagingTools()),
+  withClientRegistry(),
 )
 
 // Lore tools are conditional on lore being enabled — register them after the
@@ -178,6 +181,9 @@ const DAEMON_SESSION_ID = tribeShape.daemonSessionId
 const daemonCtx = tribeShape.daemonCtx
 const loreHandlers = tribeShape.lore
 const TOOL_REGISTRY = tribeShape.tools
+const registry = tribeShape.registry
+const clients = registry.clients
+const socketToClient = registry.socketToClient
 
 log(`Starting tribe daemon`)
 log(`Socket: ${SOCKET_PATH}`)
@@ -185,97 +191,22 @@ log(`DB: ${DB_PATH}`)
 log(`PID: ${process.pid}`)
 if (loreHandlers) log(`Lore DB: ${LORE_DB_PATH}`)
 
-// ---------------------------------------------------------------------------
-// Client registry
-// ---------------------------------------------------------------------------
-
-type ClientSession = {
-  socket: NetSocket
-  id: string
-  name: string
-  role: TribeRole
-  domains: string[]
-  project: string
-  projectName: string
-  projectId: string
-  pid: number
-  claudeSessionId: string | null
-  peerSocket: string | null // Peer socket path for direct proxy-to-proxy connections
-  conn: string // Connection path (socket or db)
-  ctx: TribeContext
-  registeredAt: number
-  /** Per-connection lore state — tracks sessionId/claudePid for lore handlers
-   *  (set on tribe.hello / tribe.session_register). Kept separate from the
-   *  tribe-side sessionId because a single proxy connection may carry both
-   *  coordination + memory traffic interleaved. */
-  lore: LoreConnState
-}
-
-const clients = new Map<string, ClientSession>() // connId → session
-const socketToClient = new Map<NetSocket, string>() // socket → connId
-
-// ---------------------------------------------------------------------------
-// Chief derivation — derived from connection order unless explicitly claimed.
-//
-// Plateau model (no leases, no DB state): the chief is the longest-connected
-// eligible client. A client can optionally call tribe.claim-chief to pin the
-// role to themselves; tribe.release-chief (or disconnecting) unpins and falls
-// back to derivation. `daemon`, `watch-*`, and `pending-*` sessions are never
-// eligible — they're neutral observers or half-connected.
-// ---------------------------------------------------------------------------
-
-import { deriveChiefId, deriveChiefInfo, isChiefEligible } from "./lib/tribe/chief.ts"
-
-let chiefClaim: string | null = null // sessionId of the explicit claimer, if any
-
-function claimChiefFor(sessionId: string, name: string): void {
-  chiefClaim = sessionId
-  logActivity("chief:claimed", `${name} claimed chief`)
-}
-
-function releaseChiefFor(sessionId: string): void {
-  if (chiefClaim !== sessionId) return
-  chiefClaim = null
-  // Find current client name for the release broadcast
-  const c = Array.from(clients.values()).find((x) => x.ctx.sessionId === sessionId)
-  const who = c?.name ?? "unknown"
-  logActivity("chief:released", `${who} released chief`)
-}
-
-/** Return ctx.sessionIds of every currently-connected eligible client. */
-function getActiveSessionIds(): Set<string> {
-  const ids = new Set<string>()
-  for (const c of clients.values()) {
-    if (!isChiefEligible(c)) continue
-    ids.add(c.ctx.sessionId)
-  }
-  return ids
-}
-
-function getActiveSessionInfo() {
-  return Array.from(clients.values())
-    .filter(isChiefEligible)
-    .map((c) => ({
-      id: c.ctx.sessionId,
-      name: c.name,
-      pid: c.pid,
-      role: c.role,
-      claudeSessionId: c.claudeSessionId,
-      registeredAt: c.registeredAt,
-    }))
-}
+// Client registry + chief derivation now live on the daemon value via
+// withClientRegistry — see lib/tribe/compose/with-client-registry.ts. The
+// `clients` and `socketToClient` Maps are aliased above; chief lease is
+// accessed through `registry.{getChiefClaim,setChiefClaim,claimChief,...}`.
 
 /** No-op handler opts for daemon-side tool calls (no MCP session to clean up) */
 const DAEMON_HANDLER_OPTS = {
   cleanup: () => {},
   userRenamed: false,
   setUserRenamed: () => {},
-  getChiefId: () => deriveChiefId(clients.values(), chiefClaim),
-  getChiefInfo: () => deriveChiefInfo(clients.values(), chiefClaim),
-  claimChief: claimChiefFor,
-  releaseChief: releaseChiefFor,
-  getActiveSessionIds,
-  getActiveSessionInfo,
+  getChiefId: () => registry.getChiefId(),
+  getChiefInfo: () => registry.getChiefInfo(),
+  claimChief: (sessionId: string, name: string) => registry.claimChief(sessionId, name, logActivity),
+  releaseChief: (sessionId: string) => registry.releaseChief(sessionId, logActivity),
+  getActiveSessionIds: () => registry.getActiveSessionIds(),
+  getActiveSessionInfo: () => registry.getActiveSessionInfo(),
   getDebugState: () => ({
     clients: Array.from(clients.values()).map((c) => ({
       id: c.ctx.sessionId,
@@ -284,8 +215,8 @@ const DAEMON_HANDLER_OPTS = {
       pid: c.pid,
       registeredAt: c.registeredAt,
     })),
-    chief: deriveChiefInfo(clients.values(), chiefClaim),
-    chiefClaim,
+    chief: registry.getChiefInfo(),
+    chiefClaim: registry.getChiefClaim(),
     cursors: db.prepare("SELECT id, name, last_delivered_ts, last_delivered_seq FROM sessions").all() as Array<{
       id: string
       name: string
@@ -1185,7 +1116,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
           onMessageInserted: messageTap,
         })
 
-        registerSession(clientCtx, projectId, (sid) => getActiveSessionIds().has(sid), identityToken)
+        registerSession(clientCtx, projectId, (sid) => registry.getActiveSessionIds().has(sid), identityToken)
 
         const client = applyClient(connId, {
           name,
@@ -1204,7 +1135,7 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
         announceJoin(client)
 
         // Chief derived from connection order (or explicit claim).
-        const chiefInfo = deriveChiefInfo(clients.values(), chiefClaim)
+        const chiefInfo = registry.getChiefInfo()
         const chiefName = chiefInfo?.name ?? "none"
 
         // Return current coordination state for this project
@@ -1501,7 +1432,7 @@ const tribeClientApi: TribeClientApi = {
       .map((c) => c.name)
   },
   hasChief() {
-    return deriveChiefId(clients.values(), chiefClaim) !== null
+    return registry.getChiefId() !== null
   },
 }
 
@@ -1622,8 +1553,8 @@ function handleConnection(socket: NetSocket): void {
 
     // If the disconnecting client had the explicit chief claim, clear it so
     // the derivation takes over (longest-remaining-connected becomes chief).
-    if (client && chiefClaim === client.ctx.sessionId) {
-      chiefClaim = null
+    if (client && registry.getChiefClaim() === client.ctx.sessionId) {
+      registry.setChiefClaim(null)
       logActivity("chief:released", `${client.name} released chief (disconnect)`)
     }
 
