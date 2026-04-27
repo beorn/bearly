@@ -278,7 +278,7 @@ export function buildPidToParent(psOutput: string): Map<number, number> {
 
 /**
  * Attribute a process to a tribe session by walking the PPID chain.
- * Session PIDs are tribe-proxy PIDs — their parent is the Claude Code process.
+ * Session PIDs are stdio-adapter PIDs — their parent is the Claude Code process.
  * High-CPU processes are siblings (other children of the same Claude Code parent).
  */
 export function attributeToSession(

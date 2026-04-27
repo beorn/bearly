@@ -19,7 +19,7 @@
   "type": "module",
   "scripts": {
     "start": "bun install --no-summary && bun server.mjs",
-    "build": "cd ../.. && bun build tools/tribe-proxy.ts --target=bun --outfile=plugins/tribe/server.mjs --external @modelcontextprotocol/sdk --external bun:sqlite",
+    "build": "cd ../.. && bun build tools/stdio-adapter.ts --target=bun --outfile=plugins/tribe/server.mjs --external @modelcontextprotocol/sdk --external bun:sqlite",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

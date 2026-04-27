@@ -529,12 +529,12 @@ describe("process attribution", () => {
    * launchd (PID 1, PPID 0)
    * ├── bash (PID 50, PPID 1)
    * │   ├── Claude Code A (PID 100, PPID 50)
-   * │   │   ├── tribe-proxy (PID 101, PPID 100) ← session "km"
+   * │   │   ├── stdio-adapter (PID 101, PPID 100) ← session "km"
    * │   │   ├── bun vitest (PID 102, PPID 100)
    * │   │   └── subshell (PID 103, PPID 100)
    * │   │       └── node (PID 104, PPID 103)
    * │   └── Claude Code B (PID 200, PPID 50)
-   * │       ├── tribe-proxy (PID 201, PPID 200) ← session "km-2"
+   * │       ├── stdio-adapter (PID 201, PPID 200) ← session "km-2"
    * │       └── bun build (PID 202, PPID 200)
    * └── mds_stores (PID 300, PPID 1)
    */
@@ -553,7 +553,7 @@ describe("process attribution", () => {
     [300, 1],
   ])
 
-  // Sessions: session name + tribe-proxy PID
+  // Sessions: session name + stdio-adapter PID
   const sessions = [
     { name: "km", pid: 101 },
     { name: "km-2", pid: 201 },
@@ -570,7 +570,7 @@ describe("process attribution", () => {
       expect(attributeToSession(104, pidToParent, sessions)).toBe("km")
     })
 
-    test("session PID itself — the tribe-proxy PID returns its own session", () => {
+    test("session PID itself — the stdio-adapter PID returns its own session", () => {
       expect(attributeToSession(101, pidToParent, sessions)).toBe("km")
       expect(attributeToSession(201, pidToParent, sessions)).toBe("km-2")
     })

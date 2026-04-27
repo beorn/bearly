@@ -119,7 +119,7 @@ async function getDaemon(): Promise<LoreClient | null> {
 }
 
 // ============================================================================
-// Tool definitions (raw JSON schema — matches tribe-proxy house style)
+// Tool definitions (raw JSON schema — matches stdio-adapter house style)
 // ============================================================================
 
 const TOOLS = [

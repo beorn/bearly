@@ -54,7 +54,7 @@ export interface WithHotReload {
 function buildSourceFiles(sourceDir: string, libTribeDir: string): string[] {
   return [
     pathResolve(sourceDir, "tribe-daemon.ts"),
-    pathResolve(sourceDir, "tribe-proxy.ts"),
+    pathResolve(sourceDir, "stdio-adapter.ts"),
     ...(() => {
       try {
         return readdirSync(libTribeDir)
