@@ -508,6 +508,176 @@ describe("config + env overrides + persistence", () => {
   })
 })
 
+// ----------------------------------------------------------
+// 3-leg dispatch — end-to-end smoke test (mocked providers)
+// ----------------------------------------------------------
+import { vi as vit } from "vitest"
+const generateTextMock3 = vit.fn()
+const queryBackgroundMock3 = vit.fn()
+vit.mock("ai", () => ({
+  generateText: generateTextMock3,
+  streamText: vit.fn(),
+}))
+vit.mock("../src/lib/openai-deep", async () => {
+  const actual = await vit.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
+  return { ...actual, queryOpenAIBackground: queryBackgroundMock3 }
+})
+
+describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
+  let homeDir: string
+  let prevHome: string | undefined
+  let prevProjectDir: string | undefined
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), "dual-pro-dispatch-"))
+    prevHome = process.env.HOME
+    prevProjectDir = process.env.CLAUDE_PROJECT_DIR
+    process.env.HOME = homeDir
+    process.env.CLAUDE_PROJECT_DIR = "/tmp/dispatch-test"
+    process.env.CLAUDE_SESSION_ID = "dispatchsess"
+    process.env.OPENAI_API_KEY = "sk-test-openai"
+    process.env.OPENROUTER_API_KEY = "sk-test-openrouter"
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-google"
+    process.env.LLM_NO_HISTORY = "1"
+    process.env.LLM_NO_AUTO_PRICING = "1"
+  })
+
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true })
+    if (prevHome !== undefined) process.env.HOME = prevHome
+    else delete process.env.HOME
+    if (prevProjectDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjectDir
+    else delete process.env.CLAUDE_PROJECT_DIR
+    vit.restoreAllMocks()
+  })
+
+  it("fires three legs, runs judge, writes ab-pro v2 entry with scores", async () => {
+    queryBackgroundMock3.mockReset()
+    queryBackgroundMock3.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
+      model,
+      content: `answer from ${model.displayName}`,
+      responseId: `resp_${Math.random().toString(36).slice(2, 8)}`,
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      durationMs: 1000,
+    }))
+    // Kimi (OpenRouter) routes through generateText; the judge also routes
+    // through generateText (ask("quick", ...)). Three calls total. Distinguish
+    // the judge call by its prompt — it contains "STRICT JSON".
+    generateTextMock3.mockReset()
+    generateTextMock3.mockImplementation(async (args: { messages?: { role: string; content: unknown }[] }) => {
+      const messages = args.messages ?? []
+      const text = messages
+        .map((m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c: { text?: string }) => c.text ?? "").join(" ") : ""))
+        .join(" ")
+      if (text.includes("STRICT JSON")) {
+        return {
+          text: JSON.stringify({
+            a: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+            b: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+            c: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+            winner: "c",
+            reasoning: "C had concrete examples.",
+          }),
+          reasoning: [],
+          usage: { inputTokens: 200, outputTokens: 80 },
+        }
+      }
+      return {
+        text: "kimi answer",
+        reasoning: [],
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
+    })
+
+    vit.resetModules()
+    process.argv = [
+      "node",
+      "cli.ts",
+      "pro",
+      "-y",
+      "--challenger",
+      "gemini-3-pro-preview",
+      "what is the best storage layer?",
+    ]
+    const mod = await import("../src/cli")
+    try {
+      await mod.main()
+    } catch (e) {
+      if (!/^__exit_/.test((e as Error).message)) throw e
+    }
+
+    // Three model calls: queryOpenAIBackground (gpt + gemini routed via
+    // background-capable openai provider — but Gemini doesn't qualify so it
+    // routes via generateText, plus Kimi via generateText, plus the judge).
+    // We don't pin exact mock counts (depends on which provider each leg
+    // routes through); we DO pin the ab-pro.jsonl entry shape.
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const abPath = `${homeDir}/.claude/projects/${encoded}/memory/ab-pro.jsonl`
+    expect(existsSync(abPath)).toBe(true)
+    const lines = readFileSync(abPath, "utf-8").trim().split("\n")
+    expect(lines.length).toBeGreaterThanOrEqual(1)
+    const ab = JSON.parse(lines[lines.length - 1]!) as {
+      schema: string
+      a: { model: string; ok: boolean; score: { total: number } | null }
+      b: { model: string; ok: boolean }
+      c?: { model: string; ok: boolean; score: { total: number } | null }
+      judge?: { winner: string; model?: string }
+      gpt: { model: string; ok: boolean }
+      kimi: { model: string; ok: boolean }
+    }
+    expect(ab.schema).toBe("ab-pro/v2")
+    expect(ab.a.model).toBe("gpt-5.4-pro")
+    expect(ab.b.model).toBe("moonshotai/kimi-k2.6")
+    expect(ab.c?.model).toBe("gemini-3-pro-preview")
+    expect(ab.judge?.winner).toBe("c")
+    expect(ab.a.score?.total).toBe(16)
+    expect(ab.c?.score?.total).toBe(20)
+    // v1 back-compat fields preserved.
+    expect(ab.gpt.model).toBe("gpt-5.4-pro")
+    expect(ab.kimi.ok).toBe(true)
+  }, 15_000)
+
+  it("--no-challenger reverts to legacy 2-leg shape (no c, no judge)", async () => {
+    queryBackgroundMock3.mockReset()
+    queryBackgroundMock3.mockResolvedValueOnce({
+      model: { displayName: "GPT-5.4 Pro" },
+      content: "gpt answer",
+      responseId: "resp_a",
+      usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100 },
+      durationMs: 100,
+    })
+    generateTextMock3.mockReset()
+    generateTextMock3.mockResolvedValueOnce({
+      text: "kimi answer",
+      reasoning: [],
+      usage: { inputTokens: 50, outputTokens: 50 },
+    })
+
+    vit.resetModules()
+    process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "--no-judge", "smoke test question"]
+    const mod = await import("../src/cli")
+    try {
+      await mod.main()
+    } catch (e) {
+      if (!/^__exit_/.test((e as Error).message)) throw e
+    }
+
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const abPath = `${homeDir}/.claude/projects/${encoded}/memory/ab-pro.jsonl`
+    expect(existsSync(abPath)).toBe(true)
+    const ab = JSON.parse(readFileSync(abPath, "utf-8").trim().split("\n").pop()!) as {
+      a: { model: string }
+      c?: unknown
+      judge?: unknown
+    }
+    expect(ab.a.model).toBe("gpt-5.4-pro")
+    expect(ab.c).toBeUndefined()
+    expect(ab.judge).toBeUndefined()
+  }, 10_000)
+})
+
 describe("filterPoolByCapability — capability-aware pool filter", () => {
   it("filters out unknown model IDs", () => {
     const result = filterPoolByCapability(

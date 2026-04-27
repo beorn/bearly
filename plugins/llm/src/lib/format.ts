@@ -43,9 +43,14 @@ export interface OutputMeta {
   durationMs?: number
   responseId?: string
   status?: "completed" | "failed" | "background" | "recovered"
-  /** Dual-pro: per-leg sections. */
+  /** Dual-pro: per-leg sections. C is the optional shadow challenger. */
   a?: LegMeta
   b?: LegMeta
+  c?: LegMeta
+  /** Dual-pro: judge envelope (km-bearly.llm-dual-pro-shadow-test). */
+  judge?: Record<string, unknown>
+  /** Dual-pro: top-N leaderboard snapshot at write time. */
+  leaderboardSnapshot?: ReadonlyArray<Record<string, unknown>>
 }
 
 /** Format a timestamp as relative time (e.g., "5m ago", "2h ago") */
@@ -141,6 +146,9 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.status) result.status = meta.status
   if (meta?.a) result.a = legToEnvelope(meta.a)
   if (meta?.b) result.b = legToEnvelope(meta.b)
+  if (meta?.c) result.c = legToEnvelope(meta.c)
+  if (meta?.judge) result.judge = meta.judge
+  if (meta?.leaderboardSnapshot) result.leaderboardSnapshot = meta.leaderboardSnapshot
   return result
 }
 

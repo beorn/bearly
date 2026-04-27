@@ -105,7 +105,7 @@ const KEYWORDS = [
 // the prompt (e.g. --image screenshot.png → "describe this screenshot.png").
 // --models / --provider were aspirational and removed; resurrect here when
 // the CLI actually implements them.
-const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image"]
+const VALUE_FLAGS = ["--model", "--context", "--context-file", "--output", "--image", "--challenger", "--sample"]
 
 /**
  * The canonical command keyword for this invocation — the FIRST positional
@@ -371,8 +371,14 @@ EXAMPLES
 
 KEYWORDS
   (none)                 Default: gpt-5.4 (~$0.02)
-  pro                    Dual-pro: GPT-5.4 Pro + Kimi K2.6 in parallel (~$5-15, A/B logged)
+  pro                    Dual-pro: champion + runner-up + (rotating) challenger
+                         in parallel + judge scoring (~$5-15, A/B/C logged).
+                         Use --no-challenger / --no-judge to dial down cost.
                          (falls back to single GPT-5.4 Pro if OPENROUTER_API_KEY unset)
+  pro --leaderboard      Print ranked model leaderboard from ab-pro.jsonl
+  pro --promote-review   Show leaderboard + interactive promotion flow
+  pro --backtest         Replay history to compare OLD vs NEW config
+                         (--quick smoke-test mode; --no-old-fire skips OLD)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
@@ -399,6 +405,10 @@ FLAGS
                          bun llm pro --json "Q" | jq .file
 
 ENVIRONMENT VARIABLES
+  LLM_CHALLENGER_POOL=id1,id2,…    Override the dual-pro shadow challenger pool.
+                                   Default pool comes from dual-pro-config.json.
+  LLM_JUDGE_MODEL=<modelId>        Override the dual-pro judge model
+                                   (default: gpt-5-mini, configurable per project).
   LLM_DUAL_PRO_B=<modelId>         Swap leg B of dual-pro (default: moonshotai/kimi-k2.6).
                                    Use for head-to-head A/B sprints — e.g.
                                    LLM_DUAL_PRO_B=gpt-5.5-pro pairs two frontier
@@ -606,12 +616,42 @@ export async function main(): Promise<string | undefined> {
       break
     }
     case "pro": {
+      // Sub-commands inside `pro` (km-bearly.llm-dual-pro-shadow-test):
+      //   --leaderboard      Print ab-pro.jsonl leaderboard table
+      //   --promote-review   Show leaderboard + interactive promotion flow
+      //   --backtest         Replay history to compare OLD vs NEW config
+      // These short-circuit before the regular dispatch.
+      if (hasFlag("--leaderboard")) {
+        const { runLeaderboard } = await import("./lib/dispatch")
+        await runLeaderboard()
+        break
+      }
+      if (hasFlag("--promote-review")) {
+        const { runPromoteReview } = await import("./lib/dispatch")
+        await runPromoteReview({ skipConfirm })
+        break
+      }
+      if (hasFlag("--backtest")) {
+        const { runBacktest } = await import("./lib/dispatch")
+        await runBacktest({
+          sample: getArg("--sample") ? parseInt(getArg("--sample")!, 10) : undefined,
+          quick: hasFlag("--quick"),
+          noOldFire: hasFlag("--no-old-fire"),
+          noChallenger: hasFlag("--no-challenger"),
+          challengerOverride: getArg("--challenger"),
+          skipConfirm,
+        })
+        break
+      }
       const q = getQuestion()
       if (!q) error("Usage: llm pro <question>")
       const outputFile = resolveOutputFile(q)
-      // Dual-pro: GPT-5.4 Pro + Kimi K2.6 in parallel. A/B test + two-is-better-than-one.
+      // Dual-pro: champion + runner-up + (optional) challenger in parallel.
+      // A/B/C test + judge scoring + leaderboard tracking.
       // --model override bypasses to single-model mode; missing OPENROUTER_API_KEY
       // auto-falls-back to single-model mode inside runProDual.
+      // --no-challenger reverts to legacy 2-leg behavior; --no-judge skips
+      // the judge call (saves cost, loses scoring).
       await runProDual({
         question: q,
         modelOverride,
@@ -621,6 +661,9 @@ export async function main(): Promise<string | undefined> {
         outputFile,
         sessionTag,
         skipConfirm,
+        noChallenger: hasFlag("--no-challenger"),
+        noJudge: hasFlag("--no-judge"),
+        challengerOverride: getArg("--challenger"),
       })
       break
     }

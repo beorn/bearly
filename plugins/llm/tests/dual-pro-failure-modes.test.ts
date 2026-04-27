@@ -49,7 +49,10 @@ function abProLogPath(home: string): string {
 
 async function runDualPro() {
   vi.resetModules()
-  process.argv = ["node", "cli.ts", "pro", "-y", "test question"]
+  // --no-challenger keeps these tests focused on the legacy 2-leg failure
+  // modes. The 3-leg path (km-bearly.llm-dual-pro-shadow-test) has its own
+  // suite in dual-pro-shadow.test.ts.
+  process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "test question"]
   const mod = await import("../src/cli")
   try {
     await mod.main()

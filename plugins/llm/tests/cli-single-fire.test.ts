@@ -96,7 +96,11 @@ describe("cli-single-fire", () => {
     resetGenerateTextToOk()
 
     vi.resetModules()
-    process.argv = ["node", "cli.ts", "pro", "-y", "test"]
+    // --no-challenger + --no-judge keep this test focused on the legacy
+    // 2-leg single-fire semantics. The 3-leg + judge path
+    // (km-bearly.llm-dual-pro-shadow-test) is exercised in
+    // dual-pro-shadow.test.ts.
+    process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "--no-judge", "test"]
     const mod = await import("../src/cli")
     await mod.main()
 
