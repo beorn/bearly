@@ -1,0 +1,55 @@
+{
+  "name": "@bearly/bg-recall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Background just-in-time recall — async daemon that watches active Claude Code sessions, runs entity-driven recall queries, and injects high-relevance hints via the tribe channel",
+  "keywords": ["claude-code", "tribe", "recall", "daemon", "observability"],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/bg-recall",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git"
+  },
+  "files": ["dist"],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@bearly/daemon-spine": "workspace:*",
+    "loggily": "^0.4.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.11",
+    "tsdown": "^0.21.7",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  }
+}

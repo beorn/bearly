@@ -52,6 +52,7 @@
     "@ai-sdk/openai": "^3.0.47",
     "@ai-sdk/perplexity": "^3.0.25",
     "@ai-sdk/xai": "^3.0.72",
+    "@bearly/bg-recall": "workspace:*",
     "@bearly/daemon-spine": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@silvery/commander": "^0.6.0",
