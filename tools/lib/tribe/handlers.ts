@@ -189,11 +189,28 @@ function handleBroadcast(ctx: TribeContext, a: ToolArgs): ToolResult {
 }
 
 function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
-  // Liveness is determined by the daemon's in-memory clients Map — there is
-  // no DB-level tri-state (live / pruned / dead). DB rows persist only for
-  // cursor recovery across reconnects.
+  // Membership is sourced from the `room_members` table (Matrix-shape, see
+  // km-tribe.matrix-shape). Today every project has exactly one default room
+  // and registerSession() populates the join row, so this is functionally a
+  // no-op vs the prior `clients` Map sweep — but it exercises the schema so
+  // the table stops being inert. Liveness still comes from the daemon's
+  // in-memory clients Map (no DB-level tri-state).
   const activeIds = opts.getActiveSessionIds()
-  const rows = ctx.stmts.allSessions.all() as Array<{
+  // INNER JOIN on room_members: a session that hasn't joined any room is not
+  // visible. The startup invariant + per-register backfill (joinDefaultRoom)
+  // guarantee every active session has a row, so this match is total in
+  // practice. Sessions appear once per room they belong to — DISTINCT collapses
+  // multi-room sessions to one row (future-proofs sub-room work without
+  // changing today's output shape).
+  const rows = ctx.db
+    .prepare(`
+      SELECT DISTINCT s.id, s.name, s.role, s.domains, s.pid, s.cwd,
+        s.claude_session_id, s.claude_session_name, s.started_at, s.updated_at
+      FROM sessions s
+      INNER JOIN room_members rm ON rm.session_id = s.id
+      ORDER BY s.started_at
+    `)
+    .all() as Array<{
     id: string
     name: string
     role: string
