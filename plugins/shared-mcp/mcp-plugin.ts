@@ -352,7 +352,7 @@ export function createMcpPlugin(opts: McpPluginOptions = {}): McpPluginHandle {
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const socketPath = resolveMcpSocketPath(opts)
-  const serverInfo = opts.serverInfo ?? { name: "@bearly/mcp", version: "0.0.0" }
+  const serverInfo = opts.serverInfo ?? { name: "@bearly/shared-mcp", version: "0.0.0" }
 
   const events = new EventEmitter<McpPluginEvents>()
   // Allow many subscribers — daemon shutdown handler, telemetry, debug

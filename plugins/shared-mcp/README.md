@@ -1,4 +1,8 @@
-# @bearly/mcp — MCP-as-tribe-plugin (prototype)
+# @bearly/shared-mcp — Shared MCP server library (prototype)
+
+> **Why "shared-mcp"?** This is not a standalone MCP plugin — it's a
+> shared MCP server library used by multiple bearly tools (tribe, tty,
+> github). The "shared-mcp" name disambiguates from per-protocol surfaces.
 
 > **Status:** prototype skeleton. Wire conformance, lifecycle, and
 > predicate composition only. Real MCP tool implementations beyond an
@@ -143,7 +147,7 @@ On startup, the plugin:
 ## Usage
 
 ```ts
-import { createMcpPlugin } from "@bearly/mcp"
+import { createMcpPlugin } from "@bearly/shared-mcp"
 
 const mcp = createMcpPlugin({
   idleTimeoutMs: 30 * 60 * 1000, // default
@@ -202,7 +206,7 @@ Plugin shape conforms to `TribePluginApi` (see
 
 ```bash
 # from the bearly worktree (uses the host-repo's vitest binary)
-/path/to/km/node_modules/.bin/vitest run plugins/mcp/
+/path/to/km/node_modules/.bin/vitest run plugins/shared-mcp/
 ```
 
 ## What this bead does NOT do
