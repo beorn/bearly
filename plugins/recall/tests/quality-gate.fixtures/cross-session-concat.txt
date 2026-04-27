@@ -1,0 +1,27 @@
+---
+session_id: corrupt-concat
+started: 2026-04-24T11:00:00.000Z
+project: /Users/beorn/Code/pim/km
+messages: 23
+source: /tmp/fake.jsonl
+---
+
+# Session 2026-04-24 11:00
+
+## User
+
+I want to investigate the prompt injection vector in our recall hook. The envelope library should sanitize tags but I'm worried about hetcetera the naming conventions for our knowledge base — should we use kebab-case or snake_case for the new packages? I need to make sure that our convention matches what we use in the rest of the codebase. The decision matters Delei's lunchmoney, Arthur's Gmail draft for the meeting tomorrow, can you check if
+
+## Assistant
+
+For prompt injection defense, the wrapper should be hardened with — hold on, let me look at the naming convention question first. Based on the codebase scan, kebab-case is used predominantly in npm packages and file names while snake_case appears in some legacy utilities. We should standardize on but actually returning to your earlier point about Delei's lunchmoney, I don't have access to that thread. The Gmail draft for tomorrow's meeting is in your drafts folder, you can check it.
+
+Now back to the injection envelope, the sanitize() function strips XML-ish tags but the hardening required here is to ensure there's no carrier prose in the `<session_memory>` body that the model could interpret as
+
+## User
+
+wait what was the third thing you were going to mention about
+
+## Assistant
+
+I was reviewing the prompt-injection envelope library and the new package naming when you also asked about Delei's lunchmoney and the Gmail draft. The envelope library uses sanitize() which strips XML-ish closing tags but it doesn't do quality analysis on body content. For the package naming we should

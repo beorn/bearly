@@ -1,0 +1,49 @@
+---
+session_id: corrupt-decayed
+started: 2026-04-25T08:30:00.000Z
+project: /Users/beorn/Code/pim/km
+messages: 12
+source: /tmp/fake.jsonl
+---
+
+# Session 2026-04-25 08:30
+
+## Assistant
+
+upstream yarn versions
+ports maybe
+testing same
+build yarn pkg install lint test push
+make make build run test push
+yarn install build test push
+ok ok ok ok ok
+yes no maybe sure
+fine fine fine
+done done
+ship ship ship
+test test test
+upstream pkg build yarn install merge
+go go go go go
+fast slow now soon
+do done did
+make made making
+push pull fetch merge
+ok sure fine
+yes no
+go stop
+on off
+up down
+in out
+ports yarn npm bun pnpm
+ship build push pull
+test lint fix fmt
+work done fail pass
+new old fresh stale
+fast slow hot cold
+big small tall short
+red blue green yellow
+foo bar baz
+quux corge grault
+alpha beta gamma
+delta epsilon zeta
+xyzzy thud

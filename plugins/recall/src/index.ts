@@ -18,6 +18,9 @@ export { buildQueryContext, renderContextPrompt } from "./lib/context.ts"
 export { getCurrentSessionContext, extractSessionFocus } from "./lib/session-context.ts"
 export { writeTrace } from "./lib/trace.ts"
 
+export { analyzeQuality, isAcceptable } from "./lib/quality-gate.ts"
+export type { QualityResult, QualitySignals, QualityOpts } from "./lib/quality-gate.ts"
+
 export { recall, boostedRank, expandQueryVariants, setRecallLogging, parseTimeToMs } from "./history/search.ts"
 export {
   synthesizeResults,

@@ -1,0 +1,58 @@
+---
+session_id: corrupt-stuck-loop
+started: 2026-04-26T13:00:00.000Z
+project: /Users/beorn/Code/pim/km
+messages: 47
+source: /tmp/fake.jsonl
+---
+
+# Session 2026-04-26 13:00
+
+> so back to the vault reorg
+
+## User
+
+so back to the vault reorg!
+
+## Assistant
+
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!
+so back to the vault reorg!

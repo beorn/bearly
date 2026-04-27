@@ -1,0 +1,43 @@
+---
+session_id: good-session
+started: 2026-04-23T10:00:00.000Z
+project: /Users/beorn/Code/pim/km
+messages: 18
+source: /tmp/fake.jsonl
+---
+
+# Session 2026-04-23 10:00
+
+> Investigating why the silvery rendering pipeline drops sticky children when the column scrolls
+
+## User
+
+I'm seeing sticky headers disappear when I scroll the column past their natural position. Can you investigate the rendering pipeline?
+
+## Assistant
+
+I'll investigate this. Sticky children in silvery are tracked by the rendering pipeline through dirty flags. When a column scrolls, the incremental renderer compares the current frame against the previous frame to determine which cells need redrawing. The sticky child should be re-anchored to its sticky position, but if the dirty flag isn't set on the sticky region, the renderer skips redrawing it and the cell goes blank.
+
+Let me look at the relevant code in `vendor/silvery/packages/ag-term/src/pipeline/`. The key files are `compose.ts` (which decides which cells to redraw) and `sticky.ts` (which manages sticky child tracking).
+
+After tracing through the code, I found that the sticky region's dirty flag is being cleared by the parent's scroll handler before the sticky region's content gets re-evaluated. The fix is to defer the dirty flag clearing until after the sticky region has been recomposed.
+
+I'll write a STRICT test first to reproduce this. The test should set up a column with a sticky header, scroll past the natural sticky position, and assert that the sticky header is still visible after the scroll completes.
+
+## User
+
+Sounds good. Please write the test first and verify it fails before the fix.
+
+## Assistant
+
+The test is at `vendor/silvery/tests/pipeline/sticky-scroll.test.ts`. It sets up the scenario, scrolls, and uses the STRICT-mode invariant checker to assert that sticky regions remain visible. Currently the test fails as expected with "sticky region cleared during scroll". I'll now apply the fix to the dirty flag handling and re-run the test to confirm it passes.
+
+After applying the fix and running the test suite, all 47 STRICT pipeline tests pass including the new one. The change is small: in `compose.ts` we move the `clearDirtyFlags(scrollRegion)` call to after `composeStickyChildren()` instead of before it.
+
+## User
+
+Good work. Can you also add a regression test that simulates rapid scrolling so we don't regress on race conditions?
+
+## Assistant
+
+Done. The new test in `pipeline/rapid-scroll.test.ts` does 50 sequential scroll operations with no awaits between them and asserts that sticky regions remain consistent throughout. The test passes with the fix applied. I'll commit both tests and the fix together so the regression coverage lands in the same commit as the bug fix.
