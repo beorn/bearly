@@ -125,9 +125,8 @@ export function openDatabase(path: string): Database {
 		PRIMARY KEY (room_id, session_id)
 	)`)
 
-  // `dismissals` table dropped by migration v11 (km-tribe.filter-collapse) —
-  // tribe.dismiss was an over-import; ambient classification + inbox cursor
-  // already cover the audit / "ignored event" use case.
+  // `dismissals` table was dropped by migration v11 — ambient classification
+  // + the inbox cursor already cover the audit / "ignored event" use case.
 
   // `event_log` was merged into `messages WHERE kind='event'` by migration v8
   // (km-tribe.polish-sweep item 9). Fresh installs get only the messages table;
@@ -456,11 +455,11 @@ const MIGRATIONS: readonly Migration[] = [
     version: 11,
     name: "filter-collapse",
     up(db) {
-      // km-tribe.filter-collapse: collapse tribe.mode + tribe.snooze + tribe.dismiss
-      // into a single tribe.filter tool. Rename sessions.mode/snooze_until/snooze_kinds
-      // → filter_mode/filter_until/filter_kinds; drop messages.response_expected (the
-      // hint is derived from kind + sender at delivery time); drop the dismissals
-      // table outright.
+      // km-tribe.filter-collapse: rename sessions.mode/snooze_until/snooze_kinds
+      // → filter_mode/filter_until/filter_kinds; drop messages.response_expected
+      // (the hint is derived from kind + sender at delivery time); drop the
+      // dismissals table outright. The unified tribe.filter tool replaces the
+      // prior trio — see plugins/tribe/CHANGELOG.md for the migration guide.
       //
       // Fresh-install guard: openDatabase() runs migrations BEFORE the CREATE TABLE
       // statements above, so on a fresh install the relevant tables don't yet exist

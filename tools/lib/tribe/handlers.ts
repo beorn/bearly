@@ -674,8 +674,7 @@ function matchesGlob(globs: string[], value: string | null): boolean {
 
 /**
  * Apply a session-level event filter — combines persistent mode + time-bounded
- * mute + per-kind glob list into a single tool call. Replaces the old
- * tribe.mode + tribe.snooze + tribe.dismiss trio.
+ * mute + per-kind glob list into a single tool call.
  *
  * Empty args clear the filter (mode → 'normal', kinds + until → null).
  * `until` is an absolute unix-ms timestamp; absent = persistent.
