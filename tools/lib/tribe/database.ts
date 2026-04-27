@@ -365,6 +365,16 @@ const MIGRATIONS: readonly Migration[] = [
       // response_expected hint (yes / no / optional). Adds rooms primitives
       // (Matrix-shape) plus per-session inbox cursor / mode / snooze and a
       // dismissals audit table. See vendor/bearly/CHANGELOG.md 0.12.0.
+      //
+      // Fresh-install guard: openDatabase() runs migrations BEFORE the
+      // CREATE TABLE messages block (line ~63). On fresh installs the
+      // messages table doesn't exist yet, but the CREATE TABLE below
+      // already includes every column this migration adds — so we skip.
+      const tableExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        .get() as { name: string } | null
+      if (!tableExists) return
+
       const messageCols = new Set(
         (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
       )
