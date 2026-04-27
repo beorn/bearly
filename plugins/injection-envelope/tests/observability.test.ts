@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
-import { addWriterFor, setLogLevel, setSuppressConsole, type LogLevel } from "loggily"
+import { addWriter, setLogLevel, setSuppressConsole, type LogLevel } from "loggily"
 import { emitInjectionDebugEvent, installInjectionFileWriter } from "../src/debug.ts"
 
 const unsubs: Array<() => void> = []
@@ -31,7 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   while (unsubs.length) unsubs.pop()?.()
   setSuppressConsole(false)
-  setLogLevel(((prevLevel as LogLevel) ?? "warn"))
+  setLogLevel((prevLevel as LogLevel) ?? "warn")
 })
 
 function track(unsub: () => void): void {
@@ -42,7 +42,7 @@ describe("injection-envelope observability — namespace routing", () => {
   test("emit goes to injection:wrap, skip + empty go to injection:skip", () => {
     const captured: Array<{ ns: string; msg: string; props?: Record<string, unknown> }> = []
     track(
-      addWriterFor("injection:*", (_fmt, _lvl, ns, event) => {
+      addWriter({ ns: "injection:*" }, (_fmt, _lvl, ns, event) => {
         if (event.kind === "log") {
           captured.push({ ns, msg: event.message, props: event.props })
         }
@@ -74,7 +74,7 @@ describe("injection-envelope observability — namespace routing", () => {
   test("structured props (sessionId, prompt, additionalContext) survive the writer", () => {
     const captured: Record<string, unknown>[] = []
     track(
-      addWriterFor("injection:*", (_fmt, _lvl, _ns, event) => {
+      addWriter({ ns: "injection:*" }, (_fmt, _lvl, _ns, event) => {
         if (event.kind === "log") captured.push(event.props ?? {})
       }),
     )

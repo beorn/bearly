@@ -6,7 +6,9 @@
  * - `injection:wrap`  — successful framed-envelope emission (action="emit")
  * - `injection:skip`  — caller decided not to inject (action="skip" / "empty")
  *
- * Files / network sinks are wired downstream via loggily's `addWriterFor`.
+ * Files / network sinks are wired downstream via loggily's
+ * `addWriter({ ns: "injection:*" }, writer)` — the canonical
+ * namespace-scoped form.
  *
  * Hosts (the Claude Code hook entry point) typically install a writer
  * explicitly via {@link installInjectionFileWriter}; for one-release
@@ -15,7 +17,7 @@
  * Library consumers without either env var pay nothing.
  */
 
-import { addWriterFor, createFileWriter, createLogger } from "loggily"
+import { addWriter, createFileWriter, createLogger } from "loggily"
 
 export interface InjectionDebugEvent {
   /** Emitter identity — which hook/path produced this. */
@@ -50,7 +52,7 @@ export function installInjectionFileWriter(path: string): () => void {
   if (_installedPaths.has(path)) return () => {}
   _installedPaths.add(path)
   const writer = createFileWriter(path)
-  return addWriterFor("injection:*", (_formatted, _level, _ns, event) => {
+  return addWriter({ ns: "injection:*" }, (_formatted, _level, _ns, event) => {
     if (event.kind !== "log") return
     writer.write(
       JSON.stringify({

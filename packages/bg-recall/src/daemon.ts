@@ -73,9 +73,9 @@ export type BgRecallDaemon = {
 export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
   const idleTimeoutMs = config.idleTimeoutMs ?? readIdleTimeoutFromEnv() ?? DEFAULT_IDLE_MS
 
-  // Per-namespace loggers — `addWriterFor("bg-recall:*", …)` in the host
-  // wires file output. Until the host installs a writer, output goes through
-  // loggily's normal env-driven console pipeline.
+  // Per-namespace loggers — `addWriter({ ns: "bg-recall:*" }, …)` in the
+  // host wires file output. Until the host installs a writer, output goes
+  // through loggily's normal env-driven console pipeline.
   const stateLog = createLogger("bg-recall:daemon")
   const decisionLog = createLogger("bg-recall:decision")
   const hintLog = createLogger("bg-recall:hint")
@@ -194,8 +194,12 @@ export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
         tool: decision.trigger.tool,
         entities: decision.entities,
         queries: decision.queries.map((q) => ({ source: q.source, query: q.query, hits: q.hits.length })),
-        candidates: decision.candidates.slice(0, 3).map((c) => ({ id: c.hit.id, score: c.score, reject: c.rejectReason })),
-        emitted: decision.emitted ? { id: decision.emitted.id, to: decision.emitted.to, source: decision.emitted.source } : null,
+        candidates: decision.candidates
+          .slice(0, 3)
+          .map((c) => ({ id: c.hit.id, score: c.score, reject: c.rejectReason })),
+        emitted: decision.emitted
+          ? { id: decision.emitted.id, to: decision.emitted.to, source: decision.emitted.source }
+          : null,
         rejected: decision.rejected ?? null,
       })
       return decision
