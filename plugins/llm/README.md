@@ -39,6 +39,35 @@ Cost dials: `--no-challenger` (skip leg C), `--no-judge` (skip rubric scoring),
 `--challenger <id>` (override rotation). Backtest dials: `--sample N`,
 `--quick` (cheap judge), `--no-old-fire` (only fire NEW; less honest, half cost).
 
+### Auto-discovery: keep the model registry fresh
+
+New models ship constantly. The registry in `src/lib/types.ts` is hand-curated
+on purpose — pricing is frozen, capabilities encode dispatch behaviour, and a
+wrong entry can silently route Pro calls to a non-existent model. The
+auto-discovery flow keeps the curation cheap:
+
+```bash
+# Stage 1 — discovery (free, runs as a side-effect of pricing-update)
+bun tools/llm.ts update-pricing
+# → writes ~/.cache/bearly-llm/new-models.json with candidates +
+#   capability hints scraped from provider docs
+
+# Stage 2 — LLM-gated promotion (~$0.02 per scan)
+bun tools/llm.ts pro --discover-models
+# → prints a markdown decision table (yes / no / needs-review per candidate)
+
+bun tools/llm.ts pro --discover-models --apply
+# → writes /tmp/llm-new-models.patch (unified diff for the `yes` decisions)
+
+git apply /tmp/llm-new-models.patch   # human reviews and applies
+```
+
+The classifier (`gpt-5-nano`) filters obvious noise — dated snapshots that
+should map via `apiModelId`, deprecated/private-beta entries, garbage pricing.
+`needs-review` items appear under a `## Pending review` heading so the human
+can act on them without them entering the diff. Run weekly via `/sop infra`
+or cron.
+
 ## --json envelope
 
 Every command supports `--json` for pipe-friendly output. JSON line on stdout,

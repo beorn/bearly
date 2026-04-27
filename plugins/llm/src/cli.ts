@@ -382,6 +382,9 @@ KEYWORDS
   pro --judge-history    Retroactively score historical ab-pro.jsonl entries
                          (--limit N, --quick for cheap judge, --apply to write)
                          (--quick smoke-test mode; --no-old-fire skips OLD)
+  pro --discover-models  Classify auto-discovered models from new-models.json
+                         and (with --apply) emit /tmp/llm-new-models.patch
+                         (run update-pricing first to populate the cache)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
   quick/cheap/mini/nano  Cheap/fast model if you really want it (~$0.01)
@@ -664,6 +667,11 @@ export async function main(): Promise<string | undefined> {
           apply: hasFlag("--apply"),
           skipConfirm,
         })
+        break
+      }
+      if (hasFlag("--discover-models")) {
+        const { runDiscoverModels } = await import("./lib/dispatch")
+        await runDiscoverModels({ apply: hasFlag("--apply") })
         break
       }
       const q = getQuestion()

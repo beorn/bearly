@@ -2,10 +2,14 @@
 
 ## 0.4.0 (2026-04-27)
 
-Quota + balance tracking — surface remaining credit / rate limits per provider
-after each call (km-bearly.llm-quota-tracking). User's $700/month spend signal
-made this urgent: today the only feedback for "am I about to blow the rate
-limit" is a hard `insufficient_quota` error AFTER the call fails.
+Quota tracking + auto-discovery — two features that together make spending
+visible AND keep the registry fresh without surprise pollution.
+
+## Quota + balance tracking (km-bearly.llm-quota-tracking)
+
+User's $700/month spend signal made this urgent: today the only feedback
+for "am I about to blow the rate limit" is a hard `insufficient_quota`
+error AFTER the call fails.
 
 ### Added
 
@@ -24,20 +28,57 @@ limit" is a hard `insufficient_quota` error AFTER the call fails.
   so `bun llm quota` always has fresh fallback data even when `--quota`
   wasn't passed. Atomic write (temp + rename) so a crash mid-write can't
   corrupt the cache.
-
-### Changed
-
 - **`ModelResponse.quota`** — new optional field. Captured from
   `result.response.headers` in `queryModel`, parsed via the right provider
   prefix (Anthropic uses `anthropic-ratelimit-*`; everyone else uses
   `x-ratelimit-*`). Best-effort — silent when headers aren't present.
 
-### Why P1
+## Auto-discovery + LLM-gated promotion (km-bearly.llm-registry-auto-update)
 
-User's $700/month OpenAI spend without visibility was a trust risk. Smallest
-meaningful feature to convert that into a managed signal. Lands before the
-next /pro-heavy session so cost-aware decisions become possible (including
-agent-side: "am I blowing the rate limit, should I back off").
+Models ship constantly (GPT-5.5 announced 2026-04-23, etc.). The registry
+was hand-maintained: stale entries lingered, new ones were missed. This
+adds a two-stage pipeline that surfaces candidates without auto-polluting.
+
+### Added
+
+- **Stage 1 — discovery side-effect on `bun llm update-pricing`.**
+  `performPricingUpdate` now writes `~/.cache/bearly-llm/new-models.json`
+  alongside the pricing cache. The artifact lists SKU IDs found in provider
+  doc text but absent from the registry, enriched with regex-detected
+  capability hints (`webSearch`, `vision`, `deepResearch`, `backgroundApi`)
+  and a ~400-char snippet of surrounding doc context. No extra cost — the
+  pricing scraper already pulled the HTML.
+- **Stage 2 — `bun llm pro --discover-models [--apply]`.** Reads the
+  artifact, runs `gpt-5-nano` (or whichever quick-tier model is available)
+  as a classifier per candidate, and prints a markdown decision table with
+  `yes` / `no` / `needs-review` decisions plus reasons. With `--apply`,
+  writes `/tmp/llm-new-models.patch` — a unified diff adding the
+  `yes`-decisions to `SKUS_DATA` and `ENDPOINTS_DATA` in `types.ts`. The
+  diff is NOT auto-applied; the user reviews and runs `git apply` themselves.
+- **`needs-review` items surface separately** under a `## Pending review`
+  heading so the human can act on them without them entering the diff.
+
+### Why LLM-gated, not auto-add
+
+Provider docs lie. Some IDs are dated snapshots (`gpt-5-pro-2025-10-06`)
+that should map to existing aliases via `apiModelId`, not become new SKUs.
+Some are deprecated. Some are private beta. Auto-adding would pollute the
+registry. The cheap classifier filters obvious noise; human reviews the
+diff before it lands.
+
+### Cost
+
+Discovery: $0 (runs in pricing-update). Classifier: ~$0.0005 × N candidates.
+For ~30 candidates, ~$0.02 per scan. Wired into `/sop packages` for weekly
+runs.
+
+### Files
+
+- New: `plugins/llm/src/lib/quota.ts` (~470 LOC) — provider fetchers, header
+  parsers, atomic cache I/O, table renderer.
+- New: `plugins/llm/src/lib/discover.ts` (~400 LOC) — capability extraction,
+  SKU discovery, classifier prompt/parser, unified-diff generator.
+- New tests: `quota.test.ts` (26) + `discover.test.ts` (39).
 
 ## 0.3.0 (2026-04-27)
 
