@@ -10,15 +10,50 @@ import type { TribeContext } from "./context.ts"
 // ---------------------------------------------------------------------------
 
 /**
- * `MessageKind` is the typed replacement for the former `recipient='log'`
- * string sentinel. Every row in `messages` carries a `kind` column:
+ * `MessageKind` describes the *transport* class of a row in `messages`:
  *
  *   - `direct`    — addressed to a single recipient (recipient = session name)
  *   - `broadcast` — addressed to everyone (recipient = '*')
  *   - `event`     — journal-only row, never delivered to any client
  *                   (recipient = '*' but delivery filter checks `kind` first)
+ *
+ * Classification (actionable vs ambient) lives on the separate `delivery`
+ * column — see `Delivery` below. The two axes are independent: a broadcast
+ * can be `push` (actionable bell) or `pull` (ambient inbox-only), and a
+ * direct message is always `push`.
  */
 export type MessageKind = "direct" | "broadcast" | "event"
+
+/**
+ * `Delivery` is the km-tribe.event-classification routing class:
+ *
+ *   - `push` — actionable: fanned out down the MCP channel + lands in inbox
+ *   - `pull` — ambient: lands in inbox only; the agent reads it when it asks
+ *
+ * Default for back-compat is `push` (existing call sites unchanged).
+ */
+export type Delivery = "push" | "pull"
+
+/**
+ * `ResponseExpected` is the per-event hint surfaced on the channel envelope
+ * so the LLM can decide whether to reply at all:
+ *
+ *   - `yes`      — direct query / blocker / assignment → reply via tribe.send
+ *   - `optional` — FYI that might warrant action → agent decides
+ *   - `no`       — silent read is the correct response (most ambient kinds)
+ */
+export type ResponseExpected = "yes" | "no" | "optional"
+
+/**
+ * Optional classification metadata for a message. All fields are optional
+ * for back-compat — pass nothing and the row defaults to push / optional.
+ */
+export type Classification = {
+  delivery?: Delivery
+  responseExpected?: ResponseExpected
+  pluginKind?: string
+  roomId?: string
+}
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -47,12 +82,20 @@ export function sendMessage(
   bead_id?: string,
   ref?: string,
   kind: MessageKind = "direct",
+  classification: Classification = {},
 ): { id: string; ts: number; rowid: number } {
   const id = randomUUID()
   const ts = Date.now()
   // Default kind inference: '*' is a broadcast unless the caller explicitly
   // passed 'event'. This keeps existing call sites correct without audit.
   const resolvedKind: MessageKind = kind === "event" ? "event" : recipient === "*" ? "broadcast" : kind
+  // Direct messages are inherently actionable. Events are journal-only and
+  // never delivered, so delivery is irrelevant — keep the column populated for
+  // schema invariants.
+  const delivery: Delivery =
+    classification.delivery ?? (resolvedKind === "direct" ? "push" : resolvedKind === "event" ? "push" : "push")
+  const responseExpected: ResponseExpected =
+    classification.responseExpected ?? (resolvedKind === "direct" ? "yes" : "optional")
   const result = ctx.stmts.insertMessage.run({
     $id: id,
     $type: type,
@@ -63,6 +106,10 @@ export function sendMessage(
     $bead_id: bead_id ?? null,
     $ref: ref ?? null,
     $ts: ts,
+    $response_expected: responseExpected,
+    $delivery: delivery,
+    $plugin_kind: classification.pluginKind ?? null,
+    $room_id: classification.roomId ?? null,
   })
   const rowid = Number(result.lastInsertRowid)
   ctx.onMessageInserted?.({
@@ -75,6 +122,10 @@ export function sendMessage(
     recipient,
     content,
     bead_id: bead_id ?? null,
+    delivery,
+    responseExpected,
+    pluginKind: classification.pluginKind ?? null,
+    roomId: classification.roomId ?? null,
   })
   return { id, ts, rowid }
 }
@@ -100,5 +151,12 @@ export function logEvent(ctx: TribeContext, type: string, bead_id?: string, data
     $bead_id: bead_id ?? null,
     $ref: null,
     $ts: Date.now(),
+    // Event rows are journal-only; the daemon's broadcastToConnected drops
+    // kind='event' before delivery. These columns are still populated to keep
+    // schema invariants — every row carries a delivery class.
+    $response_expected: "no",
+    $delivery: "push",
+    $plugin_kind: null,
+    $room_id: null,
   })
 }

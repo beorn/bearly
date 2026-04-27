@@ -936,7 +936,11 @@ export async function checkReaper(
       suspect.asked = true
       const msg = `health:reaper: PID ${pid} (${suspect.command}) at ${suspect.cpu}% CPU for ${suspect.etime}. Is this yours? Reply within 60s or it will be killed.`
       log.info?.(`reaper: asking about PID ${pid}`)
-      api.broadcast(msg, "health:reaper:query")
+      api.broadcast(msg, "health:reaper:query", undefined, {
+        delivery: "push",
+        responseExpected: "yes",
+        pluginKind: "health:reaper:query",
+      })
     }
 
     // After 3 + graceSamples: check for claims, then kill
@@ -990,7 +994,11 @@ export async function checkReaper(
       }
 
       const killMsg = `health:reaper: killed PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s, ${suspect.cpu}% CPU for ${suspect.etime}`
-      api.broadcast(killMsg, "health:reaper:killed")
+      api.broadcast(killMsg, "health:reaper:killed", undefined, {
+        delivery: "pull",
+        responseExpected: "no",
+        pluginKind: "health:reaper:killed",
+      })
       state.reaperSuspects.delete(pid)
     }
   }
@@ -1165,25 +1173,40 @@ export const healthMonitorPlugin: TribePluginApi = {
           const msg = `${alert.message}${attribution}`
           log.info?.(`alert: ${msg}`)
 
+          // km-tribe.event-classification: criticals are actionable (push) so
+          // a session pays attention; warnings are ambient (pull). Direct
+          // messages still push by transport class but carry the right
+          // responseExpected hint so the agent knows whether to reply.
+          const isCritical = alert.severity === "critical"
+          const dmClass = {
+            delivery: "push",
+            responseExpected: isCritical ? "yes" : "optional",
+            pluginKind: `health:${alert.type}:${alert.severity}`,
+          } as const
+          const broadcastClass = {
+            delivery: isCritical ? "push" : "pull",
+            responseExpected: isCritical ? "yes" : "no",
+            pluginKind: `health:${alert.type}:${alert.severity}`,
+          } as const
           // Route: DM each responsible session
           const attributedSessions = new Set<string>()
           for (const [name] of sessionLoad) {
             if (name !== "unattributed") {
               attributedSessions.add(name)
-              api.send(name, msg, `health:${alert.type}:${alert.severity}`)
+              api.send(name, msg, `health:${alert.type}:${alert.severity}`, undefined, dmClass)
             }
           }
 
           // Critical: also broadcast to everyone
           if (alert.severity === "critical") {
-            api.broadcast(msg, `health:${alert.type}:${alert.severity}`)
+            api.broadcast(msg, `health:${alert.type}:${alert.severity}`, undefined, broadcastClass)
           } else if (attributedSessions.size === 0 && api.hasChief()) {
             // Warning with no attributed sessions (e.g. disk, worktree): send to chief
-            api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
+            api.send("chief", msg, `health:${alert.type}:${alert.severity}`, undefined, dmClass)
           } else {
             // Warning: send to chief if unattributed processes exist
             if (sessionLoad.has("unattributed") && api.hasChief()) {
-              api.send("chief", msg, `health:${alert.type}:${alert.severity}`)
+              api.send("chief", msg, `health:${alert.type}:${alert.severity}`, undefined, dmClass)
             }
           }
         }
@@ -1228,20 +1251,34 @@ export const healthMonitorPlugin: TribePluginApi = {
             const lockMsg = formatLockMessage(lock, sessionName, durationSec)
             log.info?.(`alert: ${lockMsg}`)
 
-            // DM responsible session
+            // km-tribe.event-classification: first-detect git-lock is ambient
+            // (most are concurrent commits resolving in <30s). The session
+            // attributed to the lock still gets a DM with `responseExpected:
+            // optional` so the holder can act.
             if (sessionName) {
-              api.send(sessionName, lockMsg, "health:git-lock:warning")
+              api.send(sessionName, lockMsg, "health:git-lock:warning", undefined, {
+                delivery: "push",
+                responseExpected: "optional",
+                pluginKind: "health:git-lock:warning",
+              })
             }
-            // Broadcast to tribe
-            api.broadcast(lockMsg, "health:git-lock:warning")
+            api.broadcast(lockMsg, "health:git-lock:warning", undefined, {
+              delivery: "pull",
+              responseExpected: "no",
+              pluginKind: "health:git-lock:warning",
+            })
           }
 
-          // Stale lock escalation: >30s
+          // Stale lock escalation: >30s — actionable, the lock is stuck.
           if (durationMs > LOCK_STALE_THRESHOLD_MS && !alertState.lockStaleWarned.has(lock.path)) {
             alertState.lockStaleWarned.add(lock.path)
             const staleMsg = formatStaleLockMessage(lock, sessionName, durationMs / 1000)
             log.info?.(`alert: ${staleMsg}`)
-            api.broadcast(staleMsg, "health:git-lock:warning")
+            api.broadcast(staleMsg, "health:git-lock:warning", undefined, {
+              delivery: "push",
+              responseExpected: "yes",
+              pluginKind: "health:git-lock:stale",
+            })
           }
         }
 
@@ -1270,7 +1307,11 @@ export const healthMonitorPlugin: TribePluginApi = {
                 alertState.firedAlerts.add("disk-io:warning")
                 const msg = `Disk I/O warning: ${io.readWriteMBps.toFixed(0)} MB/s sustained (threshold: ${thresholds.diskIoWarningMBps} MB/s). Multiple agents may be running tests simultaneously.`
                 log.info?.(`alert: ${msg}`)
-                api.broadcast(msg, "health:disk-io:warning")
+                api.broadcast(msg, "health:disk-io:warning", undefined, {
+                  delivery: "pull",
+                  responseExpected: "no",
+                  pluginKind: "health:disk-io:warning",
+                })
               }
             } else {
               alertState.ioAboveWarning = 0
@@ -1299,7 +1340,11 @@ export const healthMonitorPlugin: TribePluginApi = {
                 const resetIn = Math.max(0, Math.round((rateLimit.resetAt * 1000 - Date.now()) / 60000))
                 const msg = `GitHub API rate limit warning: ${rateLimit.remaining}/${rateLimit.limit} remaining (${Math.round(remainingPercent)}%). Resets in ${resetIn}min.`
                 log.info?.(`alert: ${msg}`)
-                api.broadcast(msg, "health:gh-rate-limit:warning")
+                api.broadcast(msg, "health:gh-rate-limit:warning", undefined, {
+                  delivery: "push",
+                  responseExpected: "optional",
+                  pluginKind: "health:gh-rate-limit:warning",
+                })
               } else if (remainingPercent >= thresholds.ghRateLimitWarning) {
                 alertState.firedAlerts.delete("gh-rate-limit:warning")
               }

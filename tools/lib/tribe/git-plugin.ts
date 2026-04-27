@@ -49,7 +49,13 @@ export const gitPlugin: TribePluginApi = {
         if (head && lastHead && head !== lastHead) {
           // Atomic dedup: first observer to claim this commit hash wins
           if (api.claimDedup(`commit:${head}`)) {
-            api.broadcast(`Committed: ${line}`, "status")
+            // km-tribe.event-classification: commits are ambient — informational
+            // for the tribe but no agent needs to react. Land in inbox only.
+            api.broadcast(`Committed: ${line}`, "status", undefined, {
+              delivery: "pull",
+              responseExpected: "no",
+              pluginKind: "git:commit",
+            })
           }
           // Hot-reload on tribe code changes is handled by the daemon's own
           // source watcher (tribe-daemon.ts — onSourceChange). No explicit

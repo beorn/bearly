@@ -29,6 +29,10 @@ export const TRIBE_COORD_METHODS = {
   claimChief: "tribe.claim-chief",
   releaseChief: "tribe.release-chief",
   debug: "tribe.debug",
+  inbox: "tribe.inbox",
+  mode: "tribe.mode",
+  snooze: "tribe.snooze",
+  dismiss: "tribe.dismiss",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -112,6 +116,14 @@ export function handleToolCall(
       return handleReleaseChief(ctx, opts)
     case TRIBE_COORD_METHODS.debug:
       return handleDebug(ctx, a, opts)
+    case TRIBE_COORD_METHODS.inbox:
+      return handleInbox(ctx, a)
+    case TRIBE_COORD_METHODS.mode:
+      return handleMode(ctx, a)
+    case TRIBE_COORD_METHODS.snooze:
+      return handleSnooze(ctx, a)
+    case TRIBE_COORD_METHODS.dismiss:
+      return handleDismiss(ctx, a)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -585,4 +597,135 @@ function handleDebug(_ctx: TribeContext, _a: ToolArgs, opts: HandlerOpts): ToolR
         cursors: [],
       }
   return { content: [{ type: "text", text: JSON.stringify(state) }] }
+}
+
+// ---------------------------------------------------------------------------
+// km-tribe.event-classification handlers
+// ---------------------------------------------------------------------------
+
+type InboxRow = {
+  id: string
+  rowid: number
+  type: string
+  sender: string
+  recipient: string
+  content: string
+  bead_id: string | null
+  ref: string | null
+  ts: number
+  response_expected: string
+  delivery: string
+  plugin_kind: string | null
+  room_id: string | null
+}
+
+function handleInbox(ctx: TribeContext, a: ToolArgs): ToolResult {
+  const limit = typeof a.limit === "number" && a.limit > 0 && a.limit <= 500 ? a.limit : 50
+  const cursor = ctx.stmts.getInboxCursor.get({ $id: ctx.sessionId }) as { last_inbox_pull_seq: number } | null
+  const sinceArg = typeof a.since === "number" ? a.since : null
+  const since = sinceArg !== null ? sinceArg : (cursor?.last_inbox_pull_seq ?? 0)
+
+  const rows = ctx.stmts.getInboxRows.all({
+    $since: since,
+    $name: ctx.getName(),
+    $limit: limit,
+  }) as InboxRow[]
+
+  // Optional plugin_kind glob filter — applied in JS to keep SQL simple.
+  const kindGlobs = Array.isArray(a.kinds) ? (a.kinds as string[]).filter((s) => typeof s === "string") : null
+  const filtered = kindGlobs && kindGlobs.length > 0 ? rows.filter((r) => matchesGlob(kindGlobs, r.plugin_kind)) : rows
+
+  // Advance the cursor only when not using `since` arg (since=arg means caller
+  // controls iteration explicitly and shouldn't bump the persistent cursor).
+  if (filtered.length > 0 && sinceArg === null) {
+    const maxSeq = filtered[filtered.length - 1]!.rowid
+    ctx.stmts.advanceInboxCursor.run({ $id: ctx.sessionId, $seq: maxSeq, $now: Date.now() })
+  }
+
+  const events = filtered.map((r) => ({
+    id: r.id,
+    rowid: r.rowid,
+    type: r.type,
+    from: r.sender,
+    to: r.recipient,
+    content: r.content,
+    bead: r.bead_id,
+    ref: r.ref,
+    ts: new Date(r.ts).toISOString(),
+    response_expected: r.response_expected,
+    delivery: r.delivery,
+    plugin_kind: r.plugin_kind,
+    room_id: r.room_id,
+  }))
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ events, cursor: events.length > 0 ? events[events.length - 1]!.rowid : since }, null, 2),
+      },
+    ],
+  }
+}
+
+function matchesGlob(globs: string[], value: string | null): boolean {
+  if (!value) return false
+  for (const g of globs) {
+    if (g === "*") return true
+    if (!g.includes("*") && g === value) return true
+    if (g.includes("*")) {
+      const re: RegExp = new RegExp("^" + g.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$")
+      if (re.test(value)) return true
+    }
+  }
+  return false
+}
+
+function handleMode(ctx: TribeContext, a: ToolArgs): ToolResult {
+  const mode = a.mode as string
+  if (mode !== "focus" && mode !== "normal" && mode !== "ambient") {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: `Invalid mode: "${mode}". Use focus|normal|ambient.` }) }],
+    }
+  }
+  ctx.stmts.setSessionMode.run({ $id: ctx.sessionId, $mode: mode, $now: Date.now() })
+  return { content: [{ type: "text", text: JSON.stringify({ mode, set: true }) }] }
+}
+
+function handleSnooze(ctx: TribeContext, a: ToolArgs): ToolResult {
+  const dur = a.duration_sec
+  if (typeof dur !== "number" || dur < 0 || dur > 24 * 60 * 60) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: "duration_sec must be 0..86400 (24h)." }) }],
+    }
+  }
+  const now = Date.now()
+  if (dur === 0) {
+    ctx.stmts.setSessionSnooze.run({ $id: ctx.sessionId, $until: null, $kinds: null, $now: now })
+    return { content: [{ type: "text", text: JSON.stringify({ snoozed: false, woke: true }) }] }
+  }
+  const until = now + dur * 1000
+  const kinds = Array.isArray(a.kinds) ? JSON.stringify(a.kinds) : null
+  ctx.stmts.setSessionSnooze.run({ $id: ctx.sessionId, $until: until, $kinds: kinds, $now: now })
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ snoozed: true, until: new Date(until).toISOString(), kinds: a.kinds ?? null }),
+      },
+    ],
+  }
+}
+
+function handleDismiss(ctx: TribeContext, a: ToolArgs): ToolResult {
+  const messageId = a.message_id as string
+  if (!messageId || typeof messageId !== "string") {
+    return { content: [{ type: "text", text: JSON.stringify({ error: "message_id required" }) }] }
+  }
+  ctx.stmts.insertDismissal.run({
+    $session_id: ctx.sessionId,
+    $message_id: messageId,
+    $reason: (a.reason as string | undefined) ?? null,
+    $ts: Date.now(),
+  })
+  return { content: [{ type: "text", text: JSON.stringify({ dismissed: true, message_id: messageId }) }] }
 }

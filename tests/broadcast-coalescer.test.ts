@@ -19,6 +19,8 @@ function makeEv(i: number, overrides: Partial<PendingBroadcast> = {}): PendingBr
     sender: `sender-${i % 3}`,
     content: `event ${i}`,
     bead_id: null,
+    responseExpected: "optional",
+    pluginKind: null,
     ...overrides,
   }
 }

@@ -470,9 +470,20 @@ async function rewriteViaHaiku(content: string, signal?: AbortSignal): Promise<s
 
 /** Single entry point for all observable activities.
  *  Writes to DB; the messaging layer's fanout hook delivers to connected clients
- *  synchronously (see broadcastToConnected). No polling tick involved. */
+ *  synchronously (see broadcastToConnected). No polling tick involved.
+ *
+ *  km-tribe.event-classification: daemon log activity (session join/leave,
+ *  rename, status) is ambient — the channel marker already tags these as
+ *  notification-only, but routing them to inbox-only spares the channel
+ *  entirely. Critical: a session-join/leave today still needs to wake the
+ *  proxy (auto-rename hook) — the proxy now reads via tribe.inbox cursor.
+ */
 function logActivity(type: string, content: string): void {
-  sendMessage(daemonCtx, "*", content, type, undefined, undefined, "broadcast")
+  sendMessage(daemonCtx, "*", content, type, undefined, undefined, "broadcast", {
+    delivery: "pull",
+    responseExpected: "no",
+    pluginKind: `daemon:${type}`,
+  })
 }
 
 function pushToClient(connId: string, method: string, params?: Record<string, unknown>): void {
@@ -564,6 +575,59 @@ function broadcastBatchMs(): number {
  */
 const NOTIFICATION_ONLY_MARKER = "notification-only:do-not-acknowledge-or-respond-to"
 
+/**
+ * km-tribe.event-classification: per-session mode + snooze gate. Runs at
+ * delivery time so persisted rows are never re-classified — mode/snooze can
+ * change without rewriting history. Order: mode → snooze (mode=ambient is the
+ * escape hatch that bypasses snooze).
+ *
+ *   mode=focus   → only `responseExpected="yes"` reaches the channel
+ *   mode=normal  → kind-based default (already filtered by `delivery=push`)
+ *   mode=ambient → everything; snooze ignored
+ *
+ * Snooze stacks under normal mode: if `snooze_until > now`, drop unless the
+ * event's plugin_kind is NOT in `snooze_kinds` (when present — empty/NULL
+ * means snooze applies to all kinds).
+ */
+function shouldDeliver(
+  info: { responseExpected: "yes" | "no" | "optional"; pluginKind: string | null },
+  filter: { mode: string; snooze_until: number | null; snooze_kinds: string | null } | undefined,
+): boolean {
+  if (!filter) return true // No session row yet — default-allow
+  const mode = filter.mode || "normal"
+  if (mode === "ambient") return true
+  if (mode === "focus") {
+    return info.responseExpected === "yes"
+  }
+  // mode === 'normal' — apply snooze if active
+  const now = Date.now()
+  if (!filter.snooze_until || filter.snooze_until <= now) return true
+  const kinds = filter.snooze_kinds ? safeJsonArray(filter.snooze_kinds) : null
+  if (!kinds || kinds.length === 0) return false // snooze covers all kinds
+  // snooze_kinds is a list of plugin_kind globs (e.g. ["github:*", "git:commit"]).
+  // Match: drop only if the event's pluginKind matches at least one glob.
+  if (!info.pluginKind) return true // no plugin_kind → never matches a glob list
+  return !kinds.some((g) => globMatch(g, info.pluginKind!))
+}
+
+function safeJsonArray(s: string): string[] | null {
+  try {
+    const parsed = JSON.parse(s)
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed as string[]
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Minimal glob: '*' matches anything within a kind segment. */
+function globMatch(pattern: string, value: string): boolean {
+  if (pattern === "*") return true
+  if (!pattern.includes("*")) return pattern === value
+  const re = new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$")
+  return re.test(value)
+}
+
 function isNotificationOnlyType(type: string): boolean {
   if (type === "session" || type === "status" || type === "delta") return true
   if (type.startsWith("chief:")) return true
@@ -582,6 +646,12 @@ function singleEventNotification(ev: PendingBroadcast): string {
     content: ev.content,
     bead_id: ev.bead_id,
     message_id: ev.id,
+    // km-tribe.event-classification: surfaced on every channel envelope so the
+    // receiving LLM can decide whether to reply at all. The MCP wrapper only
+    // renders source/from/type/message_id by default; clients that want this
+    // attribute pull it from `params.responseExpected` directly.
+    responseExpected: ev.responseExpected,
+    plugin_kind: ev.pluginKind,
   })
 }
 
@@ -592,6 +662,11 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
   const header = `${total} tribe event${total === 1 ? "" : "s"}`
   const content = `${header}\n${lines.join("\n")}`
   const last = events[events.length - 1]
+  // For a coalesced batch, the per-event responseExpected can vary. The
+  // safest aggregation is the strongest signal: if any event in the batch
+  // expected a reply ("yes"), the batch envelope says "yes"; otherwise
+  // fall back to "optional" (avoids pretending an entire batch is "no").
+  const aggResp: "yes" | "optional" = events.some((e) => e.responseExpected === "yes") ? "yes" : "optional"
   return makeNotification("channel", {
     from: "daemon",
     type: markedType("delta"),
@@ -599,6 +674,8 @@ function batchedNotification(events: PendingBroadcast[], dropped: number): strin
     bead_id: null,
     message_id: last?.id ?? null,
     events_count: total,
+    responseExpected: aggResp,
+    plugin_kind: null,
   })
 }
 
@@ -636,11 +713,21 @@ async function broadcastToConnected(info: {
   recipient: string
   content: string
   bead_id: string | null
+  delivery: "push" | "pull"
+  responseExpected: "yes" | "no" | "optional"
+  pluginKind: string | null
+  roomId: string | null
 }): Promise<void> {
   // Journal-only rows (kind='event') stay durable in SQLite but are never
   // delivered to any connected client. This replaced the former
   // `recipient='log'` string sentinel (km-tribe.polish-sweep item 3).
   if (info.kind === "event") return
+
+  // km-tribe.event-classification: 'pull' rows are inbox-only — they land in
+  // SQLite (durable for tribe.inbox) but never get fanned out. Order matters:
+  // delivery filter runs BEFORE expensive Haiku rewrite so ambient bulk doesn't
+  // pay the LLM bill.
+  if (info.delivery === "pull") return
 
   // Neutralize transcript-shaped triggers so receiving models don't
   // pattern-complete a fake user turn. Regex layer is synchronous + always on
@@ -666,6 +753,8 @@ async function broadcastToConnected(info: {
     sender: info.sender,
     content: cleaned,
     bead_id: info.bead_id,
+    responseExpected: info.responseExpected,
+    pluginKind: info.pluginKind,
   }
 
   for (const [connId, client] of clients) {
@@ -677,6 +766,16 @@ async function broadcastToConnected(info: {
     }
     // Skip half-registered clients (role=pending placeholder).
     if (client.role === "pending") continue
+
+    // km-tribe.event-classification: per-session mode + snooze filter.
+    // Direct messages always bypass these — they're addressed to this session
+    // explicitly and the sender already paid the actionable cost.
+    if (info.kind !== "direct" && !isWatch) {
+      const sessionFilter = stmts.getSessionMode.get({ $id: client.ctx.sessionId }) as
+        | { mode: string; snooze_until: number | null; snooze_kinds: string | null }
+        | undefined
+      if (!shouldDeliver(info, sessionFilter)) continue
+    }
 
     // Direct messages bypass coalescing — they're time-sensitive.
     if (info.kind === "direct") {
@@ -1342,13 +1441,22 @@ async function handleRequest(req: JsonRpcRequest, connId: string): Promise<strin
 // ---------------------------------------------------------------------------
 
 const tribeClientApi: TribeClientApi = {
-  send(recipient, content, type, beadId) {
+  send(recipient, content, type, beadId, classification) {
     // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
     // Kind is inferred: '*' → 'broadcast', anything else → 'direct'.
-    sendMessage(daemonCtx, recipient, content, type, beadId, undefined, recipient === "*" ? "broadcast" : "direct")
+    sendMessage(
+      daemonCtx,
+      recipient,
+      content,
+      type,
+      beadId,
+      undefined,
+      recipient === "*" ? "broadcast" : "direct",
+      classification ?? {},
+    )
   },
-  broadcast(content, type, beadId) {
-    sendMessage(daemonCtx, "*", content, type, beadId, undefined, "broadcast")
+  broadcast(content, type, beadId, classification) {
+    sendMessage(daemonCtx, "*", content, type, beadId, undefined, "broadcast", classification ?? {})
   },
   claimDedup(key) {
     // Single writer — no need for BEGIN IMMEDIATE in daemon mode
@@ -1374,10 +1482,16 @@ const tribeClientApi: TribeClientApi = {
   },
 }
 
-// Wire up log broadcasting now that tribeClientApi is ready
+// Wire up log broadcasting now that tribeClientApi is ready.
+// km-tribe.event-classification: daemon warn/error logs are ambient — they
+// signal degraded daemon health but no agent needs to act. Health alerts go
+// through the health-monitor plugin path, which classifies severity.
 broadcastLog = (msg, type) => {
-  // Fanout via daemonCtx.onMessageInserted (km-tribe.event-bus) — no drain.
-  sendMessage(daemonCtx, "*", msg, type, undefined, undefined, "broadcast")
+  sendMessage(daemonCtx, "*", msg, type, undefined, undefined, "broadcast", {
+    delivery: "pull",
+    responseExpected: "no",
+    pluginKind: type,
+  })
 }
 
 const plugins = process.env.TRIBE_NO_PLUGINS

@@ -179,4 +179,63 @@ export const TOOLS_LIST = [
       properties: {},
     },
   },
+  {
+    name: "tribe.inbox",
+    description:
+      "Pull pending tribe events that did NOT push to the channel (ambient: commits, joins/leaves, routine github events, low-severity health warnings). Returns events newer than the per-session pull cursor; advances the cursor on call. " +
+      "Empty response is the correct behavior for most tribe channel events you do see — the tool returns inbox data; you decide whether to act. Do not generate acknowledgement text just because a message arrived. Each event carries a `responseExpected` hint (`yes` / `optional` / `no`) — `no` means silent read is correct.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        since: {
+          type: "number",
+          description: "Pull rows with rowid > since. Default: per-session cursor.",
+        },
+        kinds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional plugin_kind globs to filter (e.g. ['github:*', 'git:commit']).",
+        },
+        limit: { type: "number", description: "Max rows to return (default: 50)." },
+      },
+    },
+  },
+  {
+    name: "tribe.mode",
+    description:
+      "Set the per-session focus mode. `focus` = only direct DMs and threshold-escalated alerts reach the channel; `normal` = kind-based default; `ambient` = everything to channel (escape hatch). Persisted across reconnects.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        mode: { type: "string", enum: ["focus", "normal", "ambient"] },
+      },
+      required: ["mode"],
+    },
+  },
+  {
+    name: "tribe.snooze",
+    description:
+      "Time-bounded silence on channel events for this session. duration_sec=0 cancels any active snooze. Optional `kinds` is a list of plugin_kind globs (e.g. ['github:*']) to silence; omit to silence everything. Direct messages always bypass snooze.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        duration_sec: { type: "number", description: "Snooze for this many seconds; 0 = wake." },
+        kinds: { type: "array", items: { type: "string" }, description: "Optional plugin_kind globs." },
+      },
+      required: ["duration_sec"],
+    },
+  },
+  {
+    name: "tribe.dismiss",
+    description:
+      "Acknowledge an actionable event without replying. Inserts a row into the dismissals audit table (used as classifier-training signal — high dismiss rate on a kind suggests it should be reclassified ambient). Optional `reason` describes why.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        message_id: { type: "string", description: "ID of the message to dismiss." },
+        reason: { type: "string", description: "Optional free-form reason." },
+      },
+      required: ["message_id"],
+    },
+  },
 ]

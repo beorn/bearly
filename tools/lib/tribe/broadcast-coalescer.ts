@@ -30,6 +30,11 @@ export type PendingBroadcast = {
   sender: string
   content: string // already scrubbed by caller
   bead_id: string | null
+  /** km-tribe.event-classification: surfaced on the channel envelope so the
+   *  receiving LLM can decide whether to reply at all. */
+  responseExpected: "yes" | "no" | "optional"
+  /** Originating plugin event id (e.g. `git:commit`); null for human messages. */
+  pluginKind: string | null
 }
 
 export type Notification = string // pre-serialized JSON-RPC line

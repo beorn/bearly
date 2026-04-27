@@ -419,7 +419,15 @@ export const githubPlugin: TribePluginApi = {
             // Skip push events for the local repo — git plugin already broadcasts commits
             if (formatted.type === "push" && r === local) continue
 
-            api.broadcast(`${formatted.line} ${formatted.url}`, `github:${formatted.type}`)
+            // km-tribe.event-classification: routine repo activity (push, PR
+            // open, issue, release) is ambient — informational for the tribe
+            // but no agent needs to react. CI alerts (escalated below via
+            // consecutive-failure threshold) stay actionable.
+            api.broadcast(`${formatted.line} ${formatted.url}`, `github:${formatted.type}`, undefined, {
+              delivery: "pull",
+              responseExpected: "no",
+              pluginKind: `github:${formatted.type}`,
+            })
 
             // Track who pushed to each repo for CI correlation
             if (formatted.type === "push") {
@@ -475,7 +483,16 @@ export const githubPlugin: TribePluginApi = {
                     : String(run.conclusion).toUpperCase()
               const emoji = run.conclusion === "success" ? "✓" : run.conclusion === "failure" ? "✗" : "?"
               const line = `[workflow] ${r}: ${emoji} ${run.name} #${run.run_number} ${status} on ${run.head_branch} (${run.actor.login})`
-              api.broadcast(`${line} ${run.html_url}`, `github:workflow`)
+              // km-tribe.event-classification: a single workflow conclusion is
+              // ambient — only the escalated `CI ALERT` (3+ consecutive
+              // failures) is actionable. Failures still get `responseExpected:
+              // "optional"` so a session that pulls inbox notices.
+              const isFailure = run.conclusion === "failure"
+              api.broadcast(`${line} ${run.html_url}`, `github:workflow`, undefined, {
+                delivery: "pull",
+                responseExpected: isFailure ? "optional" : "no",
+                pluginKind: `github:workflow:${run.conclusion}`,
+              })
             }
 
             // Track CI state per repo for escalation (always, regardless of notify filter)
@@ -491,6 +508,8 @@ export const githubPlugin: TribePluginApi = {
                 api.broadcast(
                   `CI ALERT: ${r} ${run.name} has failed ${state.consecutiveFailures}x consecutively.${pusherInfo} Fix before pushing more.`,
                   "github:ci-alert",
+                  undefined,
+                  { delivery: "push", responseExpected: "optional", pluginKind: "github:ci-alert" },
                 )
 
                 // DM sessions that might be responsible — match by repo name in session names
@@ -501,6 +520,8 @@ export const githubPlugin: TribePluginApi = {
                       name,
                       `Your repo ${r} has CI failures (${run.name} failed ${state.consecutiveFailures}x). Check ${run.html_url}`,
                       "github:ci-alert",
+                      undefined,
+                      { delivery: "push", responseExpected: "yes", pluginKind: "github:ci-alert" },
                     )
                   }
                 }
@@ -508,6 +529,8 @@ export const githubPlugin: TribePluginApi = {
                 api.broadcast(
                   `CI ALERT: ${r} ${run.name} still broken — ${state.consecutiveFailures} consecutive failures`,
                   "github:ci-alert",
+                  undefined,
+                  { delivery: "push", responseExpected: "optional", pluginKind: "github:ci-alert" },
                 )
               }
             } else if (run.conclusion === "success") {
@@ -515,6 +538,8 @@ export const githubPlugin: TribePluginApi = {
                 api.broadcast(
                   `CI RECOVERED: ${r} ${run.name} green after ${state.consecutiveFailures} failures`,
                   "github:ci-recovered",
+                  undefined,
+                  { delivery: "push", responseExpected: "no", pluginKind: "github:ci-recovered" },
                 )
               }
               state.consecutiveFailures = 0

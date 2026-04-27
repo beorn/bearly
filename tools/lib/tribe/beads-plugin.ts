@@ -89,29 +89,50 @@ export const beadsPlugin: TribePluginApi = {
             if (prevState === currentState) continue
             reportedStates.set(entry.id, currentState)
 
-            // Broadcast all bead state transitions
+            // km-tribe.event-classification: bead state transitions are
+            // ambient — informational for the tribe but no specific agent
+            // needs to react (the proxy still uses claim broadcasts to drive
+            // auto-rename via inbox pull).
+            const ambient = { delivery: "pull", responseExpected: "no" } as const
             if (!prevState) {
-              // New bead
+              // New bead — P0 / P1 are escalated to actionable so chief sees
+              // them; P2+ stay ambient.
               if (api.claimDedup(`new:${entry.id}`)) {
-                api.broadcast(`New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id)
+                const escalate = entry.priority === "0" || entry.priority === "1"
+                api.broadcast(`New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id, {
+                  delivery: escalate ? "push" : "pull",
+                  responseExpected: escalate ? "optional" : "no",
+                  pluginKind: "bead:new",
+                })
               }
             } else if (currentState.startsWith("claimed:")) {
               if (api.claimDedup(`claimed:${entry.id}`)) {
                 const actor = entry.claimed_by ?? ""
-                api.broadcast(`Claimed: ${entry.id} — ${entry.title} [by:${actor}]`, "bead:claimed", entry.id)
+                api.broadcast(`Claimed: ${entry.id} — ${entry.title} [by:${actor}]`, "bead:claimed", entry.id, {
+                  ...ambient,
+                  pluginKind: "bead:claimed",
+                })
               }
             } else if (entry.status === "closed") {
               if (api.claimDedup(`closed:${entry.id}`)) {
-                api.broadcast(`Closed: ${entry.id} — ${entry.title}`, "bead:closed", entry.id)
+                api.broadcast(`Closed: ${entry.id} — ${entry.title}`, "bead:closed", entry.id, {
+                  ...ambient,
+                  pluginKind: "bead:closed",
+                })
               }
             } else if (entry.status === "in_progress") {
               if (api.claimDedup(`progress:${entry.id}`)) {
-                api.broadcast(`In progress: ${entry.id} — ${entry.title}`, "bead:progress", entry.id)
+                api.broadcast(`In progress: ${entry.id} — ${entry.title}`, "bead:progress", entry.id, {
+                  ...ambient,
+                  pluginKind: "bead:progress",
+                })
               }
             } else {
-              // Status change (open, deferred, etc.)
               if (api.claimDedup(`status:${entry.id}:${entry.status}`)) {
-                api.broadcast(`Bead ${entry.id} → ${entry.status}`, "bead:status", entry.id)
+                api.broadcast(`Bead ${entry.id} → ${entry.status}`, "bead:status", entry.id, {
+                  ...ambient,
+                  pluginKind: "bead:status",
+                })
               }
             }
           } catch {

@@ -48,12 +48,26 @@ export interface TribePluginHandle {
   readonly active: boolean
 }
 
+/**
+ * km-tribe.event-classification: per-emit metadata that plugins attach to
+ * pick how the event should reach the agent. All fields optional — omit to
+ * get back-compat behavior (push / optional).
+ */
+export type EventClassification = {
+  /** push = actionable channel-delivered; pull = ambient inbox-only */
+  delivery?: "push" | "pull"
+  /** Per-event reply hint surfaced on the channel envelope */
+  responseExpected?: "yes" | "no" | "optional"
+  /** Stable plugin event id (e.g. `git:commit`); used by snooze-kind globs */
+  pluginKind?: string
+}
+
 export interface TribeClientApi {
   /** Direct message to a single recipient (name) or the daemon's dispatcher. */
-  send(recipient: string, content: string, type: string, beadId?: string): void
+  send(recipient: string, content: string, type: string, beadId?: string, classification?: EventClassification): void
 
   /** Broadcast to all connected sessions (recipient = '*'). */
-  broadcast(content: string, type: string, beadId?: string): void
+  broadcast(content: string, type: string, beadId?: string, classification?: EventClassification): void
 
   /**
    * Idempotent dedup claim — returns true if this caller won the claim for

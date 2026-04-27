@@ -22,7 +22,14 @@ import {
 // Protocol version (tribe-specific)
 // ---------------------------------------------------------------------------
 
-export const TRIBE_PROTOCOL_VERSION = 2
+/**
+ * Wire-protocol version. Bump on any payload-shape change a client cares about:
+ *   v2 — baseline (post-event-bus daemon)
+ *   v3 — km-tribe.event-classification: channel notifications now carry
+ *        `responseExpected: "yes" | "optional" | "no"` and `pluginKind`;
+ *        new RPCs `tribe.inbox`, `tribe.mode`, `tribe.snooze`, `tribe.dismiss`.
+ */
+export const TRIBE_PROTOCOL_VERSION = 3
 
 // ---------------------------------------------------------------------------
 // Re-exports from the spine
