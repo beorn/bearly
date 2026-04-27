@@ -154,7 +154,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     // default to the background+poll path.
     if (!background) {
       const response = await openai.responses.create({
-        model: model.modelId,
+        model: model.apiModelId ?? model.modelId,
         input: researchPrompt,
         tools: [{ type: "web_search_preview" }],
         background: false,
@@ -178,7 +178,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
 
     // Background path: create → persist ID → (fire-and-forget | poll).
     const initialResponse = await openai.responses.create({
-      model: model.modelId,
+      model: model.apiModelId ?? model.modelId,
       input: researchPrompt,
       tools: [{ type: "web_search_preview" }],
       stream: false,
@@ -307,7 +307,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     // the whole point: even if the process dies on the next tick, the work
     // continues server-side and is recoverable via the persisted ID.
     const initialResponse = await openai.responses.create({
-      model: model.modelId,
+      model: model.apiModelId ?? model.modelId,
       input: prompt,
       stream: false,
       background: true,

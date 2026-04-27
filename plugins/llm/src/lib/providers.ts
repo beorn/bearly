@@ -91,22 +91,29 @@ function getOpenRouter() {
 }
 
 /**
- * Get the Vercel AI SDK model instance for a given model definition
+ * Get the Vercel AI SDK model instance for a given model definition.
+ *
+ * `apiModelId` overrides `modelId` for the provider call when set — used for
+ * OpenAI Pro tiers where our internal alias (`gpt-5.4-pro`) differs from
+ * OpenAI's API ID (`gpt-5-pro`). Other providers don't need the indirection
+ * today, but the override is provider-agnostic if any provider's IDs drift
+ * from ours later.
  */
 export function getLanguageModel(model: Model): LanguageModel {
+  const id = model.apiModelId ?? model.modelId
   switch (model.provider) {
     case "openai":
-      return getOpenAI()(model.modelId)
+      return getOpenAI()(id)
     case "anthropic":
-      return getAnthropic()(model.modelId)
+      return getAnthropic()(id)
     case "google":
-      return getGoogle()(model.modelId)
+      return getGoogle()(id)
     case "xai":
-      return getXai()(model.modelId)
+      return getXai()(id)
     case "perplexity":
-      return getPerplexity()(model.modelId)
+      return getPerplexity()(id)
     case "openrouter":
-      return getOpenRouter()(model.modelId)
+      return getOpenRouter()(id)
     case "ollama":
       throw new Error("Ollama does not use Vercel AI SDK — handle via ollamaChat() directly")
     default:

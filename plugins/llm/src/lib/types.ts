@@ -11,7 +11,15 @@ export type Provider = z.infer<typeof ProviderSchema>
 // Model identifiers by provider
 export const ModelSchema = z.object({
   provider: ProviderSchema,
+  // Internal alias used by the CLI and across the codebase. Stable across
+  // OpenAI's API-version churn — e.g. our `gpt-5.4-pro` outlives OpenAI's
+  // `gpt-5-pro-2025-10-06` snapshot rolling forward.
   modelId: z.string(),
+  // Optional override for the string sent to the provider API. When unset,
+  // the provider receives `modelId`. Use this for OpenAI Pro tiers where
+  // our internal version (`gpt-5.4-pro`) doesn't match OpenAI's API IDs
+  // (`gpt-5-pro` / `gpt-5-pro-2025-10-06`).
+  apiModelId: z.string().optional(),
   displayName: z.string(),
   isDeepResearch: z.boolean().default(false),
   costTier: z.enum(["local", "low", "medium", "high", "very-high"]),
@@ -186,6 +194,7 @@ export const MODELS: Model[] = [
   {
     provider: "openai",
     modelId: "gpt-5.4",
+    apiModelId: "gpt-5", // OpenAI API exposes the standard tier as "gpt-5"
     displayName: "GPT-5.4",
     isDeepResearch: false,
     costTier: "high",
@@ -196,6 +205,7 @@ export const MODELS: Model[] = [
   {
     provider: "openai",
     modelId: "gpt-5.4-pro",
+    apiModelId: "gpt-5-pro", // OpenAI API ID — our internal "5.4-pro" maps to OpenAI's current Pro tier
     displayName: "GPT-5.4 Pro",
     isDeepResearch: false,
     costTier: "very-high",
