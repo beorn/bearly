@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 (2026-04-27)
+
+### Added — quality gate
+
+- `src/lib/quality-gate.ts` — `analyzeQuality()` + `isAcceptable()` heuristics that reject corrupted session exports (stuck-loop ≥10× contiguous repeats, decayed-LLM short-sentence ratio + low stopword density, single 4/8/16-gram covering >20% of tokens). Adversarial fixtures in `tests/quality-gate.fixtures/` cover all three corruption classes plus a clean-good control.
+- `src/lib/purge-corrupted.ts` — one-shot script scanning `~/Bear/Vault/raw/chats/` and reversibly quarantining corrupted docs to `chats-quarantine/` with `.reason` sidecars.
+
+### Changed — `bun recall` defaults
+
+- Pointer mode (LLM-synthesized narrative) is now the default. The legacy `--snippets` alias has been removed (use `--raw` for the raw FTS5 path).
+- README updated to reflect the new default.
+
+### Composes with
+
+- `vendor/accountly/src/recall.ts` — index-time gate (rejects to `chats-rejected/` before qmd indexes) plus query-time backstop in `cmdHook()` (drops bad qmd hits silently). Cross-session contamination root-fix in `renderSessionMarkdown` (drops fragments whose `sessionId` differs from the file's primary `sessionId`).
+- `@bearly/bg-recall` — uses `analyzeQuality` at the daemon's pre-scoring layer.
+
+bead km-tribe.recall-quality-gate
+
 ## 0.1.0 (2026-04-17)
 
 Initial extraction into a first-class package. The recall library was

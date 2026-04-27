@@ -1,6 +1,6 @@
 {
   "name": "@bearly/recall",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Session history recall — FTS-indexed search, LLM-driven planner, multi-round agent over Claude Code transcripts",
   "license": "MIT",
