@@ -38,6 +38,7 @@ import {
   runAwait,
 } from "./lib/dispatch"
 import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/format"
+import { setJsonMode, emitJson } from "./lib/output-mode"
 
 import { readdirSync, statSync, unlinkSync } from "fs"
 
@@ -154,13 +155,27 @@ function hasFlag(name: string): boolean {
 }
 
 function error(message: string): never {
-  console.error(JSON.stringify({ error: message }))
+  // Error envelope on stdout (matches the rest of the JSON contract).
+  // Human-readable copy on stderr so interactive users see the error
+  // without piping. The status:"failed" lets `--json` consumers branch
+  // without parsing the message text.
+  emitJson({ error: message, status: "failed" })
+  console.error(`error: ${message}`)
   process.exit(1)
 }
 
 const outputArg = getArg("--output")
 const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
 const skipConfirm = hasFlag("--yes") || hasFlag("-y")
+// `--json` locks the output contract for skill consumers:
+//   stdout = exactly one JSON envelope line; stderr = all human text.
+// In legacy mode (no --json), behavior is unchanged — JSON envelope still
+// goes to stdout (alongside the human "Output written to:" line on stderr),
+// so existing scripts that scrape either stream keep working.
+//
+// Tied to --verbose: even in JSON mode, --verbose still streams tokens to
+// stderr (never stdout). The JSON line is the LAST thing on stdout, always.
+setJsonMode(hasFlag("--json"))
 const streamToken = createStreamToken(hasFlag("--verbose"))
 
 /**
@@ -362,6 +377,11 @@ FLAGS
   --context <text>       Provide explicit context (prepended to topic)
   --context-file <path>  Read context from a file
   --output <file>        Write response to specific file (default: auto /tmp/llm-<session>-<slug>-<rand>.txt)
+  --json                 Pipe-friendly mode: stdout gets a single JSON envelope
+                         line, all human text goes to stderr. Schema:
+                         {file, model, tokens:{prompt,completion,total}, cost,
+                         durationMs, responseId, status, ...}. Use with jq:
+                         bun llm pro --json "Q" | jq .file
 
 ENVIRONMENT VARIABLES
   LLM_DUAL_PRO_B=<modelId>         Swap leg B of dual-pro (default: moonshotai/kimi-k2.6).

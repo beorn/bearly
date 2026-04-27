@@ -13,6 +13,7 @@ import { isProviderAvailable, getProviderEnvVar } from "./providers"
 import { getDb, closeDb, ftsSearchWithSnippet } from "../../../recall/src/history/db"
 import { estimateCost, formatCost, getBestAvailableModel, getModel, MODELS, type Model, type ModelMode } from "./types"
 import { isPricingStale, cacheCurrentPricing, PRICING_SOURCES } from "./pricing"
+import { emitContent, emitJson, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
 
@@ -399,7 +400,10 @@ export async function askAndFinish(options: {
   } else {
     const result = getBestAvailableModel(modelMode, isProviderAvailable)
     if (!result.model) {
-      console.error(JSON.stringify({ error: `No model available for ${modelMode}. ${result.warning || ""}` }))
+      // Error envelope on stdout (JSON mode honours the contract; legacy
+      // mode also benefits — scripts that wrap llm consistently parse JSON
+      // from stdout regardless of whether --json was passed).
+      emitJson({ error: `No model available for ${modelMode}. ${result.warning || ""}`, status: "failed" })
       process.exit(1)
     }
     if (result.warning) console.error(`⚠️  ${result.warning}\n`)
@@ -441,7 +445,16 @@ export async function askAndFinish(options: {
           abortSignal: signal,
         }),
   )
-  await finishResponse(response.content, model, outputFile, sessionTag, response.usage, response.durationMs, question)
+  await finishResponse(
+    response.content,
+    model,
+    outputFile,
+    sessionTag,
+    response.usage,
+    response.durationMs,
+    question,
+    response.responseId,
+  )
 }
 
 /** Prompt user for Y/n confirmation; exit if declined.
@@ -520,7 +533,7 @@ export async function buildContext(
     try {
       parts.push(await Bun.file(options.contextFile).text())
     } catch {
-      console.error(JSON.stringify({ error: `Failed to read context file: ${options.contextFile}` }))
+      emitJson({ error: `Failed to read context file: ${options.contextFile}`, status: "failed" })
       process.exit(1)
     }
   }
@@ -592,7 +605,9 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
         case "completed": {
           console.error(`    ✅ Recovered from ${providerName} (${outcome.content.length} chars)`)
           console.error(`\n--- Recovered Response ---\n`)
-          console.log(outcome.content)
+          // emitContent → stdout in legacy, stderr in JSON mode (so the
+          // single JSON envelope line is the only thing on stdout).
+          emitContent(outcome.content)
           if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens} tokens]`)
           completePartial(partial.path, { delete: true })
           console.error(`\n--- End Recovered Response ---\n`)
@@ -669,7 +684,7 @@ export async function runDeep(options: {
   } else {
     const result = getBestAvailableModel("deep", isProviderAvailable)
     if (!result.model) {
-      console.error(JSON.stringify({ error: "No deep research model available. " + (result.warning || "") }))
+      emitJson({ error: "No deep research model available. " + (result.warning || ""), status: "failed" })
       process.exit(1)
     }
     if (result.warning) console.error(`⚠️  ${result.warning}\n`)
@@ -728,16 +743,17 @@ export async function runDeep(options: {
       // normal completion path (which emits JSON via finalizeOutput). The
       // human-readable "bun llm recover" hint was already printed to stderr
       // by the research layer. Flagged in Pro round-2 review 2026-04-21.
-      console.log(
-        JSON.stringify({
-          status: "in_progress",
-          responseId: response.responseId,
-          model: deepModel.displayName,
-          provider: deepModel.provider,
-          topic,
-          recoverCommand: `bun llm recover ${response.responseId}`,
-        }),
-      )
+      // Fire-and-forget envelope — no file yet (recover/await will fill
+      // that in once the response completes). status="background" maps
+      // to the spec's enum so skill consumers can branch on it.
+      emitJson({
+        status: "background",
+        responseId: response.responseId,
+        model: deepModel.displayName,
+        provider: deepModel.provider,
+        topic,
+        recoverCommand: `bun llm recover ${response.responseId}`,
+      })
       return
     }
     // No response ID OR an error is set — write error details to file
@@ -763,6 +779,7 @@ export async function runDeep(options: {
     response.usage,
     response.durationMs,
     topic,
+    response.responseId,
   )
 }
 
@@ -791,7 +808,7 @@ export async function runDebate(options: {
   const { getBestAvailableModels } = await import("./types")
   const { models: debateModels, warning: debateWarning } = getBestAvailableModels("debate", isProviderAvailable, 3)
   if (debateModels.length < 2) {
-    console.error(JSON.stringify({ error: "Need at least 2 models for debate. " + (debateWarning || "") }))
+    emitJson({ error: "Need at least 2 models for debate. " + (debateWarning || ""), status: "failed" })
     process.exit(1)
   }
 
@@ -853,11 +870,14 @@ export async function runDebate(options: {
   if (process.stderr.isTTY) {
     console.error("\n" + debateContent)
   }
+  const debateCost = totalResponseCost(result.responses)
   await finalizeOutput(debateContent, outputFile, sessionTag, {
     query: question,
     model: `${result.responses.length} models`,
-    cost: formatCost(totalResponseCost(result.responses)),
+    cost: formatCost(debateCost),
+    costUsd: debateCost,
     durationMs: result.totalDurationMs,
+    status: "completed",
   })
 }
 
@@ -913,7 +933,11 @@ async function writeRecoveredResponse(
   const outputFile = buildOutputPath(sessionTag, topic ?? `recover-${responseId}`)
   await finalizeOutput(content, outputFile, sessionTag, {
     query: topic,
-    tokens: usage?.totalTokens,
+    tokens: usage
+      ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
+      : undefined,
+    responseId,
+    status: "recovered",
   })
   return outputFile
 }
@@ -1095,7 +1119,7 @@ export async function runRecover(options: {
     const localPartial = findPartialByResponseId(responseId)
     if (localPartial) {
       console.error(`Found local partial (${localPartial.content.length} chars):\n`)
-      console.log(localPartial.content)
+      emitContent(localPartial.content)
 
       if (!localPartial.metadata.completedAt) {
         console.error("\n---")
@@ -1115,7 +1139,7 @@ export async function runRecover(options: {
     switch (outcome.kind) {
       case "completed": {
         console.error("\nFull response from OpenAI:\n")
-        console.log(outcome.content)
+        emitContent(outcome.content)
         if (outcome.usage) console.error(`\n[${outcome.usage.totalTokens} tokens]`)
         // finalizeOutput() inside writeRecoveredResponse already writes the
         // path line to stderr — skip the redundant "Recovered output written
@@ -1158,13 +1182,12 @@ export async function runRecover(options: {
           // Match runAwait's error envelope — include responseId + status so
           // scripts and the `bun llm await` caller can reason about the
           // failure without re-deriving context.
-          console.error(
-            JSON.stringify({
-              error: `Failed to retrieve: ${outcome.error}`,
-              status: outcome.status,
-              responseId,
-            }),
-          )
+          emitJson({
+            error: `Failed to retrieve: ${outcome.error}`,
+            status: "failed",
+            pollStatus: outcome.status,
+            responseId,
+          })
           process.exit(1)
         }
         console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${outcome.error}`)
@@ -1226,7 +1249,7 @@ export async function runRecover(options: {
 export async function runAwait(options: { responseId: string | undefined }): Promise<void> {
   const { responseId } = options
   if (!responseId) {
-    console.error(JSON.stringify({ error: "Usage: llm await <response_id>" }))
+    emitJson({ error: "Usage: llm await <response_id>", status: "failed" })
     process.exit(1)
   }
 
@@ -1250,10 +1273,11 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
 
   const errorPayload: Record<string, unknown> = {
     error: result.error ?? `Response ${result.status}`,
-    status: result.status,
+    status: "failed",
+    pollStatus: result.status,
     responseId,
   }
-  console.log(JSON.stringify(errorPayload))
+  emitJson(errorPayload)
   process.exit(1)
 }
 
@@ -1497,12 +1521,58 @@ export async function runProDual(options: {
 
   const combined = parts.join("\n")
 
+  // Dual-pro envelope ships per-leg sections (a, b) so skill consumers can
+  // branch on which leg produced what without re-parsing the combined report.
+  // Schema: { ..., a: {model, tokens, cost, durationMs, status}, b: {...} }
+  const aLeg = {
+    model: gptPro!.displayName,
+    tokens: gptResp?.usage
+      ? {
+          prompt: gptResp.usage.promptTokens,
+          completion: gptResp.usage.completionTokens,
+          total: gptResp.usage.totalTokens,
+        }
+      : undefined,
+    cost: gptCost,
+    durationMs: gptResp?.durationMs,
+    status: (gptOk ? "completed" : "failed") as "completed" | "failed",
+    error: gptErr,
+  }
+  const bLeg = {
+    model: kimi!.displayName,
+    tokens: kimiResp?.usage
+      ? {
+          prompt: kimiResp.usage.promptTokens,
+          completion: kimiResp.usage.completionTokens,
+          total: kimiResp.usage.totalTokens,
+        }
+      : undefined,
+    cost: kimiCost,
+    durationMs: kimiResp?.durationMs,
+    status: (kimiOk ? "completed" : "failed") as "completed" | "failed",
+    error: kimiErr,
+  }
+  // Combine prompt/completion totals across legs so the top-level `tokens`
+  // is the canonical {prompt, completion, total} shape (mirrors single-model
+  // emission). Total cost stays a single USD number.
+  const combinedTokens =
+    gptResp?.usage || kimiResp?.usage
+      ? {
+          prompt: (gptResp?.usage?.promptTokens ?? 0) + (kimiResp?.usage?.promptTokens ?? 0),
+          completion: (gptResp?.usage?.completionTokens ?? 0) + (kimiResp?.usage?.completionTokens ?? 0),
+          total: (gptResp?.usage?.totalTokens ?? 0) + (kimiResp?.usage?.totalTokens ?? 0),
+        }
+      : undefined
   await finalizeOutput(combined, outputFile, sessionTag, {
     query: question,
     model: `dual-pro (${gptPro!.displayName} + ${kimi!.displayName})`,
-    tokens: (gptResp?.usage?.totalTokens ?? 0) + (kimiResp?.usage?.totalTokens ?? 0),
+    tokens: combinedTokens,
     cost: formatCost(totalCost),
+    costUsd: totalCost,
     durationMs: Math.max(gptResp?.durationMs ?? 0, kimiResp?.durationMs ?? 0),
+    status: gptOk || kimiOk ? "completed" : "failed",
+    a: aLeg,
+    b: bLeg,
   })
 
   // Append an A/B log entry so we can review quality over time.

@@ -9,15 +9,43 @@ import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
 import { estimateCost, formatCost } from "./types"
+import { emitJson, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
+
+/**
+ * Per-leg metadata for dual-pro envelopes. Each leg ships independently
+ * because the two models can disagree on tokens/cost/duration; flattening
+ * loses the A/B signal we publish for skill consumers (e.g. ranking).
+ */
+export interface LegMeta {
+  model?: string
+  tokens?: { prompt: number; completion: number; total: number }
+  cost?: number
+  durationMs?: number
+  status?: "completed" | "failed"
+  error?: string
+}
 
 export interface OutputMeta {
   query?: string
   model?: string
-  tokens?: number
+  /**
+   * Total tokens (legacy single-number field) OR structured prompt/completion
+   * pair (preferred for the JSON envelope schema). Both forms are accepted;
+   * the envelope serializer normalizes.
+   */
+  tokens?: number | { prompt: number; completion: number; total?: number }
+  /** Display-formatted cost string (legacy, kept for the meta-comment header). */
   cost?: string
+  /** Numeric cost in USD — preferred for the JSON envelope. */
+  costUsd?: number
   durationMs?: number
+  responseId?: string
+  status?: "completed" | "failed" | "background" | "recovered"
+  /** Dual-pro: per-leg sections. */
+  a?: LegMeta
+  b?: LegMeta
 }
 
 /** Format a timestamp as relative time (e.g., "5m ago", "2h ago") */
@@ -58,16 +86,79 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
   return `/tmp/llm-${sessionTag}-${middle}-${hash}.txt`
 }
 
-/** Build JSON summary object for the response */
+/**
+ * Build the canonical JSON result envelope.
+ *
+ * Schema (km-bearly.llm-cli-json-output):
+ *
+ *   {
+ *     "file": "/tmp/llm-...txt",
+ *     "model": "GPT-5.4 Pro",
+ *     "tokens": { "prompt": 1234, "completion": 567, "total": 1801 },
+ *     "cost": 0.045,                         // USD, number (not string)
+ *     "durationMs": 12345,
+ *     "responseId": "resp_abc123",
+ *     "status": "completed" | "failed" | "background" | "recovered",
+ *     "chars": 4321,                         // response body length
+ *     "query": "...",                        // optional
+ *     "a": { ...leg meta },                  // optional, dual-pro
+ *     "b": { ...leg meta }
+ *   }
+ *
+ * Backward-compat: legacy callers passed `tokens` as a number and `cost`
+ * as a formatted string. Both are still accepted via OutputMeta; this
+ * builder normalizes to the canonical shape so the envelope is stable
+ * regardless of which dispatch path emitted it.
+ */
 export function buildResultJson(content: string, meta?: OutputMeta): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   if (meta?.query) result.query = meta.query
   result.chars = content.length
   if (meta?.model) result.model = meta.model
-  if (meta?.tokens) result.tokens = meta.tokens
-  if (meta?.cost) result.cost = meta.cost
+
+  if (meta?.tokens != null) {
+    if (typeof meta.tokens === "number") {
+      // Legacy single-number form — promote to total. We don't have
+      // prompt/completion split, so emit just total to preserve information
+      // without lying about the breakdown.
+      result.tokens = { total: meta.tokens }
+    } else {
+      const { prompt, completion } = meta.tokens
+      const total = meta.tokens.total ?? prompt + completion
+      result.tokens = { prompt, completion, total }
+    }
+  }
+
+  // Prefer numeric cost; fall back to legacy string form for back-compat.
+  if (meta?.costUsd != null) {
+    result.cost = meta.costUsd
+  } else if (meta?.cost) {
+    result.cost = meta.cost
+  }
+
   if (meta?.durationMs) result.durationMs = meta.durationMs
+  if (meta?.responseId) result.responseId = meta.responseId
+  if (meta?.status) result.status = meta.status
+  if (meta?.a) result.a = legToEnvelope(meta.a)
+  if (meta?.b) result.b = legToEnvelope(meta.b)
   return result
+}
+
+function legToEnvelope(leg: LegMeta): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (leg.model) out.model = leg.model
+  if (leg.tokens) {
+    out.tokens = {
+      prompt: leg.tokens.prompt,
+      completion: leg.tokens.completion,
+      total: leg.tokens.total ?? leg.tokens.prompt + leg.tokens.completion,
+    }
+  }
+  if (leg.cost != null) out.cost = leg.cost
+  if (leg.durationMs != null) out.durationMs = leg.durationMs
+  if (leg.status) out.status = leg.status
+  if (leg.error) out.error = leg.error
+  return out
 }
 
 /**
@@ -100,13 +191,23 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
       .slice(0, 50)
     const filename = `${isoCompact}-${slug}-${rand}.md`
 
+    // Tokens may be a legacy number or the structured {prompt, completion}
+    // shape. Frontmatter is plain YAML — collapse to a total scalar so old
+    // recall-indexer queries (which read `tokens: 1234`) continue to work.
+    const tokensTotal =
+      typeof meta.tokens === "number"
+        ? meta.tokens
+        : meta.tokens
+          ? (meta.tokens.total ?? meta.tokens.prompt + meta.tokens.completion)
+          : undefined
+
     // Build YAML frontmatter
     const frontmatter = [
       "---",
       `query: ${JSON.stringify(meta.query)}`,
       meta.model ? `model: ${JSON.stringify(meta.model)}` : null,
       meta.cost ? `cost: ${JSON.stringify(meta.cost)}` : null,
-      meta.tokens ? `tokens: ${meta.tokens}` : null,
+      tokensTotal != null ? `tokens: ${tokensTotal}` : null,
       meta.durationMs ? `duration_ms: ${meta.durationMs}` : null,
       `timestamp: ${JSON.stringify(now.toISOString())}`,
       sessionTag !== "manual" ? `session_id: ${JSON.stringify(sessionTag)}` : null,
@@ -130,7 +231,11 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
   obj.timestamp = new Date().toISOString()
   if (meta?.query) obj.query = meta.query
   if (meta?.cost) obj.cost = meta.cost
-  if (meta?.tokens) obj.tokens = meta.tokens
+  if (meta?.tokens != null) {
+    // Both legacy number form and structured {prompt, completion} form
+    // appear in the meta-comment unchanged — JSON.stringify handles both.
+    obj.tokens = meta.tokens
+  }
   if (meta?.durationMs) obj.durationMs = meta.durationMs
   return `<!-- llm-meta: ${JSON.stringify(obj)} -->`
 }
@@ -138,10 +243,12 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
 /**
  * After response completes: write to file, print file path on stderr, JSON metadata on stdout.
  *
- * File path on stderr: human-readable, always visible in last lines of output.
- * JSON metadata on stdout: machine-parseable single line (file path, char count, cost, etc.)
- * Streaming tokens are suppressed in non-TTY mode (see createStreamToken), so stderr only contains
- * the file path line + any status messages — no truncation risk.
+ * Output routing:
+ *   - File path line → stderr (human-readable; suppressed in JSON mode
+ *     to keep stderr quieter for piped consumers, though most callers
+ *     filter stderr regardless).
+ *   - JSON envelope → stdout (machine-parseable single line; canonical
+ *     in both JSON and legacy modes).
  *
  * DO NOT stream response content to stdout — only the JSON metadata line goes there.
  */
@@ -159,11 +266,18 @@ export async function finalizeOutput(
     process.exit(1)
   }
   persistToResearch(content, sessionTag, meta)
-  process.stderr.write("\n")
-  process.stderr.write(`Output written to: ${outputFile}\n`)
-  const result = buildResultJson(content, meta)
-  result.file = outputFile
-  console.log(JSON.stringify(result))
+  // Path line: keep on stderr in legacy mode (long-standing UX). In JSON
+  // mode, suppress — the consumer reads `envelope.file` instead, and the
+  // path line on stderr is just visual noise for non-TTY pipes.
+  if (!isJsonMode()) {
+    process.stderr.write("\n")
+    process.stderr.write(`Output written to: ${outputFile}\n`)
+  }
+  const envelope = buildResultJson(content, meta)
+  envelope.file = outputFile
+  // Default status when caller didn't set one — successful completion.
+  if (!envelope.status) envelope.status = "completed"
+  emitJson(envelope)
 }
 
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */
@@ -179,6 +293,7 @@ export async function finishResponse(
   },
   durationMs?: number,
   query?: string,
+  responseId?: string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
     // Write error to stderr (visible in interactive mode)
@@ -222,13 +337,16 @@ export async function finishResponse(
     // Emit JSON metadata to stdout so the caller knows the file exists and can detect the error
     const result: Record<string, unknown> = {
       error: "empty_response",
+      status: "failed",
       file: outputFile,
       model: model.displayName,
-      tokens: usage?.totalTokens ?? 0,
+      tokens: usage
+        ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
+        : { total: 0 },
       durationMs,
     }
     if (query) result.query = query
-    console.log(JSON.stringify(result))
+    emitJson(result)
 
     process.exit(1)
   }
@@ -236,9 +354,14 @@ export async function finishResponse(
   await finalizeOutput(content, outputFile, sessionTag, {
     query,
     model: model.displayName,
-    tokens: usage?.totalTokens,
+    tokens: usage
+      ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
+      : undefined,
     cost: cost !== undefined ? formatCost(cost) : undefined,
+    costUsd: cost,
     durationMs,
+    responseId,
+    status: "completed",
   })
 }
 
