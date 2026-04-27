@@ -36,11 +36,13 @@ import {
   withHotReload,
   withIdleQuit,
   withLore,
+  withMCPServer,
   withProjectRoot,
   withRuntime,
   withSignals,
   withSocketServer,
 } from "./lib/tribe/compose/index.ts"
+import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 
 const log = createLogger("tribe:daemon")
 
@@ -112,10 +114,43 @@ const withDispatcherShape = withDispatcher<typeof withIdleQuitShape>({
   getActivePluginNames: () => refs.activePluginNames,
   getQuitTimeoutSec: () => withSocketShape.config.quitTimeoutSec,
 })(withIdleQuitShape)
-const withHotReloadShape = withHotReload<typeof withDispatcherShape>({
+// MCP-spec surface — reads the tool registry, registers initialize / tools/list
+// / tools/call on the dispatcher. tools/call routes through the dispatcher's
+// JSON-RPC handler when possible (preserves per-connection context wired up
+// by withDispatcher), then falls back to the tool's registry handler.
+const withMCPShape = withMCPServer<typeof withDispatcherShape>({
+  metadata: TOOLS_LIST.map((t) => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.inputSchema,
+  })),
+  dispatch: async (toolName, args, ctx) => {
+    // Route every registered tool through the dispatcher's handleRequest.
+    // The dispatcher's tribe.* / lore cases own connection context; for
+    // unknown methods it returns -32601 which we surface as an MCP error.
+    if (!withDispatcherShape.tools.has(toolName)) return undefined
+    const responseLine = await withDispatcherShape.dispatcher.handleRequest(
+      { jsonrpc: "2.0", id: `mcp-${ctx.connId}-${Date.now()}`, method: toolName, params: args },
+      ctx.connId,
+    )
+    const parsed = JSON.parse(responseLine.trimEnd()) as
+      | { result: unknown; error?: undefined }
+      | { error: { code: number; message: string }; result?: undefined }
+    if ("error" in parsed && parsed.error) {
+      const err = new Error(parsed.error.message) as Error & { code: number }
+      err.code = parsed.error.code
+      throw err
+    }
+    return parsed.result
+  },
+})(withDispatcherShape)
+const withHotReloadShape = withHotReload<typeof withMCPShape>({
   stopPlugins: () => refs.stopPlugins(),
   triggerShutdown: () => refs.shutdown(),
-})(withDispatcherShape)
+})(withMCPShape)
+// Confirm withMCPShape carries the MCP server handle (for tests / status).
+log.debug?.(`MCP server ready: ${withMCPShape.mcpServer.toolNames.length} tools, protocol ${withMCPShape.mcpServer.protocolVersion}`)
+
 const withSignalsShape = withSignals<typeof withHotReloadShape>({
   onShutdown: () => refs.shutdown(),
   onReload: () => withHotReloadShape.hotReload.reload(),
