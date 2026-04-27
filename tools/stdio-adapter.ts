@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Tribe Proxy — thin MCP server that proxies to the tribe daemon.
+ * Stdio Adapter — thin MCP server that bridges Claude Code's stdio MCP wire
+ * to the tribe daemon's Unix-socket MCP wire.
  *
- * This replaces the monolithic tribe.ts. No direct DB access, no polling,
- * no plugins. Just MCP ↔ daemon forwarding.
+ * Per-agent transport translator: stdio ↔ daemon. Replaces the monolithic
+ * tribe.ts. No direct DB access, no polling, no plugins — just MCP forwarding.
  *
- * Usage (in .mcp.json):
- *   { "command": "bun", "args": ["vendor/bearly/tools/tribe-proxy.ts", "--name", "chief", "--role", "chief"] }
+ * Local dev (in .mcp.json): `bun tools/stdio-adapter.ts --name chief --role chief`
+ * Published: bundled to `plugins/tribe/server.mjs` and invoked from there.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -43,7 +44,7 @@ import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
 import { createLogger } from "loggily"
 import { createTimers } from "./lib/tribe/timers.ts"
 
-const log = createLogger("tribe:proxy")
+const log = createLogger("tribe:stdio-adapter")
 
 const proxyAc = new AbortController()
 const timers = createTimers(proxyAc.signal)
@@ -225,7 +226,7 @@ const daemon = await createReconnectingClient({
 // MCP Server
 // ---------------------------------------------------------------------------
 
-const joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward — just join silently and continue.`
+const joinInstruction = `If you receive a stdio-adapter auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward — just join silently and continue.`
 
 const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
@@ -309,7 +310,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
     timers.setTimeout(() => {
       sendChannel(
         `Auto-identify: call tribe.join(name="${myName}") with a short name for your focus area. Omit the role parameter — the daemon auto-assigns it. Do not call tribe.members or tribe.history — just join silently and continue.`,
-        { from: "tribe-proxy", type: "system" },
+        { from: "stdio-adapter", type: "system" },
       )
     }, 500)
   }

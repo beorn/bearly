@@ -2099,7 +2099,7 @@ function readTranscriptSlug(transcriptPath) {
   }
 }
 
-// tools/tribe-proxy.ts
+// tools/stdio-adapter.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -2290,7 +2290,7 @@ try {
       log5.info?.(`Reconnected to daemon`)
     },
   })
-  var joinInstruction = `If you receive a tribe-proxy auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward \u2014 just join silently and continue.`
+  var joinInstruction = `If you receive a stdio-adapter auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.history afterward \u2014 just join silently and continue.`
   var chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
 You are the chief of a tribe \u2014 a coordinator for multiple Claude Code sessions working on the same project.
@@ -2361,7 +2361,7 @@ Tribe messages:
       timers.setTimeout(() => {
         sendChannel(
           `Auto-identify: call tribe.join(name="${myName}") with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns it. Do not call tribe.members or tribe.history \u2014 just join silently and continue.`,
-          { from: "tribe-proxy", type: "system" },
+          { from: "stdio-adapter", type: "system" },
         )
       }, 500)
     }
