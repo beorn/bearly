@@ -26,15 +26,7 @@ import { createThrottle, DEFAULT_THROTTLE, type ThrottleConfig } from "./throttl
 import { createMetrics, DEFAULT_METRICS_CONFIG, type Metrics, type MetricsConfig } from "./metrics.ts"
 import { createExplainRing, type ExplainRing } from "./explain.ts"
 import { createLogger, type Logger } from "./log.ts"
-import type {
-  DaemonStatus,
-  Decision,
-  Hint,
-  QualityGate,
-  RecallFn,
-  ToolCallEvent,
-  TribeSend,
-} from "./types.ts"
+import type { DaemonStatus, Decision, Hint, QualityGate, RecallFn, ToolCallEvent, TribeSend } from "./types.ts"
 
 export type BgRecallConfig = {
   /** Per-source recall functions. Required — no defaults. */

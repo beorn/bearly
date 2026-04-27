@@ -119,11 +119,20 @@ describe("classification — per-plugin defaults via sendMessage", () => {
       responseExpected: "no",
       pluginKind: "health:cpu:warning",
     })
-    sendMessage(ctx, "*", "CPU at 95% — memory thrash imminent", "health:cpu:critical", undefined, undefined, "broadcast", {
-      delivery: "push",
-      responseExpected: "yes",
-      pluginKind: "health:cpu:critical",
-    })
+    sendMessage(
+      ctx,
+      "*",
+      "CPU at 95% — memory thrash imminent",
+      "health:cpu:critical",
+      undefined,
+      undefined,
+      "broadcast",
+      {
+        delivery: "push",
+        responseExpected: "yes",
+        pluginKind: "health:cpu:critical",
+      },
+    )
     const rows = f.db.prepare("SELECT delivery, response_expected FROM messages ORDER BY rowid ASC").all() as Array<{
       delivery: string
       response_expected: string

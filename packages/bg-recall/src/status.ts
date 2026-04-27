@@ -24,7 +24,8 @@ export function formatStatus(status: DaemonStatus): string {
   } else {
     for (const s of status.sessions) {
       const lastActive = s.lastActivityMs > 0 ? `${fmtDur(Date.now() - s.lastActivityMs)} ago` : "(never)"
-      const adoption = s.hintsFired === 0 ? "—" : `${s.hintsAdopted}/${s.hintsFired} (${pct(s.hintsAdopted, s.hintsFired)})`
+      const adoption =
+        s.hintsFired === 0 ? "—" : `${s.hintsAdopted}/${s.hintsFired} (${pct(s.hintsAdopted, s.hintsFired)})`
       const rate = s.toolCalls === 0 ? 0 : (s.hintsFired / s.toolCalls) * 100
       lines.push(
         `  ${s.sessionName.padEnd(20)} calls=${s.toolCalls.toString().padStart(4)} hints=${s.hintsFired.toString().padStart(3)} adoption=${adoption.padStart(8)} rate=${rate.toFixed(1)}/100 last=${lastActive}`,
@@ -82,10 +83,14 @@ export function formatExplain(decision: Decision): string {
     lines.push(`  score: ${decision.emitted.hit.score.toFixed(3)}`)
     lines.push(`  components:`)
     const c = decision.emitted.hit.components
-    lines.push(`    rank=${c.rank.toFixed(3)} overlap=${c.entityOverlap.toFixed(3)} recency=${c.recency.toFixed(3)} reinforcement=${c.reinforcement.toFixed(3)}`)
+    lines.push(
+      `    rank=${c.rank.toFixed(3)} overlap=${c.entityOverlap.toFixed(3)} recency=${c.recency.toFixed(3)} reinforcement=${c.reinforcement.toFixed(3)}`,
+    )
     lines.push(`  content: ${trimText(decision.emitted.content, 200)}`)
   } else if (decision.rejected) {
-    lines.push(`rejected: ${decision.rejected.reason}${decision.rejected.detail ? ` (${decision.rejected.detail})` : ""}`)
+    lines.push(
+      `rejected: ${decision.rejected.reason}${decision.rejected.detail ? ` (${decision.rejected.detail})` : ""}`,
+    )
   }
   return lines.join("\n")
 }

@@ -10,18 +10,7 @@
  */
 
 import React, { useEffect, useState } from "react"
-import {
-  createTerm,
-  render,
-  Box,
-  Text,
-  H1,
-  Muted,
-  Small,
-  Divider,
-  useApp,
-  useInput,
-} from "@silvery/ag-react"
+import { createTerm, render, Box, Text, H1, Muted, Small, Divider, useApp, useInput } from "@silvery/ag-react"
 import { createConnection } from "node:net"
 import { resolve } from "node:path"
 import { createLineParser, makeRequest } from "@bearly/daemon-spine"
@@ -44,7 +33,11 @@ function callOnce(socketPath: string, method: string, params?: Record<string, un
       const m = msg as { id?: number | string; result?: unknown; error?: { message: string } }
       if (settled) return
       settled = true
-      try { sock.end() } catch { /* ignore */ }
+      try {
+        sock.end()
+      } catch {
+        /* ignore */
+      }
       if (m.error) rej(new Error(m.error.message))
       else res(m.result)
     })
@@ -58,7 +51,11 @@ function callOnce(socketPath: string, method: string, params?: Record<string, un
     setTimeout(() => {
       if (settled) return
       settled = true
-      try { sock.destroy() } catch { /* ignore */ }
+      try {
+        sock.destroy()
+      } catch {
+        /* ignore */
+      }
       rej(new Error(`bg-recall ${method} timed out`))
     }, 3000)
   })
@@ -162,7 +159,8 @@ function Watch({ call }: { call: RPCCall }): React.JSX.Element {
           status.sessions.map((s) => (
             <Box key={s.sessionId}>
               <Text>
-                {s.sessionName.padEnd(15)} calls={String(s.toolCalls).padStart(4)} hints={String(s.hintsFired).padStart(3)} adopted=
+                {s.sessionName.padEnd(15)} calls={String(s.toolCalls).padStart(4)} hints=
+                {String(s.hintsFired).padStart(3)} adopted=
                 {s.hintsAdopted}/{s.hintsFired || 0}
               </Text>
             </Box>
@@ -179,15 +177,16 @@ function Watch({ call }: { call: RPCCall }): React.JSX.Element {
       <Box flexDirection="column">
         {decisions.slice(0, 12).map((d, i) => {
           const isFocus = i === cursor
-          const tag = d.emitted ? "FIRE" : d.rejected?.reason ?? "?"
+          const tag = d.emitted ? "FIRE" : (d.rejected?.reason ?? "?")
           // Winner score: emitted hint carries .hit.score (ScoredHit); top
           // candidate carries .score directly. Tag-by-decision-shape keeps tsc happy.
-          const score = d.emitted ? d.emitted.hit.score : d.candidates[0]?.score ?? 0
+          const score = d.emitted ? d.emitted.hit.score : (d.candidates[0]?.score ?? 0)
           return (
             <Box key={i}>
               <Text color={isFocus ? "$primary" : undefined}>
                 {isFocus ? "▸ " : "  "}
-                {fmtTime(d.ts)} {d.trigger.tool.padEnd(8)} {(tag as string).padEnd(15)} score={score.toFixed(2)} {trimText(d.entities.join(","), 50)}
+                {fmtTime(d.ts)} {d.trigger.tool.padEnd(8)} {(tag as string).padEnd(15)} score={score.toFixed(2)}{" "}
+                {trimText(d.entities.join(","), 50)}
               </Text>
             </Box>
           )
@@ -204,8 +203,7 @@ function Watch({ call }: { call: RPCCall }): React.JSX.Element {
           </Small>
           <Small>entities: {focused.entities.slice(0, 10).join(", ")}</Small>
           <Small>
-            queries:{" "}
-            {focused.queries.map((q) => `[${q.source} ${q.hits.length}/${q.durationMs}ms]`).join(" ")}
+            queries: {focused.queries.map((q) => `[${q.source} ${q.hits.length}/${q.durationMs}ms]`).join(" ")}
           </Small>
           {focused.emitted ? (
             <Text color="$success">emitted: {trimText(focused.emitted.content, 100)}</Text>

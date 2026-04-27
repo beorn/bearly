@@ -97,10 +97,7 @@ describe("classification — channel envelope + mode + snooze + dismiss", () => 
     // Send a direct push with responseExpected="yes".
     await sender.call("tribe.send", { to: "alice", message: "review please", type: "request" })
 
-    await waitFor(
-      () => notifs.some((n) => n.method === "channel" && String(n.params?.from) === "bob"),
-      5000,
-    )
+    await waitFor(() => notifs.some((n) => n.method === "channel" && String(n.params?.from) === "bob"), 5000)
     const env = notifs.find((n) => n.method === "channel" && String(n.params?.from) === "bob")!
     expect(env.params?.responseExpected).toBe("yes")
     // plugin_kind is null for human DMs (no plugin originated it)

@@ -506,7 +506,8 @@ describe("tribe daemon integration", () => {
 
       // Channel must NOT have received the join — it is inbox-only now.
       const joinOnChannel = channelNotifs.find(
-        (n) => String(n.params?.content ?? "").includes("joined") && String(n.params?.content ?? "").includes("new-worker"),
+        (n) =>
+          String(n.params?.content ?? "").includes("joined") && String(n.params?.content ?? "").includes("new-worker"),
       )
       expect(joinOnChannel).toBeUndefined()
     }, 10_000)

@@ -387,7 +387,9 @@ program
   .command("explain <hint-id>")
   .description("Show the full causality chain behind a hint")
   .action(async (hintId) => {
-    const result = (await callBgRecall("explain", { hintId })) as { decision: import("@bearly/bg-recall").Decision | null }
+    const result = (await callBgRecall("explain", { hintId })) as {
+      decision: import("@bearly/bg-recall").Decision | null
+    }
     if (!result.decision) {
       console.error(`hint ${hintId} not found in the recent ring`)
       process.exit(1)
@@ -419,6 +421,6 @@ program
   })
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error(err instanceof Error ? err.stack ?? err.message : String(err))
+  console.error(err instanceof Error ? (err.stack ?? err.message) : String(err))
   process.exit(1)
 })

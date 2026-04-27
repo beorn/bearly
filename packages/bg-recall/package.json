@@ -3,7 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "Background just-in-time recall — async daemon that watches active Claude Code sessions, runs entity-driven recall queries, and injects high-relevance hints via the tribe channel",
-  "keywords": ["claude-code", "tribe", "recall", "daemon", "observability"],
+  "keywords": [
+    "claude-code",
+    "daemon",
+    "observability",
+    "recall",
+    "tribe"
+  ],
   "homepage": "https://github.com/beorn/bearly/tree/main/packages/bg-recall",
   "bugs": {
     "url": "https://github.com/beorn/bearly/issues"
@@ -14,7 +20,9 @@
     "type": "git",
     "url": "https://github.com/beorn/bearly.git"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

@@ -83,9 +83,7 @@ export function createLogger(opts?: { path?: string; envVar?: string }): Logger 
           tool: d.trigger.tool,
           entities: d.entities,
           queries: d.queries.map((q) => ({ source: q.source, query: q.query, hits: q.hits.length })),
-          candidates: d.candidates
-            .slice(0, 3)
-            .map((c) => ({ id: c.hit.id, score: c.score, reject: c.rejectReason })),
+          candidates: d.candidates.slice(0, 3).map((c) => ({ id: c.hit.id, score: c.score, reject: c.rejectReason })),
           emitted: d.emitted ? { id: d.emitted.id, to: d.emitted.to, source: d.emitted.source } : null,
           rejected: d.rejected ?? null,
         },
