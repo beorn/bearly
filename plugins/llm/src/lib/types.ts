@@ -678,6 +678,31 @@ const SKUS_DATA: SkuConfig[] = [
     reasoning: { contextWindow: 262144 },
   },
 
+  // DeepSeek R1 — reasoning frontier via OpenRouter. Strong at deliberate
+  // multi-step reasoning; slow (10–30s typical) due to <think>-block emission.
+  // Routed for the "punch through intellectual issues" mainstay role.
+  {
+    modelId: "deepseek/deepseek-r1",
+    displayName: "DeepSeek R1",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.55,
+    outputPricePerM: 2.19,
+    typicalLatencyMs: 30000,
+    reasoning: { contextWindow: 163840 },
+  },
+  // DeepSeek Chat V3 — general-purpose, fast, cheap. Pool member, not
+  // mainstay. Use when reasoning isn't required.
+  {
+    modelId: "deepseek/deepseek-chat",
+    displayName: "DeepSeek Chat V3",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.27,
+    outputPricePerM: 1.1,
+    typicalLatencyMs: 5000,
+  },
+
   // Perplexity
   {
     modelId: "sonar",
@@ -819,6 +844,8 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
 
   // OpenRouter
   "moonshotai/kimi-k2.6": { provider: "openrouter", capabilities: NO_CAPS },
+  "deepseek/deepseek-r1": { provider: "openrouter", capabilities: NO_CAPS },
+  "deepseek/deepseek-chat": { provider: "openrouter", capabilities: NO_CAPS },
 
   // Perplexity Sonar has internal web search, but dispatch goes through the
   // standard Vercel AI SDK path (generateText) — `webSearch` capability flags

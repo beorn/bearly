@@ -467,27 +467,54 @@ export async function askAndFinish(options: {
   const { isOpenAIBackgroundCapable, queryOpenAIBackground } = await import("./openai-deep")
   const useBackground = options.modelMode === "pro" && isOpenAIBackgroundCapable(model) && !imagePath
 
-  // SIGINT/SIGTERM aborts the in-flight call — a long Pro call that the
-  // user wants to kill should stop, not wait out the ai-sdk 300s default.
-  // The abort reason surfaces in the response error so finishResponse can
-  // write it to the output file instead of silently truncating.
-  const response = await withSignalAbort((signal) =>
-    useBackground
-      ? queryOpenAIBackground({
-          prompt: enrichedQuestion,
-          model,
-          topic: question,
-          abortSignal: signal,
-        })
-      : ask(enrichedQuestion, level, {
-          modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
-          modelObject: model.provider === "ollama" ? model : undefined,
-          stream: true,
-          onToken: streamToken,
-          imagePath,
-          abortSignal: signal,
-        }),
-  )
+  // Response cache (CAS) — only for cheap deterministic single-model paths.
+  // Pro modelMode is shadow-testing intent — caching there would defeat the
+  // multi-model comparison. Image-bearing prompts skip too (image-as-cache-key
+  // would need a hash of the bytes, deferred). Background mode skips because
+  // the recovery path stores responseId, not content.
+  const cacheable = !useBackground && !imagePath && options.modelMode !== "pro"
+  const { readCache, writeCache } = await import("./cache")
+  const cacheKey = {
+    model: model.modelId,
+    prompt: enrichedQuestion,
+    params: { level, modelMode: options.modelMode },
+  }
+  let response: ModelResponse
+  const cached = cacheable ? readCache<ModelResponse>(cacheKey) : null
+  if (cached) {
+    response = cached.envelope
+    console.error(`🟢 cache hit (${cached.ts}) — ${cached.content.length} chars\n`)
+    streamToken(cached.content)
+  } else {
+    // SIGINT/SIGTERM aborts the in-flight call — a long Pro call that the
+    // user wants to kill should stop, not wait out the ai-sdk 300s default.
+    // The abort reason surfaces in the response error so finishResponse can
+    // write it to the output file instead of silently truncating.
+    response = await withSignalAbort((signal) =>
+      useBackground
+        ? queryOpenAIBackground({
+            prompt: enrichedQuestion,
+            model,
+            topic: question,
+            abortSignal: signal,
+          })
+        : ask(enrichedQuestion, level, {
+            modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
+            modelObject: model.provider === "ollama" ? model : undefined,
+            stream: true,
+            onToken: streamToken,
+            imagePath,
+            abortSignal: signal,
+          }),
+    )
+    if (cacheable && response.content && !response.error) {
+      try {
+        writeCache(cacheKey, response, response.content)
+      } catch {
+        // Cache write failure must not affect the user-visible call result.
+      }
+    }
+  }
   await finishResponse(
     response.content,
     model,

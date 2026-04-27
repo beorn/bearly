@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.5.0 (2026-04-27)
+
+Quality-first leaderboard + log-cost penalty + response cache (CAS) + DeepSeek
+in registry + non-OpenAI default fleet. The dispatch optimizes for raw intellect
+("punch through intellectual issues") with a soft penalty so extreme priciness
+brings score down — speed and failure rate are display-only.
+
+### Changed (BREAKING — config semantics)
+
+- **`scoreWeights.cost` semantics flipped from linear to log-scale.** Old:
+  `rank = score * quality - cost * avgCost`. New: `rank = score * quality
+  - cost * max(0, log10(avgCost / costThreshold))`. Cheap models (≤
+  `costThreshold`) pay zero penalty; each 10× over the threshold subtracts
+  `cost` points. Defaults: `cost: 1.0, costThreshold: 0.10` ($0.10 → 0pt,
+  $1 → −1pt, $10 → −2pt, $100 → −3pt). Existing configs with `cost: 0.5`
+  still parse but produce mathematically different rankings.
+- **`bun llm pro --leaderboard` now sorts by raw quality by default** (was:
+  sort by cost-aware rankScore). Add `--rank-by-cost` for the prior
+  cost-aware sort. Rationale: quality is the dominant axis for "punch
+  through intellectual issues"; cost surfaces as a column, not silent reorder.
+- **Display column labels**: `AvgScore` → `Quality`, `AvgTime` → `Speed`.
+  Speed and failure rate are display-only — they no longer enter rank.
+  Failures are assumed programming errors / retryable, not a model property.
+
+### Added — Response cache (CAS)
+
+- **`src/lib/cache.ts`** — content-addressable storage keyed by sha256 of
+  `(model, prompt, context, params)`. File path *is* the hash:
+  `~/.cache/bearly-llm/responses/<sha256>.json`. Lookup is O(1)
+  `fs.exists`. Atomic write (temp + rename).
+- **Wired into `askAndFinish`** for non-Pro single-model paths (ask,
+  opinion, debate). Pro shadow testing, deep research, and image-bearing
+  prompts deliberately bypass — caching there would corrupt judge
+  calibration or miss content. Cache hit prints `🟢 cache hit (<ts>)`
+  to stderr; the original envelope replays verbatim.
+- **22 new tests** — sha256 hashing properties, atomic write, graceful
+  read-failure on malformed entries, cache stats / clear, CAS round-trip.
+
+### Added — DeepSeek in registry
+
+- **`deepseek/deepseek-r1`** — frontier reasoning via OpenRouter.
+  $0.55/M input, $2.19/M output, ~30s typical latency. Champion-mainstay
+  role (cheaper than GPT-5.4 Pro, frontier-quality reasoning).
+- **`deepseek/deepseek-chat`** — DeepSeek V3 general via OpenRouter.
+  $0.27/M input, $1.10/M output, ~5s latency. Pool member.
+- Both dispatch via existing OpenRouter provider — no `--force` needed.
+
+### Changed — default fleet (no OpenAI in routine path)
+
+Recommended `dual-pro-config.json`:
+- **Champion**: `deepseek/deepseek-r1` (frontier reasoning anchor)
+- **Runner-up**: `moonshotai/kimi-k2.6` (proven cheap baseline; 241 calls
+  of judge calibration history)
+- **Pool**: `gemini-3-pro-preview, deepseek/deepseek-chat, grok-4,
+  claude-opus-4-6`
+- **Judge**: `gemini-2.5-flash` (~$0.001/judge call)
+
+GPT-5.4 Pro deliberately removed from default pool — opt-in via
+`--challenger gpt-5.4-pro` or env override. Rationale: $1+/call against
+Kimi+Gemini-Pro at ~$0.05 each with comparable quality on limited data
+(2026-04-27 verification: judge TIE 20/20).
+
+### Files
+
+- New: `plugins/llm/src/lib/cache.ts` (~140 LOC)
+- New: `plugins/llm/tests/cache.test.ts` (22 tests)
+- Modified: `plugins/llm/src/lib/dispatch.ts` (cache hook + leaderboard
+  default sort + `--rank-by-cost` flag)
+- Modified: `plugins/llm/src/lib/dual-pro.ts` (`ScoreWeightsSchema` adds
+  `costThreshold`; rank formula log-scale)
+- Modified: `plugins/llm/src/lib/types.ts` (DeepSeek SKUs + endpoints)
+- Modified: `plugins/llm/src/cli.ts` (`--rank-by-cost` flag wiring)
+
+### Tests
+
+191/191 passing (was 169; +22 cache tests).
+
 ## 0.4.0 (2026-04-27)
 
 Quota tracking + auto-discovery — two features that together make spending
@@ -141,8 +218,8 @@ surface; existing invocations still work.
   `recover`, `await`) supports `--json`. JSON envelope on stdout; all
   human-readable progress on stderr. Pipe-friendly for skill consumption.
 - Envelope: `{ file, model, tokens: { prompt, completion, total }, cost,
-  durationMs, responseId?, status }`. Status ∈ `completed | failed |
-  background | recovered`.
+durationMs, responseId?, status }`. Status ∈ `completed | failed |
+background | recovered`.
 - Dual-pro emits per-leg `a` and `b` envelopes plus aggregate metadata.
 - Centralized via `output-mode.ts` singleton (`setJsonMode`/`isJsonMode`/
   `emitJson`/`emitContent`); test-isolatable via `resetOutputMode()`.
@@ -162,7 +239,7 @@ surface; existing invocations still work.
     queries and three-gate threshold (≥10 calls, score margin ≥0.3, failure
     rate ≤ champion's)
   - `bun llm pro --backtest [--sample N] [--quick] [--no-old-fire]
-    [--no-challenger]` — replay historical queries through OLD + NEW configs
+[--no-challenger]` — replay historical queries through OLD + NEW configs
     in parallel for apples-to-apples promotion gate
 - Cost sliders: `--no-challenger` (skip leg C), `--no-judge` (skip judge),
   `--challenger <id>` (override rotation).
