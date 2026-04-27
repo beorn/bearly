@@ -1644,7 +1644,11 @@ export async function runProDual(options: {
   if (judgeResult) {
     parts.push(`\n---\n`)
     parts.push(`## Judge breakdown (${judgeModelId ?? cfg.judge})\n`)
-    const fmtRow = (id: "a" | "b" | "c", label: string, breakdown: import("./dual-pro").JudgeBreakdown | null | undefined) => {
+    const fmtRow = (
+      id: "a" | "b" | "c",
+      label: string,
+      breakdown: import("./dual-pro").JudgeBreakdown | null | undefined,
+    ) => {
       if (!breakdown) return `- **${id.toUpperCase()}** ${label}: skipped (failed)`
       const s = breakdown.scores
       return `- **${id.toUpperCase()}** ${label}: spec ${s.specificity}, action ${s.actionability}, correct ${s.correctness}, depth ${s.depth} → **total ${breakdown.total}**`
@@ -1652,7 +1656,9 @@ export async function runProDual(options: {
     parts.push(fmtRow("a", gptPro!.displayName, judgeResult.a))
     parts.push(fmtRow("b", kimi!.displayName, judgeResult.b))
     if (challenger) parts.push(fmtRow("c", `${challenger.displayName} [challenger]`, judgeResult.c ?? null))
-    parts.push(`\n**Winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`)
+    parts.push(
+      `\n**Winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`,
+    )
   } else if (judgeError) {
     parts.push(`\n---\n`)
     parts.push(`_Judge unavailable: ${judgeError}_`)
@@ -1755,9 +1761,7 @@ export async function runProDual(options: {
       : judgeError
         ? { error: judgeError }
         : undefined,
-    leaderboardSnapshot: leaderboardSnapshot.slice(0, 10).map(
-      (r) => r as unknown as Record<string, unknown>,
-    ),
+    leaderboardSnapshot: leaderboardSnapshot.slice(0, 10).map((r) => r as unknown as Record<string, unknown>),
   })
 
   // Append an A/B log entry so we can review quality over time. Extended
@@ -2170,7 +2174,7 @@ export async function runBacktest(opts: {
   const newCallCost = oldCallCost
   const judgeModel = getModel(opts.quick ? "gpt-5-nano" : cfg.judge) ?? getModel("gpt-5-mini")
   const judgeCost = judgeModel ? estimateCost(judgeModel, 4000, 800) : 0
-  const perQuery = (opts.noOldFire ? 1 : 2) * (oldCallCost + newCallCost) / 2 + judgeCost * (opts.noOldFire ? 1 : 2)
+  const perQuery = ((opts.noOldFire ? 1 : 2) * (oldCallCost + newCallCost)) / 2 + judgeCost * (opts.noOldFire ? 1 : 2)
   const totalEst = perQuery * sample.length
 
   console.error(
@@ -2224,7 +2228,8 @@ export async function runBacktest(opts: {
     const newResponses: { id: "a" | "b" | "c"; model: string; content: string }[] = []
     if (newA?.content) newResponses.push({ id: "a", model: champion!.displayName, content: newA.content })
     if (newB?.content) newResponses.push({ id: "b", model: runner!.displayName, content: newB.content })
-    if (newC?.content && challenger) newResponses.push({ id: "c", model: challenger.displayName, content: newC.content })
+    if (newC?.content && challenger)
+      newResponses.push({ id: "c", model: challenger.displayName, content: newC.content })
 
     const oldJudge = opts.noOldFire ? undefined : await judgeFor(oldResponses)
     const newJudge = await judgeFor(newResponses)

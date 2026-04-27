@@ -56,7 +56,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
  * neutral 0.5.
  */
 export function scoreHit(hit: RecallHit, opts: ScoreOpts): ScoredHit {
-  const w = { ...DEFAULT_WEIGHTS, ...(opts.weights ?? {}) }
+  const w = { ...DEFAULT_WEIGHTS, ...opts.weights }
   const now = opts.now ?? Date.now()
   const halfLife = opts.halfLifeMs ?? SEVEN_DAYS_MS
 

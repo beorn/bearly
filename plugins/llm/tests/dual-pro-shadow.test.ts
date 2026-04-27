@@ -530,7 +530,10 @@ describe("config + env overrides + persistence", () => {
     const encoded = projectRoot.replace(/\//g, "-")
     const file = `${homeDir}/.claude/projects/${encoded}/memory/backtest-runs.jsonl`
     expect(existsSync(file)).toBe(true)
-    const line = JSON.parse(readFileSync(file, "utf-8").trim())
+    const line = JSON.parse(readFileSync(file, "utf-8").trim()) as {
+      schema: string
+      oldConfig: { champion: string }
+    }
     expect(line.schema).toBe("backtest-runs/v1")
     expect(line.oldConfig.champion).toBe("old-c")
   })
@@ -546,7 +549,7 @@ describe("config + env overrides + persistence", () => {
     const encoded = projectRoot.replace(/\//g, "-")
     const file = `${homeDir}/.claude/projects/${encoded}/memory/dual-pro-promotions.jsonl`
     expect(existsSync(file)).toBe(true)
-    const line = JSON.parse(readFileSync(file, "utf-8").trim())
+    const line = JSON.parse(readFileSync(file, "utf-8").trim()) as { schema: string; decision: string }
     expect(line.schema).toBe("dual-pro-promotions/v1")
     expect(line.decision).toBe("keep-watching")
   })
@@ -637,7 +640,7 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
           typeof m.content === "string"
             ? m.content
             : Array.isArray(m.content)
-              ? m.content.map((c: { text?: string }) => c.text ?? "").join(" ")
+              ? (m.content as { text?: string }[]).map((c) => c.text ?? "").join(" ")
               : "",
         )
         .join(" ")

@@ -120,9 +120,27 @@ describe("bun llm pro --leaderboard", () => {
       {
         schema: "ab-pro/v2",
         question: "q1",
-        a: { model: "champA", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 }, cost: 0.5, durationMs: 9000 },
-        b: { model: "runnerB", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 0.05, durationMs: 7000 },
-        c: { model: "challC", ok: true, score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 }, cost: 0.8, durationMs: 12000 },
+        a: {
+          model: "champA",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+          cost: 0.5,
+          durationMs: 9000,
+        },
+        b: {
+          model: "runnerB",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 0.05,
+          durationMs: 7000,
+        },
+        c: {
+          model: "challC",
+          ok: true,
+          score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+          cost: 0.8,
+          durationMs: 12000,
+        },
       },
     ])
     await runCli(["pro", "--leaderboard"])
@@ -140,7 +158,13 @@ describe("bun llm pro --promote-review", () => {
       {
         schema: "ab-pro/v2",
         question: "q1",
-        a: { model: "gpt-5.4-pro", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 }, cost: 0.5, durationMs: 9000 },
+        a: {
+          model: "gpt-5.4-pro",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+          cost: 0.5,
+          durationMs: 9000,
+        },
       },
     ])
     await runCli(["pro", "--promote-review", "-y"])
@@ -156,8 +180,20 @@ describe("bun llm pro --promote-review", () => {
       entries.push({
         schema: "ab-pro/v2",
         question: `q${i}`,
-        a: { model: "gpt-5.4-pro", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 0.5, durationMs: 9000 },
-        b: { model: "moonshotai/kimi-k2.6", ok: true, score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 }, cost: 0.05, durationMs: 7000 },
+        a: {
+          model: "gpt-5.4-pro",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 0.5,
+          durationMs: 9000,
+        },
+        b: {
+          model: "moonshotai/kimi-k2.6",
+          ok: true,
+          score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+          cost: 0.05,
+          durationMs: 7000,
+        },
         c: {
           model: "gemini-3-pro-preview",
           ok: true,
@@ -174,7 +210,7 @@ describe("bun llm pro --promote-review", () => {
     // Promotions log written
     const promPath = `${memoryDir(homeDir)}/dual-pro-promotions.jsonl`
     expect(existsSync(promPath)).toBe(true)
-    const line = JSON.parse(readFileSync(promPath, "utf-8").trim())
+    const line = JSON.parse(readFileSync(promPath, "utf-8").trim()) as { decision: string; oldChampion: string }
     expect(line.decision).toBe("keep-watching")
     expect(line.oldChampion).toBe("gpt-5.4-pro")
   })
@@ -188,15 +224,29 @@ describe("bun llm pro --backtest", () => {
 
   it("--quick --no-old-fire --sample 2 runs without firing OLD legs", async () => {
     seedAbPro(homeDir, [
-      { schema: "ab-pro/v2", question: "what is X?", a: { model: "gpt-5.4-pro", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 } } },
-      { schema: "ab-pro/v2", question: "describe Y", a: { model: "gpt-5.4-pro", ok: true, score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 } } },
+      {
+        schema: "ab-pro/v2",
+        question: "what is X?",
+        a: {
+          model: "gpt-5.4-pro",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+        },
+      },
+      {
+        schema: "ab-pro/v2",
+        question: "describe Y",
+        a: {
+          model: "gpt-5.4-pro",
+          ok: true,
+          score: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+        },
+      },
     ])
     // generateText returns NEW responses + judge JSON. Distinguish by the
     // judge prompt's "STRICT JSON" marker.
     generateTextMock.mockImplementation(async (args: { messages?: { role: string; content: unknown }[] }) => {
-      const text = (args.messages ?? [])
-        .map((m) => (typeof m.content === "string" ? m.content : ""))
-        .join(" ")
+      const text = (args.messages ?? []).map((m) => (typeof m.content === "string" ? m.content : "")).join(" ")
       if (text.includes("STRICT JSON")) {
         return {
           text: JSON.stringify({
@@ -222,7 +272,11 @@ describe("bun llm pro --backtest", () => {
     // Persisted
     const runsPath = `${memoryDir(homeDir)}/backtest-runs.jsonl`
     expect(existsSync(runsPath)).toBe(true)
-    const line = JSON.parse(readFileSync(runsPath, "utf-8").trim())
+    const line = JSON.parse(readFileSync(runsPath, "utf-8").trim()) as {
+      schema: string
+      noOldFire: boolean
+      quick: boolean
+    }
     expect(line.schema).toBe("backtest-runs/v1")
     expect(line.noOldFire).toBe(true)
     expect(line.quick).toBe(true)

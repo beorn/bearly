@@ -834,7 +834,10 @@ export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> = Ob
  *  in-place-mutation pattern and gives tests a clean reset hook
  *  (`resetPricingOverlay()`).
  */
-const pricingOverlay = new Map<string, { inputPricePerM?: number; outputPricePerM?: number; typicalLatencyMs?: number }>()
+const pricingOverlay = new Map<
+  string,
+  { inputPricePerM?: number; outputPricePerM?: number; typicalLatencyMs?: number }
+>()
 
 export function setPricingOverlay(
   entries: Record<string, { inputPricePerM: number; outputPricePerM: number; typicalLatencyMs?: number }>,
