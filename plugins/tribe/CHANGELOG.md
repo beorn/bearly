@@ -29,7 +29,7 @@ Wire-protocol bumped v2 → v3.
 - **`tribe.dismiss({message_id, reason?})`** — audit-trail acknowledgement
   without replying. Used as classifier-training signal.
 - **Channel envelope** now carries `responseExpected: "yes" | "optional" |
-  "no"` and `plugin_kind` on every push notification.
+"no"` and `plugin_kind` on every push notification.
 
 ### Changed — delivery routing
 
@@ -41,33 +41,33 @@ never re-classified).
 
 Plugin-by-plugin matrix (`delivery | responseExpected`):
 
-- `git:commit`                            → pull | no
-- `bead:claimed/closed/progress/status`   → pull | no
-- `bead:new (P0/P1)`                      → push | optional
-- `github:push/pr/issue/release`          → pull | no
-- `github:workflow (success)`             → pull | no
-- `github:workflow (failure, single)`     → pull | optional
-- `github:ci-alert (broadcast)`           → push | optional
-- `github:ci-alert (DM responsible)`      → push | yes
-- `github:ci-recovered`                   → push | no
-- `health:* warning broadcast`            → pull | no
-- `health:* critical broadcast`           → push | yes
-- `health:* DM (warning)`                 → push | optional
-- `health:* DM (critical)`                → push | yes
-- `health:git-lock first-detect`          → pull | no
-  - DM holder                             → push | optional
-- `health:git-lock stale (>30s)`          → push | yes
-- `health:reaper:query`                   → push | yes
-- `health:reaper:killed`                  → pull | no
-- `health:disk-io:warning`                → pull | no
-- `health:gh-rate-limit:warning`          → push | optional
-- `health:account:status`                 → pull | no
-- `health:account:rate-limit`             → pull | no
-- `health:account:unavailable`            → push | yes
-- `health:account:switched`               → pull | no
-- `health:account:switch-failed`          → push | yes
-- daemon log activity (join/leave)        → pull | no
-- daemon warn/error logs                  → pull | no
+- `git:commit` → pull | no
+- `bead:claimed/closed/progress/status` → pull | no
+- `bead:new (P0/P1)` → push | optional
+- `github:push/pr/issue/release` → pull | no
+- `github:workflow (success)` → pull | no
+- `github:workflow (failure, single)` → pull | optional
+- `github:ci-alert (broadcast)` → push | optional
+- `github:ci-alert (DM responsible)` → push | yes
+- `github:ci-recovered` → push | no
+- `health:* warning broadcast` → pull | no
+- `health:* critical broadcast` → push | yes
+- `health:* DM (warning)` → push | optional
+- `health:* DM (critical)` → push | yes
+- `health:git-lock first-detect` → pull | no
+  - DM holder → push | optional
+- `health:git-lock stale (>30s)` → push | yes
+- `health:reaper:query` → push | yes
+- `health:reaper:killed` → pull | no
+- `health:disk-io:warning` → pull | no
+- `health:gh-rate-limit:warning` → push | optional
+- `health:account:status` → pull | no
+- `health:account:rate-limit` → pull | no
+- `health:account:unavailable` → push | yes
+- `health:account:switched` → pull | no
+- `health:account:switch-failed` → push | yes
+- daemon log activity (join/leave) → pull | no
+- daemon warn/error logs → pull | no
 
 Direct human messages (`tribe.send` without classification) keep the prior
 default — `push | yes` unless the caller overrides.
