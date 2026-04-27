@@ -25,7 +25,11 @@ export function openDatabase(path: string): Database {
 		claude_session_name TEXT,
 		identity_token TEXT,
 		started_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL
+		updated_at INTEGER NOT NULL,
+		last_inbox_pull_seq INTEGER NOT NULL DEFAULT 0,
+		mode       TEXT NOT NULL DEFAULT 'normal',
+		snooze_until INTEGER,
+		snooze_kinds TEXT
 	)`)
 
   // Migrations table — tracks schema version so we can evolve the DB without
@@ -65,7 +69,11 @@ export function openDatabase(path: string): Database {
 		content    TEXT NOT NULL,
 		bead_id    TEXT,
 		ref        TEXT,
-		ts         INTEGER NOT NULL
+		ts         INTEGER NOT NULL,
+		response_expected TEXT NOT NULL DEFAULT 'optional',
+		delivery   TEXT NOT NULL DEFAULT 'push',
+		plugin_kind TEXT,
+		room_id    TEXT
 	)`)
 
   // `cursors` and `reads` tables removed by migration v9 — the event-bus
@@ -100,6 +108,34 @@ export function openDatabase(path: string): Database {
 		PRIMARY KEY (project_id, key)
 	)`)
 
+  // Matrix-shape primitives (km-tribe.event-classification): rooms scope events
+  // for future multi-room support; today every project has one synthetic room.
+  db.run(`CREATE TABLE IF NOT EXISTS rooms (
+		id           TEXT PRIMARY KEY,
+		project_id   TEXT,
+		name         TEXT,
+		created_at   INTEGER NOT NULL,
+		creator_id   TEXT,
+		metadata     TEXT
+	)`)
+  db.run(`CREATE TABLE IF NOT EXISTS room_members (
+		room_id     TEXT NOT NULL,
+		session_id  TEXT NOT NULL,
+		joined_at   INTEGER NOT NULL,
+		role        TEXT NOT NULL DEFAULT 'member',
+		PRIMARY KEY (room_id, session_id)
+	)`)
+
+  // Dismissals — read-receipt-with-reason for actionable-but-ignored events.
+  // Insert via tribe.dismiss; query for audit / classifier-training signal.
+  db.run(`CREATE TABLE IF NOT EXISTS dismissals (
+		session_id TEXT NOT NULL,
+		message_id TEXT NOT NULL,
+		reason     TEXT,
+		ts         INTEGER NOT NULL,
+		PRIMARY KEY (session_id, message_id)
+	)`)
+
   // `event_log` was merged into `messages WHERE kind='event'` by migration v8
   // (km-tribe.polish-sweep item 9). Fresh installs get only the messages table;
   // existing databases retain their event_log rows via the v8 backfill.
@@ -113,6 +149,10 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_token)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_coordination_project ON coordination(project_id)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_delivery_ts ON messages(delivery, ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_plugin_kind_ts ON messages(plugin_kind, ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_dismissals_session ON dismissals(session_id, ts)")
 
   return db
 }
@@ -316,6 +356,100 @@ const MIGRATIONS: readonly Migration[] = [
       db.run("DROP TABLE IF EXISTS reads")
     },
   },
+  {
+    version: 10,
+    name: "event-classification",
+    up(db) {
+      // km-tribe.event-classification: tag every event with a delivery class
+      // (push = actionable channel-delivered, pull = ambient inbox-only) and a
+      // response_expected hint (yes / no / optional). Adds rooms primitives
+      // (Matrix-shape) plus per-session inbox cursor / mode / snooze and a
+      // dismissals audit table. See vendor/bearly/CHANGELOG.md 0.12.0.
+      const messageCols = new Set(
+        (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
+      )
+      if (!messageCols.has("response_expected")) {
+        db.run("ALTER TABLE messages ADD COLUMN response_expected TEXT NOT NULL DEFAULT 'optional'")
+      }
+      if (!messageCols.has("delivery")) {
+        db.run("ALTER TABLE messages ADD COLUMN delivery TEXT NOT NULL DEFAULT 'push'")
+      }
+      if (!messageCols.has("plugin_kind")) {
+        db.run("ALTER TABLE messages ADD COLUMN plugin_kind TEXT")
+      }
+      if (!messageCols.has("room_id")) {
+        db.run("ALTER TABLE messages ADD COLUMN room_id TEXT")
+      }
+
+      const sessionCols = new Set(
+        (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((r) => r.name),
+      )
+      if (!sessionCols.has("last_inbox_pull_seq")) {
+        db.run("ALTER TABLE sessions ADD COLUMN last_inbox_pull_seq INTEGER NOT NULL DEFAULT 0")
+      }
+      if (!sessionCols.has("mode")) {
+        db.run("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal'")
+      }
+      if (!sessionCols.has("snooze_until")) {
+        db.run("ALTER TABLE sessions ADD COLUMN snooze_until INTEGER")
+      }
+      if (!sessionCols.has("snooze_kinds")) {
+        db.run("ALTER TABLE sessions ADD COLUMN snooze_kinds TEXT")
+      }
+
+      // New tables — guarded by IF NOT EXISTS so re-runs are safe and fresh
+      // installs (which already have these from the CREATE TABLE block) skip.
+      db.run(`CREATE TABLE IF NOT EXISTS rooms (
+				id           TEXT PRIMARY KEY,
+				project_id   TEXT,
+				name         TEXT,
+				created_at   INTEGER NOT NULL,
+				creator_id   TEXT,
+				metadata     TEXT
+			)`)
+      db.run(`CREATE TABLE IF NOT EXISTS room_members (
+				room_id     TEXT NOT NULL,
+				session_id  TEXT NOT NULL,
+				joined_at   INTEGER NOT NULL,
+				role        TEXT NOT NULL DEFAULT 'member',
+				PRIMARY KEY (room_id, session_id)
+			)`)
+      db.run(`CREATE TABLE IF NOT EXISTS dismissals (
+				session_id TEXT NOT NULL,
+				message_id TEXT NOT NULL,
+				reason     TEXT,
+				ts         INTEGER NOT NULL,
+				PRIMARY KEY (session_id, message_id)
+			)`)
+
+      // Backfill: synthesize one default room per project_id, populate
+      // messages.room_id, and join every existing session to its project room.
+      // Sessions / messages without a project_id share the singleton 'default'
+      // room — keeps the schema invariant (every event scoped to a room) without
+      // forcing a project_id on legacy rows.
+      const now = Date.now()
+      const projectRows = db
+        .prepare(
+          "SELECT DISTINCT COALESCE(project_id, 'default') AS pid FROM sessions UNION SELECT DISTINCT COALESCE(project_id, 'default') AS pid FROM messages",
+        )
+        .all() as Array<{ pid: string }>
+      const insertRoom = db.prepare(
+        "INSERT OR IGNORE INTO rooms (id, project_id, name, created_at) VALUES ($id, $pid, $name, $now)",
+      )
+      for (const row of projectRows) {
+        const roomId = `room:${row.pid}`
+        insertRoom.run({ $id: roomId, $pid: row.pid === "default" ? null : row.pid, $name: row.pid, $now: now })
+      }
+      // Backfill messages.room_id where unset.
+      db.run(`UPDATE messages SET room_id = 'room:' || COALESCE(
+				(SELECT s.project_id FROM sessions s WHERE s.name = messages.sender),
+				'default'
+			) WHERE room_id IS NULL`)
+      // Backfill room_members from existing sessions.
+      db.run(`INSERT OR IGNORE INTO room_members (room_id, session_id, joined_at, role)
+				SELECT 'room:' || COALESCE(project_id, 'default'), id, started_at, role FROM sessions`)
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -336,12 +470,14 @@ export function createStatements(db: Database) {
 	`),
 
     insertMessage: db.prepare(`
-		INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts)
-		VALUES ($id, $type, $sender, $recipient, $kind, $content, $bead_id, $ref, $ts)
+		INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts,
+			response_expected, delivery, plugin_kind, room_id)
+		VALUES ($id, $type, $sender, $recipient, $kind, $content, $bead_id, $ref, $ts,
+			$response_expected, $delivery, $plugin_kind, $room_id)
 	`),
 
     allSessions: db.prepare(
-      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at FROM sessions",
+      "SELECT id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, started_at, updated_at, mode, snooze_until, snooze_kinds, last_inbox_pull_seq FROM sessions",
     ),
 
     messageHistory: db.prepare(`
@@ -376,5 +512,47 @@ export function createStatements(db: Database) {
     ),
 
     getLastDelivered: db.prepare("SELECT last_delivered_ts, last_delivered_seq FROM sessions WHERE id = $id"),
+
+    // ---------------- km-tribe.event-classification ----------------
+
+    /** Pull pending inbox rows for a session — push + pull rows whose rowid
+     *  exceeds the session's pull cursor and whose recipient matches. */
+    getInboxRows: db.prepare(`
+		SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts,
+			response_expected, delivery, plugin_kind, room_id
+		FROM messages
+		WHERE rowid > $since
+			AND (recipient = $name OR recipient = '*')
+			AND kind != 'event'
+			AND sender != $name
+		ORDER BY rowid ASC
+		LIMIT $limit
+	`),
+
+    /** Advance the per-session pull cursor — never decreases. */
+    advanceInboxCursor: db.prepare(
+      "UPDATE sessions SET last_inbox_pull_seq = MAX(last_inbox_pull_seq, $seq), updated_at = $now WHERE id = $id",
+    ),
+
+    /** Read-only fetch of the per-session pull cursor. */
+    getInboxCursor: db.prepare("SELECT last_inbox_pull_seq FROM sessions WHERE id = $id"),
+
+    /** Per-session focus mode: 'focus' | 'normal' | 'ambient'. */
+    setSessionMode: db.prepare("UPDATE sessions SET mode = $mode, updated_at = $now WHERE id = $id"),
+
+    getSessionMode: db.prepare("SELECT mode, snooze_until, snooze_kinds FROM sessions WHERE id = $id"),
+
+    /** Set or clear the snooze window on a session. duration_sec=0 clears. */
+    setSessionSnooze: db.prepare(
+      "UPDATE sessions SET snooze_until = $until, snooze_kinds = $kinds, updated_at = $now WHERE id = $id",
+    ),
+
+    /** Insert a dismissal — INSERT OR REPLACE so a session can update reasoning. */
+    insertDismissal: db.prepare(
+      "INSERT OR REPLACE INTO dismissals (session_id, message_id, reason, ts) VALUES ($session_id, $message_id, $reason, $ts)",
+    ),
+
+    /** Snapshot of dismissals for a session (audit / classifier-training). */
+    listDismissals: db.prepare("SELECT message_id, reason, ts FROM dismissals WHERE session_id = $id ORDER BY ts DESC"),
   }
 }
