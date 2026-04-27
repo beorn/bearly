@@ -254,7 +254,11 @@ const SKUS_DATA: SkuConfig[] = [
     costTier: "very-high",
     inputPricePerM: 30.0,
     outputPricePerM: 180.0,
-    typicalLatencyMs: 15000,
+    // Pro tier "thinks" before responding. Empirically 5-15+ minutes on
+    // complex review prompts (was claimed 15s — that was just the initial
+    // API call, not end-to-end). Bumped so the cost-aware leaderboard
+    // penalizes correctly and dispatch UX sets accurate expectations.
+    typicalLatencyMs: 600000,
   },
   // OpenAI - GPT-5.4 series (2026-03-05)
   {
@@ -273,7 +277,8 @@ const SKUS_DATA: SkuConfig[] = [
     costTier: "very-high",
     inputPricePerM: 25.0,
     outputPricePerM: 200.0,
-    typicalLatencyMs: 15000,
+    // See gpt-5.5-pro note above — Pro tier routinely takes 5-15+ minutes.
+    typicalLatencyMs: 600000,
   },
   // OpenAI - GPT-5.3 series
   {
@@ -302,7 +307,8 @@ const SKUS_DATA: SkuConfig[] = [
     costTier: "very-high",
     inputPricePerM: 21.0,
     outputPricePerM: 168.0,
-    typicalLatencyMs: 15000,
+    // Pro tier — see gpt-5.5-pro note above.
+    typicalLatencyMs: 600000,
   },
   // OpenAI - GPT-5.1 series
   {

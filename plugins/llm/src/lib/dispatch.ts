@@ -27,11 +27,16 @@ const log = createLogger("bearly:llm")
 /**
  * Bind SIGINT/SIGTERM to an AbortController for the duration of `fn`.
  *
- * Ctrl-C (SIGINT) and SIGTERM fire `ac.abort("user-interrupt")`, which
- * propagates to any `ask()` / poll call threading `ac.signal`. Handlers are
- * removed in `finally` so later signals fall back to the default (kill the
- * process). `process.once` — we don't want to fire abort twice if the user
- * hammers Ctrl-C; the second press terminates normally.
+ * Distinguishes the two signals in the abort reason — Ctrl-C fires
+ * "ctrl-c" (the user actually wanted to stop), SIGTERM fires "sigterm"
+ * (sent by a wrapper, parent process, or `timeout` command — NOT a
+ * user interrupt). Surfaces correctly in error envelopes so the user
+ * isn't told "user-interrupt" when they didn't interrupt anything.
+ *
+ * Handlers are removed in `finally` so later signals fall back to the
+ * default (kill the process). `process.once` — we don't want to fire
+ * abort twice if the user hammers Ctrl-C; the second press terminates
+ * normally.
  *
  * Used by the expensive dispatch paths (askAndFinish, runDeep, runDebate,
  * runProDual, runRecover, runAwait) so a long Pro call or 50m poll stops
@@ -39,14 +44,15 @@ const log = createLogger("bearly:llm")
  */
 async function withSignalAbort<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const ac = new AbortController()
-  const onSignal = () => ac.abort("user-interrupt")
-  process.once("SIGINT", onSignal)
-  process.once("SIGTERM", onSignal)
+  const onSigint = () => ac.abort("ctrl-c")
+  const onSigterm = () => ac.abort("sigterm")
+  process.once("SIGINT", onSigint)
+  process.once("SIGTERM", onSigterm)
   try {
     return await fn(ac.signal)
   } finally {
-    process.off("SIGINT", onSignal)
-    process.off("SIGTERM", onSignal)
+    process.off("SIGINT", onSigint)
+    process.off("SIGTERM", onSigterm)
   }
 }
 
@@ -1501,7 +1507,7 @@ export async function runProDual(options: {
 
   const [gptResult, kimiResult, challengerResult] = await withSignalAbort(async (outerSignal) => {
     const ac = new AbortController()
-    const onOuterAbort = () => ac.abort(outerSignal.reason ?? "user-interrupt")
+    const onOuterAbort = () => ac.abort(outerSignal.reason ?? "aborted")
     if (outerSignal.aborted) onOuterAbort()
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
     try {
