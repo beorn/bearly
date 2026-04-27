@@ -57,6 +57,11 @@ export function makeTestEnv(): TestEnv {
   // real ~/.claude/session-index.db (20s+) and stalls the vitest worker even
   // when dispatch is mocked.
   process.env.LLM_NO_HISTORY = "1"
+  // Disable response cache for tests — without this, askAndFinish's cache hook
+  // can return real-home cache entries (HOME override doesn't help if a test
+  // happens to hash to a key matching an existing entry from prior CLI runs)
+  // and zero-out the dispatch mock counts.
+  process.env.LLM_NO_CACHE = "1"
 
   const exitCodes: number[] = []
   const stderr: string[] = []

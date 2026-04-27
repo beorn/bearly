@@ -41,6 +41,12 @@ export function _setCacheDirForTesting(dir: string | undefined): void {
   cachePathOverride = dir
 }
 
+/** True when caching is suppressed for this process — set LLM_NO_CACHE=1
+ * to bypass cache reads + writes (used by tests + as a manual escape hatch). */
+function cacheDisabled(): boolean {
+  return process.env.LLM_NO_CACHE === "1"
+}
+
 function getCacheDir(): string {
   if (cachePathOverride) return cachePathOverride
   const xdg = process.env.XDG_CACHE_HOME
@@ -150,8 +156,10 @@ function findCacheFile(dir: string, hash: string): string | null {
   return null
 }
 
-/** Look up a cached response. Returns null on miss or malformed entry. */
+/** Look up a cached response. Returns null on miss, on malformed entry, or
+ * when LLM_NO_CACHE=1 (clean test isolation without per-suite dir wiring). */
 export function readCache<E = unknown>(key: CacheKey): CacheEntry<E> | null {
+  if (cacheDisabled()) return null
   const file = findCacheFile(getCacheDir(), cacheKeyHash(key))
   if (!file) return null
   try {
@@ -195,8 +203,9 @@ function deriveMetadata(
   return { model: sanitizeModelSlug(modelId), microUSD, ms, status }
 }
 
-/** Write a cache entry. Atomic via temp + rename. */
+/** Write a cache entry. Atomic via temp + rename. No-op when LLM_NO_CACHE=1. */
 export function writeCache<E = unknown>(key: CacheKey, envelope: E, content: string): void {
+  if (cacheDisabled()) return
   const dir = getCacheDir()
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const hash = cacheKeyHash(key)

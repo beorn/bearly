@@ -1,5 +1,98 @@
 # Changelog
 
+## 0.6.0 (2026-04-27)
+
+Phase 1 fleet-management additions on top of 0.5.0: static `exclude` config +
+visual quality-warning badge, `pro --diagnostics` surface for speed/failure/cost,
+filename-encoded cache metadata (`ls cache/` is the dashboard), and skill-doc
+sharpening across `/ask /pro /deep /fresh /big` to reflect the new fleet.
+
+### Added — Quality warning + exclude (km-bearly.llm-exclude-quality-warning)
+
+- **`exclude: string[]`** field on `DualProConfigSchema` (default `[]`).
+  `pickNextChallenger` filters the challenger pool by `exclude` before
+  rotating. Mainstays in the exclude list log a stderr warning but still
+  dispatch — explicit config wins over implicit eviction.
+- **`scoreWeights.qualityWarningThreshold: number`** (default 5.0).
+  Leaderboard prepends `⚠️ ` to model rows where `avgScore < threshold`
+  AND `calls ≥ 20`. Visual-only — does not affect dispatch. Add the model
+  to `exclude` to actually remove it from rotation.
+- **`--exclude <model>` CLI flag** — joins (union) with config exclude for
+  the current call. Repeat the flag or comma-separate. `LLM_EXCLUDE`
+  env var works the same way.
+- New tests: schema parses defaults + override; pickNextChallenger
+  respects exclude; mainstay-in-exclude warns + still dispatches; warning
+  badge fires for low-score high-call rows but not low-call rows; env
+  override merges with config.
+
+### Added — `pro --diagnostics` (km-bearly.llm-diagnostics)
+
+- Three reports per `bun llm pro --diagnostics`:
+  - **Speed** sorted by avgTimeMs ascending (calls ≥ 5)
+  - **Failure rate** sorted descending; warns when >30% with calls ≥ 20
+  - **Cost distribution** with avg + p50 + p95 + p99 per model (calls ≥ 10)
+- `--json` emits structured envelope: `{ status, speed, failureRate, costDist }`
+- Surfaces what the new quality-first rank no longer uses, so users don't
+  lose the signal.
+- 6 new tests in `tests/diagnostics.test.ts`.
+
+### Changed — Cache filename-encoded metadata (km-bearly.llm-cache-filename)
+
+- **Filename format**: `<sha64>,<model-slug>,<microUSD>,<ms>,<status>.json`
+  (was `<sha256>.json`). Cache directory is now a `ls`-able CSV-like
+  dashboard — top-cost / avg-duration / status distribution all derivable
+  from filenames, no JSON parse needed.
+- Status taxonomy: `ok | err | abrt | trunc` (regex-classified from
+  `envelope.error`). microUSD = `round(usage.estimatedCost × 1_000_000)`.
+- Helpers exported: `sanitizeModelSlug` (`/` → `_`), `parseFilename`
+  (round-trips well-formed; null on stray / `.tmp.` / unknown-status).
+- `cacheStats().byModel` returns `{ calls, totalMicroUSD, avgMs, statuses }`
+  per model — derived from filenames, no per-entry JSON read.
+- Lookup is `readdirSync + startsWith("<hash>,")` (O(N), N typically <1000).
+- `writeCache` unlinks stale entries for the same hash so per-entry cost +
+  duration stay current on rewrites.
+- All 22 prior cache tests adapted; 20 new tests added (42 total).
+- `readCache` / `writeCache` signatures unchanged — caller-facing behavior is
+  identical.
+
+### Added — `LLM_NO_CACHE=1` bypass
+
+- New env var disables cache reads + writes. Used by tests for clean
+  isolation; also a manual escape hatch for `bun llm "..." LLM_NO_CACHE=1`
+  to force a fresh dispatch.
+
+### Changed — Skill docs (km-skills.llm-consolidation)
+
+- `/ask` — Single-model quick questions (~$0.02). Distinct from /pro.
+- `/pro` — Multi-leg dual-pro (DeepSeek R1 + Kimi K2.6 + rotating
+  challenger). Heavier than /ask, lighter than /deep. Reflects the
+  no-OpenAI-default fleet shipped in 0.5.0.
+- `/deep` — Long-running web-search research via OpenAI's Deep Research API
+  (~$2-5, 2-15 min). NOT DeepSeek — "deep" is the OpenAI product name.
+- `/fresh` — META-PROTOCOL for being stuck 20+ min on a specific problem.
+  Calls /pro or /deep internally. Not itself an LLM tool.
+- `/big` — META-PROTOCOL for reframing the problem (10-20 hypotheses, 2
+  rounds). Subsumes /fresh. Not itself an LLM tool.
+- Helper docs (`pro/discover.md`, `review.md`, `triage.md`, `history.md`)
+  cross-referenced from `/pro/SKILL.md`.
+
+### Tests
+
+233/233 passing (was 191; +42 cache + 6 diagnostics + 6 exclude/warning - 1 deduped).
+
+### Files
+
+- New: `plugins/llm/tests/diagnostics.test.ts`
+- Modified: `plugins/llm/src/lib/cache.ts` (filename-encoded metadata,
+  LLM_NO_CACHE bypass)
+- Modified: `plugins/llm/src/lib/dual-pro.ts` (`exclude` field,
+  `qualityWarningThreshold`)
+- Modified: `plugins/llm/src/lib/dispatch.ts` (`runDiagnostics`,
+  exclude-aware `pickNextChallenger`, quality-warning badge)
+- Modified: `plugins/llm/src/cli.ts` (`--exclude`, `--diagnostics` flags)
+- Modified: `plugins/llm/tests/{cache.test.ts,dual-pro-shadow.test.ts,helpers.ts}`
+- Modified (km repo): `.claude/skills/{ask,pro,deep,fresh,big}/SKILL.md`
+
 ## 0.5.0 (2026-04-27)
 
 Quality-first leaderboard + log-cost penalty + response cache (CAS) + DeepSeek
