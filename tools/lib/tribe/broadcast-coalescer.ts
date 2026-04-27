@@ -30,9 +30,10 @@ export type PendingBroadcast = {
   sender: string
   content: string // already scrubbed by caller
   bead_id: string | null
-  /** km-tribe.event-classification: surfaced on the channel envelope so the
-   *  receiving LLM can decide whether to reply at all. */
-  responseExpected: "yes" | "no" | "optional"
+  /** Per-event reply hint derived at delivery time from kind + sender role +
+   *  recipient (km-tribe.filter-collapse). Used by the focus-mode filter and
+   *  by the batched-broadcast aggregator; not surfaced on the wire. */
+  replyHint: "yes" | "no" | "optional"
   /** Originating plugin event id (e.g. `git:commit`); null for human messages. */
   pluginKind: string | null
 }

@@ -30,9 +30,7 @@ export const TRIBE_COORD_METHODS = {
   releaseChief: "tribe.release-chief",
   debug: "tribe.debug",
   inbox: "tribe.inbox",
-  mode: "tribe.mode",
-  snooze: "tribe.snooze",
-  dismiss: "tribe.dismiss",
+  filter: "tribe.filter",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -118,12 +116,8 @@ export function handleToolCall(
       return handleDebug(ctx, a, opts)
     case TRIBE_COORD_METHODS.inbox:
       return handleInbox(ctx, a)
-    case TRIBE_COORD_METHODS.mode:
-      return handleMode(ctx, a)
-    case TRIBE_COORD_METHODS.snooze:
-      return handleSnooze(ctx, a)
-    case TRIBE_COORD_METHODS.dismiss:
-      return handleDismiss(ctx, a)
+    case TRIBE_COORD_METHODS.filter:
+      return handleFilter(ctx, a)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -613,7 +607,6 @@ type InboxRow = {
   bead_id: string | null
   ref: string | null
   ts: number
-  response_expected: string
   delivery: string
   plugin_kind: string | null
   room_id: string | null
@@ -652,7 +645,6 @@ function handleInbox(ctx: TribeContext, a: ToolArgs): ToolResult {
     bead: r.bead_id,
     ref: r.ref,
     ts: new Date(r.ts).toISOString(),
-    response_expected: r.response_expected,
     delivery: r.delivery,
     plugin_kind: r.plugin_kind,
     room_id: r.room_id,
@@ -680,54 +672,62 @@ function matchesGlob(globs: string[], value: string | null): boolean {
   return false
 }
 
-function handleMode(ctx: TribeContext, a: ToolArgs): ToolResult {
-  const mode = a.mode as string
-  if (mode !== "focus" && mode !== "normal" && mode !== "ambient") {
+/**
+ * Apply a session-level event filter — combines persistent mode + time-bounded
+ * mute + per-kind glob list into a single tool call. Replaces the old
+ * tribe.mode + tribe.snooze + tribe.dismiss trio.
+ *
+ * Empty args clear the filter (mode → 'normal', kinds + until → null).
+ * `until` is an absolute unix-ms timestamp; absent = persistent.
+ *
+ * Direct messages always bypass kinds/until — only `mode: 'focus'` filters DMs.
+ */
+function handleFilter(ctx: TribeContext, a: ToolArgs): ToolResult {
+  const rawMode = a.mode
+  if (rawMode !== undefined && rawMode !== "focus" && rawMode !== "normal" && rawMode !== "ambient") {
     return {
       content: [
-        { type: "text", text: JSON.stringify({ error: `Invalid mode: "${mode}". Use focus|normal|ambient.` }) },
+        { type: "text", text: JSON.stringify({ error: `Invalid mode: "${String(rawMode)}". Use focus|normal|ambient.` }) },
       ],
     }
   }
-  ctx.stmts.setSessionMode.run({ $id: ctx.sessionId, $mode: mode, $now: Date.now() })
-  return { content: [{ type: "text", text: JSON.stringify({ mode, set: true }) }] }
-}
+  const mode = (rawMode as string | undefined) ?? "normal"
 
-function handleSnooze(ctx: TribeContext, a: ToolArgs): ToolResult {
-  const dur = a.duration_sec
-  if (typeof dur !== "number" || dur < 0 || dur > 24 * 60 * 60) {
+  const rawUntil = a.until
+  if (rawUntil !== undefined && (typeof rawUntil !== "number" || rawUntil < 0)) {
     return {
-      content: [{ type: "text", text: JSON.stringify({ error: "duration_sec must be 0..86400 (24h)." }) }],
+      content: [{ type: "text", text: JSON.stringify({ error: "until must be a non-negative unix-ms timestamp." }) }],
     }
   }
-  const now = Date.now()
-  if (dur === 0) {
-    ctx.stmts.setSessionSnooze.run({ $id: ctx.sessionId, $until: null, $kinds: null, $now: now })
-    return { content: [{ type: "text", text: JSON.stringify({ snoozed: false, woke: true }) }] }
+  const until = (rawUntil as number | undefined) ?? null
+
+  const rawKinds = a.kinds
+  if (rawKinds !== undefined && (!Array.isArray(rawKinds) || rawKinds.some((k) => typeof k !== "string"))) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: "kinds must be an array of strings." }) }],
+    }
   }
-  const until = now + dur * 1000
-  const kinds = Array.isArray(a.kinds) ? JSON.stringify(a.kinds) : null
-  ctx.stmts.setSessionSnooze.run({ $id: ctx.sessionId, $until: until, $kinds: kinds, $now: now })
+  const kinds = Array.isArray(rawKinds) && rawKinds.length > 0 ? JSON.stringify(rawKinds) : null
+
+  ctx.stmts.setSessionFilter.run({
+    $id: ctx.sessionId,
+    $mode: mode,
+    $until: until,
+    $kinds: kinds,
+    $now: Date.now(),
+  })
+
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify({ snoozed: true, until: new Date(until).toISOString(), kinds: a.kinds ?? null }),
+        text: JSON.stringify({
+          set: true,
+          mode,
+          until: until !== null ? new Date(until).toISOString() : null,
+          kinds: Array.isArray(rawKinds) ? rawKinds : null,
+        }),
       },
     ],
   }
-}
-
-function handleDismiss(ctx: TribeContext, a: ToolArgs): ToolResult {
-  const messageId = a.message_id as string
-  if (!messageId || typeof messageId !== "string") {
-    return { content: [{ type: "text", text: JSON.stringify({ error: "message_id required" }) }] }
-  }
-  ctx.stmts.insertDismissal.run({
-    $session_id: ctx.sessionId,
-    $message_id: messageId,
-    $reason: (a.reason as string | undefined) ?? null,
-    $ts: Date.now(),
-  })
-  return { content: [{ type: "text", text: JSON.stringify({ dismissed: true, message_id: messageId }) }] }
 }

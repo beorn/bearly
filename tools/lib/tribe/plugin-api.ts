@@ -51,14 +51,16 @@ export interface TribePluginHandle {
 /**
  * km-tribe.event-classification: per-emit metadata that plugins attach to
  * pick how the event should reach the agent. All fields optional — omit to
- * get back-compat behavior (push / optional).
+ * get back-compat behavior (push delivery, plugin-kind null).
+ *
+ * `responseExpected` was removed in km-tribe.filter-collapse (v4 wire) — the
+ * channel envelope now derives the reply hint at delivery time from
+ * `(kind, recipient, senderRole)`.
  */
 export type EventClassification = {
   /** push = actionable channel-delivered; pull = ambient inbox-only */
   delivery?: "push" | "pull"
-  /** Per-event reply hint surfaced on the channel envelope */
-  responseExpected?: "yes" | "no" | "optional"
-  /** Stable plugin event id (e.g. `git:commit`); used by snooze-kind globs */
+  /** Stable plugin event id (e.g. `git:commit`); used by tribe.filter-kind globs */
   pluginKind?: string
 }
 

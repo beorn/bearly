@@ -35,24 +35,48 @@ export type MessageKind = "direct" | "broadcast" | "event"
 export type Delivery = "push" | "pull"
 
 /**
- * `ResponseExpected` is the per-event hint surfaced on the channel envelope
- * so the LLM can decide whether to reply at all:
+ * `ReplyHint` is the per-event hint the daemon derives at delivery time
+ * from `(kind, recipient, senderRole)` — see `deriveReplyHint` below. It
+ * is no longer persisted on the row (the column was dropped by migration
+ * v11) and is no longer surfaced on the channel envelope. The type is
+ * exported only because the broadcast pipeline still uses it as a return
+ * shape (and `tribe.filter` mode `focus` still gates on it).
  *
- *   - `yes`      — direct query / blocker / assignment → reply via tribe.send
- *   - `optional` — FYI that might warrant action → agent decides
- *   - `no`       — silent read is the correct response (most ambient kinds)
+ *   - `yes`      — direct DM from a peer member → reply via tribe.send
+ *   - `optional` — broadcast / system / daemon push → agent decides
+ *   - `no`       — ambient (event row) → silent read is correct
  */
-export type ResponseExpected = "yes" | "no" | "optional"
+export type ReplyHint = "yes" | "no" | "optional"
 
 /**
- * Optional classification metadata for a message. All fields are optional
- * for back-compat — pass nothing and the row defaults to push / optional.
+ * Optional classification metadata for a message. All fields are optional —
+ * pass nothing and the row defaults to push delivery.
  */
 export type Classification = {
   delivery?: Delivery
-  responseExpected?: ResponseExpected
   pluginKind?: string
   roomId?: string
+}
+
+/**
+ * Derive the channel-envelope reply hint from the durable message metadata.
+ * Replaces the persisted column dropped by migration v11 — every consumer
+ * that needs the hint computes it on demand.
+ *
+ *   - `event` rows are journal-only, never delivered → `'no'`
+ *   - `'*'` recipient (broadcast) → `'optional'` regardless of sender
+ *   - sender role of `daemon` / `system` (plugin emits) → `'optional'`
+ *   - everything else (direct DM from a peer member) → `'yes'`
+ */
+export function deriveReplyHint(opts: {
+  kind: MessageKind
+  recipient: string
+  senderRole: string
+}): ReplyHint {
+  if (opts.kind === "event") return "no"
+  if (opts.recipient === "*") return "optional"
+  if (opts.senderRole === "daemon" || opts.senderRole === "system") return "optional"
+  return "yes"
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +116,7 @@ export function sendMessage(
   // Direct messages are inherently actionable. Events are journal-only and
   // never delivered, so delivery is irrelevant — keep the column populated for
   // schema invariants.
-  const delivery: Delivery =
-    classification.delivery ?? (resolvedKind === "direct" ? "push" : resolvedKind === "event" ? "push" : "push")
-  const responseExpected: ResponseExpected =
-    classification.responseExpected ?? (resolvedKind === "direct" ? "yes" : "optional")
+  const delivery: Delivery = classification.delivery ?? "push"
   const result = ctx.stmts.insertMessage.run({
     $id: id,
     $type: type,
@@ -106,7 +127,6 @@ export function sendMessage(
     $bead_id: bead_id ?? null,
     $ref: ref ?? null,
     $ts: ts,
-    $response_expected: responseExpected,
     $delivery: delivery,
     $plugin_kind: classification.pluginKind ?? null,
     $room_id: classification.roomId ?? null,
@@ -119,11 +139,11 @@ export function sendMessage(
     type,
     kind: resolvedKind,
     sender: ctx.getName(),
+    senderRole: ctx.getRole(),
     recipient,
     content,
     bead_id: bead_id ?? null,
     delivery,
-    responseExpected,
     pluginKind: classification.pluginKind ?? null,
     roomId: classification.roomId ?? null,
   })
@@ -152,9 +172,8 @@ export function logEvent(ctx: TribeContext, type: string, bead_id?: string, data
     $ref: null,
     $ts: Date.now(),
     // Event rows are journal-only; the daemon's broadcastToConnected drops
-    // kind='event' before delivery. These columns are still populated to keep
-    // schema invariants — every row carries a delivery class.
-    $response_expected: "no",
+    // kind='event' before delivery. The delivery column is still populated to
+    // keep schema invariants — every row carries a delivery class.
     $delivery: "push",
     $plugin_kind: null,
     $room_id: null,

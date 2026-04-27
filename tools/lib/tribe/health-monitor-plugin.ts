@@ -938,7 +938,6 @@ export async function checkReaper(
       log.info?.(`reaper: asking about PID ${pid}`)
       api.broadcast(msg, "health:reaper:query", undefined, {
         delivery: "push",
-        responseExpected: "yes",
         pluginKind: "health:reaper:query",
       })
     }
@@ -996,7 +995,6 @@ export async function checkReaper(
       const killMsg = `health:reaper: killed PID ${pid} (${suspect.command}) — unclaimed after ${thresholds.reaperGraceSamples * 10}s, ${suspect.cpu}% CPU for ${suspect.etime}`
       api.broadcast(killMsg, "health:reaper:killed", undefined, {
         delivery: "pull",
-        responseExpected: "no",
         pluginKind: "health:reaper:killed",
       })
       state.reaperSuspects.delete(pid)
@@ -1174,18 +1172,15 @@ export const healthMonitorPlugin: TribePluginApi = {
           log.info?.(`alert: ${msg}`)
 
           // km-tribe.event-classification: criticals are actionable (push) so
-          // a session pays attention; warnings are ambient (pull). Direct
-          // messages still push by transport class but carry the right
-          // responseExpected hint so the agent knows whether to reply.
+          // a session pays attention; warnings are ambient (pull). The reply
+          // hint is derived at delivery time (kind + sender role + recipient).
           const isCritical = alert.severity === "critical"
           const dmClass = {
             delivery: "push",
-            responseExpected: isCritical ? "yes" : "optional",
             pluginKind: `health:${alert.type}:${alert.severity}`,
           } as const
           const broadcastClass = {
             delivery: isCritical ? "push" : "pull",
-            responseExpected: isCritical ? "yes" : "no",
             pluginKind: `health:${alert.type}:${alert.severity}`,
           } as const
           // Route: DM each responsible session
@@ -1253,18 +1248,16 @@ export const healthMonitorPlugin: TribePluginApi = {
 
             // km-tribe.event-classification: first-detect git-lock is ambient
             // (most are concurrent commits resolving in <30s). The session
-            // attributed to the lock still gets a DM with `responseExpected:
-            // optional` so the holder can act.
+            // attributed to the lock still gets a DM so the holder can act —
+            // the channel envelope's reply hint is derived at delivery time.
             if (sessionName) {
               api.send(sessionName, lockMsg, "health:git-lock:warning", undefined, {
                 delivery: "push",
-                responseExpected: "optional",
                 pluginKind: "health:git-lock:warning",
               })
             }
             api.broadcast(lockMsg, "health:git-lock:warning", undefined, {
               delivery: "pull",
-              responseExpected: "no",
               pluginKind: "health:git-lock:warning",
             })
           }
@@ -1276,7 +1269,6 @@ export const healthMonitorPlugin: TribePluginApi = {
             log.info?.(`alert: ${staleMsg}`)
             api.broadcast(staleMsg, "health:git-lock:warning", undefined, {
               delivery: "push",
-              responseExpected: "yes",
               pluginKind: "health:git-lock:stale",
             })
           }
@@ -1309,7 +1301,6 @@ export const healthMonitorPlugin: TribePluginApi = {
                 log.info?.(`alert: ${msg}`)
                 api.broadcast(msg, "health:disk-io:warning", undefined, {
                   delivery: "pull",
-                  responseExpected: "no",
                   pluginKind: "health:disk-io:warning",
                 })
               }
@@ -1342,7 +1333,6 @@ export const healthMonitorPlugin: TribePluginApi = {
                 log.info?.(`alert: ${msg}`)
                 api.broadcast(msg, "health:gh-rate-limit:warning", undefined, {
                   delivery: "push",
-                  responseExpected: "optional",
                   pluginKind: "health:gh-rate-limit:warning",
                 })
               } else if (remainingPercent >= thresholds.ghRateLimitWarning) {

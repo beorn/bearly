@@ -93,7 +93,7 @@ export const beadsPlugin: TribePluginApi = {
             // ambient — informational for the tribe but no specific agent
             // needs to react (the proxy still uses claim broadcasts to drive
             // auto-rename via inbox pull).
-            const ambient = { delivery: "pull", responseExpected: "no" } as const
+            const ambient = { delivery: "pull" } as const
             if (!prevState) {
               // New bead — P0 / P1 are escalated to actionable so chief sees
               // them; P2+ stay ambient.
@@ -105,7 +105,6 @@ export const beadsPlugin: TribePluginApi = {
                   entry.id,
                   {
                     delivery: escalate ? "push" : "pull",
-                    responseExpected: escalate ? "optional" : "no",
                     pluginKind: "bead:new",
                   },
                 )

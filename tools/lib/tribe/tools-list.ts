@@ -183,7 +183,7 @@ export const TOOLS_LIST = [
     name: "tribe.inbox",
     description:
       "Pull pending tribe events that did NOT push to the channel (ambient: commits, joins/leaves, routine github events, low-severity health warnings). Returns events newer than the per-session pull cursor; advances the cursor on call. " +
-      "Empty response is the correct behavior for most tribe channel events you do see — the tool returns inbox data; you decide whether to act. Do not generate acknowledgement text just because a message arrived. Each event carries a `responseExpected` hint (`yes` / `optional` / `no`) — `no` means silent read is correct.",
+      "Empty response is the correct behavior for most tribe channel events you do see — the tool returns inbox data; you decide whether to act. Do not generate acknowledgement text just because a message arrived.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -201,41 +201,32 @@ export const TOOLS_LIST = [
     },
   },
   {
-    name: "tribe.mode",
+    name: "tribe.filter",
     description:
-      "Set the per-session focus mode. `focus` = only direct DMs and threshold-escalated alerts reach the channel; `normal` = kind-based default; `ambient` = everything to channel (escape hatch). Persisted across reconnects.",
+      "Per-session filter for incoming events. Combines persistent mode + time-bounded mute + per-kind glob matching into a single tool. " +
+      "`mode` sets the persistent focus level (`focus` = only direct DMs reach the channel, `normal` = kind-based default, `ambient` = everything). " +
+      "`kinds` matches `plugin_kind` globs (e.g. `['github:*', 'git:commit']`) to silence selectively. " +
+      "`until` is an optional unix-ms timestamp expiring the kind filter; absent = persistent. " +
+      "Empty args clears the filter (mode resets to `normal`, kinds + until cleared). Direct messages always bypass kinds/until — only `mode: focus` filters DMs.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        mode: { type: "string", enum: ["focus", "normal", "ambient"] },
+        mode: {
+          type: "string",
+          enum: ["focus", "normal", "ambient"],
+          description: "Persistent filter mode (optional). Defaults to 'normal' when args are empty.",
+        },
+        kinds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional plugin_kind globs to silence (e.g. ['github:*']).",
+        },
+        until: {
+          type: "number",
+          description: "Optional unix-ms timestamp at which the kind/mute filter expires. Absent = persistent.",
+        },
       },
-      required: ["mode"],
-    },
-  },
-  {
-    name: "tribe.snooze",
-    description:
-      "Time-bounded silence on channel events for this session. duration_sec=0 cancels any active snooze. Optional `kinds` is a list of plugin_kind globs (e.g. ['github:*']) to silence; omit to silence everything. Direct messages always bypass snooze.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        duration_sec: { type: "number", description: "Snooze for this many seconds; 0 = wake." },
-        kinds: { type: "array", items: { type: "string" }, description: "Optional plugin_kind globs." },
-      },
-      required: ["duration_sec"],
-    },
-  },
-  {
-    name: "tribe.dismiss",
-    description:
-      "Acknowledge an actionable event without replying. Inserts a row into the dismissals audit table (used as classifier-training signal — high dismiss rate on a kind suggests it should be reclassified ambient). Optional `reason` describes why.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        message_id: { type: "string", description: "ID of the message to dismiss." },
-        reason: { type: "string", description: "Optional free-form reason." },
-      },
-      required: ["message_id"],
+      required: [],
     },
   },
 ]
