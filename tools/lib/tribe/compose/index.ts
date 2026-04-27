@@ -57,7 +57,16 @@ export { withSocketServer, probeAndCleanSocket } from "./with-socket-server.ts"
 export type { SocketServer, WithSocketServer } from "./with-socket-server.ts"
 
 export { withDispatcher } from "./with-dispatcher.ts"
-export type { Dispatcher, DispatcherRuntimeHooks, WithDispatcher } from "./with-dispatcher.ts"
+export type { Dispatcher, DispatcherRuntimeHooks, MethodHandler, WithDispatcher } from "./with-dispatcher.ts"
+
+export { withMCPServer } from "./with-mcp-server.ts"
+export type {
+  McpServerCapabilities,
+  McpServerInfo,
+  McpToolMetadata,
+  WithMCPServer,
+  WithMCPServerOpts,
+} from "./with-mcp-server.ts"
 
 export { withSignals } from "./with-signals.ts"
 export type { SignalHooks, WithSignals } from "./with-signals.ts"

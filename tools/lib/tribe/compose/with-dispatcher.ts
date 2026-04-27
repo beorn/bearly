@@ -69,11 +69,29 @@ export interface DispatcherRuntimeHooks {
   suppressWindowMs?: number
 }
 
+/**
+ * Method handler for late-bound JSON-RPC methods (e.g. MCP-spec methods
+ * registered by `withMCPServer()`). Returns the result data; the dispatcher
+ * wraps it in a JSON-RPC response. Throw to surface a JSON-RPC error.
+ */
+export type MethodHandler = (
+  params: Record<string, unknown>,
+  ctx: { connId: string },
+) => unknown | Promise<unknown>
+
 export interface Dispatcher {
   /** The accept-handler the socket server invokes. */
   handleConnection: (socket: NetSocket) => void
   /** The JSON-RPC method router. Exposed for tests. */
   handleRequest: (req: JsonRpcRequest, connId: string) => Promise<string>
+  /**
+   * Register a late-bound method handler. Used by surfaces (e.g. MCP server)
+   * that need to answer JSON-RPC methods after the dispatcher is built.
+   * Late-bound methods are checked BEFORE lore in the default branch, so they
+   * never conflict with the explicit `tribe.*` cases above. Re-registration
+   * throws.
+   */
+  register: (method: string, handler: MethodHandler) => void
 }
 
 export interface WithDispatcher {
@@ -200,6 +218,14 @@ export function withDispatcher<
     const getActivePluginNames = hooks.getActivePluginNames ?? (() => [])
     const getQuitTimeoutSec = hooks.getQuitTimeoutSec ?? (() => -1)
     const suppressWindowMs = hooks.suppressWindowMs ?? (process.env.TRIBE_NO_SUPPRESS ? 0 : 10_000)
+
+    const methodHandlers = new Map<string, MethodHandler>()
+    function register(method: string, handler: MethodHandler): void {
+      if (methodHandlers.has(method)) {
+        throw new Error(`Method "${method}" already registered`)
+      }
+      methodHandlers.set(method, handler)
+    }
 
     function logActivity(type: string, content: string): void {
       sendMessage(daemonCtx, "*", content, type, undefined, undefined, "broadcast", {
@@ -630,6 +656,22 @@ export function withDispatcher<
           }
 
           default: {
+            // Late-bound method handlers (e.g. MCP-spec methods registered
+            // by `withMCPServer()`). Checked first so surfaces composed after
+            // the dispatcher can answer methods over the same Unix socket.
+            const lateHandler = methodHandlers.get(method)
+            if (lateHandler) {
+              try {
+                const result = await lateHandler(p, { connId })
+                return makeResponse(id, result as Record<string, unknown>)
+              } catch (err) {
+                const errorWithCode = err as Error & { code?: number }
+                const code = typeof errorWithCode.code === "number" ? errorWithCode.code : -32603
+                const msg = errorWithCode.message ?? String(err)
+                return makeError(id, code, msg)
+              }
+            }
+
             // Lore (memory) RPC surface.
             if (loreHandlers && loreHandlers.isLoreMethod(method)) {
               const client = clients.get(connId)
@@ -726,7 +768,7 @@ export function withDispatcher<
 
     return {
       ...t,
-      dispatcher: { handleConnection, handleRequest },
+      dispatcher: { handleConnection, handleRequest, register },
     }
   }
 }
