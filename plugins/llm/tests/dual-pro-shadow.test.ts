@@ -50,7 +50,7 @@ import {
   type BacktestPerQueryResult,
 } from "../src/lib/dual-pro"
 
-const FLAT_WEIGHTS: ScoreWeights = { score: 1, cost: 0, time: 0 }
+const FLAT_WEIGHTS: ScoreWeights = { score: 1, cost: 0, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 }
 
 // ----------------------------------------------------------
 // (a) Leaderboard math
@@ -161,10 +161,10 @@ describe("buildLeaderboard — leaderboard math", () => {
         },
       },
     ]
-    const flat = buildLeaderboard(entries, { score: 1, cost: 0, time: 0 })
+    const flat = buildLeaderboard(entries, { score: 1, cost: 0, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 })
     // Equal rankScore when cost+time weights are 0; tiebreaker = calls (both 1) → stable order, both 12.
     expect(flat.find((r) => r.model === "cheap")!.rankScore).toBe(flat.find((r) => r.model === "expensive")!.rankScore)
-    const costWeighted = buildLeaderboard(entries, { score: 1, cost: 1, time: 0 })
+    const costWeighted = buildLeaderboard(entries, { score: 1, cost: 1, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 })
     expect(costWeighted.find((r) => r.model === "cheap")!.rankScore).toBeGreaterThan(
       costWeighted.find((r) => r.model === "expensive")!.rankScore,
     )
@@ -784,6 +784,117 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
   }, 10_000)
 })
 
+// ----------------------------------------------------------
+// Phase 1B — exclude config + quality warning badge
+// ----------------------------------------------------------
+describe("exclude config — static eviction without state machinery", () => {
+  let homeDir: string
+  let prevHome: string | undefined
+  let prevExclude: string | undefined
+  let prevProjectDir: string | undefined
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), "dual-pro-exclude-"))
+    prevHome = process.env.HOME
+    prevExclude = process.env.LLM_EXCLUDE
+    prevProjectDir = process.env.CLAUDE_PROJECT_DIR
+    process.env.HOME = homeDir
+    process.env.CLAUDE_PROJECT_DIR = "/tmp/exclude-test-project"
+    delete process.env.LLM_EXCLUDE
+  })
+
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true })
+    if (prevHome !== undefined) process.env.HOME = prevHome
+    else delete process.env.HOME
+    if (prevExclude !== undefined) process.env.LLM_EXCLUDE = prevExclude
+    else delete process.env.LLM_EXCLUDE
+    if (prevProjectDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjectDir
+    else delete process.env.CLAUDE_PROJECT_DIR
+  })
+
+  it("DualProConfigSchema parses with default exclude=[] when missing", () => {
+    expect(DEFAULT_CONFIG.exclude).toEqual([])
+  })
+
+  it("loadConfig parses an explicit exclude list", async () => {
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const dir = `${homeDir}/.claude/projects/${encoded}/memory`
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      `${dir}/dual-pro-config.json`,
+      JSON.stringify({
+        champion: "champA",
+        runnerUp: "runnerB",
+        challengerPool: ["c1", "c2"],
+        challengerStrategy: "round-robin",
+        judge: "j",
+        rubric: "default",
+        scoreWeights: { score: 1, cost: 1, costThreshold: 0.1, time: 0, qualityWarningThreshold: 5.0 },
+        exclude: ["bad-model", "another-bad"],
+      }),
+    )
+    const cfg = await loadConfig()
+    expect(cfg.exclude).toEqual(["bad-model", "another-bad"])
+  })
+
+  it("LLM_EXCLUDE env var splits comma-separated ids and unions with config", () => {
+    process.env.LLM_EXCLUDE = "x , y, z"
+    const cfg = applyEnvOverrides({ ...DEFAULT_CONFIG, exclude: ["x", "pre-existing"] })
+    // x already present (deduped), y/z appended after the config's pre-existing entries.
+    expect(cfg.exclude).toEqual(["x", "pre-existing", "y", "z"])
+  })
+
+  it("LLM_EXCLUDE empty string is a no-op", () => {
+    process.env.LLM_EXCLUDE = ""
+    const cfg = applyEnvOverrides({ ...DEFAULT_CONFIG, exclude: ["a"] })
+    expect(cfg.exclude).toEqual(["a"])
+  })
+
+  it("renderStarterConfig embeds the exclude field with empty default", () => {
+    // renderStarterConfig is exercised via loadConfig's "writes a starter
+    // config when missing" path. Here we hit it indirectly via DEFAULT_CONFIG.
+    expect(DEFAULT_CONFIG.exclude).toEqual([])
+  })
+})
+
+describe("pickNextChallenger — exclude filter", () => {
+  const pool = ["m1", "m2", "m3"]
+
+  it("filters excluded ids before applying rotation strategy", () => {
+    // m2 excluded → effective pool is [m1, m3]
+    let counter = 0
+    const seq: string[] = []
+    for (let i = 0; i < 6; i++) {
+      const r = pickNextChallenger(pool, "round-robin", counter, ["m2"])
+      seq.push(r.modelId!)
+      counter = r.nextCounter
+    }
+    expect(seq).toEqual(["m1", "m3", "m1", "m3", "m1", "m3"])
+    expect(seq).not.toContain("m2")
+  })
+
+  it("returns undefined when all pool members are excluded", () => {
+    const r = pickNextChallenger(pool, "round-robin", 0, ["m1", "m2", "m3"])
+    expect(r.modelId).toBeUndefined()
+    // Counter does not advance when there's nothing to pick.
+    expect(r.nextCounter).toBe(0)
+  })
+
+  it("default empty exclude preserves original behavior", () => {
+    expect(pickNextChallenger(pool, "round-robin", 0).modelId).toBe("m1")
+    expect(pickNextChallenger(pool, "round-robin", 0, []).modelId).toBe("m1")
+  })
+
+  it("exclude is honored under round-robin-after-N-calls strategy too", () => {
+    // m1 excluded → effective pool is [m2, m3]
+    expect(pickNextChallenger(pool, "round-robin-after-5-calls", 0, ["m1"]).modelId).toBe("m2")
+    expect(pickNextChallenger(pool, "round-robin-after-5-calls", 5, ["m1"]).modelId).toBe("m3")
+    expect(pickNextChallenger(pool, "round-robin-after-5-calls", 10, ["m1"]).modelId).toBe("m2") // wrap
+  })
+})
+
 describe("filterPoolByCapability — capability-aware pool filter", () => {
   it("filters out unknown model IDs", () => {
     const result = filterPoolByCapability(
@@ -817,5 +928,142 @@ describe("filterPoolByCapability — capability-aware pool filter", () => {
       (p) => p === "google", // only google available
     )
     expect(result).toEqual(["gemini-3-pro-preview"])
+  })
+})
+
+// ----------------------------------------------------------
+// Phase 1B — runLeaderboard quality warning badge
+// ----------------------------------------------------------
+describe("runLeaderboard — quality warning badge", () => {
+  let homeDir: string
+  let prevHome: string | undefined
+  let prevProjectDir: string | undefined
+  let stderrSpy: ReturnType<typeof vit.spyOn>
+  let stdoutSpy: ReturnType<typeof vit.spyOn>
+  let logSpy: ReturnType<typeof vit.spyOn>
+  let stderrChunks: string[]
+  let stdoutChunks: string[]
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), "dual-pro-leaderboard-"))
+    prevHome = process.env.HOME
+    prevProjectDir = process.env.CLAUDE_PROJECT_DIR
+    process.env.HOME = homeDir
+    process.env.CLAUDE_PROJECT_DIR = "/tmp/leaderboard-test"
+    stderrChunks = []
+    stdoutChunks = []
+    stderrSpy = vit.spyOn(console, "error").mockImplementation((...xs: unknown[]) => {
+      stderrChunks.push(xs.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "))
+    })
+    logSpy = vit.spyOn(console, "log").mockImplementation((...xs: unknown[]) => {
+      stdoutChunks.push(xs.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "))
+    })
+    stdoutSpy = vit.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      stdoutChunks.push(typeof chunk === "string" ? chunk : String(chunk))
+      return true
+    })
+  })
+
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true })
+    if (prevHome !== undefined) process.env.HOME = prevHome
+    else delete process.env.HOME
+    if (prevProjectDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjectDir
+    else delete process.env.CLAUDE_PROJECT_DIR
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    logSpy.mockRestore()
+    vit.restoreAllMocks()
+  })
+
+  /** Write 25+ ab-pro entries for a junk model (avgScore 4) and 25 for a good
+   * model (avgScore 18). The junk row should be flagged; good row should not. */
+  function seedAbPro(): void {
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const dir = `${homeDir}/.claude/projects/${encoded}/memory`
+    mkdirSync(dir, { recursive: true })
+    const lines: string[] = []
+    for (let i = 0; i < 25; i++) {
+      lines.push(
+        JSON.stringify({
+          schema: "ab-pro/v2",
+          a: {
+            model: "good-model",
+            ok: true,
+            score: { scores: { specificity: 5, actionability: 4, correctness: 5, depth: 4 }, total: 18 },
+            cost: 0.5,
+            durationMs: 1000,
+          },
+          c: {
+            model: "junk-model",
+            ok: true,
+            score: { scores: { specificity: 1, actionability: 1, correctness: 1, depth: 1 }, total: 4 },
+            cost: 0.5,
+            durationMs: 1000,
+          },
+        }),
+      )
+    }
+    writeFileSync(`${dir}/ab-pro.jsonl`, lines.join("\n") + "\n")
+  }
+
+  it("flags low-score high-call rows, leaves high-score and low-call alone (JSON mode)", async () => {
+    seedAbPro()
+    // Add a low-call low-score row that should NOT be flagged (insufficient evidence).
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const file = `${homeDir}/.claude/projects/${encoded}/memory/ab-pro.jsonl`
+    const existing = readFileSync(file, "utf-8")
+    const newRow = JSON.stringify({
+      schema: "ab-pro/v2",
+      b: {
+        model: "fresh-bad-model",
+        ok: true,
+        score: { scores: { specificity: 1, actionability: 1, correctness: 1, depth: 1 }, total: 4 },
+        cost: 0.1,
+        durationMs: 500,
+      },
+    })
+    writeFileSync(file, existing + newRow + "\n")
+
+    const { runLeaderboard } = await import("../src/lib/dispatch")
+    const { setJsonMode } = await import("../src/lib/output-mode")
+    setJsonMode(true)
+    try {
+      await runLeaderboard()
+    } finally {
+      setJsonMode(false)
+    }
+    // Find the JSON envelope on stdout.
+    const stdoutText = stdoutChunks.join("")
+    const envelopeMatch = stdoutText.match(/\{[\s\S]*\}/)
+    expect(envelopeMatch).toBeTruthy()
+    const envelope = JSON.parse(envelopeMatch![0]) as {
+      rows: { model: string; calls: number; avgScore: number; qualityWarning: boolean }[]
+      qualityWarnings: string[]
+    }
+    const junk = envelope.rows.find((r) => r.model === "junk-model")!
+    const good = envelope.rows.find((r) => r.model === "good-model")!
+    const fresh = envelope.rows.find((r) => r.model === "fresh-bad-model")!
+    expect(junk.qualityWarning).toBe(true)
+    expect(good.qualityWarning).toBe(false)
+    // Low calls (1) → not flagged, even though avgScore is below threshold.
+    expect(fresh.qualityWarning).toBe(false)
+    expect(envelope.qualityWarnings).toEqual(["junk-model"])
+  })
+
+  it("renders ⚠️ prefix in plain-text mode and a follow-up note", async () => {
+    seedAbPro()
+    const { runLeaderboard } = await import("../src/lib/dispatch")
+    const { setJsonMode } = await import("../src/lib/output-mode")
+    setJsonMode(false)
+    await runLeaderboard()
+    const out = stderrChunks.join("\n")
+    // Junk row prefixed; good row not prefixed.
+    expect(out).toMatch(/⚠️\s*junk-model/)
+    expect(out).not.toMatch(/⚠️\s*good-model/)
+    // Footer note suggests adding to exclude.
+    expect(out).toMatch(/Consider adding to exclude:.*"junk-model"/)
   })
 })

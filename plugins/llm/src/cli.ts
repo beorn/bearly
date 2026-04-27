@@ -426,6 +426,10 @@ FLAGS
                          envelope (under the "quota" key). Zero extra HTTP.
                          The runtime quota cache is always updated regardless;
                          this flag just gates the per-call envelope surface.
+  --exclude <model>      Exclude a model from dual-pro challenger rotation for
+                         this call. Repeat or comma-separate: --exclude a,b
+                         or --exclude a --exclude b. Joins with the persistent
+                         \`exclude\` list in dual-pro-config.json.
 
 ENVIRONMENT VARIABLES
   LLM_CHALLENGER_POOL=id1,id2,…    Override the dual-pro shadow challenger pool.
@@ -437,6 +441,8 @@ ENVIRONMENT VARIABLES
                                    LLM_DUAL_PRO_B=gpt-5.5-pro pairs two frontier
                                    Pros and logs both to ab-pro.jsonl.
   LLM_RECOVER_MAX_ATTEMPTS=<n>     Polls for deep-research recovery (default: 600 = 50 min).
+  LLM_EXCLUDE=id1,id2,…            Exclude these models from challenger rotation.
+                                   Joins (union) with config exclude.
 
 FEATURES
   • Auto-recovery: Checks for interrupted responses and recovers them

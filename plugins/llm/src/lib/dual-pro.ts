@@ -61,6 +61,11 @@ export const ScoreWeightsSchema = z.object({
   cost: z.number().default(1.0),
   costThreshold: z.number().default(0.1),
   time: z.number().default(0.0),
+  /** A model is flagged with `⚠️` in the leaderboard when its avgScore drops
+   * below this threshold AND it has enough calls (≥20) to be a real signal.
+   * Visual-only — does not affect dispatch. Add the model ID to `exclude`
+   * to actually remove it from rotation. */
+  qualityWarningThreshold: z.number().default(5.0),
 })
 export type ScoreWeights = z.infer<typeof ScoreWeightsSchema>
 
@@ -90,7 +95,26 @@ export const DualProConfigSchema = z.object({
   challengerStrategy: ChallengerStrategySchema.default("round-robin-after-10-calls"),
   judge: z.string().default("gpt-5-mini"),
   rubric: RubricSchema.default("default"),
-  scoreWeights: ScoreWeightsSchema.default({ score: 1.0, cost: 1.0, costThreshold: 0.1, time: 0.0 }),
+  scoreWeights: ScoreWeightsSchema.default({
+    score: 1.0,
+    cost: 1.0,
+    costThreshold: 0.1,
+    time: 0.0,
+    qualityWarningThreshold: 5.0,
+  }),
+  /**
+   * List of model IDs to exclude from all dispatch paths (champion, runner-up,
+   * challenger rotation). The leaderboard still tracks them — quality history
+   * doesn't disappear — but pickNextChallenger filters them out so a junk
+   * model surfaced via the `⚠️` warning badge stops burning tokens.
+   *
+   * If the configured `champion` or `runnerUp` is in this list, dispatch logs
+   * a warning and uses it anyway — explicit config wins over implicit exclude
+   * (so you don't silently drop your mainstay because of a stale leaderboard).
+   *
+   * Env override: LLM_EXCLUDE=id1,id2,id3 (joins with config exclude).
+   */
+  exclude: z.array(z.string()).default([]),
 })
 export type DualProConfig = z.infer<typeof DualProConfigSchema>
 
@@ -107,6 +131,23 @@ export function applyEnvOverrides(cfg: DualProConfig, env: NodeJS.ProcessEnv = p
     if (pool.length > 0) next.challengerPool = pool
   }
   if (env.LLM_JUDGE_MODEL) next.judge = env.LLM_JUDGE_MODEL
+  if (env.LLM_EXCLUDE) {
+    const extra = env.LLM_EXCLUDE.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (extra.length > 0) {
+      // Union with the config's exclude list; preserve declared order with config first.
+      const seen = new Set(next.exclude)
+      const merged = [...next.exclude]
+      for (const id of extra) {
+        if (!seen.has(id)) {
+          merged.push(id)
+          seen.add(id)
+        }
+      }
+      next.exclude = merged
+    }
+  }
   return next
 }
 
@@ -200,7 +241,17 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   //   $0.10 → 0pt    $1 → −1pt    $10 → −2pt    $100 → −3pt
   //
   // Set cost: 0 to rank purely by quality. Raise cost to punish pricey models harder.
-  "scoreWeights": ${JSON.stringify(cfg.scoreWeights, null, 2).replace(/\n/g, "\n  ")}
+  // qualityWarningThreshold flags models whose avgScore drops below it AND
+  // have ≥ 20 calls (visual ⚠️ in the leaderboard). Add the model to "exclude"
+  // below to actually remove it from rotation.
+  "scoreWeights": ${JSON.stringify(cfg.scoreWeights, null, 2).replace(/\n/g, "\n  ")},
+
+  // List of model IDs to exclude from all dispatch paths (champion, runner-up,
+  // challenger rotation). Use this to drop a junk model surfaced by the
+  // ⚠️ quality warning badge in the leaderboard. Champion / runner-up listed
+  // here log a stderr warning but still dispatch (explicit config wins).
+  // Env override: LLM_EXCLUDE=id1,id2,id3 (joins with this list).
+  "exclude": ${JSON.stringify(cfg.exclude)}
 }
 `
 }
@@ -260,25 +311,30 @@ export function pickNextChallenger(
   pool: readonly string[],
   strategy: ChallengerStrategy,
   counter: number,
+  exclude: readonly string[] = [],
 ): { modelId: string | undefined; nextCounter: number } {
-  if (pool.length === 0) return { modelId: undefined, nextCounter: counter }
+  // Filter excluded IDs FIRST — rotation should never land on a model the
+  // user has explicitly muted. Junk-model surfacing happens via the leaderboard
+  // warning badge; eviction happens via this filter.
+  const filtered = exclude.length > 0 ? pool.filter((id) => !exclude.includes(id)) : pool
+  if (filtered.length === 0) return { modelId: undefined, nextCounter: counter }
   const safeCounter = Math.max(0, Math.floor(counter))
   switch (strategy) {
     case "random": {
-      const i = Math.floor(Math.random() * pool.length)
-      return { modelId: pool[i], nextCounter: safeCounter + 1 }
+      const i = Math.floor(Math.random() * filtered.length)
+      return { modelId: filtered[i], nextCounter: safeCounter + 1 }
     }
     case "round-robin": {
-      const i = safeCounter % pool.length
-      return { modelId: pool[i], nextCounter: safeCounter + 1 }
+      const i = safeCounter % filtered.length
+      return { modelId: filtered[i], nextCounter: safeCounter + 1 }
     }
     case "round-robin-after-5-calls": {
-      const i = Math.floor(safeCounter / 5) % pool.length
-      return { modelId: pool[i], nextCounter: safeCounter + 1 }
+      const i = Math.floor(safeCounter / 5) % filtered.length
+      return { modelId: filtered[i], nextCounter: safeCounter + 1 }
     }
     case "round-robin-after-10-calls": {
-      const i = Math.floor(safeCounter / 10) % pool.length
-      return { modelId: pool[i], nextCounter: safeCounter + 1 }
+      const i = Math.floor(safeCounter / 10) % filtered.length
+      return { modelId: filtered[i], nextCounter: safeCounter + 1 }
     }
   }
 }
