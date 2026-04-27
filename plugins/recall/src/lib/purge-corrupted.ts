@@ -17,15 +17,7 @@
  *   bun src/lib/purge-corrupted.ts --dry-run          # report only, move nothing
  *   bun src/lib/purge-corrupted.ts --chats /tmp/...   # custom source
  */
-import {
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-  renameSync,
-  existsSync,
-  mkdirSync,
-  statSync,
-} from "node:fs"
+import { readFileSync, readdirSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { analyzeQuality } from "./quality-gate.ts"

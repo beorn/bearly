@@ -80,9 +80,7 @@ export class Scope extends AsyncDisposableStack {
   }
 
   override move(): never {
-    throw new TypeError(
-      "Scope.move() is not supported — create a new scope and re-register resources explicitly",
-    )
+    throw new TypeError("Scope.move() is not supported — create a new scope and re-register resources explicitly")
   }
 }
 
@@ -97,14 +95,8 @@ export function createScope(name?: string): Scope {
  * picked when the cleanup returns void, the async one when it returns a Promise.
  */
 export function disposable<T extends object>(value: T, dispose: (v: T) => void): T & Disposable
-export function disposable<T extends object>(
-  value: T,
-  dispose: (v: T) => Promise<void>,
-): T & AsyncDisposable
-export function disposable(
-  value: object,
-  dispose: (v: object) => void | Promise<void>,
-): object {
+export function disposable<T extends object>(value: T, dispose: (v: T) => Promise<void>): T & AsyncDisposable
+export function disposable(value: object, dispose: (v: object) => void | Promise<void>): object {
   return Object.assign(value, {
     [Symbol.dispose](): void {
       void dispose(value)

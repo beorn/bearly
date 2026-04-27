@@ -31,7 +31,7 @@ function bindHandler(method: string): Tool["handler"] {
     if (!extra) {
       throw new Error(`messaging tool "${method}" called without ctx.extra (need TribeContext + HandlerOpts)`)
     }
-    return await handleToolCall(extra.ctx, method, args, extra.opts)
+    return handleToolCall(extra.ctx, method, args, extra.opts)
   }
 }
 

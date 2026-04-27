@@ -28,15 +28,9 @@ const STUCK_LOOP = `# Session 2026-04-26
 ## Assistant
 ${"so back to the vault reorg!\n".repeat(30)}`
 
-const CLEAN = readFileSync(
-  join(import.meta.dirname, "quality-gate.fixtures", "clean-good.txt"),
-  "utf-8",
-)
+const CLEAN = readFileSync(join(import.meta.dirname, "quality-gate.fixtures", "clean-good.txt"), "utf-8")
 
-const DECAYED = readFileSync(
-  join(import.meta.dirname, "quality-gate.fixtures", "decayed-llm.txt"),
-  "utf-8",
-)
+const DECAYED = readFileSync(join(import.meta.dirname, "quality-gate.fixtures", "decayed-llm.txt"), "utf-8")
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "purge-test-"))
@@ -77,11 +71,10 @@ describe("purge-corrupted CLI", () => {
   test("--dry-run reports but moves nothing", () => {
     writeChat("clean.md", CLEAN)
     writeChat("stuck-loop.md", STUCK_LOOP)
-    const r = spawnSync(
-      "bun",
-      [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--dry-run"],
-      { encoding: "utf-8", timeout: 15_000 },
-    )
+    const r = spawnSync("bun", [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--dry-run"], {
+      encoding: "utf-8",
+      timeout: 15_000,
+    })
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/2 chats; 1 flagged/)
     expect(r.stderr).toMatch(/Dry run/)
@@ -96,11 +89,10 @@ describe("purge-corrupted CLI", () => {
     writeChat("clean.md", CLEAN)
     writeChat("stuck-loop.md", STUCK_LOOP)
     writeChat("decayed.md", DECAYED)
-    const r = spawnSync(
-      "bun",
-      [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--yes"],
-      { encoding: "utf-8", timeout: 15_000 },
-    )
+    const r = spawnSync("bun", [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--yes"], {
+      encoding: "utf-8",
+      timeout: 15_000,
+    })
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/Moved 2 chat\(s\)/)
 
@@ -126,11 +118,10 @@ describe("purge-corrupted CLI", () => {
   test("nothing to do when source has only clean chats", () => {
     writeChat("clean-1.md", CLEAN)
     writeChat("clean-2.md", CLEAN)
-    const r = spawnSync(
-      "bun",
-      [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--yes"],
-      { encoding: "utf-8", timeout: 15_000 },
-    )
+    const r = spawnSync("bun", [PURGE_BIN, "--chats", chatsDir, "--quarantine", quarantineDir, "--yes"], {
+      encoding: "utf-8",
+      timeout: 15_000,
+    })
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/Nothing to quarantine/)
     expect(existsSync(quarantineDir)).toBe(false)

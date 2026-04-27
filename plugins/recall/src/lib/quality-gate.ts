@@ -64,17 +64,108 @@ const DEFAULT_OPTS: Required<QualityOpts> = { minTokens: 50 }
 // only need a heuristic, not a linguistics library. Coverage tuned against
 // the clean-good fixture (must score >= 0.20 stopword density).
 const STOPWORDS = new Set<string>([
-  "a", "an", "and", "are", "as", "at", "be", "because", "been", "but", "by",
-  "can", "could", "did", "do", "does", "doing", "for", "from", "had", "has",
-  "have", "he", "her", "here", "him", "his", "how", "i", "if", "in", "into",
-  "is", "it", "its", "just", "me", "my", "no", "not", "now", "of", "on", "or",
-  "our", "out", "over", "our", "should", "so", "some", "such", "that", "the",
-  "their", "them", "then", "there", "these", "they", "this", "those", "to",
-  "too", "under", "up", "very", "was", "we", "were", "what", "when", "where",
-  "which", "while", "who", "why", "will", "with", "would", "you", "your",
-  "we'll", "we've", "i'll", "i've", "don't", "doesn't", "didn't", "isn't",
-  "aren't", "can't", "won't", "let's", "it's", "that's", "there's", "what's",
-  "who's", "where's", "how's", "us",
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "because",
+  "been",
+  "but",
+  "by",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "doing",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "he",
+  "her",
+  "here",
+  "him",
+  "his",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "me",
+  "my",
+  "no",
+  "not",
+  "now",
+  "of",
+  "on",
+  "or",
+  "our",
+  "out",
+  "over",
+  "our",
+  "should",
+  "so",
+  "some",
+  "such",
+  "that",
+  "the",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "to",
+  "too",
+  "under",
+  "up",
+  "very",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "why",
+  "will",
+  "with",
+  "would",
+  "you",
+  "your",
+  "we'll",
+  "we've",
+  "i'll",
+  "i've",
+  "don't",
+  "doesn't",
+  "didn't",
+  "isn't",
+  "aren't",
+  "can't",
+  "won't",
+  "let's",
+  "it's",
+  "that's",
+  "there's",
+  "what's",
+  "who's",
+  "where's",
+  "how's",
+  "us",
 ])
 
 const WORD_RE = /[a-zA-Z][a-zA-Z'-]*/g
@@ -98,7 +189,10 @@ function stripFraming(text: string): string {
 }
 
 function maxContiguousRepeatedLine(text: string): number {
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0)
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
   if (lines.length === 0) return 0
   let max = 1
   let run = 1
@@ -190,12 +284,12 @@ export function analyzeQuality(text: string): QualityResult {
   let rejectReason: string | undefined
   if (repeat >= 10) {
     rejectReason = "stuck-loop:repeated-line"
-  } else if (ngram.coverage > 0.20) {
+  } else if (ngram.coverage > 0.2) {
     rejectReason = "stuck-loop:ngram-coverage"
   } else if (totalTokens >= DEFAULT_OPTS.minTokens) {
-    if (sent.total >= 5 && sent.ratio > 0.70) {
+    if (sent.total >= 5 && sent.ratio > 0.7) {
       rejectReason = "decayed-llm:short-sentences"
-    } else if (sw < 0.10) {
+    } else if (sw < 0.1) {
       rejectReason = "decayed-llm:stopword-density"
     } else if (pr < 0.02 && sent.total >= 5) {
       rejectReason = "decayed-llm:punctuation"
@@ -205,9 +299,9 @@ export function analyzeQuality(text: string): QualityResult {
   // Score: 1 - max(symptom strengths). Informational only.
   const symptomStrength = Math.max(
     Math.min(1, repeat / 10),
-    Math.min(1, ngram.coverage / 0.20),
-    Math.min(1, sent.ratio / 0.70),
-    Math.min(1, (0.10 - sw) / 0.10),
+    Math.min(1, ngram.coverage / 0.2),
+    Math.min(1, sent.ratio / 0.7),
+    Math.min(1, (0.1 - sw) / 0.1),
   )
   const score = Math.max(0, 1 - symptomStrength)
 
@@ -224,7 +318,7 @@ export function isAcceptable(text: string, opts?: QualityOpts): boolean {
     const repeat = maxContiguousRepeatedLine(prose)
     if (repeat >= 10) return false
     const ng = maxNgramCoverage(tokens)
-    if (ng.coverage > 0.20) return false
+    if (ng.coverage > 0.2) return false
     return true
   }
   return analyzeQuality(text).rejectReason === undefined

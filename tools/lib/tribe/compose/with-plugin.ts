@@ -30,9 +30,7 @@ function ensurePluginsField<T extends BaseTribe & WithPluginApi>(t: T): T & With
   return { ...t, pluginHandles: [] }
 }
 
-export function withPlugin<T extends BaseTribe & WithPluginApi>(
-  plugin: TribePluginApi,
-): (t: T) => T & WithPlugins {
+export function withPlugin<T extends BaseTribe & WithPluginApi>(plugin: TribePluginApi): (t: T) => T & WithPlugins {
   return (raw) => {
     const t = ensurePluginsField(raw)
     const isAvailable = plugin.available()
@@ -49,9 +47,7 @@ export function withPlugin<T extends BaseTribe & WithPluginApi>(
 }
 
 /** Bulk helper — pipes through one withPlugin per entry in registration order. */
-export function withPlugins<T extends BaseTribe & WithPluginApi>(
-  plugins: TribePluginApi[],
-): (t: T) => T & WithPlugins {
+export function withPlugins<T extends BaseTribe & WithPluginApi>(plugins: TribePluginApi[]): (t: T) => T & WithPlugins {
   return (raw) => {
     let v = ensurePluginsField(raw) as T & WithPlugins
     for (const p of plugins) {

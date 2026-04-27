@@ -28,7 +28,7 @@ export function loreTools(lore: LoreHandlers): Tool[] {
     handler: async (args, ctx: ToolContext) => {
       const extra = ctx.extra as LoreToolExtra | undefined
       const conn: LoreConnState = extra?.conn ?? { sessionId: null, claudePid: null }
-      return await lore.dispatch(conn, name, args)
+      return lore.dispatch(conn, name, args)
     },
   }))
 }

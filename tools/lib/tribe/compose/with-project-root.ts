@@ -12,8 +12,6 @@ export interface WithProjectRoot {
   readonly projectRoot: string
 }
 
-export function withProjectRoot<T extends BaseTribe>(
-  root: string = process.cwd(),
-): (t: T) => T & WithProjectRoot {
+export function withProjectRoot<T extends BaseTribe>(root: string = process.cwd()): (t: T) => T & WithProjectRoot {
   return (t) => ({ ...t, projectRoot: root })
 }

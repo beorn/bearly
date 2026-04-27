@@ -19,8 +19,6 @@ export interface WithPluginApi {
   readonly pluginApi: TribeClientApi
 }
 
-export function withPluginApi<T extends BaseTribe>(
-  api: TribeClientApi,
-): (t: T) => T & WithPluginApi {
+export function withPluginApi<T extends BaseTribe>(api: TribeClientApi): (t: T) => T & WithPluginApi {
   return (t) => ({ ...t, pluginApi: api })
 }

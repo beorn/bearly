@@ -1,14 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  createScope,
-  disposable,
-  pipe,
-  Scope,
-  withTool,
-  withTools,
-  type Tool,
-  type WithTools,
-} from "../src/index.ts"
+import { createScope, disposable, pipe, Scope, withTool, withTools, type Tool, type WithTools } from "../src/index.ts"
 
 describe("pipe", () => {
   it("returns the base value when no plugins are passed", () => {

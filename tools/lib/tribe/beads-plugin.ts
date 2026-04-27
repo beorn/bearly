@@ -99,11 +99,16 @@ export const beadsPlugin: TribePluginApi = {
               // them; P2+ stay ambient.
               if (api.claimDedup(`new:${entry.id}`)) {
                 const escalate = entry.priority === "0" || entry.priority === "1"
-                api.broadcast(`New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`, "bead:new", entry.id, {
-                  delivery: escalate ? "push" : "pull",
-                  responseExpected: escalate ? "optional" : "no",
-                  pluginKind: "bead:new",
-                })
+                api.broadcast(
+                  `New bead: ${entry.id} — ${entry.title} (${entry.priority ?? "?"})`,
+                  "bead:new",
+                  entry.id,
+                  {
+                    delivery: escalate ? "push" : "pull",
+                    responseExpected: escalate ? "optional" : "no",
+                    pluginKind: "bead:new",
+                  },
+                )
               }
             } else if (currentState.startsWith("claimed:")) {
               if (api.claimDedup(`claimed:${entry.id}`)) {

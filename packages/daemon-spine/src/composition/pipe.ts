@@ -13,13 +13,7 @@ export function pipe<A>(a: A): A
 export function pipe<A, B>(a: A, p1: Plugin<A, B>): B
 export function pipe<A, B, C>(a: A, p1: Plugin<A, B>, p2: Plugin<B, C>): C
 export function pipe<A, B, C, D>(a: A, p1: Plugin<A, B>, p2: Plugin<B, C>, p3: Plugin<C, D>): D
-export function pipe<A, B, C, D, E>(
-  a: A,
-  p1: Plugin<A, B>,
-  p2: Plugin<B, C>,
-  p3: Plugin<C, D>,
-  p4: Plugin<D, E>,
-): E
+export function pipe<A, B, C, D, E>(a: A, p1: Plugin<A, B>, p2: Plugin<B, C>, p3: Plugin<C, D>, p4: Plugin<D, E>): E
 export function pipe<A, B, C, D, E, F>(
   a: A,
   p1: Plugin<A, B>,

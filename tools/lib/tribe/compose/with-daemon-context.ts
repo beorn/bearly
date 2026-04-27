@@ -15,9 +15,7 @@ export interface WithDaemonContext {
   readonly daemonCtx: TribeContext
 }
 
-export function withDaemonContext<T extends BaseTribe & WithDatabase>(): (
-  t: T,
-) => T & WithDaemonContext {
+export function withDaemonContext<T extends BaseTribe & WithDatabase>(): (t: T) => T & WithDaemonContext {
   return (t) => {
     const daemonCtx = createTribeContext({
       db: t.db,

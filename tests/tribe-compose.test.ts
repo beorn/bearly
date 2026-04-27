@@ -208,11 +208,7 @@ describe("messagingTools()", () => {
   })
 
   it("populates the registry without duplicates", () => {
-    const t = pipe(
-      createBaseTribe(),
-      withTools<ReturnType<typeof createBaseTribe>>(),
-      withTool(messagingTools()),
-    )
+    const t = pipe(createBaseTribe(), withTools<ReturnType<typeof createBaseTribe>>(), withTool(messagingTools()))
     expect(t.tools.size).toBe(MESSAGING_TOOL_NAMES.length)
   })
 })

@@ -684,7 +684,9 @@ function handleMode(ctx: TribeContext, a: ToolArgs): ToolResult {
   const mode = a.mode as string
   if (mode !== "focus" && mode !== "normal" && mode !== "ambient") {
     return {
-      content: [{ type: "text", text: JSON.stringify({ error: `Invalid mode: "${mode}". Use focus|normal|ambient.` }) }],
+      content: [
+        { type: "text", text: JSON.stringify({ error: `Invalid mode: "${mode}". Use focus|normal|ambient.` }) },
+      ],
     }
   }
   ctx.stmts.setSessionMode.run({ $id: ctx.sessionId, $mode: mode, $now: Date.now() })

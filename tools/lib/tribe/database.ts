@@ -370,9 +370,9 @@ const MIGRATIONS: readonly Migration[] = [
       // CREATE TABLE messages block (line ~63). On fresh installs the
       // messages table doesn't exist yet, but the CREATE TABLE below
       // already includes every column this migration adds — so we skip.
-      const tableExists = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
-        .get() as { name: string } | null
+      const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get() as {
+        name: string
+      } | null
       if (!tableExists) return
 
       const messageCols = new Set(

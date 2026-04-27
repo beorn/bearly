@@ -20,7 +20,9 @@ describe("JSON-RPC framers", () => {
   it("makeResponse / makeError produce mutually exclusive payloads", () => {
     const ok = JSON.parse(makeResponse(7, { value: 1 }))
     expect(ok).toEqual({ jsonrpc: "2.0", id: 7, result: { value: 1 } })
-    const err = JSON.parse(makeError(7, -32601, "Method not found"))
+    const err = JSON.parse(makeError(7, -32601, "Method not found")) as {
+      error: { code: number; message: string; data: unknown }
+    }
     expect(err.error).toEqual({ code: -32601, message: "Method not found", data: undefined })
     expect(err).not.toHaveProperty("result")
   })

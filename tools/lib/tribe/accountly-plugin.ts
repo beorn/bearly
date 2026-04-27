@@ -158,11 +158,16 @@ export const accountlyPlugin: TribePluginApi = {
         const cliPath = resolve(process.cwd(), "vendor/accountly/src/cli.ts")
         if (!existsSync(cliPath)) {
           if (api.claimDedup("accountly:cli-missing")) {
-            api.broadcast("accountly plugin: CLI not found, auto-rotation disabled", "health:account:error", undefined, {
-              delivery: "pull",
-              responseExpected: "no",
-              pluginKind: "health:account:error",
-            })
+            api.broadcast(
+              "accountly plugin: CLI not found, auto-rotation disabled",
+              "health:account:error",
+              undefined,
+              {
+                delivery: "pull",
+                responseExpected: "no",
+                pluginKind: "health:account:error",
+              },
+            )
           }
           return nextInterval
         }
