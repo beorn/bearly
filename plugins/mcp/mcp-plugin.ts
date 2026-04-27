@@ -148,6 +148,9 @@ function toWebRequest(req: IncomingMessage): Request {
       })
     : null
 
+  // UPSTREAM-WAITING(oven-sh/bun#7716): Delete url.toString() when Bun ships keep-alive close-event fix
+  // Bead: km-bearly.bun-keepalive-url-shim
+  // Escalate by: 2026-10-27
   return new Request(url.toString(), {
     method,
     headers,
