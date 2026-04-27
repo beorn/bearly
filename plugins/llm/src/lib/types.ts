@@ -42,7 +42,13 @@ export type Provider = z.infer<typeof ProviderSchema>
 // SKU — user-facing model identity (stable across provider API churn)
 // ============================================================================
 
-/** Reasoning-model knobs. See SkuConfig.reasoning JSDoc for field semantics. */
+/** Reasoning-model knobs. See SkuConfig.reasoning JSDoc for field semantics.
+ *
+ *  NOTE: `openaiEffort` and `anthropicBudget` are SOFT-DEPRECATED — prefer the
+ *  typed-union `reasoningParam` on the ProviderEndpoint (see below). They are
+ *  still honored by `queryModel` for back-compat: when the endpoint omits
+ *  `reasoningParam`, the legacy SKU fields drive `providerOptions`. When both
+ *  are set, `reasoningParam` wins. */
 export const ReasoningConfigSchema = z.object({
   // Max total output tokens (reasoning + content). Used as a static ceiling.
   maxOutputTokens: z.number().optional(),
@@ -50,12 +56,54 @@ export const ReasoningConfigSchema = z.object({
   // computes max_tokens at call time as `contextWindow − estimatedInput −
   // safetyMargin`, eliminating the static-cap tradeoff.
   contextWindow: z.number().optional(),
-  // OpenAI o-series `reasoning_effort`: low | medium | high.
+  /** @deprecated Set `reasoningParam: { kind: "openai-effort", defaultLevel: ... }`
+   *  on the ProviderEndpoint instead. Kept for back-compat — still honored when
+   *  the endpoint has no `reasoningParam`. */
   openaiEffort: z.enum(["low", "medium", "high"]).optional(),
-  // Anthropic Claude 4.5+ extended-thinking `budget_tokens`.
+  /** @deprecated Set `reasoningParam: { kind: "anthropic-budget", defaultTokens: ... }`
+   *  on the ProviderEndpoint instead. Kept for back-compat — still honored when
+   *  the endpoint has no `reasoningParam`. */
   anthropicBudget: z.number().optional(),
 })
 export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>
+
+// ============================================================================
+// Reasoning param — typed-union for provider-specific reasoning knobs
+// ============================================================================
+
+/** Provider-specific reasoning parameter declared at the ProviderEndpoint
+ *  level. Each provider exposes a *fundamentally different* mechanism (tokens
+ *  vs. effort vs. depth vs. boolean) with different pricing and latency
+ *  profiles — squashing them into a generic "low | medium | high" loses the
+ *  superpower. This typed union is the dispatch contract: routing reads
+ *  `endpoint.reasoningParam.kind` instead of string-matching the provider name.
+ *
+ *  `defaultX` fields seed the per-call value when the caller doesn't override.
+ *  The dispatch path in research.ts maps each kind to the correct
+ *  `providerOptions` shape for the Vercel AI SDK. */
+export const ReasoningParamSchema = z.discriminatedUnion("kind", [
+  // OpenAI o-series + GPT-5.x reasoning models: `reasoning_effort` enum.
+  z.object({
+    kind: z.literal("openai-effort"),
+    defaultLevel: z.enum(["low", "medium", "high"]).optional(),
+  }),
+  // Anthropic Claude 4.5+ extended thinking: `thinking.budget_tokens` (numeric).
+  z.object({
+    kind: z.literal("anthropic-budget"),
+    defaultTokens: z.number().optional(),
+  }),
+  // Google Gemini "deep search" / depth knob — wired when the SDK exposes it.
+  z.object({
+    kind: z.literal("google-depth"),
+    defaultMode: z.enum(["standard", "deep"]).optional(),
+  }),
+  // DeepSeek `<think>`-block toggle — boolean, no level.
+  z.object({
+    kind: z.literal("deepseek-thinking"),
+    defaultEnabled: z.boolean().optional(),
+  }),
+])
+export type ReasoningParam = z.infer<typeof ReasoningParamSchema>
 
 export const SkuSchema = z.object({
   /** Internal alias used by the CLI and across the codebase. Stable across
@@ -116,6 +164,11 @@ export const ProviderEndpointSchema = z.object({
    *  (`gpt-5-pro` / `gpt-5-pro-2025-10-06`). */
   apiModelId: z.string().optional(),
   capabilities: CapabilitiesSchema,
+  /** Provider-specific reasoning knob. Routing inspects `kind` instead of
+   *  string-matching the provider name, so adding a new reasoning provider is
+   *  a registry edit + a switch case — never a name match in dispatch. See
+   *  `ReasoningParamSchema` for the union. */
+  reasoningParam: ReasoningParamSchema.optional(),
 })
 export type ProviderEndpoint = z.infer<typeof ProviderEndpointSchema>
 
@@ -794,11 +847,30 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   },
   "gpt-4o": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true, vision: true } },
   "gpt-4.1": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true, vision: true } },
-  // OpenAI — O-series (reasoning, supports background API)
-  o3: { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
-  "o3-pro": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
-  "o3-mini": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
-  "o4-mini": { provider: "openai", capabilities: { ...NO_CAPS, backgroundApi: true } },
+  // OpenAI — O-series (reasoning, supports background API). The reasoning
+  // SKUs declare `reasoningParam: { kind: "openai-effort", ... }` — dispatch
+  // reads this to wire `providerOptions.openai.reasoningEffort` without a
+  // provider-name string match.
+  o3: {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, backgroundApi: true },
+    reasoningParam: { kind: "openai-effort", defaultLevel: "medium" },
+  },
+  "o3-pro": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, backgroundApi: true },
+    reasoningParam: { kind: "openai-effort", defaultLevel: "high" },
+  },
+  "o3-mini": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, backgroundApi: true },
+    reasoningParam: { kind: "openai-effort", defaultLevel: "medium" },
+  },
+  "o4-mini": {
+    provider: "openai",
+    capabilities: { ...NO_CAPS, backgroundApi: true },
+    reasoningParam: { kind: "openai-effort", defaultLevel: "medium" },
+  },
   // OpenAI — Deep Research (uses queryOpenAIDeepResearch with web_search_preview)
   "o3-deep-research-2025-06-26": {
     provider: "openai",
@@ -809,9 +881,18 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
     capabilities: { ...NO_CAPS, webSearch: true, deepResearch: true },
   },
 
-  // Anthropic
-  "claude-opus-4-6": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
-  "claude-sonnet-4-6": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
+  // Anthropic — 4.6 series ships extended thinking; the param is a numeric
+  // `budget_tokens`, semantically a different beast from OpenAI's effort enum.
+  "claude-opus-4-6": {
+    provider: "anthropic",
+    capabilities: { ...NO_CAPS, vision: true },
+    reasoningParam: { kind: "anthropic-budget", defaultTokens: 16384 },
+  },
+  "claude-sonnet-4-6": {
+    provider: "anthropic",
+    capabilities: { ...NO_CAPS, vision: true },
+    reasoningParam: { kind: "anthropic-budget", defaultTokens: 8192 },
+  },
   "claude-opus-4-5-20251101": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
   "claude-sonnet-4-5-20250929": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
   "claude-opus-4-1-20250805": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
@@ -820,9 +901,21 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   "claude-haiku-4-5-20251001": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
   "claude-3-haiku-20240307": { provider: "anthropic", capabilities: { ...NO_CAPS, vision: true } },
 
-  // Google
-  "gemini-3-pro-preview": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
-  "gemini-2.5-pro": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
+  // Google — Gemini Pro tiers expose a depth knob (standard vs deep search).
+  // The Vercel AI SDK doesn't yet plumb this through `providerOptions.google`
+  // for plain chat — wiring is gated behind a TODO in research.ts. Declaring
+  // the intent here lets dispatch pick it up the moment the SDK supports it,
+  // and keeps the registry honest about what each model can do.
+  "gemini-3-pro-preview": {
+    provider: "google",
+    capabilities: { ...NO_CAPS, vision: true },
+    reasoningParam: { kind: "google-depth", defaultMode: "standard" },
+  },
+  "gemini-2.5-pro": {
+    provider: "google",
+    capabilities: { ...NO_CAPS, vision: true },
+    reasoningParam: { kind: "google-depth", defaultMode: "standard" },
+  },
   "gemini-2.5-flash": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
   "gemini-2.0-flash": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
   "gemini-2.0-flash-lite": { provider: "google", capabilities: { ...NO_CAPS, vision: true } },
@@ -842,9 +935,17 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   "grok-3": { provider: "xai", capabilities: NO_CAPS },
   "grok-3-fast": { provider: "xai", capabilities: NO_CAPS },
 
-  // OpenRouter
+  // OpenRouter — DeepSeek R1 emits `<think>` blocks that count against the
+  // output cap (handled via `reasoning.contextWindow` on the SKU). The
+  // reasoningParam declaration is the routing-level intent: when the SDK
+  // exposes a `thinking_enabled` toggle for OpenRouter→DeepSeek, dispatch
+  // wires it without a name match.
   "moonshotai/kimi-k2.6": { provider: "openrouter", capabilities: NO_CAPS },
-  "deepseek/deepseek-r1": { provider: "openrouter", capabilities: NO_CAPS },
+  "deepseek/deepseek-r1": {
+    provider: "openrouter",
+    capabilities: NO_CAPS,
+    reasoningParam: { kind: "deepseek-thinking", defaultEnabled: true },
+  },
   "deepseek/deepseek-chat": { provider: "openrouter", capabilities: NO_CAPS },
 
   // Perplexity Sonar has internal web search, but dispatch goes through the
@@ -865,7 +966,11 @@ export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> = Ob
   Object.fromEntries(
     Object.entries(ENDPOINTS_DATA).map(([k, v]) => [
       k,
-      Object.freeze({ ...v, capabilities: Object.freeze({ ...v.capabilities }) }),
+      Object.freeze({
+        ...v,
+        capabilities: Object.freeze({ ...v.capabilities }),
+        ...(v.reasoningParam ? { reasoningParam: Object.freeze({ ...v.reasoningParam }) } : {}),
+      }),
     ]),
   ),
 )

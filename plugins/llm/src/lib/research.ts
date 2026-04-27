@@ -43,9 +43,10 @@ async function captureQuotaFromResult(
   let headers
   try {
     const r = result as { response?: unknown }
-    const resp = r.response && typeof (r.response as Promise<unknown>).then === "function"
-      ? await (r.response as Promise<unknown>)
-      : r.response
+    const resp =
+      r.response && typeof (r.response as Promise<unknown>).then === "function"
+        ? await (r.response as Promise<unknown>)
+        : r.response
     headers = extractHeaders({ response: resp })
   } catch {
     return undefined
@@ -251,31 +252,57 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // models leave the block unset entirely (provider default applies).
   const maxOutputTokens = computeMaxOutputTokens(model, messages)
 
-  // Provider-specific reasoning knobs. OpenAI o-series exposes a
-  // `reasoning_effort` enum (low|medium|high) on the Chat Completions API;
-  // Anthropic Claude 4.5+ extended thinking takes a `thinking` object with
-  // a numeric `budget_tokens`. Vercel AI SDK forwards these via the
-  // `providerOptions` key on generateText/streamText, scoped under the
-  // provider id. Models without a reasoning block leave providerOptions
-  // unset and fall through to the provider default.
+  // Provider-specific reasoning knobs. Each provider exposes a
+  // *fundamentally different* mechanism — OpenAI's effort enum, Anthropic's
+  // numeric budget, Google's depth mode, DeepSeek's <think> toggle — with
+  // different pricing and latency profiles. Routing reads
+  // `endpoint.reasoningParam.kind` (a typed discriminated union) and dispatches
+  // per provider via a switch, so no string match on `model.provider` is
+  // required to wire the right shape.
   //
-  // The SDK's type is `Record<string, JSONObject>` (from @ai-sdk/provider,
-  // transitively) — we construct the shape with any-typed values and cast
-  // at the call site rather than pulling in @ai-sdk/provider-utils as a
-  // direct dep just for the ProviderOptions alias.
-  // Current AI SDK naming is camelCase, not the raw-API snake_case. Snake
-  // shapes are silently dropped by the SDK — previously this code was a
-  // no-op that appeared to work because the test suite mocked the SDK at
-  // the import boundary. Flagged in Pro round-2 review 2026-04-21.
-  //   - OpenAI: `reasoningEffort`, not `reasoning_effort`
-  //   - Anthropic: `budgetTokens`, not `budget_tokens`
+  // The Vercel AI SDK's `providerOptions` is `Record<string, JSONObject>` and
+  // forwards each slot to the matching provider. Naming is camelCase
+  // (`reasoningEffort`, `budgetTokens`) — snake_case is silently dropped.
+  //
+  // SKU-level `model.reasoning.{openaiEffort,anthropicBudget}` are
+  // soft-deprecated overrides — when set, they win over the endpoint default
+  // for the matching kind. Endpoints without `reasoningParam` get no
+  // providerOptions; the legacy fields alone are insufficient because the
+  // routing-side intent now lives on the endpoint, not the SKU.
   const providerOptions: Record<string, Record<string, any>> = {}
-  if (model.provider === "openai" && model.reasoning?.openaiEffort) {
-    providerOptions.openai = { reasoningEffort: model.reasoning.openaiEffort }
-  }
-  if (model.provider === "anthropic" && model.reasoning?.anthropicBudget) {
-    providerOptions.anthropic = {
-      thinking: { type: "enabled", budgetTokens: model.reasoning.anthropicBudget },
+  const endpointForReasoning = getEndpoint(model.modelId)
+  const reasoningParam = endpointForReasoning?.reasoningParam
+  if (reasoningParam) {
+    switch (reasoningParam.kind) {
+      case "openai-effort": {
+        const level = model.reasoning?.openaiEffort ?? reasoningParam.defaultLevel
+        if (level) providerOptions.openai = { reasoningEffort: level }
+        break
+      }
+      case "anthropic-budget": {
+        const tokens = model.reasoning?.anthropicBudget ?? reasoningParam.defaultTokens
+        if (tokens) {
+          providerOptions.anthropic = {
+            thinking: { type: "enabled", budgetTokens: tokens },
+          }
+        }
+        break
+      }
+      case "google-depth": {
+        // TODO when the Vercel AI SDK exposes Gemini's depth knob via
+        // providerOptions.google. The endpoint declaration above is the
+        // forward-looking intent — wiring it here will be a one-line change
+        // (no provider-name match in routing). Leaving providerOptions.google
+        // unset means the call falls through to the Gemini default depth.
+        break
+      }
+      case "deepseek-thinking": {
+        // TODO when the Vercel AI SDK / OpenRouter expose DeepSeek's
+        // thinking_enabled toggle via providerOptions. R1's <think> behavior
+        // is on by default at the model level today; the registry entry pins
+        // the intent so dispatch can wire it without a name match later.
+        break
+      }
     }
   }
   const hasProviderOptions = Object.keys(providerOptions).length > 0
