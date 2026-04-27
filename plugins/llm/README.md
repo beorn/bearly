@@ -14,14 +14,38 @@ claude plugin install llm@bearly
 # Quick question (~$0.02)
 bun tools/llm.ts "question"
 
-# Deep research with web search (~$2-5)
+# Pro review — champion + runner-up + rotating challenger, judged (~$0.50–$15)
+bun tools/llm.ts pro --context-file ./src/module.ts "Review this"
+
+# Deep research with web search (~$2–5)
 bun tools/llm.ts --deep -y "topic"
 
 # Second opinion from another model (~$0.02)
 bun tools/llm.ts opinion "Is this approach reasonable?"
 
-# Multi-model debate with synthesis (~$1-3)
+# Multi-model debate with synthesis (~$1–3)
 bun tools/llm.ts debate -y "Monorepo vs polyrepo?"
+```
+
+### Pro admin (champion-challenger leaderboard)
+
+```bash
+bun tools/llm.ts pro --leaderboard      # ranked table from ab-pro.jsonl
+bun tools/llm.ts pro --promote-review   # interactive promotion flow w/ samples
+bun tools/llm.ts pro --backtest         # replay history; OLD vs NEW config
+```
+
+Cost dials: `--no-challenger` (skip leg C), `--no-judge` (skip rubric scoring),
+`--challenger <id>` (override rotation). Backtest dials: `--sample N`,
+`--quick` (cheap judge), `--no-old-fire` (only fire NEW; less honest, half cost).
+
+## --json envelope
+
+Every command supports `--json` for pipe-friendly output. JSON line on stdout,
+all progress on stderr:
+
+```bash
+bun tools/llm.ts "ping" --json | jq .file
 ```
 
 ## Context
@@ -39,18 +63,25 @@ bun tools/llm.ts --with-history "topic"
 
 ## Output
 
-Response always written to a file. JSON metadata on stdout:
+Response always written to a file. JSON metadata on stdout (more fields with
+`--json`):
 
 ```json
 {
   "file": "/tmp/llm-abc12345.txt",
   "model": "GPT-5.4",
-  "cost": "$0.02",
-  "durationMs": 3200
+  "tokens": { "prompt": 1234, "completion": 567 },
+  "cost": 0.02,
+  "durationMs": 3200,
+  "responseId": "resp_abc",
+  "status": "completed"
 }
 ```
 
-Read the output file — streaming tokens go to stderr only in interactive terminals.
+`status` ∈ `completed | failed | background | recovered`. Dual-pro emits
+per-leg `a`, `b`, and (when `--challenger` enabled) `c` envelopes plus a
+`judge` block with rubric scores. Read the output file — streaming tokens go
+to stderr only in interactive terminals.
 
 ## API Keys
 
