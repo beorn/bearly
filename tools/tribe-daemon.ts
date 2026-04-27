@@ -9,8 +9,8 @@
  *   bun tribe-daemon.ts --fd 3             # Inherit socket fd (for hot-reload re-exec)
  */
 
-import { createConnection, createServer, type Socket as NetSocket, type Server } from "node:net"
-import { existsSync, unlinkSync, chmodSync, readdirSync, readFileSync, realpathSync, watch } from "node:fs"
+import { type Socket as NetSocket } from "node:net"
+import { existsSync, unlinkSync, readdirSync, readFileSync, watch } from "node:fs"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
@@ -60,6 +60,7 @@ import {
   createBaseTribe,
   loreTools,
   messagingTools,
+  probeAndCleanSocket,
   withBroadcast,
   withClientRegistry,
   withConfig,
@@ -67,6 +68,7 @@ import {
   withDatabase,
   withLore,
   withProjectRoot,
+  withSocketServer,
   type ClientSession,
 } from "./lib/tribe/compose/index.ts"
 
@@ -139,7 +141,7 @@ ac.signal.addEventListener("abort", () => {
   void rootScope[Symbol.asyncDispose]().catch(() => {})
 })
 
-const tribeShape = pipe(
+const partialShape = pipe(
   createBaseTribe({ scope: rootScope, daemonVersion: "0.10.0" }),
   withConfig(),
   withProjectRoot(),
@@ -151,6 +153,19 @@ const tribeShape = pipe(
   withClientRegistry(),
   withBroadcast(),
 )
+
+// Async probe runs OUTSIDE the pipe (sync). If a live daemon already owns the
+// socket path, exit cleanly — the rest of boot is meaningless. Otherwise the
+// stale socket file is removed so withSocketServer's bind() succeeds.
+if (partialShape.config.inheritFd === null) {
+  const alreadyAlive = await probeAndCleanSocket(partialShape.config.socketPath)
+  if (alreadyAlive) {
+    log(`Another daemon is already listening on ${partialShape.config.socketPath}, exiting`)
+    process.exit(0)
+  }
+}
+
+const tribeShape = withSocketServer<typeof partialShape>()(partialShape)
 
 // Lore tools are conditional on lore being enabled — register them after the
 // pipe so the registry stays append-only when --no-lore is set.
@@ -176,6 +191,8 @@ const clients = registry.clients
 const socketToClient = registry.socketToClient
 const broadcast = tribeShape.broadcast
 const messageTap = broadcast.messageTap
+const server = tribeShape.socket.server
+const startedAt = tribeShape.socket.startedAt
 
 /** Single entry point for all observable activities. Writes to DB; the messaging
  *  layer's fanout hook delivers to connected clients synchronously (see
@@ -947,7 +964,6 @@ cleanupOldData(daemonCtx)
 // Suppress join/leave broadcasts during initial reconnection burst after hot-reload.
 // TRIBE_NO_SUPPRESS=1 disables this (used in tests).
 const SUPPRESS_WINDOW_MS = process.env.TRIBE_NO_SUPPRESS ? 0 : 10_000
-const startedAt = Date.now()
 
 function handleConnection(socket: NetSocket): void {
   const connId = randomUUID()
@@ -1038,61 +1054,10 @@ function handleConnection(socket: NetSocket): void {
   })
 }
 
-let server: Server
-
-if (INHERIT_FD !== null) {
-  // Hot-reload: inherit existing socket fd
-  server = createServer(handleConnection)
-  server.listen({ fd: INHERIT_FD })
-  log(`Inherited socket fd ${INHERIT_FD} (hot-reload)`)
-} else {
-  // Check if another daemon is already running by probing the socket.
-  // If the connect succeeds, a live daemon is listening — exit quietly.
-  // If it fails (ECONNREFUSED / ENOENT), the socket is stale or absent.
-  if (existsSync(SOCKET_PATH)) {
-    const alive = await new Promise<boolean>((resolvePromise) => {
-      const probe = createConnection(SOCKET_PATH)
-      let settled = false
-      const finish = (v: boolean) => {
-        if (settled) return
-        settled = true
-        try {
-          probe.destroy()
-        } catch {
-          /* ignore */
-        }
-        resolvePromise(v)
-      }
-      probe.once("connect", () => finish(true))
-      probe.once("error", () => finish(false))
-      // Safety timeout — don't hang daemon startup on a wedged socket
-      // Node returns NodeJS.Timeout (has .unref()), Bun returns number — guard both
-      const t = setTimeout(() => finish(false), 500) as unknown as { unref?: () => void }
-      t.unref?.()
-    })
-    if (alive) {
-      log(`Another daemon is already listening on ${SOCKET_PATH}, exiting`)
-      process.exit(0)
-    }
-    // Stale socket file — remove it so bind() succeeds below.
-    try {
-      unlinkSync(SOCKET_PATH)
-    } catch {
-      /* ignore */
-    }
-  }
-
-  server = createServer(handleConnection)
-  server.listen(SOCKET_PATH, () => {
-    // Restrict socket to owner only (no group/other access)
-    try {
-      chmodSync(SOCKET_PATH, 0o600)
-    } catch {
-      /* ignore on platforms that don't support it */
-    }
-  })
-  log(`Listening on ${SOCKET_PATH}`)
-}
+// Wire the dispatcher's connection handler onto the bound server. The server
+// itself is created + listening from withSocketServer; this attaches the
+// per-accept logic.
+server.on("connection", handleConnection)
 
 // ---------------------------------------------------------------------------
 // Auto-quit liveness — declarative deadline + periodic check

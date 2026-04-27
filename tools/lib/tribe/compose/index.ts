@@ -52,3 +52,6 @@ export type { ClientRegistry, ClientSession, WithClientRegistry } from "./with-c
 
 export { withBroadcast } from "./with-broadcast.ts"
 export type { Broadcast, WithBroadcast } from "./with-broadcast.ts"
+
+export { withSocketServer, probeAndCleanSocket } from "./with-socket-server.ts"
+export type { SocketServer, WithSocketServer } from "./with-socket-server.ts"
