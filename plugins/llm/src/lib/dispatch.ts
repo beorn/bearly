@@ -2167,6 +2167,10 @@ export async function runBacktest(opts: {
   // (OLD + NEW). --no-old-fire halves it; --no-challenger drops by a third.
   const champion = getModel(cfg.champion)
   const runner = getModel(cfg.runnerUp)
+  // Backtest fixes ONE challenger across the entire sample for fair OLD-vs-NEW
+  // comparison. Deliberately does NOT call pickNextChallenger — replaying the
+  // historical leg-C model would conflate "compare configs" with "reproduce
+  // history" and is not what backtest is for. Override via --challenger.
   const challengerId = opts.challengerOverride ?? cfg.challengerPool[0]
   const challenger = opts.noChallenger ? undefined : challengerId ? getModel(challengerId) : undefined
   const perLegEst = (m: Model | undefined) => (m ? estimateCost(m, 1500, 1500) : 0)

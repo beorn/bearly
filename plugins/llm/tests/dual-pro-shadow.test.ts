@@ -519,6 +519,37 @@ describe("config + env overrides + persistence", () => {
     expect(cfg.scoreWeights.cost).toBe(0.5)
   })
 
+  it("loadConfig preserves URLs and slash-separated values inside string fields", async () => {
+    // Defensive test against the /pro reviewer's claim that the JSONC strip
+    // regex would mangle URLs/paths containing `//`. The regex is anchored
+    // with `^\\s*` which only matches `//` at start-of-line + optional
+    // whitespace, so URLs inside string values are safe. Re-verify it.
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const dir = `${homeDir}/.claude/projects/${encoded}/memory`
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      `${dir}/dual-pro-config.json`,
+      `{
+  "champion": "https://example.com//double-slash-path",
+  "runnerUp": "moonshotai/kimi-k2.6",
+  "challengerPool": ["openai/gpt-5", "anthropic/claude-opus-4-6"],
+  // line comment that SHOULD be stripped
+  "challengerStrategy": "round-robin",
+    // indented line comment also stripped
+  "judge": "gpt-5-mini",
+  "rubric": "default",
+  "scoreWeights": { "score": 1, "cost": 0.5, "time": 0 }
+}`,
+    )
+    const cfg = await loadConfig()
+    // URLs and slash-separated values must survive the strip.
+    expect(cfg.champion).toBe("https://example.com//double-slash-path")
+    expect(cfg.runnerUp).toBe("moonshotai/kimi-k2.6")
+    expect(cfg.challengerPool).toEqual(["openai/gpt-5", "anthropic/claude-opus-4-6"])
+    expect(cfg.judge).toBe("gpt-5-mini")
+  })
+
   it("appendBacktestRun writes a JSONL entry", async () => {
     await appendBacktestRun({
       oldConfig: { champion: "old-c" },

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0 (2026-04-27)
+
+Cost-aware promotion default + defensive tests for /pro review findings.
+
+### Changed
+
+- **`scoreWeights.cost` default flipped to `0.5`** (was `0.0`). Without a cost
+  weight, the leaderboard ranks purely by quality and would happily promote
+  a $15-per-call model over a $0.50 model that scores marginally lower —
+  directly responsible for cost surprises. Set `cost: 0.0` explicitly in
+  your `dual-pro-config.json` to opt back in to quality-only ranking.
+
+### Notes (false positives from /pro review surfaced and re-verified)
+
+- **JSONC parser does NOT mangle URLs/paths inside string values.** The
+  `^\s*` line-anchor in the strip regex only matches `//` at start-of-line +
+  optional whitespace; `https://`, `moonshotai/kimi-k2.6`, `openai/gpt-5`
+  inside string values are safe. Defensive test added to prove it.
+- **Backtest does NOT call `pickNextChallenger`**; it deliberately fixes
+  one challenger across the sample (`cfg.challengerPool[0]` or `--challenger`
+  override) so OLD-vs-NEW comparison is fair. Comment added to clarify intent.
+- **Judge skips failed legs.** Both live (`runProDual`) and backtest
+  (`judgeFor`) paths filter the judge prompt to legs with content; failed
+  legs aren't sent to the judge.
+
+See `bd show km-bearly.llm-pro-review-fixes` for the full re-verification
+log + remaining real findings (path leakage, O(N) leaderboard at scale,
+half-finished registry split).
+
 ## 0.2.0 (2026-04-27)
 
 Major iteration: capability-based dispatch, structured CLI output, and

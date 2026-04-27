@@ -43,10 +43,16 @@ const log = createLogger("bearly:llm:dual-pro")
  * Score weights tune the leaderboard ranking. `score` is the judge's
  * weighted total (0–5). `cost` and `time` are penalties — set to 0 to
  * ignore them, raise to let leaderboard punish expensive/slow models.
+ *
+ * Default `cost: 0.5` is intentionally cost-aware — without it, the
+ * leaderboard ranks purely by quality and would happily promote a $15
+ * model over a $0.50 model that scores only marginally lower. Users who
+ * have unlimited budget and care only about peak quality should set
+ * `cost: 0.0` explicitly in their dual-pro-config.json.
  */
 export const ScoreWeightsSchema = z.object({
   score: z.number().default(1.0),
-  cost: z.number().default(0.0),
+  cost: z.number().default(0.5),
   time: z.number().default(0.0),
 })
 export type ScoreWeights = z.infer<typeof ScoreWeightsSchema>
@@ -77,7 +83,7 @@ export const DualProConfigSchema = z.object({
   challengerStrategy: ChallengerStrategySchema.default("round-robin-after-10-calls"),
   judge: z.string().default("gpt-5-mini"),
   rubric: RubricSchema.default("default"),
-  scoreWeights: ScoreWeightsSchema.default({ score: 1.0, cost: 0.0, time: 0.0 }),
+  scoreWeights: ScoreWeightsSchema.default({ score: 1.0, cost: 0.5, time: 0.0 }),
 })
 export type DualProConfig = z.infer<typeof DualProConfigSchema>
 
@@ -177,7 +183,9 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   "rubric": ${JSON.stringify(cfg.rubric)},
 
   // Leaderboard ranking weights. score is judge total (0-5); cost/time are
-  // penalties — set to 0 to ignore, raise to penalize expensive/slow models.
+  // penalties. Default cost: 0.5 keeps the leaderboard cost-aware — without
+  // it, a $15 model that scores 4.8 displaces a $0.50 model that scores 4.6.
+  // Set cost: 0.0 to rank purely by quality. Raise time to penalize slow models.
   "scoreWeights": ${JSON.stringify(cfg.scoreWeights, null, 2).replace(/\n/g, "\n  ")}
 }
 `
