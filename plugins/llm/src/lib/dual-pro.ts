@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod"
-import { getModel, type Model, MODELS, BEST_MODELS } from "./types"
+import { getModel, getEndpoint, type Model, MODELS, BEST_MODELS } from "./types"
 import { isProviderAvailable } from "./providers"
 import { createLogger } from "loggily"
 
@@ -197,29 +197,14 @@ export function renderStarterConfig(cfg: DualProConfig): string {
 export type Capability = "webSearch" | "vision" | "deepResearch" | "backgroundApi"
 
 export function modelHasCapability(model: Model, cap: Capability): boolean {
-  switch (cap) {
-    case "deepResearch":
-      return model.isDeepResearch
-    case "webSearch":
-      // Today: deep-research models all have web search. Standard models
-      // can request web_search via the OpenAI Responses API but the flag
-      // isn't on the registry yet — assume true for OpenAI/perplexity, false
-      // elsewhere. Will be precise once registry-split lands.
-      return model.isDeepResearch || model.provider === "openai" || model.provider === "perplexity"
-    case "vision":
-      // Heuristic: ollama vision models start with "llava"/"qwen2.5-vl".
-      // Frontier models (GPT-4o+, Claude Opus 4+, Gemini) accept images.
-      return (
-        model.provider === "openai" ||
-        model.provider === "anthropic" ||
-        model.provider === "google" ||
-        /vl|llava|vision/i.test(model.modelId)
-      )
-    case "backgroundApi":
-      // Only OpenAI Responses API supports background mode. Used by
-      // dispatch.ts:isOpenAIBackgroundCapable; mirrored here for filter.
-      return model.provider === "openai"
-  }
+  // Registry-split landed: ProviderEndpoint declares capabilities per SKU.
+  // Read directly from the endpoint when available; fall back to the model's
+  // legacy facade fields for synthetic OpenRouter SKUs without an endpoint.
+  const ep = getEndpoint(model.modelId)
+  if (ep) return Boolean(ep.capabilities[cap])
+  // Synthetic-SKU fallback: only `deepResearch` is reliably derivable from
+  // the legacy Model shape. Everything else conservatively false.
+  return cap === "deepResearch" ? model.isDeepResearch : false
 }
 
 /** Filter pool to models that satisfy ALL required capabilities AND have
@@ -394,7 +379,10 @@ export function parseJudgeResponse(raw: string): JudgeResult | undefined {
   let text = raw.trim()
   // Strip common ```json fences
   if (text.startsWith("```")) {
-    text = text.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim()
+    text = text
+      .replace(/^```[a-zA-Z]*\n?/, "")
+      .replace(/```$/, "")
+      .trim()
   }
   // Take the first { ... } block — judges sometimes prepend prose despite
   // the "STRICT JSON, nothing else" instruction.
@@ -524,7 +512,7 @@ export async function readAbProLog(): Promise<AbProEntry[]> {
   const out: AbProEntry[] = []
   for (const line of lines) {
     try {
-      out.push(JSON.parse(line))
+      out.push(JSON.parse(line) as AbProEntry)
     } catch {
       // Skip malformed lines; readers must tolerate format drift.
     }
@@ -619,10 +607,7 @@ export interface BacktestSampleOptions {
  * Returns the entries (not just IDs) so callers can re-fire them. Pure —
  * no I/O.
  */
-export function sampleBacktestEntries(
-  entries: readonly AbProEntry[],
-  opts: BacktestSampleOptions,
-): AbProEntry[] {
+export function sampleBacktestEntries(entries: readonly AbProEntry[], opts: BacktestSampleOptions): AbProEntry[] {
   const size = Math.max(0, Math.floor(opts.size))
   if (size === 0 || entries.length === 0) return []
   const recencyWeight = opts.recencyWeight ?? 0.7
@@ -792,9 +777,7 @@ export function formatBacktestReport(report: BacktestReport): string {
     lines.push("## Regressions (OLD scored higher)")
     lines.push("")
     for (const r of report.regressions) {
-      lines.push(
-        `- ${r.question.slice(0, 80)} — OLD ${fmt(r.oldTotal ?? 0)} vs NEW ${fmt(r.newTotal ?? 0)}`,
-      )
+      lines.push(`- ${r.question.slice(0, 80)} — OLD ${fmt(r.oldTotal ?? 0)} vs NEW ${fmt(r.newTotal ?? 0)}`)
     }
   }
   return lines.join("\n")
