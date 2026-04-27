@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.7.0 (2026-04-27)
+
+2+2 fleet dispatch (4 legs in parallel) + pairwise judge — endorsed by both
+Kimi K2.6 and Gemini 3 Pro in the 2026-04-27 review. Two stable mainstays
+anchor judge calibration with low variance; two rotating split-test slots
+cover the candidate pool roughly twice as fast as the old single-challenger
+rotation. Slot D = correlated re-test of the most-recent winner (confirms
+wins reproduce instead of pure pool exploration).
+
+### Changed — Schema (km-bearly.llm-fleet-2x2)
+
+- **`DualProConfigSchema`** now uses `mainstays: [string, string]` +
+  `splitTestPool: string[]` + `splitTestSlots: number` (default 2) +
+  `splitTestStrategy`. Legacy v0.6 fields (`champion`, `runnerUp`,
+  `challengerPool`, `challengerStrategy`) still parse — the loader
+  translates them to the new shape via `normalizeConfig`. Saves on disk
+  (`renderStarterConfig`) emit the v0.7 shape; reads accept both.
+- **Env overrides**: `LLM_DUAL_PRO_B` overrides `mainstays[1]`;
+  `LLM_SPLIT_TEST_POOL` is the preferred name for the split-test pool
+  (`LLM_CHALLENGER_POOL` still accepted for back-compat).
+
+### Added — 4-leg dispatch + pairwise judging
+
+- **`runProDual`** fires up to 4 legs (mainstays + 2 split-test slots) in a
+  single `Promise.all` round trip. Total runtime is dominated by the slowest
+  leg, not the sum.
+- **Slot D = correlated re-test**: `pickSplitTestSlots(pool, strategy,
+  counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
+  picks the most-recent winner from `ab-pro.jsonl` history that is in the
+  pool, NOT a mainstay, and NOT slot C. Cold start (no winners) falls back
+  to "next pool entry after slot C in pool-list order" so the two slots
+  cover different members on first run.
+- **Pairwise judge**: instead of one 4-way prompt (which suffers from
+  position bias and context saturation), three cheap pairwise judge calls
+  fire in parallel — `ab` (B vs A), `ac` (C vs A), `ad` (D vs A). Each pair
+  sends only TWO responses to the judge. With Gemini 2.5 Flash judge at
+  ~$0.001/call, ~$0.003 total — usually cheaper than one bloated 4-way prompt.
+- **`buildPairwiseJudgePrompt`** + **`parsePairwiseJudgeResponse`**: pairwise
+  prompt builder + tolerant parser (strips ```` ```json ```` fences, handles
+  prepended prose). Output: `{ winner: "A" | "B" | "tie", scoreA, scoreB,
+  reasoning }`.
+- **`synthesizePairwiseFromV2`**: v2 → v3 reader. Historical v2 ab-pro.jsonl
+  entries with N-way `judge.{a,b,c,winner}` fields surface a synthesized
+  `judge.ab`/`ac` to keep leaderboard / judge-history / backtest consumers
+  uniform.
+
+### Added — `--legs N` CLI flag
+
+- `--legs 2` / `--legs 3` / `--legs 4` caps the leg count for THIS call.
+  `--no-challenger` is now an alias for `--legs 2`. Defaults to
+  `2 + cfg.splitTestSlots` from config.
+
+### Changed — ab-pro.jsonl bumped to v3
+
+- **Schema**: `ab-pro/v3` adds leg `d` (split-test slot 2) and pairwise
+  judge results (`judge.ab` / `judge.ac` / `judge.ad`).
+- **Back-compat**: v3 entries still emit the v2 fields (`judge.winner`,
+  `judge.{a,b,c,d}` synthesized from pairwise scoreA/scoreB) and the v1
+  `gpt`/`kimi` keys. Readers can pin any of v1 / v2 / v3.
+- **`buildLeaderboard`**: aggregates leg D alongside a/b/c. Skips the v1
+  `gpt`/`kimi` keys when v2/v3 leg keys are present (avoids double-counting
+  the same model in entries that emit both shapes).
+
+### Tests
+
+- **`tests/four-leg.test.ts`** — 28 new tests covering schema migration
+  (v0.6 ↔ v0.7), `pickSplitTestSlots` (correlated re-test, cold-start,
+  exclude, lookback window), pairwise prompt + parser, v2→v3 synthesis,
+  full 4-leg dispatch with mocked providers (`--legs 2/3/4` honored),
+  pairwise judge fires 3 calls, slot D is the recent winner from history.
+- **Existing tests updated** to pin `ab-pro/v3` schema in the dispatch
+  smoke test and reflect the pairwise judge mock shape.
+
 ## 0.6.0 (2026-04-27)
 
 Phase 1 fleet-management additions on top of 0.5.0: static `exclude` config +
@@ -103,12 +176,12 @@ brings score down — speed and failure rate are display-only.
 ### Changed (BREAKING — config semantics)
 
 - **`scoreWeights.cost` semantics flipped from linear to log-scale.** Old:
-  `rank = score * quality - cost * avgCost`. New: `rank = score * quality
-  - cost * max(0, log10(avgCost / costThreshold))`. Cheap models (≤
-  `costThreshold`) pay zero penalty; each 10× over the threshold subtracts
-  `cost` points. Defaults: `cost: 1.0, costThreshold: 0.10` ($0.10 → 0pt,
-  $1 → −1pt, $10 → −2pt, $100 → −3pt). Existing configs with `cost: 0.5`
-  still parse but produce mathematically different rankings.
+  `rank = score * quality - cost * avgCost`. New: `rank = score \* quality
+  - cost \* max(0, log10(avgCost / costThreshold))`. Cheap models (≤
+`costThreshold`) pay zero penalty; each 10× over the threshold subtracts
+`cost`points. Defaults:`cost: 1.0, costThreshold: 0.10`($0.10 → 0pt,
+$1 → −1pt, $10 → −2pt, $100 → −3pt). Existing configs with`cost: 0.5`
+    still parse but produce mathematically different rankings.
 - **`bun llm pro --leaderboard` now sorts by raw quality by default** (was:
   sort by cost-aware rankScore). Add `--rank-by-cost` for the prior
   cost-aware sort. Rationale: quality is the dominant axis for "punch
@@ -120,7 +193,7 @@ brings score down — speed and failure rate are display-only.
 ### Added — Response cache (CAS)
 
 - **`src/lib/cache.ts`** — content-addressable storage keyed by sha256 of
-  `(model, prompt, context, params)`. File path *is* the hash:
+  `(model, prompt, context, params)`. File path _is_ the hash:
   `~/.cache/bearly-llm/responses/<sha256>.json`. Lookup is O(1)
   `fs.exists`. Atomic write (temp + rename).
 - **Wired into `askAndFinish`** for non-Pro single-model paths (ask,
@@ -143,11 +216,12 @@ brings score down — speed and failure rate are display-only.
 ### Changed — default fleet (no OpenAI in routine path)
 
 Recommended `dual-pro-config.json`:
+
 - **Champion**: `deepseek/deepseek-r1` (frontier reasoning anchor)
 - **Runner-up**: `moonshotai/kimi-k2.6` (proven cheap baseline; 241 calls
   of judge calibration history)
 - **Pool**: `gemini-3-pro-preview, deepseek/deepseek-chat, grok-4,
-  claude-opus-4-6`
+claude-opus-4-6`
 - **Judge**: `gemini-2.5-flash` (~$0.001/judge call)
 
 GPT-5.4 Pro deliberately removed from default pool — opt-in via

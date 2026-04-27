@@ -161,10 +161,22 @@ describe("buildLeaderboard — leaderboard math", () => {
         },
       },
     ]
-    const flat = buildLeaderboard(entries, { score: 1, cost: 0, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 })
+    const flat = buildLeaderboard(entries, {
+      score: 1,
+      cost: 0,
+      time: 0,
+      costThreshold: 0.1,
+      qualityWarningThreshold: 5.0,
+    })
     // Equal rankScore when cost+time weights are 0; tiebreaker = calls (both 1) → stable order, both 12.
     expect(flat.find((r) => r.model === "cheap")!.rankScore).toBe(flat.find((r) => r.model === "expensive")!.rankScore)
-    const costWeighted = buildLeaderboard(entries, { score: 1, cost: 1, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 })
+    const costWeighted = buildLeaderboard(entries, {
+      score: 1,
+      cost: 1,
+      time: 0,
+      costThreshold: 0.1,
+      qualityWarningThreshold: 5.0,
+    })
     expect(costWeighted.find((r) => r.model === "cheap")!.rankScore).toBeGreaterThan(
       costWeighted.find((r) => r.model === "expensive")!.rankScore,
     )
@@ -476,14 +488,14 @@ describe("config + env overrides + persistence", () => {
     process.env.LLM_CHALLENGER_POOL = "x,y,z"
     process.env.LLM_JUDGE_MODEL = "judge-x"
     const cfg = applyEnvOverrides({ ...DEFAULT_CONFIG })
-    expect(cfg.runnerUp).toBe("override-runner")
-    expect(cfg.challengerPool).toEqual(["x", "y", "z"])
+    expect(cfg.mainstays[1]).toBe("override-runner")
+    expect(cfg.splitTestPool).toEqual(["x", "y", "z"])
     expect(cfg.judge).toBe("judge-x")
   })
 
   it("loadConfig writes a starter config when missing", async () => {
     const cfg = await loadConfig()
-    expect(cfg.champion).toBe(DEFAULT_CONFIG.champion)
+    expect(cfg.mainstays).toEqual(DEFAULT_CONFIG.mainstays)
     // Starter file should now exist
     const projectRoot = process.env.CLAUDE_PROJECT_DIR!
     const encoded = projectRoot.replace(/\//g, "-")
@@ -491,10 +503,14 @@ describe("config + env overrides + persistence", () => {
     expect(existsSync(file)).toBe(true)
     const text = readFileSync(file, "utf-8")
     expect(text).toMatch(/dual-pro-config\.json/)
-    expect(text).toMatch(/champion/)
+    expect(text).toMatch(/mainstays/)
+    expect(text).toMatch(/splitTestPool/)
+    expect(text).toMatch(/splitTestSlots/)
   })
 
-  it("loadConfig reads a JSONC file with comments", async () => {
+  it("loadConfig reads a JSONC file with comments (legacy v0.6 shape)", async () => {
+    // Back-compat: a config file written with the v0.6 champion/runnerUp/
+    // challengerPool fields must still load — translated into the new shape.
     const projectRoot = process.env.CLAUDE_PROJECT_DIR!
     const encoded = projectRoot.replace(/\//g, "-")
     const dir = `${homeDir}/.claude/projects/${encoded}/memory`
@@ -513,10 +529,34 @@ describe("config + env overrides + persistence", () => {
 }`,
     )
     const cfg = await loadConfig()
-    expect(cfg.champion).toBe("custom-champ")
-    expect(cfg.challengerPool).toEqual(["a", "b"])
-    expect(cfg.challengerStrategy).toBe("round-robin")
+    expect(cfg.mainstays).toEqual(["custom-champ", "custom-runner"])
+    expect(cfg.splitTestPool).toEqual(["a", "b"])
+    expect(cfg.splitTestStrategy).toBe("round-robin")
     expect(cfg.scoreWeights.cost).toBe(0.5)
+  })
+
+  it("loadConfig reads a v0.7 JSONC file (mainstays + splitTestPool)", async () => {
+    const projectRoot = process.env.CLAUDE_PROJECT_DIR!
+    const encoded = projectRoot.replace(/\//g, "-")
+    const dir = `${homeDir}/.claude/projects/${encoded}/memory`
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      `${dir}/dual-pro-config.json`,
+      JSON.stringify({
+        mainstays: ["m0", "m1"],
+        splitTestPool: ["s1", "s2", "s3"],
+        splitTestSlots: 2,
+        splitTestStrategy: "round-robin-after-5-calls",
+        judge: "j",
+        rubric: "review",
+        scoreWeights: { score: 1, cost: 1, costThreshold: 0.1, time: 0, qualityWarningThreshold: 5.0 },
+      }),
+    )
+    const cfg = await loadConfig()
+    expect(cfg.mainstays).toEqual(["m0", "m1"])
+    expect(cfg.splitTestPool).toEqual(["s1", "s2", "s3"])
+    expect(cfg.splitTestSlots).toBe(2)
+    expect(cfg.splitTestStrategy).toBe("round-robin-after-5-calls")
   })
 
   it("loadConfig preserves URLs and slash-separated values inside string fields", async () => {
@@ -544,16 +584,16 @@ describe("config + env overrides + persistence", () => {
     )
     const cfg = await loadConfig()
     // URLs and slash-separated values must survive the strip.
-    expect(cfg.champion).toBe("https://example.com//double-slash-path")
-    expect(cfg.runnerUp).toBe("moonshotai/kimi-k2.6")
-    expect(cfg.challengerPool).toEqual(["openai/gpt-5", "anthropic/claude-opus-4-6"])
+    expect(cfg.mainstays[0]).toBe("https://example.com//double-slash-path")
+    expect(cfg.mainstays[1]).toBe("moonshotai/kimi-k2.6")
+    expect(cfg.splitTestPool).toEqual(["openai/gpt-5", "anthropic/claude-opus-4-6"])
     expect(cfg.judge).toBe("gpt-5-mini")
   })
 
   it("appendBacktestRun writes a JSONL entry", async () => {
     await appendBacktestRun({
-      oldConfig: { champion: "old-c" },
-      newConfig: { champion: "new-c" },
+      oldConfig: { mainstays: ["old-c", "old-r"] },
+      newConfig: { mainstays: ["new-c", "new-r"] },
       report: aggregateBacktest([]),
       decision: "deferred",
     })
@@ -563,10 +603,10 @@ describe("config + env overrides + persistence", () => {
     expect(existsSync(file)).toBe(true)
     const line = JSON.parse(readFileSync(file, "utf-8").trim()) as {
       schema: string
-      oldConfig: { champion: string }
+      oldConfig: { mainstays: [string, string] }
     }
     expect(line.schema).toBe("backtest-runs/v1")
-    expect(line.oldConfig.champion).toBe("old-c")
+    expect(line.oldConfig.mainstays).toEqual(["old-c", "old-r"])
   })
 
   it("appendPromotionDecision writes a JSONL entry", async () => {
@@ -587,9 +627,9 @@ describe("config + env overrides + persistence", () => {
 
   it("inferDefaultsFromRegistry matches BEST_MODELS.pro", () => {
     const inferred = inferDefaultsFromRegistry()
-    expect(inferred.champion).toBe("gpt-5.4-pro")
-    expect(inferred.runnerUp).toBe("moonshotai/kimi-k2.6")
-    expect(inferred.challengerPool.length).toBeGreaterThan(0)
+    expect(inferred.mainstays[0]).toBe("gpt-5.4-pro")
+    expect(inferred.mainstays[1]).toBe("moonshotai/kimi-k2.6")
+    expect(inferred.splitTestPool.length).toBeGreaterThan(0)
   })
 })
 
@@ -651,7 +691,7 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
     vit.restoreAllMocks()
   })
 
-  it("fires three legs, runs judge, writes ab-pro v2 entry with scores", async () => {
+  it("fires three legs, runs pairwise judge, writes ab-pro v3 entry with scores", async () => {
     queryBackgroundMock3.mockReset()
     queryBackgroundMock3.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
       model,
@@ -660,9 +700,8 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
       durationMs: 1000,
     }))
-    // Kimi (OpenRouter) routes through generateText; the judge also routes
-    // through generateText (ask("quick", ...)). Three calls total. Distinguish
-    // the judge call by its prompt — it contains "STRICT JSON".
+    // Pairwise judge prompts contain "Response A" + "Response B" + "STRICT JSON".
+    // The pair detection is by inspecting the contender model name in the prompt.
     generateTextMock3.mockReset()
     generateTextMock3.mockImplementation(async (args: { messages?: { role: string; content: unknown }[] }) => {
       const messages = args.messages ?? []
@@ -675,15 +714,26 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
               : "",
         )
         .join(" ")
-      if (text.includes("STRICT JSON")) {
+      if (text.includes("STRICT JSON") && text.includes("Response A")) {
+        // Pairwise judge — detect which contender by name. Slot C (Gemini)
+        // wins; slot B (Kimi) loses to A.
+        const isAC = text.includes("Gemini")
         return {
-          text: JSON.stringify({
-            a: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
-            b: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
-            c: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
-            winner: "c",
-            reasoning: "C had concrete examples.",
-          }),
+          text: JSON.stringify(
+            isAC
+              ? {
+                  scoreA: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+                  scoreB: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+                  winner: "B",
+                  reasoning: "C had concrete examples.",
+                }
+              : {
+                  scoreA: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+                  scoreB: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+                  winner: "A",
+                  reasoning: "A more thorough.",
+                },
+          ),
           reasoning: [],
           usage: { inputTokens: 200, outputTokens: 80 },
         }
@@ -712,9 +762,6 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
       if (!/^__exit_/.test((e as Error).message)) throw e
     }
 
-    // Three model calls: queryOpenAIBackground (gpt + gemini routed via
-    // background-capable openai provider — but Gemini doesn't qualify so it
-    // routes via generateText, plus Kimi via generateText, plus the judge).
     // We don't pin exact mock counts (depends on which provider each leg
     // routes through); we DO pin the ab-pro.jsonl entry shape.
     const projectRoot = process.env.CLAUDE_PROJECT_DIR!
@@ -728,17 +775,28 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
       a: { model: string; ok: boolean; score: { total: number } | null }
       b: { model: string; ok: boolean }
       c?: { model: string; ok: boolean; score: { total: number } | null }
-      judge?: { winner: string; model?: string }
+      judge?: {
+        winner: string
+        model?: string
+        ab?: { winner: string; scoreA: { total: number }; scoreB: { total: number } }
+        ac?: { winner: string; scoreA: { total: number }; scoreB: { total: number } }
+      }
       gpt: { model: string; ok: boolean }
       kimi: { model: string; ok: boolean }
     }
-    expect(ab.schema).toBe("ab-pro/v2")
+    // Schema bumped to v3 — adds leg D + pairwise judge fields. v1 keys
+    // (gpt/kimi) and v2 keys (a/b/c + judge.winner) preserved.
+    expect(ab.schema).toBe("ab-pro/v3")
     expect(ab.a.model).toBe("gpt-5.4-pro")
     expect(ab.b.model).toBe("moonshotai/kimi-k2.6")
     expect(ab.c?.model).toBe("gemini-3-pro-preview")
+    // C (Gemini) won pairwise AC with score 20; A score averaged from AB+AC = 16.
     expect(ab.judge?.winner).toBe("c")
     expect(ab.a.score?.total).toBe(16)
     expect(ab.c?.score?.total).toBe(20)
+    // Pairwise results recorded too.
+    expect(ab.judge?.ab?.winner).toBe("A")
+    expect(ab.judge?.ac?.winner).toBe("B")
     // v1 back-compat fields preserved.
     expect(ab.gpt.model).toBe("gpt-5.4-pro")
     expect(ab.kimi.ok).toBe(true)

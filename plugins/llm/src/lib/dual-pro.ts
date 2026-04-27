@@ -88,11 +88,39 @@ export const RubricSchema = z.union([
 ])
 export type Rubric = z.infer<typeof RubricSchema>
 
-export const DualProConfigSchema = z.object({
-  champion: z.string().default("gpt-5.4-pro"),
-  runnerUp: z.string().default("moonshotai/kimi-k2.6"),
-  challengerPool: z.array(z.string()).default(["gemini-3-pro-preview", "grok-4", "claude-opus-4-6"]),
-  challengerStrategy: ChallengerStrategySchema.default("round-robin-after-10-calls"),
+/**
+ * Raw config shape — accepts BOTH the v0.7+ (mainstays/splitTestPool) shape
+ * AND the v0.6 (champion/runnerUp/challengerPool) shape. Internal callers
+ * always use the normalized `DualProConfig` produced by `normalizeConfig`,
+ * which translates legacy → new on read. Saves on disk continue using the
+ * new shape (renderStarterConfig).
+ */
+export const DualProConfigInputSchema = z.object({
+  // --- v0.7+ shape ---
+  /** Two stable mainstays — frontier reasoning anchor + cheap proven baseline.
+   * Anchors judge calibration so split-test slots are scored against a low-
+   * variance reference. */
+  mainstays: z.tuple([z.string(), z.string()]).optional(),
+  /** Pool the split-test slots rotate through. Models added here get covered
+   * faster than the old single-challenger rotation. */
+  splitTestPool: z.array(z.string()).optional(),
+  /** How many split-test slots fire per call (0 = mainstays only, 1 = legacy
+   * 3-leg, 2 = full 2+2 fleet). Slot D rotates as "re-face the prior winner"
+   * (correlated re-test) — confirms wins reproduce, doesn't waste a slot on
+   * pure pool exploration. */
+  splitTestSlots: z.number().min(0).max(4).optional(),
+  /** Rotation strategy for split-test slot C. Slot D always uses correlated
+   * re-test (most-recent winner not in mainstays/slot-C; cold-start falls back
+   * to slot C strategy with a +1 round-robin offset). */
+  splitTestStrategy: ChallengerStrategySchema.optional(),
+
+  // --- v0.6 legacy shape (back-compat read; never written) ---
+  champion: z.string().optional(),
+  runnerUp: z.string().optional(),
+  challengerPool: z.array(z.string()).optional(),
+  challengerStrategy: ChallengerStrategySchema.optional(),
+
+  // --- shared (both shapes) ---
   judge: z.string().default("gpt-5-mini"),
   rubric: RubricSchema.default("default"),
   scoreWeights: ScoreWeightsSchema.default({
@@ -103,32 +131,97 @@ export const DualProConfigSchema = z.object({
     qualityWarningThreshold: 5.0,
   }),
   /**
-   * List of model IDs to exclude from all dispatch paths (champion, runner-up,
-   * challenger rotation). The leaderboard still tracks them — quality history
-   * doesn't disappear — but pickNextChallenger filters them out so a junk
-   * model surfaced via the `⚠️` warning badge stops burning tokens.
+   * List of model IDs to exclude from all dispatch paths (mainstays + split-test
+   * rotation). The leaderboard still tracks them — quality history doesn't
+   * disappear — but pickNextChallenger / pickSplitTestSlots filter them out so
+   * a junk model surfaced via the `⚠️` warning badge stops burning tokens.
    *
-   * If the configured `champion` or `runnerUp` is in this list, dispatch logs
-   * a warning and uses it anyway — explicit config wins over implicit exclude
-   * (so you don't silently drop your mainstay because of a stale leaderboard).
+   * If a configured mainstay is in this list, dispatch logs a warning and uses
+   * it anyway — explicit config wins over implicit exclude (so you don't
+   * silently drop your mainstay because of a stale leaderboard).
    *
    * Env override: LLM_EXCLUDE=id1,id2,id3 (joins with config exclude).
    */
   exclude: z.array(z.string()).default([]),
 })
-export type DualProConfig = z.infer<typeof DualProConfigSchema>
+export type DualProConfigInput = z.infer<typeof DualProConfigInputSchema>
 
-export const DEFAULT_CONFIG: DualProConfig = DualProConfigSchema.parse({})
+/**
+ * Normalized internal config — always uses the v0.7 shape.
+ * Internal code (dispatch, rotation, judging) reads only this.
+ */
+export interface DualProConfig {
+  mainstays: [string, string]
+  splitTestPool: string[]
+  splitTestSlots: number
+  splitTestStrategy: ChallengerStrategy
+  judge: string
+  rubric: Rubric
+  scoreWeights: ScoreWeights
+  exclude: string[]
+}
 
-/** Apply env overrides to a config object. Pure — returns a new object. */
+/**
+ * Translate the raw input shape into the internal canonical shape.
+ *
+ * Read precedence: prefer the new `mainstays` / `splitTestPool` if set; else
+ * fall back to legacy `champion`+`runnerUp` / `challengerPool`. If the input
+ * has neither, fall back to baked defaults so a fresh install still boots.
+ *
+ * Throws when the user supplied a partial new-shape (e.g. only `mainstays[0]`
+ * via a hand-edited config that violates the tuple constraint) — the zod
+ * tuple already catches that. This function only rejects the truly
+ * unrecoverable case where neither shape is present in a partial-edit.
+ */
+export function normalizeConfig(raw: DualProConfigInput): DualProConfig {
+  let mainstays: [string, string]
+  if (raw.mainstays) {
+    mainstays = raw.mainstays
+  } else if (raw.champion && raw.runnerUp) {
+    mainstays = [raw.champion, raw.runnerUp]
+  } else {
+    // Baked defaults: same as the previous v0.6 default (gpt-5.4-pro +
+    // moonshotai/kimi-k2.6). Users with the new design pin their actual
+    // mainstays in dual-pro-config.json — the baked defaults exist only so
+    // a fresh install boots cleanly.
+    mainstays = ["gpt-5.4-pro", "moonshotai/kimi-k2.6"]
+  }
+  const splitTestPool = raw.splitTestPool ?? raw.challengerPool ?? ["gemini-3-pro-preview", "grok-4", "claude-opus-4-6"]
+  const splitTestSlots = raw.splitTestSlots ?? 2
+  const splitTestStrategy = raw.splitTestStrategy ?? raw.challengerStrategy ?? "round-robin-after-10-calls"
+  return {
+    mainstays,
+    splitTestPool,
+    splitTestSlots,
+    splitTestStrategy,
+    judge: raw.judge,
+    rubric: raw.rubric,
+    scoreWeights: raw.scoreWeights,
+    exclude: raw.exclude,
+  }
+}
+
+/** Canonical schema kept for downstream consumers that want a one-shot
+ * `parse → DualProConfig`. Equivalent to `normalizeConfig(parse(input))`. */
+export const DualProConfigSchema = DualProConfigInputSchema.transform(normalizeConfig)
+
+export const DEFAULT_CONFIG: DualProConfig = normalizeConfig(DualProConfigInputSchema.parse({}))
+
+/** Apply env overrides to a config object. Pure — returns a new object.
+ *
+ * Legacy env names continue to work — `LLM_DUAL_PRO_B` overrides mainstay-2
+ * (the cheap baseline slot), `LLM_CHALLENGER_POOL` overrides the split-test
+ * pool. New name `LLM_SPLIT_TEST_POOL` is the preferred alias. */
 export function applyEnvOverrides(cfg: DualProConfig, env: NodeJS.ProcessEnv = process.env): DualProConfig {
-  const next = { ...cfg }
-  if (env.LLM_DUAL_PRO_B) next.runnerUp = env.LLM_DUAL_PRO_B
-  if (env.LLM_CHALLENGER_POOL) {
-    const pool = env.LLM_CHALLENGER_POOL.split(",")
+  const next: DualProConfig = { ...cfg, mainstays: [...cfg.mainstays] as [string, string] }
+  if (env.LLM_DUAL_PRO_B) next.mainstays = [next.mainstays[0], env.LLM_DUAL_PRO_B]
+  const poolEnv = env.LLM_SPLIT_TEST_POOL || env.LLM_CHALLENGER_POOL
+  if (poolEnv) {
+    const pool = poolEnv
+      .split(",")
       .map((s) => s.trim())
       .filter(Boolean)
-    if (pool.length > 0) next.challengerPool = pool
+    if (pool.length > 0) next.splitTestPool = pool
   }
   if (env.LLM_JUDGE_MODEL) next.judge = env.LLM_JUDGE_MODEL
   if (env.LLM_EXCLUDE) {
@@ -183,6 +276,10 @@ export async function loadConfig(opts: { writeOnMissing?: boolean } = {}): Promi
       // the comment header that explains each field.
       const stripped = raw.replace(/^\s*\/\/.*$/gm, "")
       const parsed = JSON.parse(stripped)
+      // Parse the raw input shape (accepts both v0.6 legacy and v0.7 new
+      // fields) then normalize. This is what makes the schema migration
+      // back-compatible: a config file with only `champion`+`runnerUp`+
+      // `challengerPool` still loads cleanly into the new internal shape.
       cfg = DualProConfigSchema.parse(parsed)
     } catch (e) {
       log.warn?.("dual-pro-config.json malformed; using defaults", { error: String(e) })
@@ -202,27 +299,45 @@ export async function loadConfig(opts: { writeOnMissing?: boolean } = {}): Promi
   return applyEnvOverrides(cfg)
 }
 
-/** Render a JSONC starter config with comments explaining each field. */
+/** Render a JSONC starter config with comments explaining each field.
+ *
+ * Writes the v0.7 shape (mainstays + splitTestPool + splitTestSlots). The
+ * loader still reads the v0.6 shape (champion/runnerUp/challengerPool) for
+ * back-compat, but new files always start in the new shape. */
 export function renderStarterConfig(cfg: DualProConfig): string {
-  return `// dual-pro-config.json — controls bun llm pro champion-challenger dispatch.
+  return `// dual-pro-config.json — controls bun llm pro multi-leg dispatch.
 // Each field documented inline. Edit and save; takes effect on next /pro call.
 {
-  // Leg A — champion. Stable across calls. Top-1 model by judge score.
-  "champion": ${JSON.stringify(cfg.champion)},
+  // Mainstays — two stable models that fire every call. Anchor judge
+  // calibration with a low-variance baseline. Convention: position 0 is
+  // a frontier reasoning anchor (punch-through intellectual issues),
+  // position 1 is a proven cheap baseline (sanity-check + low cost).
+  // Env override: LLM_DUAL_PRO_B=<modelId> overrides position 1.
+  "mainstays": ${JSON.stringify(cfg.mainstays)},
 
-  // Leg B — runner-up. Stable across calls. Top-2 model by judge score.
-  // Env override: LLM_DUAL_PRO_B=<modelId>
-  "runnerUp": ${JSON.stringify(cfg.runnerUp)},
+  // Split-test pool — slots C and D rotate through this list to cover
+  // candidate models faster. Slot C uses splitTestStrategy; slot D
+  // re-faces the most-recent winner against mainstays (correlated
+  // re-test — confirms wins reproduce instead of pure pool exploration).
+  // Env override: LLM_SPLIT_TEST_POOL=id1,id2,id3 (LLM_CHALLENGER_POOL
+  // also accepted for back-compat).
+  "splitTestPool": ${JSON.stringify(cfg.splitTestPool)},
 
-  // Leg C — challenger pool. Rotates per call. New candidates added here.
-  // Env override: LLM_CHALLENGER_POOL=id1,id2,id3
-  "challengerPool": ${JSON.stringify(cfg.challengerPool)},
+  // How many split-test slots fire per call (0–4). Defaults to 2 →
+  // full 2+2 fleet (4 legs in parallel). Set 0 to revert to mainstays-only;
+  // set 1 for legacy 3-leg behavior. Per-call override: --legs N flag.
+  "splitTestSlots": ${JSON.stringify(cfg.splitTestSlots)},
 
-  // Strategy for picking next challenger. round-robin-after-N-calls steps
-  // the index every N successful 3-leg dispatches; random picks each call.
-  "challengerStrategy": ${JSON.stringify(cfg.challengerStrategy)},
+  // Strategy for picking slot C. round-robin-after-N-calls steps the
+  // index every N successful dispatches; random picks each call. Slot D
+  // always uses correlated re-test (most-recent winner not in mainstays
+  // and not slot C; cold-start falls back to slot C strategy +1 offset).
+  "splitTestStrategy": ${JSON.stringify(cfg.splitTestStrategy)},
 
-  // Cheap model that scores the three responses (1-5 each on rubric).
+  // Cheap model that scores responses pairwise (B-vs-A, C-vs-A, D-vs-A).
+  // 3 cheap pairwise calls > 1 saturated 4-way prompt — pairwise judging
+  // sidesteps position bias and context dilution. Gemini 2.5 Flash at
+  // ~$0.001/call → ~$0.003 total, often cheaper than one bloated 4-way.
   // Env override: LLM_JUDGE_MODEL=<modelId>
   "judge": ${JSON.stringify(cfg.judge)},
 
@@ -246,10 +361,10 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   // below to actually remove it from rotation.
   "scoreWeights": ${JSON.stringify(cfg.scoreWeights, null, 2).replace(/\n/g, "\n  ")},
 
-  // List of model IDs to exclude from all dispatch paths (champion, runner-up,
-  // challenger rotation). Use this to drop a junk model surfaced by the
-  // ⚠️ quality warning badge in the leaderboard. Champion / runner-up listed
-  // here log a stderr warning but still dispatch (explicit config wins).
+  // List of model IDs to exclude from all dispatch paths (mainstays + split-
+  // test slots). Use this to drop a junk model surfaced by the ⚠️ quality
+  // warning badge in the leaderboard. Mainstays listed here log a stderr
+  // warning but still dispatch (explicit config wins).
   // Env override: LLM_EXCLUDE=id1,id2,id3 (joins with this list).
   "exclude": ${JSON.stringify(cfg.exclude)}
 }
@@ -339,6 +454,59 @@ export function pickNextChallenger(
   }
 }
 
+/**
+ * Pick the next [slotC, slotD] pair for the split-test fleet.
+ *
+ * Slot C: standard rotation (same logic as `pickNextChallenger`).
+ * Slot D: **correlated re-test** — most recent winner from `history` that
+ *   is neither a mainstay nor slot C, providing reproducibility evidence
+ *   for emerging contenders. Cold start (no winner history) falls back to
+ *   slot C's strategy with a +1 round-robin offset, so slots C and D never
+ *   collide and the second slot still explores the pool.
+ *
+ * The "winner" is read from `history` entries, looking at the most recent
+ * `lookback` entries (default 10). The `judgeWinner` field on each entry
+ * names which leg won; `legs[winnerKey]` resolves to the model id.
+ *
+ * Pure — no I/O. Caller threads `counter` and `history` in.
+ */
+export function pickSplitTestSlots(
+  pool: readonly string[],
+  strategy: ChallengerStrategy,
+  counter: number,
+  history: readonly { winnerModelId?: string }[],
+  mainstays: readonly string[],
+  exclude: readonly string[] = [],
+  opts: { lookback?: number } = {},
+): { slotC: string | undefined; slotD: string | undefined; nextCounter: number } {
+  const c = pickNextChallenger(pool, strategy, counter, exclude)
+  const slotC = c.modelId
+  // Find the most-recent winner that is NOT a mainstay and NOT slot C.
+  const lookback = Math.max(1, opts.lookback ?? 10)
+  const recent = history.slice(-lookback)
+  let slotD: string | undefined
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const w = recent[i]?.winnerModelId
+    if (!w) continue
+    if (mainstays.includes(w)) continue
+    if (slotC && w === slotC) continue
+    if (exclude.includes(w)) continue
+    if (!pool.includes(w)) continue
+    slotD = w
+    break
+  }
+  if (!slotD) {
+    // Cold start: pick the next pool member AFTER slot C in pool-list
+    // order, so the two slots cover different pool members on first run.
+    // (Re-running pickNextChallenger with counter+1 doesn't give "next pool
+    // entry" semantics because it mods by the filtered-pool length — we
+    // want the literal next-available pool member.)
+    const remaining = pool.filter((id) => !exclude.includes(id) && !mainstays.includes(id) && id !== slotC)
+    if (remaining.length > 0) slotD = remaining[0]
+  }
+  return { slotC, slotD, nextCounter: c.nextCounter }
+}
+
 /** Persist + read the rotation counter. Lives next to ab-pro.jsonl. */
 export async function readChallengerCounter(): Promise<number> {
   const fs = await import("fs")
@@ -384,9 +552,19 @@ export const RUBRIC_DEFINITIONS: Record<Rubric, { dimensions: readonly string[];
 }
 
 /**
- * Build the judge prompt. The judge is told to score each leg on the
- * rubric (1–5 per dimension, sum = total) and pick a winner. Output is
- * strict JSON — see parseJudgeResponse.
+ * Build the legacy N-way judge prompt (3 or 4 responses in one prompt).
+ *
+ * **Prefer `buildPairwiseJudgePrompt`** for new code — feeding 4 distinct
+ * LLM responses into a single judge prompt suffers from position bias and
+ * context-saturation, and has been measured to degrade judge accuracy.
+ * Three cheap pairwise calls (B-vs-A, C-vs-A, D-vs-A) is more reliable
+ * AND usually cheaper. This function is kept for the backtest replay path
+ * (which compares OLD vs NEW outcomes legacy-style) and any v2 entry that
+ * is being re-judged after the fact.
+ *
+ * The judge is told to score each leg on the rubric (1–5 per dimension,
+ * sum = total) and pick a winner. Output is strict JSON — see
+ * parseJudgeResponse.
  */
 export function buildJudgePrompt(args: {
   question: string
@@ -442,7 +620,8 @@ export const JudgeResultSchema = z.object({
   a: JudgeBreakdownSchema.nullable(),
   b: JudgeBreakdownSchema.nullable(),
   c: JudgeBreakdownSchema.nullable().optional(),
-  winner: z.union([z.literal("a"), z.literal("b"), z.literal("c"), z.literal("tie")]),
+  d: JudgeBreakdownSchema.nullable().optional(),
+  winner: z.union([z.literal("a"), z.literal("b"), z.literal("c"), z.literal("d"), z.literal("tie")]),
   reasoning: z.string().optional(),
 })
 export type JudgeResult = z.infer<typeof JudgeResultSchema>
@@ -476,6 +655,116 @@ export function parseJudgeResponse(raw: string): JudgeResult | undefined {
 }
 
 // --------------------------------------------------------------------
+// Pairwise judge — 2 responses at a time, run 3 times in parallel
+// (B-vs-A, C-vs-A, D-vs-A). Sidesteps N-way position bias + context
+// saturation that degrades single-prompt 4-way judging accuracy.
+// --------------------------------------------------------------------
+
+export type PairwiseSide = "A" | "B"
+export type PairwiseWinner = "A" | "B" | "tie"
+export type PairwisePairId = "ab" | "ac" | "ad"
+
+export const PairwiseJudgeResultSchema = z.object({
+  winner: z.union([z.literal("A"), z.literal("B"), z.literal("tie")]),
+  scoreA: JudgeBreakdownSchema.nullable(),
+  scoreB: JudgeBreakdownSchema.nullable(),
+  reasoning: z.string().optional(),
+})
+export type PairwiseJudgeResult = z.infer<typeof PairwiseJudgeResultSchema>
+
+/** Build a pairwise judge prompt — A is the anchor (a mainstay), B is the
+ * contender. Judge picks A / B / tie and scores both on the rubric. */
+export function buildPairwiseJudgePrompt(args: {
+  question: string
+  pair: { a: { model: string; content: string }; b: { model: string; content: string } }
+  rubric: Rubric
+}): string {
+  const { question, pair, rubric } = args
+  const def = RUBRIC_DEFINITIONS[rubric]
+  const trunc = (s: string) => (s.length > 4000 ? s.slice(0, 4000) + "\n…[truncated]" : s)
+  return `You are scoring two LLM responses to the same question on a rubric.
+
+QUESTION:
+${question}
+
+### Response A (${pair.a.model})
+
+${trunc(pair.a.content)}
+
+### Response B (${pair.b.model})
+
+${trunc(pair.b.content)}
+
+RUBRIC: ${rubric}
+${def.emphasis}
+
+Score each response on these dimensions (1=poor, 5=excellent):
+${def.dimensions.map((d) => `- ${d}`).join("\n")}
+
+Pick the winner — response with the higher TOTAL (sum of dimension scores).
+If the totals are within 1 point, return "tie".
+
+Output STRICT JSON, nothing else (no markdown fence, no prose):
+{
+  "scoreA": { "scores": { "specificity": N, "actionability": N, "correctness": N, "depth": N }, "total": N },
+  "scoreB": { "scores": { "specificity": N, "actionability": N, "correctness": N, "depth": N }, "total": N },
+  "winner": "A" | "B" | "tie",
+  "reasoning": "one-sentence justification"
+}`
+}
+
+/** Parse a pairwise judge response. Same fence/prose tolerance as
+ * `parseJudgeResponse`. Returns undefined on unparseable / schema-mismatched
+ * output. */
+export function parsePairwiseJudgeResponse(raw: string): PairwiseJudgeResult | undefined {
+  if (!raw) return undefined
+  let text = raw.trim()
+  if (text.startsWith("```")) {
+    text = text
+      .replace(/^```[a-zA-Z]*\n?/, "")
+      .replace(/```$/, "")
+      .trim()
+  }
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  if (start < 0 || end <= start) return undefined
+  try {
+    const obj = JSON.parse(text.slice(start, end + 1))
+    return PairwiseJudgeResultSchema.parse(obj)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Synthesize a pairwise result from a v2 N-way judge result + the leg
+ * scores. Used by the v2→v3 reader so historical entries surface a uniform
+ * `judge.ab` / `judge.ac` shape to consumers (leaderboard, backtest,
+ * judge-history). If both leg scores are missing we return undefined so
+ * the consumer can short-circuit instead of inventing a verdict.
+ */
+export function synthesizePairwiseFromV2(
+  scoreA: JudgeBreakdown | null | undefined,
+  scoreB: JudgeBreakdown | null | undefined,
+  v2Winner: "a" | "b" | "c" | "tie" | undefined,
+  v2WinnerKey: "a" | "b" | "c",
+): PairwiseJudgeResult | undefined {
+  if (!scoreA && !scoreB) return undefined
+  const a = scoreA?.total ?? 0
+  const b = scoreB?.total ?? 0
+  // Map v2's global winner to this pair's verdict only when this pair
+  // contains the global winner. Otherwise infer from the totals (within
+  // 1 point = tie, mirroring the live judge rule).
+  let winner: PairwiseWinner
+  if (v2Winner === "tie") winner = "tie"
+  else if (v2Winner === "a") winner = "A"
+  else if (v2Winner === v2WinnerKey) winner = "B"
+  else if (Math.abs(a - b) <= 1) winner = "tie"
+  else winner = a >= b ? "A" : "B"
+  return { winner, scoreA: scoreA ?? null, scoreB: scoreB ?? null }
+}
+
+// --------------------------------------------------------------------
 // Leaderboard math
 // --------------------------------------------------------------------
 
@@ -491,8 +780,8 @@ export interface AbProLegEntry {
   content?: string
 }
 
-/** Schema-aware reader for ab-pro.jsonl entries — tolerates v1 (gpt/kimi)
- * and v2 (a/b/c) shapes. */
+/** Schema-aware reader for ab-pro.jsonl entries — tolerates v1 (gpt/kimi),
+ * v2 (a/b/c + N-way judge), and v3 (a/b/c/d + pairwise judge) shapes. */
 export interface AbProEntry {
   schema?: string
   timestamp?: string
@@ -500,10 +789,31 @@ export interface AbProEntry {
   a?: AbProLegEntry
   b?: AbProLegEntry
   c?: AbProLegEntry
+  /** v3 — split-test slot D (correlated re-test of recent winner). */
+  d?: AbProLegEntry
   // v1 legacy fields (gpt/kimi). Reader normalizes to a/b.
   gpt?: { model: string; ok: boolean; cost?: number; durationMs?: number }
   kimi?: { model: string; ok: boolean; cost?: number; durationMs?: number }
-  judge?: { model?: string; result?: JudgeResult }
+  /** v2 shape: judge: { model, winner, reasoning, error, cost, rubric, a, b, c }
+   *  v3 shape: judge: { model, rubric, error, cost, ab, ac?, ad? }
+   *  Both still ship `winner`/`reasoning` at the top level for back-compat
+   *  with v2 readers (synthesized from the AB pair on v3 writes). */
+  judge?: {
+    model?: string
+    rubric?: string
+    error?: string
+    cost?: number
+    winner?: "a" | "b" | "c" | "d" | "tie"
+    reasoning?: string
+    a?: JudgeBreakdown | null
+    b?: JudgeBreakdown | null
+    c?: JudgeBreakdown | null
+    d?: JudgeBreakdown | null
+    ab?: PairwiseJudgeResult
+    ac?: PairwiseJudgeResult
+    ad?: PairwiseJudgeResult
+    result?: JudgeResult
+  }
   pin?: boolean
   queryHash?: string
 }
@@ -551,12 +861,17 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
   for (const e of entries) {
     // Normalize v1 (gpt/kimi) entries to a/b. They never have scores —
     // ok/cost/duration only — so they still count toward failureRate but
-    // not avgScore.
-    if (e.gpt) bumpLeg({ model: e.gpt.model, ok: e.gpt.ok, cost: e.gpt.cost, durationMs: e.gpt.durationMs })
-    if (e.kimi) bumpLeg({ model: e.kimi.model, ok: e.kimi.ok, cost: e.kimi.cost, durationMs: e.kimi.durationMs })
+    // not avgScore. v2 emits BOTH gpt/kimi AND a/b — to avoid double-
+    // counting we only consume the v1 keys when no v2/v3 leg keys are
+    // present on the entry.
+    if (!e.a && !e.b) {
+      if (e.gpt) bumpLeg({ model: e.gpt.model, ok: e.gpt.ok, cost: e.gpt.cost, durationMs: e.gpt.durationMs })
+      if (e.kimi) bumpLeg({ model: e.kimi.model, ok: e.kimi.ok, cost: e.kimi.cost, durationMs: e.kimi.durationMs })
+    }
     bumpLeg(e.a)
     bumpLeg(e.b)
     bumpLeg(e.c)
+    bumpLeg(e.d)
   }
   const rows: LeaderboardRow[] = []
   for (const [model, s] of stats) {
@@ -750,8 +1065,8 @@ export function sampleBacktestEntries(entries: readonly AbProEntry[], opts: Back
 
 export interface BacktestPerQueryResult {
   question: string
-  oldWinner?: "a" | "b" | "c" | "tie"
-  newWinner?: "a" | "b" | "c" | "tie"
+  oldWinner?: "a" | "b" | "c" | "d" | "tie"
+  newWinner?: "a" | "b" | "c" | "d" | "tie"
   oldTotal?: number // judge total for OLD config's best leg
   newTotal?: number // judge total for NEW config's best leg
   oldCost?: number
@@ -936,11 +1251,11 @@ export async function appendPromotionDecision(entry: {
 /** Inferred default config from the registry's BEST_MODELS.pro entries. */
 export function inferDefaultsFromRegistry(): DualProConfig {
   const proIds = BEST_MODELS.pro
-  const champion = proIds[0] ?? DEFAULT_CONFIG.champion
-  const runnerUp = proIds[1] ?? DEFAULT_CONFIG.runnerUp
-  // Challenger pool = remaining BEST_MODELS.pro entries plus a couple of
-  // cross-provider candidates that aren't already champ/runner.
-  const seen = new Set([champion, runnerUp])
+  const m0 = proIds[0] ?? DEFAULT_CONFIG.mainstays[0]
+  const m1 = proIds[1] ?? DEFAULT_CONFIG.mainstays[1]
+  // Split-test pool = remaining BEST_MODELS.pro entries plus a couple of
+  // cross-provider candidates that aren't already a mainstay.
+  const seen = new Set([m0, m1])
   const pool: string[] = []
   for (const id of proIds.slice(2)) {
     if (!seen.has(id)) {
@@ -948,7 +1263,7 @@ export function inferDefaultsFromRegistry(): DualProConfig {
       seen.add(id)
     }
   }
-  // Pad with diverse picks so a fresh install has a real shadow set.
+  // Pad with diverse picks so a fresh install has a real split-test set.
   for (const id of ["gemini-3-pro-preview", "grok-4", "claude-opus-4-6"]) {
     if (!seen.has(id) && getModel(id)) {
       pool.push(id)
@@ -957,9 +1272,8 @@ export function inferDefaultsFromRegistry(): DualProConfig {
   }
   return {
     ...DEFAULT_CONFIG,
-    champion,
-    runnerUp,
-    challengerPool: pool.length > 0 ? pool : DEFAULT_CONFIG.challengerPool,
+    mainstays: [m0, m1],
+    splitTestPool: pool.length > 0 ? pool : DEFAULT_CONFIG.splitTestPool,
   }
 }
 

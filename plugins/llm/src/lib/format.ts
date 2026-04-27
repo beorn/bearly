@@ -43,10 +43,15 @@ export interface OutputMeta {
   durationMs?: number
   responseId?: string
   status?: "completed" | "failed" | "background" | "recovered"
-  /** Dual-pro: per-leg sections. C is the optional shadow challenger. */
+  /** Dual-pro: per-leg sections. A/B are mainstays (always present in
+   * dual-pro mode); C/D are optional split-test slots. */
   a?: LegMeta
   b?: LegMeta
   c?: LegMeta
+  d?: LegMeta
+  /** Dual-pro: number of legs that fired (2 = mainstays only, 3 = +slot C,
+   * 4 = full 2+2 fleet). */
+  legs?: number
   /** Dual-pro: judge envelope (km-bearly.llm-dual-pro-shadow-test). */
   judge?: Record<string, unknown>
   /** Dual-pro: top-N leaderboard snapshot at write time. */

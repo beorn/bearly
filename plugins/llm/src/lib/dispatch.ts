@@ -11,7 +11,16 @@ import { listPartials, findPartialByResponseId, cleanupPartials } from "./persis
 import { consensus } from "./consensus"
 import { isProviderAvailable, getProviderEnvVar } from "./providers"
 import { getDb, closeDb, ftsSearchWithSnippet } from "../../../recall/src/history/db"
-import { estimateCost, formatCost, getBestAvailableModel, getModel, MODELS, type Model, type ModelMode, type ModelResponse } from "./types"
+import {
+  estimateCost,
+  formatCost,
+  getBestAvailableModel,
+  getModel,
+  MODELS,
+  type Model,
+  type ModelMode,
+  type ModelResponse,
+} from "./types"
 import {
   isPricingStale,
   cacheCurrentPricing,
@@ -1354,28 +1363,38 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
 }
 
 /**
- * Run dual-pro mode (now three-leg champion-challenger pattern, behind config).
+ * Run dual-pro mode — 2+2 fleet (4 legs in parallel) with pairwise judge.
  *
  * Flow:
- *   - Leg A (champion): config'd top-1 — stable across calls (default gpt-5.4-pro)
- *   - Leg B (runner-up): config'd top-2 — stable across calls (default kimi-k2.6)
- *   - Leg C (challenger): rotates from a candidate pool, shadow-tested
+ *   - Leg A (mainstay 1): frontier reasoning anchor — stable across calls
+ *   - Leg B (mainstay 2): proven cheap baseline — stable across calls
+ *   - Leg C (split-test slot 1): rotates through `splitTestPool`
+ *   - Leg D (split-test slot 2): correlated re-test — re-faces most-recent
+ *     winner from history (cold start: round-robin offset by 1 from slot C)
  *
- * After all three respond, a cheap judge model rates each on a rubric
- * (specificity / actionability / correctness / depth, 1-5 each). Scores +
- * time + cost go to ab-pro.jsonl (extends, doesn't replace, the v1 format).
+ * After all 4 respond, three cheap pairwise judge calls run in parallel:
+ *   - judge AB: B vs A on the rubric
+ *   - judge AC: C vs A on the rubric
+ *   - judge AD: D vs A on the rubric
+ *
+ * Pairwise judging (vs. a single 4-way prompt) sidesteps position bias and
+ * context-saturation that materially degrade N-way judge accuracy. With
+ * Gemini 2.5 Flash judge at ~$0.001/call, 3 pairwise calls (~$0.003) is
+ * usually cheaper than one bloated 4-way prompt that would need more
+ * tokens to fit four responses anyway.
  *
  * Cost sliders:
- *   --no-challenger : skip leg C → 2-leg behavior (back-compat)
- *   --challenger <id>: explicit override of rotation
- *   --no-judge      : skip judge call (saves $0.01-0.05; loses scoring signal)
+ *   --legs N         : cap legs (2 = mainstays only, 3 = +slot C, 4 = full)
+ *   --no-challenger  : alias for --legs 2
+ *   --challenger <id>: explicit slot C override (skips slot D unless --legs 4)
+ *   --no-judge       : skip judge calls (saves ~$0.003; loses scoring)
  *
- * A/B log lives at ~/.claude/projects/<project>/memory/ab-pro.jsonl. Each line
- * records the prompt, all three responses' cost/duration/length/score,
- * judge model, and winner. Read by `bun llm pro --leaderboard` and used by
- * the promotion threshold (`bun llm pro --promote-review`).
+ * A/B log lives at ~/.claude/projects/<project>/memory/ab-pro.jsonl. Each
+ * line records the prompt, every leg's cost/duration/length/score, judge
+ * model, pairwise judge results (ab/ac/ad), and a synthesized "winner"
+ * field for back-compat with v2 readers.
  *
- * Auto-falls-back to single-model `askAndFinish` if a champion provider is
+ * Auto-falls-back to single-model `askAndFinish` if a mainstay provider is
  * unavailable.
  */
 export async function runProDual(options: {
@@ -1390,7 +1409,10 @@ export async function runProDual(options: {
   challengerOverride?: string
   noChallenger?: boolean
   noJudge?: boolean
-  /** Extra model IDs to exclude from challenger rotation for THIS call only.
+  /** Cap the number of legs that fire (2 = mainstays only, 3 = mainstays + slot C,
+   * 4 = full 2+2 fleet). Defaults to `splitTestSlots + 2` from config. */
+  legs?: number
+  /** Extra model IDs to exclude from split-test rotation for THIS call only.
    * Joins (union) with the persistent `exclude` list in dual-pro-config.json. */
   extraExclude?: readonly string[]
 }): Promise<void> {
@@ -1415,70 +1437,100 @@ export async function runProDual(options: {
     return
   }
 
-  // Load champion-challenger config (file + env overrides). The legacy
-  // env var LLM_DUAL_PRO_B still works — applyEnvOverrides preserves it.
+  // Load fleet config (file + env overrides). Legacy env LLM_DUAL_PRO_B and
+  // LLM_CHALLENGER_POOL still work — applyEnvOverrides preserves them.
   const cfg = await dualPro.loadConfig()
-  const gptPro = getModel(cfg.champion)
-  // Leg B defaults to Kimi K2.6 (cheap sanity-check). Override with
-  // LLM_DUAL_PRO_B=<modelId> for head-to-head sprints — e.g.
-  // LLM_DUAL_PRO_B=gpt-5.5-pro to A/B frontier OpenAI Pros. The A/B log
-  // (ab-pro.jsonl) records whichever model B was, so mixed windows are
-  // disambiguated after the fact by reading `kimi.model` in each entry.
-  const modelBId = cfg.runnerUp
-  const kimi = getModel(modelBId)
-  const gptAvailable = gptPro && isProviderAvailable(gptPro.provider)
-  const kimiAvailable = kimi && isProviderAvailable(kimi.provider)
+  const [mainstay0Id, mainstay1Id] = cfg.mainstays
+  const mainstay0 = getModel(mainstay0Id)
+  const mainstay1 = getModel(mainstay1Id)
+  const m0Available = mainstay0 && isProviderAvailable(mainstay0.provider)
+  const m1Available = mainstay1 && isProviderAvailable(mainstay1.provider)
 
   // Effective exclude = persistent config + this-call --exclude flag (union).
-  const effectiveExclude = options.extraExclude && options.extraExclude.length > 0
-    ? Array.from(new Set([...cfg.exclude, ...options.extraExclude]))
-    : cfg.exclude
+  const effectiveExclude =
+    options.extraExclude && options.extraExclude.length > 0
+      ? Array.from(new Set([...cfg.exclude, ...options.extraExclude]))
+      : cfg.exclude
 
-  // Mainstays (champion / runner-up) listed in `exclude` log a warning but
-  // still dispatch — explicit config wins over implicit exclude. Stale
-  // leaderboard data shouldn't silently drop the model the user pinned.
-  if (effectiveExclude.includes(cfg.champion)) {
-    console.error(
-      `⚠️  excluded model "${cfg.champion}" is set as champion — dispatching anyway. Fix dual-pro-config.json.`,
-    )
-  }
-  if (effectiveExclude.includes(cfg.runnerUp)) {
-    console.error(
-      `⚠️  excluded model "${cfg.runnerUp}" is set as runnerUp — dispatching anyway. Fix dual-pro-config.json.`,
-    )
-  }
-
-  // Resolve Leg C — the rotating challenger. Skipped when --no-challenger
-  // or when the pool is empty after capability/availability/exclude filtering.
-  let challenger: Model | undefined
-  let challengerCounter = 0
-  if (!options.noChallenger) {
-    if (options.challengerOverride) {
-      challenger = getModel(options.challengerOverride)
-    } else {
-      const filteredPool = dualPro.filterPoolByCapability(
-        cfg.challengerPool.filter((id) => id !== cfg.champion && id !== cfg.runnerUp),
-        [],
+  // Mainstays listed in `exclude` log a warning but still dispatch — explicit
+  // config wins over implicit exclude. Stale leaderboard data shouldn't
+  // silently drop a model the user pinned.
+  for (const id of cfg.mainstays) {
+    if (effectiveExclude.includes(id)) {
+      console.error(
+        `⚠️  excluded model "${id}" is set as a mainstay — dispatching anyway. Fix dual-pro-config.json.`,
       )
-      challengerCounter = await dualPro.readChallengerCounter()
-      const picked = dualPro.pickNextChallenger(
-        filteredPool,
-        cfg.challengerStrategy,
-        challengerCounter,
-        effectiveExclude,
-      )
-      challenger = getModel(picked.modelId ?? "")
-      if (challenger) await dualPro.writeChallengerCounter(picked.nextCounter)
     }
   }
 
-  // Fall back to single-model mode if we can't run both sides.
-  if (!gptAvailable || !kimiAvailable) {
-    const missing = !gptAvailable
-      ? "OPENAI_API_KEY"
-      : !kimi
-        ? `unknown model "${modelBId}"`
-        : `provider key for ${kimi.provider}`
+  // Decide leg cap: --no-challenger forces 2; --legs N caps explicitly;
+  // otherwise default = 2 (mainstays) + cfg.splitTestSlots.
+  const defaultLegCap = 2 + cfg.splitTestSlots
+  const requestedLegs = options.noChallenger ? 2 : (options.legs ?? defaultLegCap)
+  const legCap = Math.max(2, Math.min(4, Math.floor(requestedLegs)))
+
+  // Resolve split-test slots. Slot C honors --challenger override; slot D is
+  // always picked via correlated re-test (most-recent winner reproducer).
+  let slotC: Model | undefined
+  let slotD: Model | undefined
+  let nextCounter = 0
+  if (legCap >= 3) {
+    const counter = await dualPro.readChallengerCounter()
+    if (options.challengerOverride) {
+      slotC = getModel(options.challengerOverride)
+      // --challenger always means "slot C only" — slot D is skipped to honor
+      // the user's explicit pick. Pump the counter so the next non-override
+      // call doesn't replay the same rotation slot.
+      nextCounter = counter + 1
+    } else {
+      const filteredPool = dualPro.filterPoolByCapability(
+        cfg.splitTestPool.filter((id) => !cfg.mainstays.includes(id)),
+        [],
+      )
+      // Build winner history for the correlated re-test (slot D).
+      const priorEntries = await dualPro.readAbProLog()
+      const winnerHistory = priorEntries
+        .map((e) => {
+          const w = e.judge?.winner
+          if (!w || w === "tie") return undefined
+          const leg = w === "a" ? e.a : w === "b" ? e.b : w === "c" ? e.c : w === "d" ? e.d : undefined
+          return leg?.model ? { winnerModelId: leg.model } : undefined
+        })
+        .filter((x): x is { winnerModelId: string } => !!x)
+      if (legCap >= 4) {
+        const picked = dualPro.pickSplitTestSlots(
+          filteredPool,
+          cfg.splitTestStrategy,
+          counter,
+          winnerHistory,
+          cfg.mainstays,
+          effectiveExclude,
+        )
+        slotC = getModel(picked.slotC ?? "")
+        slotD = getModel(picked.slotD ?? "")
+        nextCounter = picked.nextCounter
+      } else {
+        const picked = dualPro.pickNextChallenger(
+          filteredPool,
+          cfg.splitTestStrategy,
+          counter,
+          effectiveExclude,
+        )
+        slotC = getModel(picked.modelId ?? "")
+        nextCounter = picked.nextCounter
+      }
+    }
+  }
+
+  // Fall back to single-model mode if we can't run both mainstays.
+  if (!m0Available || !m1Available) {
+    const missing = !m0Available
+      ? !mainstay0
+        ? `unknown model "${mainstay0Id}"`
+        : `provider key for ${mainstay0.provider}`
+      : !mainstay1
+        ? `unknown model "${mainstay1Id}"`
+        : `provider key for ${mainstay1.provider}`
     console.error(`⚠️  Dual-pro unavailable (${missing}) — falling back to single model\n`)
     await askAndFinish({
       question,
@@ -1499,71 +1551,56 @@ export async function runProDual(options: {
   const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
 
-  const challengerLabel = challenger ? ` + ${challenger.displayName} (challenger)` : ""
-  console.error(`[dual-pro] Querying ${gptPro!.displayName} + ${kimi!.displayName}${challengerLabel} in parallel...`)
-  // Cost estimate scales with leg B's tier. K2.6 = $0.01-0.05 (default,
-  // rounding-error). A second very-high Pro (e.g. gpt-5.5-pro for A/B) ≈ $5-15.
-  const legBCostStr = kimi!.costTier === "very-high" ? "$5-15" : "$0.01-0.05"
-  const totalEstStr = kimi!.costTier === "very-high" ? "~$10-30" : "~$5-15"
-  console.error(
-    `  • Estimated cost: $5-15 (${gptPro!.displayName}) + ${legBCostStr} (${kimi!.displayName}) = ${totalEstStr} total`,
-  )
-  // K2.6-style thinking models use dynamic sizing via reasoning.contextWindow.
-  // The actual output cap is computed per-call in research.ts (contextWindow −
-  // estimated input − 4096 safety). Report the window + strategy here; per-call
-  // numbers show up in the final report. Non-thinking models skip this line.
-  if (kimi!.reasoning?.contextWindow || kimi!.reasoning?.maxOutputTokens) {
-    const cap = kimi!.reasoning?.contextWindow
-      ? `dynamic (up to ~${kimi!.reasoning.contextWindow - 4096} tokens, scales with input)`
-      : `${kimi!.reasoning?.maxOutputTokens} tokens (static)`
-    console.error(`  • ${kimi!.displayName} output budget: ${cap}\n`)
-  } else {
-    console.error("")
-  }
+  // Build the slot/leg list. Always 2 mainstays; up to 2 split-test slots.
+  type LegSlot = { id: "a" | "b" | "c" | "d"; role: "mainstay" | "split-test"; model: Model }
+  const legSlots: LegSlot[] = [
+    { id: "a", role: "mainstay", model: mainstay0! },
+    { id: "b", role: "mainstay", model: mainstay1! },
+  ]
+  if (slotC && legCap >= 3) legSlots.push({ id: "c", role: "split-test", model: slotC })
+  if (slotD && legCap >= 4) legSlots.push({ id: "d", role: "split-test", model: slotD })
 
-  // Cost confirmation matches runDebate / runDeep — a multi-dollar call
-  // deserves a Y/n gate. The 2026-04-20 double-fire bug made silent billing
-  // mistakes worse than they would otherwise be; this is the explicit-opt-in
-  // backstop. Prompt scales when both legs are Pro tier (frontier A/B).
-  const proLabel =
-    kimi!.costTier === "very-high"
-      ? `(${gptPro!.displayName} + ${kimi!.displayName}, both Pro tier)`
-      : `(mostly ${gptPro!.displayName})`
-  await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} ${proLabel}. Proceed? [Y/n] `, skipConfirm)
+  const fleetLabel = legSlots
+    .map((s) => `${s.model.displayName}${s.role === "split-test" ? " [split-test]" : ""}`)
+    .join(" + ")
+  console.error(`[dual-pro] Querying ${legSlots.length} legs in parallel: ${fleetLabel}...`)
+  // Cost estimate — mainstays drive most of the bill. Per-leg cap is
+  // ~$5-15 for Pro-tier; cheap baselines (kimi-k2.6) are $0.01-0.05.
+  const proLegCount = legSlots.filter((s) => s.model.costTier === "very-high").length
+  const totalEstStr = proLegCount >= 2 ? `~$${5 * proLegCount}-${15 * proLegCount}` : `~$5-15`
+  console.error(`  • Estimated cost: ${totalEstStr} (${proLegCount} Pro-tier legs of ${legSlots.length})`)
+  // Surface dynamic-thinking budgets for any leg that uses them.
+  for (const s of legSlots) {
+    if (s.model.reasoning?.contextWindow || s.model.reasoning?.maxOutputTokens) {
+      const cap = s.model.reasoning?.contextWindow
+        ? `dynamic (up to ~${s.model.reasoning.contextWindow - 4096} tokens, scales with input)`
+        : `${s.model.reasoning?.maxOutputTokens} tokens (static)`
+      console.error(`  • ${s.model.displayName} output budget: ${cap}`)
+    }
+  }
+  console.error("")
+
+  // Cost confirmation — a multi-dollar call deserves a Y/n gate. Pre-existing
+  // 2026-04-20 double-fire-class bugs made silent billing mistakes worse than
+  // they otherwise would be; this is the explicit-opt-in backstop.
+  const tierLabel = proLegCount >= 2 ? `${proLegCount} Pro-tier legs` : "mostly mainstays"
+  await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} (${tierLabel}). Proceed? [Y/n] `, skipConfirm)
 
   const { ask } = await import("./research")
   const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("./openai-deep")
 
-  // Route the GPT leg through the Responses API so the call is recoverable:
+  // Route OpenAI Pro legs through the Responses API so they're recoverable:
   // a 30+ min Pro call that gets SIGINT / network-hiccup / wall-clock killed
   // still persists its responseId, and `bun llm recover <id>` reattaches to
-  // the server-side work. K2.6 cannot take this path — OpenRouter doesn't
-  // expose the Responses API, so the Kimi leg stays on generateText (if it's
-  // aborted, work is lost — acceptable given the ~30s typical runtime).
+  // the server-side work. Non-OpenAI legs stay on generateText (if aborted,
+  // work is lost — acceptable given ~30s typical runtime).
   //
   // imagePath disables the background path — the Responses-API background
   // helper is text-only today, and silently dropping the image would be worse
   // than losing recoverability for the rare image+pro case.
-  const canBackgroundGpt = isOpenAIBackgroundCapable(gptPro!) && !imagePath
-  // Leg B also qualifies when it's an OpenAI Pro (e.g. gpt-5.5-pro A/B).
-  // K2.6 doesn't — OpenRouter doesn't expose the Responses API, so Kimi stays
-  // on generateText (if aborted, work is lost — acceptable given ~30s runtime).
-  const canBackgroundKimi = isOpenAIBackgroundCapable(kimi!) && !imagePath
-  const canBackgroundChallenger = challenger ? isOpenAIBackgroundCapable(challenger) && !imagePath : false
-
-  // Fire all three in parallel. Streaming is disabled — multi streams would
-  // interleave unreadably on stderr. Users read the final files.
-  //
-  // SIGINT-only cancellation. Previously this wrapper enforced a wall-clock
-  // ceiling (5 min → scaled → removed here) that kept killing legitimate
-  // long-context queries. With the GPT leg on background mode the user can
-  // always `bun llm recover <id>` to reattach — losing the local process is
-  // no longer terminal for the work.
-  //
-  // imagePath is forwarded explicitly — dropping it would silently degrade
-  // `--image` to text-only.
-  const dispatchOne = (m: Model, useBackground: boolean, ac: AbortController) =>
-    useBackground
+  const dispatchOne = (m: Model, ac: AbortController) => {
+    const useBackground = isOpenAIBackgroundCapable(m) && !imagePath
+    return useBackground
       ? queryOpenAIBackground({
           prompt: enrichedQuestion,
           model: m,
@@ -1576,84 +1613,90 @@ export async function runProDual(options: {
           imagePath,
           abortSignal: ac.signal,
         })
+  }
 
-  const [gptResult, kimiResult, challengerResult] = await withSignalAbort(async (outerSignal) => {
+  // Fire ALL legs in parallel — single round trip, timing dominated by the
+  // slowest leg. Streaming disabled (multi-stream interleave unreadable).
+  const settledResults = await withSignalAbort(async (outerSignal) => {
     const ac = new AbortController()
     const onOuterAbort = () => ac.abort(outerSignal.reason ?? "aborted")
     if (outerSignal.aborted) onOuterAbort()
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
     try {
-      const calls: Promise<import("./types").ModelResponse>[] = [
-        dispatchOne(gptPro!, canBackgroundGpt, ac),
-        dispatchOne(kimi!, canBackgroundKimi, ac),
-      ]
-      if (challenger) calls.push(dispatchOne(challenger, canBackgroundChallenger, ac))
-      const settled = await Promise.allSettled(calls)
-      return [settled[0]!, settled[1]!, settled[2]] as const
+      const calls = legSlots.map((s) => dispatchOne(s.model, ac))
+      return await Promise.allSettled(calls)
     } finally {
       outerSignal.removeEventListener("abort", onOuterAbort)
     }
   })
 
-  // Normalize both legs to a consistent (ok, error) shape. "Success" requires
-  // non-empty trimmed content AND no error — a fulfilled promise with empty
-  // content (reasoning-exhaustion, abort, API quirks) is a failure, not a
-  // silent-success. Previously the progress line said ✓ while the combined
-  // report said ⚠️ Failed for the same call — inconsistent + debug-hostile.
-  const gptResp = gptResult.status === "fulfilled" ? gptResult.value : undefined
-  const kimiResp = kimiResult.status === "fulfilled" ? kimiResult.value : undefined
-  const challengerResp = challengerResult?.status === "fulfilled" ? challengerResult.value : undefined
-  const gptErrRaw = gptResult.status === "rejected" ? String(gptResult.reason) : gptResp?.error
-  const kimiErrRaw = kimiResult.status === "rejected" ? String(kimiResult.reason) : kimiResp?.error
-  const challengerErrRaw =
-    challengerResult?.status === "rejected" ? String(challengerResult.reason) : challengerResp?.error
-  const gptOk = !gptErrRaw && !!gptResp?.content && gptResp.content.trim().length > 0
-  const kimiOk = !kimiErrRaw && !!kimiResp?.content && kimiResp.content.trim().length > 0
-  const challengerOk =
-    !!challenger && !challengerErrRaw && !!challengerResp?.content && challengerResp.content.trim().length > 0
-  const gptErr = gptErrRaw ?? (gptResp && !gptOk ? "empty content" : undefined)
-  const kimiErr = kimiErrRaw ?? (kimiResp && !kimiOk ? "empty content" : undefined)
-  const challengerErr = challengerErrRaw ?? (challengerResp && !challengerOk ? "empty content" : undefined)
+  // Normalize each leg to (ok, error). "Success" requires non-empty trimmed
+  // content AND no error — a fulfilled promise with empty content
+  // (reasoning-exhaustion, abort, API quirks) is a failure, not a silent
+  // success.
+  type LegOutcome = LegSlot & {
+    response?: import("./types").ModelResponse
+    error?: string
+    ok: boolean
+  }
+  const legOutcomes: LegOutcome[] = legSlots.map((slot, i) => {
+    const settled = settledResults[i]!
+    const response = settled.status === "fulfilled" ? settled.value : undefined
+    const errRaw = settled.status === "rejected" ? String(settled.reason) : response?.error
+    const ok = !errRaw && !!response?.content && response.content.trim().length > 0
+    const error = errRaw ?? (response && !ok ? "empty content" : undefined)
+    return { ...slot, response, error, ok }
+  })
 
-  if (gptOk && gptResp)
-    console.error(
-      `  ✓ ${gptPro!.displayName} (${gptResp.usage?.totalTokens ?? 0} tok, ${Math.round(gptResp.durationMs / 1000)}s)`,
-    )
-  else console.error(`  ✗ ${gptPro!.displayName}: ${gptErr ?? "unknown failure"}`)
-  if (kimiOk && kimiResp)
-    console.error(
-      `  ✓ ${kimi!.displayName} (${kimiResp.usage?.totalTokens ?? 0} tok, ${Math.round(kimiResp.durationMs / 1000)}s)`,
-    )
-  else console.error(`  ✗ ${kimi!.displayName}: ${kimiErr ?? "unknown failure"}`)
-  if (challenger) {
-    if (challengerOk && challengerResp)
+  for (const leg of legOutcomes) {
+    const tag = leg.role === "split-test" ? " [split-test]" : ""
+    if (leg.ok && leg.response) {
       console.error(
-        `  ✓ ${challenger.displayName} [challenger] (${challengerResp.usage?.totalTokens ?? 0} tok, ${Math.round(challengerResp.durationMs / 1000)}s)`,
+        `  ✓ ${leg.model.displayName}${tag} (${leg.response.usage?.totalTokens ?? 0} tok, ${Math.round(leg.response.durationMs / 1000)}s)`,
       )
-    else console.error(`  ✗ ${challenger.displayName} [challenger]: ${challengerErr ?? "unknown failure"}`)
+    } else {
+      console.error(`  ✗ ${leg.model.displayName}${tag}: ${leg.error ?? "unknown failure"}`)
+    }
   }
 
-  // Build the combined report. All responses presented side-by-side, headers
-  // labelled so the reader can diff. Non-fatal errors surface inline so the
-  // reader sees which model failed without digging through logs.
-  const gptCost = gptResp?.usage ? estimateCost(gptPro!, gptResp.usage.promptTokens, gptResp.usage.completionTokens) : 0
-  const kimiCost = kimiResp?.usage
-    ? estimateCost(kimi!, kimiResp.usage.promptTokens, kimiResp.usage.completionTokens)
-    : 0
-  const challengerCost =
-    challenger && challengerResp?.usage
-      ? estimateCost(challenger, challengerResp.usage.promptTokens, challengerResp.usage.completionTokens)
-      : 0
-  const totalCost = gptCost + kimiCost + challengerCost
+  // Persist the rotation counter only after all legs returned — guarantees a
+  // SIGINT'd dispatch doesn't burn a slot rotation.
+  if (legCap >= 3 && !options.challengerOverride && nextCounter > 0) {
+    try {
+      await dualPro.writeChallengerCounter(nextCounter)
+    } catch {
+      // best-effort; counter drift is benign.
+    }
+  }
 
-  // Judge — score each leg via a cheap model. Skipped on --no-judge or
-  // when no leg succeeded (nothing to score). Failures don't abort the
-  // run — the user-facing report still ships, just without scores.
-  let judgeResult: import("./dual-pro").JudgeResult | undefined
+  // Convenience aliases for the report builder (so we don't have to thread
+  // legOutcomes through everything).
+  const legA = legOutcomes[0]!
+  const legB = legOutcomes[1]!
+  const legC = legOutcomes.find((l) => l.id === "c")
+  const legD = legOutcomes.find((l) => l.id === "d")
+
+  // Per-leg cost — failed legs cost zero (no usage payload).
+  const costForLeg = (l: LegOutcome) =>
+    l.response?.usage ? estimateCost(l.model, l.response.usage.promptTokens, l.response.usage.completionTokens) : 0
+  const legCosts = new Map<string, number>(legOutcomes.map((l) => [l.id, costForLeg(l)]))
+  const totalLegCost = Array.from(legCosts.values()).reduce((s, c) => s + c, 0)
+
+  // Pairwise judge — three cheap calls in parallel (B-vs-A, C-vs-A, D-vs-A).
+  // Each pair sends only TWO responses to the judge — sidesteps N-way
+  // position bias and context dilution. With Gemini 2.5 Flash at ~$0.001/call
+  // this costs ~$0.003 total, often cheaper than one bloated 4-way prompt.
+  type PairwiseLog = {
+    ab?: import("./dual-pro").PairwiseJudgeResult
+    ac?: import("./dual-pro").PairwiseJudgeResult
+    ad?: import("./dual-pro").PairwiseJudgeResult
+  }
+  const pairwise: PairwiseLog = {}
   let judgeError: string | undefined
   let judgeCost = 0
   let judgeModelId: string | undefined
-  if (!options.noJudge && (gptOk || kimiOk || challengerOk)) {
+  const anyLegOk = legOutcomes.some((l) => l.ok)
+  if (!options.noJudge && anyLegOk && legA.ok) {
     const judgeModel = getModel(cfg.judge)
     if (!judgeModel) {
       judgeError = `judge model "${cfg.judge}" not found in registry`
@@ -1661,61 +1704,132 @@ export async function runProDual(options: {
       judgeError = `judge unavailable: ${getProviderEnvVar(judgeModel.provider)} not set`
     } else {
       judgeModelId = judgeModel.modelId
-      const judgeResponses: { id: "a" | "b" | "c"; model: string; content: string }[] = []
-      if (gptOk && gptResp) judgeResponses.push({ id: "a", model: gptPro!.displayName, content: gptResp.content })
-      if (kimiOk && kimiResp) judgeResponses.push({ id: "b", model: kimi!.displayName, content: kimiResp.content })
-      if (challengerOk && challengerResp && challenger)
-        judgeResponses.push({ id: "c", model: challenger.displayName, content: challengerResp.content })
-      const judgePrompt = dualPro.buildJudgePrompt({ question, responses: judgeResponses, rubric: cfg.rubric })
-      try {
-        console.error(`\n[dual-pro] Judging via ${judgeModel.displayName}...`)
-        const judgeRaw = await ask(judgePrompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
-        if (judgeRaw.usage)
-          judgeCost = estimateCost(judgeModel, judgeRaw.usage.promptTokens, judgeRaw.usage.completionTokens)
-        if (judgeRaw.content) judgeResult = dualPro.parseJudgeResponse(judgeRaw.content)
-        if (!judgeResult) judgeError = "judge response unparseable"
-      } catch (e) {
-        judgeError = `judge call failed: ${e instanceof Error ? e.message : String(e)}`
+      const pairs: { id: "ab" | "ac" | "ad"; contender: LegOutcome }[] = []
+      if (legB.ok) pairs.push({ id: "ab", contender: legB })
+      if (legC?.ok) pairs.push({ id: "ac", contender: legC })
+      if (legD?.ok) pairs.push({ id: "ad", contender: legD })
+      console.error(`\n[dual-pro] Pairwise judging via ${judgeModel.displayName} (${pairs.length} pairs)...`)
+      const judgeOnce = async (
+        pairId: "ab" | "ac" | "ad",
+        contender: LegOutcome,
+      ): Promise<{ id: typeof pairId; result?: import("./dual-pro").PairwiseJudgeResult; cost: number; error?: string }> => {
+        const prompt = dualPro.buildPairwiseJudgePrompt({
+          question,
+          pair: {
+            a: { model: legA.model.displayName, content: legA.response!.content },
+            b: { model: contender.model.displayName, content: contender.response!.content },
+          },
+          rubric: cfg.rubric,
+        })
+        try {
+          const raw = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
+          const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
+          const result = raw.content ? dualPro.parsePairwiseJudgeResponse(raw.content) : undefined
+          return { id: pairId, result, cost, error: result ? undefined : "unparseable" }
+        } catch (e) {
+          return { id: pairId, cost: 0, error: e instanceof Error ? e.message : String(e) }
+        }
+      }
+      const settled = await Promise.all(pairs.map((p) => judgeOnce(p.id, p.contender)))
+      for (const r of settled) {
+        judgeCost += r.cost
+        if (r.result) pairwise[r.id] = r.result
+      }
+      const failures = settled.filter((r) => !r.result)
+      if (failures.length === settled.length && settled.length > 0) {
+        judgeError = `all pairwise judges failed (${failures.map((f) => f.error).join("; ")})`
+      } else if (failures.length > 0) {
+        console.error(`  ⚠ ${failures.length}/${settled.length} pairwise judges failed`)
       }
     }
     if (judgeError) console.error(`  ⚠ judge unavailable: ${judgeError}`)
+  } else if (!options.noJudge && !legA.ok) {
+    judgeError = "judge skipped — anchor leg A failed"
   }
 
+  // Synthesize an N-way `judge.{a,b,c,d,winner}` shape for v2 consumers
+  // (leaderboard, judge-history, backtest). Pull leg-specific scores from
+  // the AB/AC/AD pairs (each pair scored leg A on its own line — they should
+  // agree but we average to reduce variance).
+  const aScoreSamples = (
+    [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(Boolean) as import("./dual-pro").JudgeBreakdown[]
+  ).map((s) => s.total)
+  const aTotal = aScoreSamples.length > 0 ? aScoreSamples.reduce((s, x) => s + x, 0) / aScoreSamples.length : undefined
+  const judgeTotals: Record<"a" | "b" | "c" | "d", number | undefined> = {
+    a: aTotal,
+    b: pairwise.ab?.scoreB?.total,
+    c: pairwise.ac?.scoreB?.total,
+    d: pairwise.ad?.scoreB?.total,
+  }
+  const overallWinnerKey = (() => {
+    const candidates: ("a" | "b" | "c" | "d")[] = ["a", "b", "c", "d"]
+    const have = candidates.filter((k) => judgeTotals[k] != null)
+    if (have.length === 0) return undefined
+    let best = have[0]!
+    for (const k of have) if ((judgeTotals[k] ?? 0) > (judgeTotals[best] ?? 0)) best = k
+    // Tie if within 1 point of the runner-up.
+    const others = have.filter((k) => k !== best).map((k) => judgeTotals[k] ?? 0)
+    const second = others.length > 0 ? Math.max(...others) : -Infinity
+    if ((judgeTotals[best] ?? 0) - second <= 1) return "tie" as const
+    return best
+  })()
+  // Average breakdown for leg A (used by the v2 reader synthesis).
+  const aScoreAvg: import("./dual-pro").JudgeBreakdown | undefined = (() => {
+    const samples = (
+      [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(Boolean) as import("./dual-pro").JudgeBreakdown[]
+    )
+    if (samples.length === 0) return undefined
+    const avg = (k: keyof import("./dual-pro").JudgeBreakdown["scores"]) =>
+      samples.reduce((s, x) => s + x.scores[k], 0) / samples.length
+    return {
+      scores: {
+        specificity: avg("specificity"),
+        actionability: avg("actionability"),
+        correctness: avg("correctness"),
+        depth: avg("depth"),
+      },
+      total: aTotal!,
+    }
+  })()
+
+  const judgeResult: import("./dual-pro").JudgeResult | undefined =
+    overallWinnerKey != null
+      ? {
+          a: aScoreAvg ?? null,
+          b: pairwise.ab?.scoreB ?? null,
+          c: pairwise.ac?.scoreB ?? null,
+          d: pairwise.ad?.scoreB ?? null,
+          winner: overallWinnerKey,
+          reasoning:
+            overallWinnerKey === "tie"
+              ? "pairwise totals within 1 point"
+              : `${overallWinnerKey.toUpperCase()} highest pairwise total`,
+        }
+      : undefined
+
+  // Build the combined markdown report. All responses presented side-by-side,
+  // headers labelled so the reader can diff. Non-fatal errors surface inline
+  // so the reader sees which model failed without digging through logs.
   const parts: string[] = []
   parts.push(`# Dual-Pro Response\n`)
   parts.push(`**Question**: ${question}\n`)
-  parts.push(`**Models**: ${gptPro!.displayName} + ${kimi!.displayName}`)
-  parts.push(`**Total cost**: ${formatCost(totalCost)} (${formatCost(gptCost)} + ${formatCost(kimiCost)})\n`)
+  parts.push(`**Models**: ${legOutcomes.map((l) => l.model.displayName).join(" + ")}`)
+  const costBreakdown = legOutcomes.map((l) => formatCost(legCosts.get(l.id) ?? 0)).join(" + ")
+  parts.push(`**Total cost**: ${formatCost(totalLegCost)} (${costBreakdown})\n`)
 
-  parts.push(`---\n`)
-  parts.push(`## ${gptPro!.displayName}`)
-  if (gptOk && gptResp) {
-    const meta = `_${gptResp.usage?.totalTokens ?? 0} tokens · ${Math.round(gptResp.durationMs / 1000)}s · ${formatCost(gptCost)}_`
-    parts.push(meta + "\n")
-    parts.push(gptResp.content.trim())
-  } else {
-    parts.push(`⚠️  Failed: ${gptErr ?? "no content"}`)
-  }
-
-  parts.push(`\n---\n`)
-  parts.push(`## ${kimi!.displayName}`)
-  if (kimiOk && kimiResp) {
-    const meta = `_${kimiResp.usage?.totalTokens ?? 0} tokens · ${Math.round(kimiResp.durationMs / 1000)}s · ${formatCost(kimiCost)}_`
-    parts.push(meta + "\n")
-    parts.push(kimiResp.content.trim())
-  } else {
-    parts.push(`⚠️  Failed: ${kimiErr ?? "no content"}`)
-  }
-
-  if (challenger) {
-    parts.push(`\n---\n`)
-    parts.push(`## ${challenger.displayName} [challenger]`)
-    if (challengerOk && challengerResp) {
-      const meta = `_${challengerResp.usage?.totalTokens ?? 0} tokens · ${Math.round(challengerResp.durationMs / 1000)}s · ${formatCost(challengerCost)}_`
+  for (let i = 0; i < legOutcomes.length; i++) {
+    const leg = legOutcomes[i]!
+    const tag = leg.role === "split-test" ? " [split-test]" : ""
+    if (i === 0) parts.push(`---\n`)
+    else parts.push(`\n---\n`)
+    parts.push(`## ${leg.model.displayName}${tag}`)
+    if (leg.ok && leg.response) {
+      const cost = legCosts.get(leg.id) ?? 0
+      const meta = `_${leg.response.usage?.totalTokens ?? 0} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCost(cost)}_`
       parts.push(meta + "\n")
-      parts.push(challengerResp.content.trim())
+      parts.push(leg.response.content.trim())
     } else {
-      parts.push(`⚠️  Failed: ${challengerErr ?? "no content"}`)
+      parts.push(`⚠️  Failed: ${leg.error ?? "no content"}`)
     }
   }
 
@@ -1723,19 +1837,26 @@ export async function runProDual(options: {
     parts.push(`\n---\n`)
     parts.push(`## Judge breakdown (${judgeModelId ?? cfg.judge})\n`)
     const fmtRow = (
-      id: "a" | "b" | "c",
+      id: "a" | "b" | "c" | "d",
       label: string,
       breakdown: import("./dual-pro").JudgeBreakdown | null | undefined,
     ) => {
       if (!breakdown) return `- **${id.toUpperCase()}** ${label}: skipped (failed)`
       const s = breakdown.scores
-      return `- **${id.toUpperCase()}** ${label}: spec ${s.specificity}, action ${s.actionability}, correct ${s.correctness}, depth ${s.depth} → **total ${breakdown.total}**`
+      return `- **${id.toUpperCase()}** ${label}: spec ${s.specificity.toFixed(1)}, action ${s.actionability.toFixed(1)}, correct ${s.correctness.toFixed(1)}, depth ${s.depth.toFixed(1)} → **total ${breakdown.total.toFixed(1)}**`
     }
-    parts.push(fmtRow("a", gptPro!.displayName, judgeResult.a))
-    parts.push(fmtRow("b", kimi!.displayName, judgeResult.b))
-    if (challenger) parts.push(fmtRow("c", `${challenger.displayName} [challenger]`, judgeResult.c ?? null))
+    parts.push(fmtRow("a", legA.model.displayName, judgeResult.a))
+    parts.push(fmtRow("b", legB.model.displayName, judgeResult.b))
+    if (legC) parts.push(fmtRow("c", `${legC.model.displayName} [split-test]`, judgeResult.c ?? null))
+    if (legD) parts.push(fmtRow("d", `${legD.model.displayName} [split-test]`, judgeResult.d ?? null))
+    parts.push("")
+    // Surface the pairwise outcomes so the reader can see what each judge
+    // call actually decided (not just the synthesized N-way winner).
+    if (pairwise.ab) parts.push(`- **AB**: ${pairwise.ab.winner}${pairwise.ab.reasoning ? ` — ${pairwise.ab.reasoning}` : ""}`)
+    if (pairwise.ac) parts.push(`- **AC**: ${pairwise.ac.winner}${pairwise.ac.reasoning ? ` — ${pairwise.ac.reasoning}` : ""}`)
+    if (pairwise.ad) parts.push(`- **AD**: ${pairwise.ad.winner}${pairwise.ad.reasoning ? ` — ${pairwise.ad.reasoning}` : ""}`)
     parts.push(
-      `\n**Winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`,
+      `\n**Overall winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`,
     )
   } else if (judgeError) {
     parts.push(`\n---\n`)
@@ -1744,88 +1865,63 @@ export async function runProDual(options: {
 
   const combined = parts.join("\n")
 
-  // Dual-pro envelope ships per-leg sections (a, b) so skill consumers can
-  // branch on which leg produced what without re-parsing the combined report.
-  // Schema: { ..., a: {model, tokens, cost, durationMs, status}, b: {...} }
-  const aLeg = {
-    model: gptPro!.displayName,
-    tokens: gptResp?.usage
+  // Dual-pro envelope ships per-leg sections so skill consumers can branch
+  // on which leg produced what without re-parsing the combined report.
+  type EnvelopeLeg = {
+    model: string
+    tokens?: { prompt: number; completion: number; total: number }
+    cost: number
+    durationMs?: number
+    status: "completed" | "failed"
+    error?: string
+  }
+  const envelopeLeg = (leg: LegOutcome): EnvelopeLeg => ({
+    model: leg.model.displayName,
+    tokens: leg.response?.usage
       ? {
-          prompt: gptResp.usage.promptTokens,
-          completion: gptResp.usage.completionTokens,
-          total: gptResp.usage.totalTokens,
+          prompt: leg.response.usage.promptTokens,
+          completion: leg.response.usage.completionTokens,
+          total: leg.response.usage.totalTokens,
         }
       : undefined,
-    cost: gptCost,
-    durationMs: gptResp?.durationMs,
-    status: (gptOk ? "completed" : "failed") as "completed" | "failed",
-    error: gptErr,
-  }
-  const bLeg = {
-    model: kimi!.displayName,
-    tokens: kimiResp?.usage
-      ? {
-          prompt: kimiResp.usage.promptTokens,
-          completion: kimiResp.usage.completionTokens,
-          total: kimiResp.usage.totalTokens,
-        }
-      : undefined,
-    cost: kimiCost,
-    durationMs: kimiResp?.durationMs,
-    status: (kimiOk ? "completed" : "failed") as "completed" | "failed",
-    error: kimiErr,
-  }
-  const cLeg = challenger
-    ? {
-        model: challenger.displayName,
-        tokens: challengerResp?.usage
-          ? {
-              prompt: challengerResp.usage.promptTokens,
-              completion: challengerResp.usage.completionTokens,
-              total: challengerResp.usage.totalTokens,
-            }
-          : undefined,
-        cost: challengerCost,
-        durationMs: challengerResp?.durationMs,
-        status: (challengerOk ? "completed" : "failed") as "completed" | "failed",
-        error: challengerErr,
-      }
-    : undefined
+    cost: legCosts.get(leg.id) ?? 0,
+    durationMs: leg.response?.durationMs,
+    status: leg.ok ? "completed" : "failed",
+    error: leg.error,
+  })
+  const aLeg = envelopeLeg(legA)
+  const bLeg = envelopeLeg(legB)
+  const cLegEnv = legC ? envelopeLeg(legC) : undefined
+  const dLegEnv = legD ? envelopeLeg(legD) : undefined
+
   // Combine prompt/completion totals across legs so the top-level `tokens`
   // is the canonical {prompt, completion, total} shape (mirrors single-model
   // emission). Total cost stays a single USD number.
-  const combinedTokens =
-    gptResp?.usage || kimiResp?.usage || challengerResp?.usage
-      ? {
-          prompt:
-            (gptResp?.usage?.promptTokens ?? 0) +
-            (kimiResp?.usage?.promptTokens ?? 0) +
-            (challengerResp?.usage?.promptTokens ?? 0),
-          completion:
-            (gptResp?.usage?.completionTokens ?? 0) +
-            (kimiResp?.usage?.completionTokens ?? 0) +
-            (challengerResp?.usage?.completionTokens ?? 0),
-          total:
-            (gptResp?.usage?.totalTokens ?? 0) +
-            (kimiResp?.usage?.totalTokens ?? 0) +
-            (challengerResp?.usage?.totalTokens ?? 0),
-        }
-      : undefined
+  const combinedTokens = legOutcomes.some((l) => l.response?.usage)
+    ? {
+        prompt: legOutcomes.reduce((s, l) => s + (l.response?.usage?.promptTokens ?? 0), 0),
+        completion: legOutcomes.reduce((s, l) => s + (l.response?.usage?.completionTokens ?? 0), 0),
+        total: legOutcomes.reduce((s, l) => s + (l.response?.usage?.totalTokens ?? 0), 0),
+      }
+    : undefined
+
   // Build a leaderboard snapshot at write time for skill consumers that
   // want the current rankings without re-reading ab-pro.jsonl.
   const priorEntries = await dualPro.readAbProLog()
   const leaderboardSnapshot = dualPro.buildLeaderboard(priorEntries, cfg.scoreWeights)
   await finalizeOutput(combined, outputFile, sessionTag, {
     query: question,
-    model: `dual-pro (${gptPro!.displayName} + ${kimi!.displayName}${challenger ? ` + ${challenger.displayName}` : ""})`,
+    model: `dual-pro (${legOutcomes.map((l) => l.model.displayName).join(" + ")})`,
     tokens: combinedTokens,
-    cost: formatCost(totalCost + judgeCost),
-    costUsd: totalCost + judgeCost,
-    durationMs: Math.max(gptResp?.durationMs ?? 0, kimiResp?.durationMs ?? 0, challengerResp?.durationMs ?? 0),
-    status: gptOk || kimiOk || challengerOk ? "completed" : "failed",
+    cost: formatCost(totalLegCost + judgeCost),
+    costUsd: totalLegCost + judgeCost,
+    durationMs: Math.max(0, ...legOutcomes.map((l) => l.response?.durationMs ?? 0)),
+    status: anyLegOk ? "completed" : "failed",
     a: aLeg,
     b: bLeg,
-    c: cLeg,
+    c: cLegEnv,
+    d: dLegEnv,
+    legs: legOutcomes.length,
     judge: judgeResult
       ? {
           model: judgeModelId,
@@ -1834,6 +1930,10 @@ export async function runProDual(options: {
           a: judgeResult.a,
           b: judgeResult.b,
           c: judgeResult.c,
+          d: judgeResult.d,
+          ab: pairwise.ab,
+          ac: pairwise.ac,
+          ad: pairwise.ad,
           cost: judgeCost,
         }
       : judgeError
@@ -1842,21 +1942,29 @@ export async function runProDual(options: {
     leaderboardSnapshot: leaderboardSnapshot.slice(0, 10).map((r) => r as unknown as Record<string, unknown>),
   })
 
-  // Append an A/B log entry so we can review quality over time. Extended
-  // shape carries leg C + judge scores; appendAbProLog still writes the
-  // legacy gpt/kimi keys for back-compat with v1 readers.
+  // Append an ab-pro.jsonl entry so we can review quality over time. v3
+  // shape carries leg D + pairwise judge results; legacy gpt/kimi keys
+  // remain for v1 readers.
   await appendAbProLog({
     question,
     sessionTag,
     outputFile,
-    gpt: { model: gptPro!, response: gptResp, error: gptErr, score: judgeResult?.a ?? null },
-    kimi: { model: kimi!, response: kimiResp, error: kimiErr, score: judgeResult?.b ?? null },
-    challenger: challenger
-      ? { model: challenger, response: challengerResp, error: challengerErr, score: judgeResult?.c ?? null }
-      : undefined,
-    gptCost,
-    kimiCost,
-    challengerCost,
+    legs: legOutcomes.map((l) => ({
+      id: l.id,
+      model: l.model,
+      response: l.response,
+      error: l.error,
+      cost: legCosts.get(l.id) ?? 0,
+      score:
+        l.id === "a"
+          ? aScoreAvg ?? null
+          : l.id === "b"
+            ? pairwise.ab?.scoreB ?? null
+            : l.id === "c"
+              ? pairwise.ac?.scoreB ?? null
+              : pairwise.ad?.scoreB ?? null,
+    })),
+    pairwise,
     judgeModel: judgeModelId,
     judgeWinner: judgeResult?.winner,
     judgeReasoning: judgeResult?.reasoning,
@@ -1871,7 +1979,7 @@ export async function runProDual(options: {
   try {
     const updated = await dualPro.readAbProLog()
     const updatedBoard = dualPro.buildLeaderboard(updated, cfg.scoreWeights)
-    const verdict = dualPro.evaluatePromotion(updatedBoard, cfg.champion, cfg.challengerPool)
+    const verdict = dualPro.evaluatePromotion(updatedBoard, cfg.mainstays[0], cfg.splitTestPool)
     if (verdict.shouldOfferPromotion && verdict.challenger) {
       console.error(
         `\n🏆 Promotion candidate: ${verdict.challenger.model} (${verdict.reason}). Run \`bun llm pro --promote-review\`.`,
@@ -1881,16 +1989,16 @@ export async function runProDual(options: {
     // Best-effort signal.
   }
 
-  // If all (relevant) legs failed, surface as a non-zero exit so scripts
-  // don't mistake an error report for a success. The combined report + A/B
-  // log still get written — useful for post-mortem — but the caller knows
-  // it went wrong. Keep the legacy "Both dual-pro legs failed" message for
-  // back-compat with downstream scripts that grep for it.
-  const allFailed = !gptOk && !kimiOk && (!challenger || !challengerOk)
-  if (allFailed) {
-    const msg = challenger
-      ? "\n⚠️  All dual-pro legs failed — see report for details."
-      : "\n⚠️  Both dual-pro legs failed — see report for details."
+  // If all legs failed, surface as a non-zero exit so scripts don't mistake
+  // an error report for a success. The combined report + ab-pro log still
+  // get written — useful for post-mortem — but the caller knows it went
+  // wrong. Keep the legacy "Both dual-pro legs failed" message for the
+  // 2-leg case, since downstream scripts grep for it.
+  if (!anyLegOk) {
+    const msg =
+      legOutcomes.length === 2
+        ? "\n⚠️  Both dual-pro legs failed — see report for details."
+        : "\n⚠️  All dual-pro legs failed — see report for details."
     console.error(msg)
     process.exit(1)
   }
@@ -1908,29 +2016,21 @@ async function appendAbProLog(entry: {
   question: string
   sessionTag: string
   outputFile: string
-  gpt: {
+  legs: {
+    id: "a" | "b" | "c" | "d"
     model: Model
     response: import("./types").ModelResponse | undefined
     error: string | undefined
-    score?: import("./dual-pro").JudgeBreakdown | null
+    cost: number
+    score: import("./dual-pro").JudgeBreakdown | null
+  }[]
+  pairwise: {
+    ab?: import("./dual-pro").PairwiseJudgeResult
+    ac?: import("./dual-pro").PairwiseJudgeResult
+    ad?: import("./dual-pro").PairwiseJudgeResult
   }
-  kimi: {
-    model: Model
-    response: import("./types").ModelResponse | undefined
-    error: string | undefined
-    score?: import("./dual-pro").JudgeBreakdown | null
-  }
-  challenger?: {
-    model: Model
-    response: import("./types").ModelResponse | undefined
-    error: string | undefined
-    score?: import("./dual-pro").JudgeBreakdown | null
-  }
-  gptCost: number
-  kimiCost: number
-  challengerCost?: number
   judgeModel?: string
-  judgeWinner?: "a" | "b" | "c" | "tie"
+  judgeWinner?: "a" | "b" | "c" | "d" | "tie"
   judgeReasoning?: string
   judgeError?: string
   judgeCost?: number
@@ -1946,96 +2046,99 @@ async function appendAbProLog(entry: {
     const home = process.env.HOME || os.homedir()
     const dir = `${home}/.claude/projects/${encoded}/memory`
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    // Build a compact leg snapshot — both legacy gpt/kimi keys (for v1
-    // readers) and the new a/b/c shape live in the same line. The
-    // leaderboard reader normalizes both.
-    const legSnapshot = (
-      m: Model,
-      response: import("./types").ModelResponse | undefined,
-      error: string | undefined,
-      cost: number,
-      score?: import("./dual-pro").JudgeBreakdown | null,
-    ) => ({
-      model: m.modelId,
-      ok: !!response?.content && response.content.trim().length > 0 && !error,
-      error,
-      tokens: response?.usage?.totalTokens,
-      promptTokens: response?.usage?.promptTokens,
-      completionTokens: response?.usage?.completionTokens,
-      durationMs: response?.durationMs,
-      chars: response?.content?.length,
-      // Inline content so retroactive judging never depends on /tmp/llm-*.txt
-      // file lifetime (auto-cleaned at 7 days). Adds ~3-50KB per entry; at
-      // 1000 entries the JSONL stays under ~50MB. Worth the disk for the
-      // ability to rescore historical runs against new judge models forever.
-      content: response?.content,
-      cost,
-      score: score ?? null,
+
+    // Build a compact leg snapshot. Inline content so retroactive judging
+    // never depends on /tmp/llm-*.txt file lifetime (auto-cleaned at 7 days).
+    const snapshot = (l: (typeof entry.legs)[number]) => ({
+      model: l.model.modelId,
+      ok: !!l.response?.content && l.response.content.trim().length > 0 && !l.error,
+      error: l.error,
+      tokens: l.response?.usage?.totalTokens,
+      promptTokens: l.response?.usage?.promptTokens,
+      completionTokens: l.response?.usage?.completionTokens,
+      durationMs: l.response?.durationMs,
+      chars: l.response?.content?.length,
+      content: l.response?.content,
+      cost: l.cost,
+      score: l.score ?? null,
     })
+    const byId = new Map(entry.legs.map((l) => [l.id, l]))
+    const a = byId.has("a") ? snapshot(byId.get("a")!) : undefined
+    const b = byId.has("b") ? snapshot(byId.get("b")!) : undefined
+    const c = byId.has("c") ? snapshot(byId.get("c")!) : undefined
+    const d = byId.has("d") ? snapshot(byId.get("d")!) : undefined
+
     // Stable-ish hash of the question for leaderboard correlation. djb2.
     const queryHash = (() => {
       let h = 5381
       for (let i = 0; i < entry.question.length; i++) h = ((h << 5) + h + entry.question.charCodeAt(i)) >>> 0
       return h.toString(16)
     })()
-    const a = legSnapshot(entry.gpt.model, entry.gpt.response, entry.gpt.error, entry.gptCost, entry.gpt.score)
-    const b = legSnapshot(entry.kimi.model, entry.kimi.response, entry.kimi.error, entry.kimiCost, entry.kimi.score)
-    const c = entry.challenger
-      ? legSnapshot(
-          entry.challenger.model,
-          entry.challenger.response,
-          entry.challenger.error,
-          entry.challengerCost ?? 0,
-          entry.challenger.score,
-        )
-      : undefined
+    const legA = byId.get("a")
+    const legB = byId.get("b")
     const line =
       JSON.stringify({
-        // Schema version so future readers can detect format drift. v2
-        // adds a/b/c keys + judge fields; v1 gpt/kimi keys remain for
-        // back-compat. Readers should treat unknown fields as opaque.
-        schema: "ab-pro/v2",
+        // Schema version. v3 adds leg `d` + pairwise judge results
+        // (`judge.ab`/`ac`/`ad`); v2-v1 keys preserved for back-compat.
+        // Readers should treat unknown fields as opaque.
+        schema: "ab-pro/v3",
         timestamp: new Date().toISOString(),
         session: entry.sessionTag,
         question: entry.question,
         queryHash,
         outputFile: entry.outputFile,
-        // v1 (back-compat) — same payload as v1 readers expect.
-        gpt: {
-          model: entry.gpt.model.modelId,
-          ok: !!entry.gpt.response?.content,
-          error: entry.gpt.error,
-          tokens: entry.gpt.response?.usage?.totalTokens,
-          promptTokens: entry.gpt.response?.usage?.promptTokens,
-          completionTokens: entry.gpt.response?.usage?.completionTokens,
-          durationMs: entry.gpt.response?.durationMs,
-          chars: entry.gpt.response?.content?.length,
-          cost: entry.gptCost,
-        },
-        kimi: {
-          model: entry.kimi.model.modelId,
-          ok: !!entry.kimi.response?.content,
-          error: entry.kimi.error,
-          tokens: entry.kimi.response?.usage?.totalTokens,
-          promptTokens: entry.kimi.response?.usage?.promptTokens,
-          completionTokens: entry.kimi.response?.usage?.completionTokens,
-          durationMs: entry.kimi.response?.durationMs,
-          chars: entry.kimi.response?.content?.length,
-          cost: entry.kimiCost,
-        },
-        // v2 — a/b/c + judge.
+        // v1 (back-compat) — same payload as v1 readers expect. Always
+        // mirrors legs A and B (the mainstays).
+        gpt: legA
+          ? {
+              model: legA.model.modelId,
+              ok: !!legA.response?.content,
+              error: legA.error,
+              tokens: legA.response?.usage?.totalTokens,
+              promptTokens: legA.response?.usage?.promptTokens,
+              completionTokens: legA.response?.usage?.completionTokens,
+              durationMs: legA.response?.durationMs,
+              chars: legA.response?.content?.length,
+              cost: legA.cost,
+            }
+          : undefined,
+        kimi: legB
+          ? {
+              model: legB.model.modelId,
+              ok: !!legB.response?.content,
+              error: legB.error,
+              tokens: legB.response?.usage?.totalTokens,
+              promptTokens: legB.response?.usage?.promptTokens,
+              completionTokens: legB.response?.usage?.completionTokens,
+              durationMs: legB.response?.durationMs,
+              chars: legB.response?.content?.length,
+              cost: legB.cost,
+            }
+          : undefined,
+        // v2/v3 — a/b/c/d + judge.
         a,
         b,
         c,
+        d,
         judge:
-          entry.judgeWinner || entry.judgeError
+          entry.judgeWinner || entry.judgeError || entry.pairwise.ab || entry.pairwise.ac || entry.pairwise.ad
             ? {
                 model: entry.judgeModel,
+                // v2 fields (winner/reasoning/error/cost/rubric + leg scores)
+                // — synthesized from pairwise results so v2 readers still work.
                 winner: entry.judgeWinner,
                 reasoning: entry.judgeReasoning,
                 error: entry.judgeError,
                 cost: entry.judgeCost,
                 rubric: entry.rubric,
+                a: byId.get("a")?.score ?? null,
+                b: byId.get("b")?.score ?? null,
+                c: byId.has("c") ? byId.get("c")!.score ?? null : undefined,
+                d: byId.has("d") ? byId.get("d")!.score ?? null : undefined,
+                // v3 — pairwise results, the actual judge output.
+                ab: entry.pairwise.ab,
+                ac: entry.pairwise.ac,
+                ad: entry.pairwise.ad,
               }
             : undefined,
       }) + "\n"
@@ -2079,8 +2182,7 @@ export async function runLeaderboard(opts: { rankByCost?: boolean } = {}): Promi
   // actually evict, add the model to `exclude` in dual-pro-config.json.
   const QUALITY_WARNING_MIN_CALLS = 20
   const qualityThreshold = cfg.scoreWeights.qualityWarningThreshold
-  const isQualityWarning = (r: LeaderboardRow) =>
-    r.calls >= QUALITY_WARNING_MIN_CALLS && r.avgScore < qualityThreshold
+  const isQualityWarning = (r: LeaderboardRow) => r.calls >= QUALITY_WARNING_MIN_CALLS && r.avgScore < qualityThreshold
   const warnings = rows.filter(isQualityWarning)
 
   if (isJsonMode()) {
@@ -2142,7 +2244,7 @@ export async function runPromoteReview(opts: { skipConfirm?: boolean } = {}): Pr
   const entries = await dualPro.readAbProLog()
   const rows = dualPro.buildLeaderboard(entries, cfg.scoreWeights)
   await runLeaderboard()
-  const verdict = dualPro.evaluatePromotion(rows, cfg.champion, cfg.challengerPool)
+  const verdict = dualPro.evaluatePromotion(rows, cfg.mainstays[0], cfg.splitTestPool)
   console.error(`Verdict: ${verdict.reason}`)
   if (!verdict.shouldOfferPromotion) {
     if (isJsonMode()) emitJson({ status: "no-action", reason: verdict.reason, leaderboard: rows.slice(0, 10) })
@@ -2178,8 +2280,8 @@ export async function runPromoteReview(opts: { skipConfirm?: boolean } = {}): Pr
   if (opts.skipConfirm) {
     console.error("\n(--yes set; recording 'keep-watching' decision and exiting without changes.)")
     await dualPro.appendPromotionDecision({
-      oldChampion: cfg.champion,
-      oldRunnerUp: cfg.runnerUp,
+      oldChampion: cfg.mainstays[0],
+      oldRunnerUp: cfg.mainstays[1],
       decision: "keep-watching",
       reasoning: "auto-yes — no interactive confirmation",
       challenger: verdict.challenger,
@@ -2198,10 +2300,10 @@ export async function runPromoteReview(opts: { skipConfirm?: boolean } = {}): Pr
   }
   const decision = decisionMap[choice]!
   await dualPro.appendPromotionDecision({
-    oldChampion: cfg.champion,
-    oldRunnerUp: cfg.runnerUp,
+    oldChampion: cfg.mainstays[0],
+    oldRunnerUp: cfg.mainstays[1],
     newChampion: decision === "promote" || decision === "promote-and-demote" ? verdict.challenger?.model : undefined,
-    newRunnerUp: decision === "promote-and-demote" ? cfg.champion : undefined,
+    newRunnerUp: decision === "promote-and-demote" ? cfg.mainstays[0] : undefined,
     decision,
     reasoning: verdict.reason,
     challenger: verdict.challenger,
@@ -2284,13 +2386,13 @@ export async function runBacktest(opts: {
 
   // Cost estimate. With default settings: sample × 3 models × cost × 2
   // (OLD + NEW). --no-old-fire halves it; --no-challenger drops by a third.
-  const champion = getModel(cfg.champion)
-  const runner = getModel(cfg.runnerUp)
+  const champion = getModel(cfg.mainstays[0])
+  const runner = getModel(cfg.mainstays[1])
   // Backtest fixes ONE challenger across the entire sample for fair OLD-vs-NEW
   // comparison. Deliberately does NOT call pickNextChallenger — replaying the
   // historical leg-C model would conflate "compare configs" with "reproduce
   // history" and is not what backtest is for. Override via --challenger.
-  const challengerId = opts.challengerOverride ?? cfg.challengerPool[0]
+  const challengerId = opts.challengerOverride ?? cfg.splitTestPool[0]
   const challenger = opts.noChallenger ? undefined : challengerId ? getModel(challengerId) : undefined
   const perLegEst = (m: Model | undefined) => (m ? estimateCost(m, 1500, 1500) : 0)
   const oldCallCost = perLegEst(champion) + perLegEst(runner) + (opts.noChallenger ? 0 : perLegEst(challenger))
@@ -2377,8 +2479,8 @@ export async function runBacktest(opts: {
 
   const report = dualPro.aggregateBacktest(perQueryResults)
   await dualPro.appendBacktestRun({
-    oldConfig: { champion: cfg.champion, runnerUp: cfg.runnerUp },
-    newConfig: { challengerPool: [challengerId ?? ""].filter(Boolean) },
+    oldConfig: { mainstays: [...cfg.mainstays] as [string, string] },
+    newConfig: { splitTestPool: [challengerId ?? ""].filter(Boolean) },
     report,
     decision: "deferred",
     noOldFire: !!opts.noOldFire,
@@ -2588,6 +2690,7 @@ export async function runJudgeHistory(opts: {
       if (e.a) e.a = { ...e.a, score: r.judge.a }
       if (e.b) e.b = { ...e.b, score: r.judge.b }
       if (e.c && r.judge.c) e.c = { ...e.c, score: r.judge.c }
+      if (e.d && r.judge.d) e.d = { ...e.d, score: r.judge.d }
     }
     const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
     const encoded = projectRoot.replace(/\//g, "-")

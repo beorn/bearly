@@ -116,6 +116,7 @@ const VALUE_FLAGS = [
   "--exclude",
   "--sample",
   "--limit",
+  "--legs",
 ]
 
 /**
@@ -714,12 +715,23 @@ export async function main(): Promise<string | undefined> {
       for (let i = 0; i < args.length; i++) {
         const a = args[i]!
         if (a === "--exclude" && i + 1 < args.length) {
-          for (const id of args[i + 1]!.split(",").map((s) => s.trim()).filter(Boolean)) excludeArgs.push(id)
+          for (const id of args[i + 1]!.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean))
+            excludeArgs.push(id)
         } else if (a.startsWith("--exclude=")) {
-          for (const id of a.slice("--exclude=".length).split(",").map((s) => s.trim()).filter(Boolean))
+          for (const id of a
+            .slice("--exclude=".length)
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean))
             excludeArgs.push(id)
         }
       }
+      // --legs N caps the leg count (2 = mainstays only, 3 = +slot C, 4 = full
+      // 2+2 fleet). Defaults to 2 + cfg.splitTestSlots inside runProDual.
+      const legsArg = getArg("--legs")
+      const legs = legsArg ? Number.parseInt(legsArg, 10) : undefined
       await runProDual({
         question: q,
         modelOverride,
@@ -731,6 +743,7 @@ export async function main(): Promise<string | undefined> {
         skipConfirm,
         noChallenger: hasFlag("--no-challenger"),
         noJudge: hasFlag("--no-judge"),
+        legs: legs != null && Number.isFinite(legs) ? legs : undefined,
         extraExclude: excludeArgs,
         challengerOverride: getArg("--challenger"),
       })
