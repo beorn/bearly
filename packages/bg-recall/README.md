@@ -40,14 +40,26 @@ PostToolUse hook (non-blocking)
 
 Every decision is observable from three angles:
 
-1. **JSONL log** — set `BG_RECALL_DEBUG_LOG=/tmp/bg-recall.log`; every tool
-   call, query, candidate, throttle decision, hint, and rejection writes one
-   JSON line. Format matches `INJECTION_DEBUG_LOG` so both can be tailed
-   side-by-side with `jq`.
+1. **Loggily JSONL** — the daemon emits structured events through the
+   `bg-recall:*` namespace tree (`bg-recall:daemon`, `bg-recall:decision`,
+   `bg-recall:hint`). Wire a JSONL file with one of:
+
+   ```bash
+   # bg-recall-only file
+   LOGGILY_FILE_BG_RECALL=/tmp/bg-recall.log DEBUG='bg-recall:*' bg-recall start
+
+   # shared file (same stream as injection-envelope, filter with jq)
+   LOGGILY_FILE=/tmp/observability.log DEBUG='bg-recall:*,injection:*' bg-recall start
+
+   # back-compat alias (one-release transition)
+   BG_RECALL_DEBUG_LOG=/tmp/bg-recall.log bg-recall start
+   ```
+
 2. **Status snapshot** — host CLI exposes `bg-recall status`: state,
    per-session counts, top entities, recent hints with adoption status.
 3. **Explain trace** — `bg-recall explain <hint-id>` returns the full
-   causality chain (top-3 candidates with scores, why this one won).
+   causality chain (top-3 candidates with scores, why this one won) from the
+   in-memory ring; the loggily JSONL file is the durable mirror.
 
 Adoption is tracked: a hint is "adopted" if the model calls `retrieve_memory`
 within N tool calls, otherwise it ages into "ignored".

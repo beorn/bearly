@@ -31,9 +31,6 @@ export type { Metrics, MetricsConfig } from "./metrics.ts"
 export { createExplainRing } from "./explain.ts"
 export type { ExplainRing } from "./explain.ts"
 
-export { createLogger } from "./log.ts"
-export type { DebugEvent, DebugEventKind, Logger } from "./log.ts"
-
 export { extractEntities, extractShingles, entitiesFromToolCall, entityOverlap } from "./entities.ts"
 export { rankHits, scoreHit, DEFAULT_WEIGHTS } from "./relevance.ts"
 export type { RelevanceWeights, ScoreOpts } from "./relevance.ts"

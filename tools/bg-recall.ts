@@ -25,6 +25,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { existsSync, mkdirSync, unlinkSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { spawn } from "node:child_process"
+import { addWriterFor, createFileWriter } from "loggily"
 import { createBgRecallDaemon, type BgRecallDaemon, type ToolCallEvent, type QualityGate } from "@bearly/bg-recall"
 import { formatStatus, formatExplain } from "@bearly/bg-recall"
 import {
@@ -51,6 +52,36 @@ function resolveBgRecallSocket(): string {
 
 function resolveDaemonScript(): string {
   return resolve(dirname(new URL(import.meta.url).pathname), "bg-recall.ts")
+}
+
+// ---------------------------------------------------------------------------
+// Observability — route bg-recall:* loggily traffic to a JSONL file.
+// Resolution: LOGGILY_FILE_BG_RECALL → LOGGILY_FILE → BG_RECALL_DEBUG_LOG.
+// The last is a one-release back-compat alias retained until the
+// follow-on env-purge bead lands.
+// ---------------------------------------------------------------------------
+
+function installBgRecallFileWriter(): void {
+  const path =
+    process.env.LOGGILY_FILE_BG_RECALL ??
+    process.env.LOGGILY_FILE ??
+    process.env.BG_RECALL_DEBUG_LOG
+  if (!path) return
+  const writer = createFileWriter(path)
+  addWriterFor("bg-recall:*", (_formatted, _level, _ns, event) => {
+    if (event.kind !== "log") return
+    // Re-emit as JSONL so consumers can `tail -f | jq .`. One namespace per
+    // line, structured props (hintId, score, …) preserved verbatim.
+    writer.write(
+      JSON.stringify({
+        ts: new Date(event.time).toISOString(),
+        namespace: event.namespace,
+        level: event.level,
+        msg: event.message,
+        ...event.props,
+      }),
+    )
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +165,11 @@ type DaemonMode = {
 }
 
 async function startDaemon(socketPath: string): Promise<DaemonMode> {
+  // Wire JSONL observability for the bg-recall:* namespace tree if a path is
+  // configured. Resolution order: LOGGILY_FILE_BG_RECALL → LOGGILY_FILE →
+  // BG_RECALL_DEBUG_LOG (back-compat alias for one release).
+  installBgRecallFileWriter()
+
   // Ensure runtime dir + clean stale socket file.
   const sockDir = dirname(socketPath)
   if (!existsSync(sockDir)) mkdirSync(sockDir, { recursive: true })

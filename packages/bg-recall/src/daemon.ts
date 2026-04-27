@@ -21,11 +21,11 @@
  * is a function on `deps`. That keeps the package testable + portable.
  */
 
+import { createLogger } from "loggily"
 import { createPipeline, DEFAULT_PIPELINE_CONFIG, type PipelineConfig } from "./pipeline.ts"
 import { createThrottle, DEFAULT_THROTTLE, type ThrottleConfig } from "./throttle.ts"
 import { createMetrics, DEFAULT_METRICS_CONFIG, type Metrics, type MetricsConfig } from "./metrics.ts"
 import { createExplainRing, type ExplainRing } from "./explain.ts"
-import { createLogger, type Logger } from "./log.ts"
 import type { DaemonStatus, Decision, Hint, QualityGate, RecallFn, ToolCallEvent, TribeSend } from "./types.ts"
 
 export type BgRecallConfig = {
@@ -47,8 +47,6 @@ export type BgRecallConfig = {
   metrics?: Partial<MetricsConfig>
   /** Explain ring size. Default: 200. */
   explainRingSize?: number
-  /** Override the JSONL log path (else BG_RECALL_DEBUG_LOG env). */
-  debugLog?: string | null
 }
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
@@ -75,7 +73,13 @@ export type BgRecallDaemon = {
 export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
   const idleTimeoutMs = config.idleTimeoutMs ?? readIdleTimeoutFromEnv() ?? DEFAULT_IDLE_MS
 
-  const logger: Logger = createLogger({ path: config.debugLog ?? undefined })
+  // Per-namespace loggers — `addWriterFor("bg-recall:*", …)` in the host
+  // wires file output. Until the host installs a writer, output goes through
+  // loggily's normal env-driven console pipeline.
+  const stateLog = createLogger("bg-recall:daemon")
+  const decisionLog = createLogger("bg-recall:decision")
+  const hintLog = createLogger("bg-recall:hint")
+
   const explainRing = createExplainRing(config.explainRingSize ?? 200)
   const throttle = createThrottle({ ...DEFAULT_THROTTLE, ...config.throttle })
   const metrics = createMetrics({ ...DEFAULT_METRICS_CONFIG, ...config.metrics })
@@ -98,7 +102,7 @@ export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
     if (stopped) return
     idleTimer = setTimeout(() => {
       idle = true
-      logger.log({ kind: "daemon-state", data: { state: "idle", reason: "idle-timeout" } })
+      stateLog.info?.("idle", { state: "idle", reason: "idle-timeout" })
       config.onIdleQuit?.(snapshotStatus())
     }, idleTimeoutMs)
   }
@@ -160,7 +164,19 @@ export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
             throttle.recordHighScore(event.sessionId)
             pipeline.recordEmitted(decision.emitted)
             metrics.recordHint(decision.emitted)
-            logger.hint(decision.emitted)
+            const h = decision.emitted
+            hintLog.info?.("emitted", {
+              hintId: h.id,
+              sessionId: h.to,
+              source: h.source,
+              to: h.to,
+              content: h.content,
+              triggerEntities: h.triggerEntities,
+              score: h.hit.score,
+              components: h.hit.components,
+              candidates: h.candidates,
+              ts: new Date(h.ts).toISOString(),
+            })
           } catch (err) {
             // Send failed — keep the decision but mark it rejected.
             decision.emitted = undefined
@@ -172,7 +188,16 @@ export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
       }
 
       explainRing.record(decision)
-      logger.decision(decision)
+      decisionLog.info?.("decision", {
+        sessionId: decision.sessionId,
+        ts: new Date(decision.ts).toISOString(),
+        tool: decision.trigger.tool,
+        entities: decision.entities,
+        queries: decision.queries.map((q) => ({ source: q.source, query: q.query, hits: q.hits.length })),
+        candidates: decision.candidates.slice(0, 3).map((c) => ({ id: c.hit.id, score: c.score, reject: c.rejectReason })),
+        emitted: decision.emitted ? { id: decision.emitted.id, to: decision.emitted.to, source: decision.emitted.source } : null,
+        rejected: decision.rejected ?? null,
+      })
       return decision
     },
     status: snapshotStatus,
@@ -195,13 +220,13 @@ export function createBgRecallDaemon(config: BgRecallConfig): BgRecallDaemon {
       stopped = false
       idle = false
       armIdleTimer()
-      logger.log({ kind: "daemon-state", data: { state: "running" } })
+      stateLog.info?.("running", { state: "running" })
     },
     stop() {
       stopped = true
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = null
-      logger.log({ kind: "daemon-state", data: { state: "stopped", final: snapshotStatus() } })
+      stateLog.info?.("stopped", { state: "stopped", final: snapshotStatus() })
     },
     isIdle() {
       return idle
