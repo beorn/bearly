@@ -67,3 +67,6 @@ export type { HotReload, HotReloadOpts, WithHotReload } from "./with-hot-reload.
 
 export { withIdleQuit } from "./with-idle-quit.ts"
 export type { IdleQuit, IdleQuitOpts, WithIdleQuit } from "./with-idle-quit.ts"
+
+export { withRuntime } from "./with-runtime.ts"
+export type { Runtime, RuntimeOpts, WithRuntime } from "./with-runtime.ts"
