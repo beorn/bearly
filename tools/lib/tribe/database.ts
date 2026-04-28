@@ -428,11 +428,13 @@ const MIGRATIONS: readonly Migration[] = [
       // Sessions / messages without a project_id share the singleton 'default'
       // room — keeps the schema invariant (every event scoped to a room) without
       // forcing a project_id on legacy rows.
+      //
+      // Note: only sessions carries project_id. messages joins via sender →
+      // sessions.name. Earlier draft of this migration UNIONed a phantom
+      // messages.project_id and crashed on every existing v9 install.
       const now = Date.now()
       const projectRows = db
-        .prepare(
-          "SELECT DISTINCT COALESCE(project_id, 'default') AS pid FROM sessions UNION SELECT DISTINCT COALESCE(project_id, 'default') AS pid FROM messages",
-        )
+        .prepare("SELECT DISTINCT COALESCE(project_id, 'default') AS pid FROM sessions")
         .all() as Array<{ pid: string }>
       const insertRoom = db.prepare(
         "INSERT OR IGNORE INTO rooms (id, project_id, name, created_at) VALUES ($id, $pid, $name, $now)",
