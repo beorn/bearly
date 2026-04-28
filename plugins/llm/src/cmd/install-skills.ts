@@ -57,7 +57,7 @@ async function promptOverwrite(skill: string): Promise<boolean> {
   // to "no overwrite" so we never silently clobber user-customized skills.
   if (!process.stdin.isTTY) return false
   process.stderr.write(`  ↳ ${skill} already exists — overwrite? [y/N] `)
-  return await new Promise<boolean>((resolve) => {
+  return new Promise<boolean>((resolve) => {
     const onData = (chunk: Buffer): void => {
       const answer = chunk.toString("utf-8").trim().toLowerCase()
       process.stdin.removeListener("data", onData)

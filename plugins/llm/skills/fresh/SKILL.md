@@ -11,8 +11,9 @@ benefits-from: [recall, pm, gbrain]
 **Keywords**: stuck, fresh perspective, step back, rethink, going in circles, each fix breaks something, tried everything
 
 **When to use /fresh vs /big vs /ask vs /pro vs /deep:**
-- `/fresh` — *meta-protocol.* You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
-- `/big` — *meta-protocol.* The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
+
+- `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
+- `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
 - `/ask` — Direct: single-model quick question (~$0.02).
 - `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~$0.20). Default fleet is non-OpenAI (DeepSeek R1 + Kimi K2.6 + rotating challenger); GPT-5.4 Pro is opt-in via `--challenger gpt-5.4-pro`.
 - `/deep` — Direct: web-search research with citations (~$2-5, 2-15 min).
@@ -53,24 +54,25 @@ The researcher has no IDE, no codebase access, no ability to browse around. Ever
 need to reason about must be in the context file. Include **all the background code** they'd
 need to understand the system, not just the code you think is broken.
 
-| Context | How | Priority |
-|---------|-----|----------|
-| Full source files (current) | Append entire files to context | **Required** |
-| Full source files (original, before changes) | `git show <commit>:<path>` | **Required** |
-| Git diff of changes | `git diff <base-commit> HEAD -- <files>` | Required |
-| Failing test code | Full test functions, not names | Required |
-| Exact error output | Copy-paste from test runner | Required |
-| Type definitions / interfaces | Full type files the code depends on | Required |
-| Related code (callers/callees) | Full files or large sections | Required |
-| Passing tests your changes fix | Shows what WORKS, constrains solutions | Recommended |
-| Architecture docs / CLAUDE.md | System overview the researcher can reference | Recommended |
-| Session history | `bun recall "<topic>"` — summarize findings | If available |
+| Context                                      | How                                          | Priority     |
+| -------------------------------------------- | -------------------------------------------- | ------------ |
+| Full source files (current)                  | Append entire files to context               | **Required** |
+| Full source files (original, before changes) | `git show <commit>:<path>`                   | **Required** |
+| Git diff of changes                          | `git diff <base-commit> HEAD -- <files>`     | Required     |
+| Failing test code                            | Full test functions, not names               | Required     |
+| Exact error output                           | Copy-paste from test runner                  | Required     |
+| Type definitions / interfaces                | Full type files the code depends on          | Required     |
+| Related code (callers/callees)               | Full files or large sections                 | Required     |
+| Passing tests your changes fix               | Shows what WORKS, constrains solutions       | Recommended  |
+| Architecture docs / CLAUDE.md                | System overview the researcher can reference | Recommended  |
+| Session history                              | `bun recall "<topic>"` — summarize findings  | If available |
 
 **Context budget**: 20-50KB is the sweet spot. Deep research handles large contexts well.
 Don't trim code to save space — trim prose instead. The researcher needs to see how
 functions interact, not read your summary of how they interact.
 
 **What to include beyond the "broken" code**:
+
 - **Type definitions**: If the code uses `InkxNode`, include the full `types.ts`
 - **The pipeline**: If you're fixing phase 3 of a 5-phase pipeline, include all 5 phases
 - **Callers and callees**: The function that calls the broken function, and what the broken function calls
@@ -145,6 +147,7 @@ Order: types/interfaces first, then core logic, then tests, then callers.]
 ```
 
 **Framing tips**:
+
 - Lead with "how the system works" not "how my code is broken"
 - Describe what SHOULD happen before what DOES happen
 - Include passing tests — they constrain solutions and prevent suggestions that would break working code
@@ -202,16 +205,16 @@ If a bead is active, update its notes with the findings.
 
 ## Anti-Patterns
 
-| Don't | Why |
-|-------|-----|
-| Skip Phase 1 | The self-assessment often reveals the answer |
-| Send code snippets instead of full files | Researcher can't see how functions interact |
-| Trim "irrelevant" code aggressively | What YOU think is irrelevant may be the key |
-| Paraphrase error messages | Exact messages matter for diagnosis |
-| Omit type definitions | Researcher needs types to understand the code |
-| Omit failed approaches | They constrain the solution space |
-| Ask confirmation questions | "Is my X correct?" anchors on your model |
-| Describe code instead of including it | "It uses a pipeline" vs showing the pipeline code |
-| Lead with your diagnosis | Anchors the researcher — lead with symptoms |
-| Rush to implement | Present advice first, get user buy-in |
-| Forget `--no-recover` | Stale recovered responses waste $2-5 |
+| Don't                                    | Why                                               |
+| ---------------------------------------- | ------------------------------------------------- |
+| Skip Phase 1                             | The self-assessment often reveals the answer      |
+| Send code snippets instead of full files | Researcher can't see how functions interact       |
+| Trim "irrelevant" code aggressively      | What YOU think is irrelevant may be the key       |
+| Paraphrase error messages                | Exact messages matter for diagnosis               |
+| Omit type definitions                    | Researcher needs types to understand the code     |
+| Omit failed approaches                   | They constrain the solution space                 |
+| Ask confirmation questions               | "Is my X correct?" anchors on your model          |
+| Describe code instead of including it    | "It uses a pipeline" vs showing the pipeline code |
+| Lead with your diagnosis                 | Anchors the researcher — lead with symptoms       |
+| Rush to implement                        | Present advice first, get user buy-in             |
+| Forget `--no-recover`                    | Stale recovered responses waste $2-5              |

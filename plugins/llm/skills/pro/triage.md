@@ -4,12 +4,12 @@ Processes review output into classified findings, creates tracking beads, and pr
 
 ## Classification
 
-| Level | Meaning | Action |
-|-------|---------|--------|
-| P0 | Correctness bug — WILL cause wrong behavior | Create bug bead, fix immediately |
-| P1 | Important — safety, resource leaks, significant quality | Create bug bead, recommend fixing |
-| P2 | Medium — quality improvements, minor inconsistencies | Track in review bead notes |
-| P3 | Style — naming, formatting (only if clearly better) | Track in review bead notes |
+| Level | Meaning                                                 | Action                            |
+| ----- | ------------------------------------------------------- | --------------------------------- |
+| P0    | Correctness bug — WILL cause wrong behavior             | Create bug bead, fix immediately  |
+| P1    | Important — safety, resource leaks, significant quality | Create bug bead, recommend fixing |
+| P2    | Medium — quality improvements, minor inconsistencies    | Track in review bead notes        |
+| P3    | Style — naming, formatting (only if clearly better)     | Track in review bead notes        |
 
 ## Triage Process
 
@@ -31,6 +31,7 @@ bd update km-<scope>.pro-review-<MMDD> --parent km-all.pro-review-<N>
 ```
 
 **Scope mapping**:
+
 - `packages/km-storage` → `km-storage`
 - `packages/km-board` → `km-board`
 - `apps/km-tui` → `km-tui`
@@ -85,18 +86,22 @@ Show a findings summary:
 ## Pro Review: <package> — N findings
 
 ### P0 — Correctness Bugs (X)
+
 1. **<title>** (`file.ts:120-130`) — <description>
 2. ...
 
 ### P1 — Important (Y)
+
 1. **<title>** (`file.ts:45-50`) — <description>
 2. ...
 
 ### P2 — Quality (Z)
+
 1. **<title>** (`file.ts:200`) — <description>
 2. ...
 
 ### P3 — Style (W)
+
 [Listed briefly or just count]
 
 **Beads created**: km-scope.pro-review-MMDD + X bug beads

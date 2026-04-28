@@ -55,12 +55,12 @@ These live in `tools/` and run from source. They will eventually become independ
 
 ### Tribe Tools (part of @bearly/tribe)
 
-| Tool           | Description                                             | Entry Point                 |
-| -------------- | ------------------------------------------------------- | --------------------------- |
-| `tribe-daemon` | Coordination daemon (discovery broker, Unix socket IPC) | `bun tools/tribe-daemon.ts` |
-| `stdio-adapter`| Per-agent stdio↔Unix-socket MCP transport adapter       | `bun tools/stdio-adapter.ts`|
-| `tribe-cli`    | CLI: status, send, log, health, sessions, retro, watch  | `bun tools/tribe-cli.ts`    |
-| `tribe-watch`  | Live TUI dashboard (React/Silvery)                      | `bun tools/tribe-watch.tsx` |
+| Tool            | Description                                             | Entry Point                  |
+| --------------- | ------------------------------------------------------- | ---------------------------- |
+| `tribe-daemon`  | Coordination daemon (discovery broker, Unix socket IPC) | `bun tools/tribe-daemon.ts`  |
+| `stdio-adapter` | Per-agent stdio↔Unix-socket MCP transport adapter       | `bun tools/stdio-adapter.ts` |
+| `tribe-cli`     | CLI: status, send, log, health, sessions, retro, watch  | `bun tools/tribe-cli.ts`     |
+| `tribe-watch`   | Live TUI dashboard (React/Silvery)                      | `bun tools/tribe-watch.tsx`  |
 
 ### Plugin System
 

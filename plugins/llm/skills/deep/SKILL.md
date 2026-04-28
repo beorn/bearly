@@ -11,11 +11,11 @@ OpenAI's Deep Research API: web search + extended reasoning + citations. **NOT**
 
 ## Decision table
 
-| User says | Command | Cost |
-|-----------|---------|------|
-| `/deep "<topic>"` | `bun llm --deep -y --no-recover --context-file <ctx> "<topic>"` | ~$2-5, 2-15 min |
-| `/deep pro "<topic>"` | add `--model gpt-5.4-pro` | ~$5-15, 30-50 min |
-| `/deep <topic>` (research only, no code) | omit `--context-file`; topic alone | ~$2-5 |
+| User says                                | Command                                                         | Cost              |
+| ---------------------------------------- | --------------------------------------------------------------- | ----------------- |
+| `/deep "<topic>"`                        | `bun llm --deep -y --no-recover --context-file <ctx> "<topic>"` | ~$2-5, 2-15 min   |
+| `/deep pro "<topic>"`                    | add `--model gpt-5.4-pro`                                       | ~$5-15, 30-50 min |
+| `/deep <topic>` (research only, no code) | omit `--context-file`; topic alone                              | ~$2-5             |
 
 `pro` keyword does NOT work with `--deep` (gets absorbed into topic text). Use `--model gpt-5.4-pro` instead.
 

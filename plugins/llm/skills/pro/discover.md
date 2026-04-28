@@ -37,6 +37,7 @@ done
 ```
 
 **Grouping rules**:
+
 - silvery internal packages with <1000 LOC: group with their closest sibling (e.g., `@silvery/theme` + `@silvery/ag-react/ui`)
 - flexily: single review unit (all under `vendor/flexily/src/`)
 - Small packages (<500 LOC): skip unless specifically requested
@@ -52,6 +53,7 @@ Cost ≈ (input_tokens * $25 / 1M) + (output_tokens * $200 / 1M)
 ```
 
 For a quick per-package estimate:
+
 ```
 cost ≈ (LOC * 40 * 0.000025) + 0.40
      ≈ (LOC * 0.001) + 0.40
@@ -68,6 +70,7 @@ cat .claude/skills/pro/history.jsonl 2>/dev/null
 ```
 
 For each package, extract:
+
 - **Last reviewed**: Most recent entry's `date`
 - **Findings**: Sum of findings from last review
 - **Fix rate**: `fixed / total` from last review
@@ -80,18 +83,19 @@ Present using `AskUserQuestion`:
 ```markdown
 ## Pro Review Targets
 
-| # | Package | LOC | Est. Cost | Last Reviewed | Findings | Commits Since |
-|---|---------|-----|-----------|---------------|----------|---------------|
-| 1 | km-storage | 4,200 | ~$4.60 | 2026-03-13 | 23 (all fixed) | 5 |
-| 2 | km-commands | 5,500 | ~$5.90 | never | - | - |
-| 3 | km-board | 3,800 | ~$4.20 | never | - | - |
-| ... | | | | | | |
-| | **TOTAL (all)** | | **~$48** | | | |
+| #   | Package         | LOC   | Est. Cost | Last Reviewed | Findings       | Commits Since |
+| --- | --------------- | ----- | --------- | ------------- | -------------- | ------------- |
+| 1   | km-storage      | 4,200 | ~$4.60    | 2026-03-13    | 23 (all fixed) | 5             |
+| 2   | km-commands     | 5,500 | ~$5.90    | never         | -              | -             |
+| 3   | km-board        | 3,800 | ~$4.20    | never         | -              | -             |
+| ... |                 |       |           |               |                |               |
+|     | **TOTAL (all)** |       | **~$48**  |               |                |               |
 
 Enter packages to review (numbers like "2,3,5", or "all", "unreviewed", "stale"):
 ```
 
 **Adaptive adjustments** (when history exists):
+
 - Use actual cost from history instead of formula estimate when available
 - Sort by recommendation: unreviewed first, then stale, then recently reviewed
 - Flag packages with historically high finding density (findings/LOC > 0.01)

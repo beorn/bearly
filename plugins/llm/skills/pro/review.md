@@ -48,7 +48,7 @@ deeper in areas that were problematic:
 - [P0] Off-by-one in range calculation (file.ts:120) — FIXED
 - [P1] Missing null check in parser (parser.ts:45) — FIXED
 - [P1] Resource leak in connection pool (pool.ts:200) — OPEN
-...
+  ...
 ```
 
 This helps the reviewer verify fixes and focus on historically weak areas.

@@ -13,14 +13,14 @@ Default fleet (no OpenAI): champion `deepseek/deepseek-r1`, runner-up `moonshota
 
 ## Decision table
 
-| User says | Mode | Command |
-|-----------|------|---------|
-| `/pro "question"` | 3-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"` |
-| `pro, <question>` | 3-leg dispatch + judge | same — casual form |
-| `/pro review <pkg>` | code review (fast) | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"` |
-| `/pro review --deep <pkg>` | code review (deep) | add `--deep` to the above — promotes to `/deep` semantics |
-| `/pro review` (no arg) | discover + cost | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
-| `/pro "q" --challenger gpt-5.4-pro` | opt-in OpenAI | pins GPT-5.4 Pro into the rotating slot for this call |
+| User says                           | Mode                   | Command                                                                         |
+| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
+| `/pro "question"`                   | 3-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`                   |
+| `pro, <question>`                   | 3-leg dispatch + judge | same — casual form                                                              |
+| `/pro review <pkg>`                 | code review (fast)     | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
+| `/pro review --deep <pkg>`          | code review (deep)     | add `--deep` to the above — promotes to `/deep` semantics                       |
+| `/pro review` (no arg)              | discover + cost        | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
+| `/pro "q" --challenger gpt-5.4-pro` | opt-in OpenAI          | pins GPT-5.4 Pro into the rotating slot for this call                           |
 
 ## Cost guidance
 
@@ -54,6 +54,7 @@ The default-fleet cost shift (was $5-15 with GPT-5.4 Pro champion → now ~$0.20
 Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) with pairwise judge — see `/tmp/llm-refactor-execution.md` Phase 3.
 
 **Admin** (read-only or interactive — no API spend unless `--backtest` fires):
+
 - `bun llm pro --leaderboard` — ranked table from ab-pro.jsonl
 - `bun llm pro --promote-review` — interactive promotion flow with sample queries
 - `bun llm pro --backtest [--quick] [--no-old-fire] [--sample N]` — replay history through OLD vs NEW config; apples-to-apples promotion gate

@@ -11,41 +11,41 @@ One model, one answer, fast and cheap. Use this when you want a quick external o
 
 ## Decision table
 
-| User says | Command | Cost |
-|-----------|---------|------|
-| `/ask "<question>"` | `bun llm "<question>"` | ~$0.02 |
-| `/ask:opinion <q>` or "second opinion" | `bun llm opinion "<q>"` | ~$0.02 |
-| `/ask:all <q>` or `debate <q>` | `bun llm debate -y "<q>"` (3 models + synthesis) | ~$1-3 |
-| `/ask:pro <q>` or "pro review" | escalate to `/pro` (3-leg + judge) | ~$0.20 |
-| `/deep <topic>` | escalate to `/deep` (web search + citations) | ~$2-5 |
-| Image analysis | `bun llm --image <path> "<q>"` | varies |
-| Local model | `bun llm --model ollama:<name> "<q>"` | free |
+| User says                              | Command                                          | Cost   |
+| -------------------------------------- | ------------------------------------------------ | ------ |
+| `/ask "<question>"`                    | `bun llm "<question>"`                           | ~$0.02 |
+| `/ask:opinion <q>` or "second opinion" | `bun llm opinion "<q>"`                          | ~$0.02 |
+| `/ask:all <q>` or `debate <q>`         | `bun llm debate -y "<q>"` (3 models + synthesis) | ~$1-3  |
+| `/ask:pro <q>` or "pro review"         | escalate to `/pro` (3-leg + judge)               | ~$0.20 |
+| `/deep <topic>`                        | escalate to `/deep` (web search + citations)     | ~$2-5  |
+| Image analysis                         | `bun llm --image <path> "<q>"`                   | varies |
+| Local model                            | `bun llm --model ollama:<name> "<q>"`            | free   |
 
 ## Keywords
 
-| Keyword | What | Cost |
-|---------|------|------|
-| *(none)* | Best available cloud model | ~$0.02 |
-| `pro` | Escalates to `/pro` (3-leg dispatch + judge — see [/pro](../pro/SKILL.md)) | ~$0.20 |
-| `opinion` | Second opinion from a different provider | ~$0.02 |
-| `debate` | 3 models from different providers + synthesis | ~$1-3 |
-| `quick`/`cheap`/`mini`/`nano` | Fast/cheap (only when needed) | ~$0.01 |
+| Keyword                       | What                                                                       | Cost   |
+| ----------------------------- | -------------------------------------------------------------------------- | ------ |
+| _(none)_                      | Best available cloud model                                                 | ~$0.02 |
+| `pro`                         | Escalates to `/pro` (3-leg dispatch + judge — see [/pro](../pro/SKILL.md)) | ~$0.20 |
+| `opinion`                     | Second opinion from a different provider                                   | ~$0.02 |
+| `debate`                      | 3 models from different providers + synthesis                              | ~$1-3  |
+| `quick`/`cheap`/`mini`/`nano` | Fast/cheap (only when needed)                                              | ~$0.01 |
 
 **WARNING**: keywords (`pro`, `opinion`, `debate`) do NOT work with `--deep` — they're absorbed into the topic. Use `--model <id>` instead: `bun llm --deep --model gpt-5.4-pro -y "<topic>"`.
 
 ## Flags
 
-| Flag | What |
-|------|------|
-| `--deep` | OpenAI deep research (web search, citations) |
-| `--ask` | Explicit default mode |
-| `--image <path>` | Send screenshot/image to a vision model |
-| `--model <id>` | Specific cloud or local model (`ollama:<name>` for local) |
-| `--with-history` | Include relevant context from session history |
-| `--context <text>` | Inline context (avoid for source code — use `--context-file`) |
-| `--context-file <path>` | Read context from a file (use this for source code) |
-| `-y` | Skip confirmation |
-| `--no-recover` | Force fresh call, ignore prior responses |
+| Flag                    | What                                                          |
+| ----------------------- | ------------------------------------------------------------- |
+| `--deep`                | OpenAI deep research (web search, citations)                  |
+| `--ask`                 | Explicit default mode                                         |
+| `--image <path>`        | Send screenshot/image to a vision model                       |
+| `--model <id>`          | Specific cloud or local model (`ollama:<name>` for local)     |
+| `--with-history`        | Include relevant context from session history                 |
+| `--context <text>`      | Inline context (avoid for source code — use `--context-file`) |
+| `--context-file <path>` | Read context from a file (use this for source code)           |
+| `-y`                    | Skip confirmation                                             |
+| `--no-recover`          | Force fresh call, ignore prior responses                      |
 
 ## MANDATORY: silvery positioning brief
 
@@ -58,6 +58,7 @@ Without this brief, external LLMs default to advising as "TUI library author" �
 ## In-response summary
 
 In the same response where you call `bun llm`, include a brief summary so the user can judge the call:
+
 - Question/topic (in enough detail to evaluate)
 - Motivation (what you're trying to learn)
 - Context included (files, sizes)

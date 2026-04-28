@@ -422,9 +422,7 @@ export async function selectClassifierModel(): Promise<Model | null> {
  */
 export function formatRawDiscoveryTable(candidates: readonly DiscoveredCandidate[]): string {
   if (candidates.length === 0) return "_(no candidates)_\n"
-  const header =
-    "| Provider | ID | Display | Pricing in/out | Capabilities |\n" +
-    "| --- | --- | --- | --- | --- |\n"
+  const header = "| Provider | ID | Display | Pricing in/out | Capabilities |\n" + "| --- | --- | --- | --- | --- |\n"
   const body = candidates
     .map((c) => {
       const caps =

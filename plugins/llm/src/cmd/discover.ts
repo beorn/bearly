@@ -62,9 +62,7 @@ export async function runDiscoverModels(opts: { apply?: boolean; classify?: bool
       const { getOutputDir } = await import("../lib/format")
       const outPath = path.join(getOutputDir(), "llm-new-models.patch")
       fs.writeFileSync(outPath, patch)
-      console.error(
-        `\n✓ Wrote ${outPath} (${artifact.candidates.length} entries — ALL candidates, no LLM filter)`,
-      )
+      console.error(`\n✓ Wrote ${outPath} (${artifact.candidates.length} entries — ALL candidates, no LLM filter)`)
       console.error(`  Review with: cat ${outPath}`)
       console.error(`  Apply with:  git apply ${outPath}`)
     }
