@@ -7,6 +7,46 @@ and this package adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.14.0 — Assign envelope enrichment (km-tribe.task-assignment-stale-snapshot)
+
+Defensive guard for the chief-stale-snapshot loop: when a session sends
+`tribe.send {type: "assign", bead: <id>}`, the daemon now attaches fresh
+bead state and a re-issue counter to the channel envelope at delivery time,
+so the receiver doesn't have to trust the sender's in-context cache.
+
+### Added (additive — wire v4 unchanged, new optional fields)
+
+- **`bead_state`** on `assign`-typed channel envelopes. Sourced fresh from
+  `.beads/backup/issues.jsonl` on every delivery. Shape:
+  `{title, status, priority, notes_excerpt, notes_truncated, updated_at}`.
+  Notes are truncated to ~600 chars; receivers can request the full body
+  via `bd show <id>`. Omitted when no beads journal is reachable.
+- **`reissue_count`** on `assign`-typed channel envelopes. Counts prior
+  `type='assign'` messages with the same sender → recipient → bead_id
+  triple. `0` for first delivery, `1+` indicates a re-issue. The receiver
+  can use this to surface prior evidence rather than entering an A/B/C
+  escalation loop.
+- New module `tools/lib/tribe/bead-snapshot.ts` exporting
+  `readBeadSnapshot(beadId, projectRoot)` for use by the broadcast
+  pipeline (and any future tribe surface that needs fresh bead state).
+- New prepared statement `countPriorAssigns` on `TribeStatements`.
+
+### Why
+
+Sessions repeatedly hit the same loop: chief sends an assignment from a
+stale in-context snapshot of a bead; the assigned agent has evidence the
+work is done (or premises are wrong); chief re-issues from the same stale
+snapshot anyway; agent has to escalate via the A/B/C protocol from
+`feedback-stand-firm-on-pro-review.md`. The chief's snapshot lives inside
+the LLM session's context — outside any code path tribe controls. But the
+daemon DOES sit at the choke point where messages are delivered, and it
+DOES have access to the canonical bead journal. Enriching the wire
+envelope makes the right answer obvious to the receiver in one cycle
+instead of three.
+
+The wire field set is purely additive — clients that don't know about
+`bead_state` / `reissue_count` simply ignore them. No protocol bump.
+
 ## 0.13.0 — Filter collapse, derived reply hint (km-tribe.filter-collapse)
 
 Wire-protocol bumped v3 → v4. Three tools become one; one persisted column
@@ -23,9 +63,9 @@ becomes a derived value.
   (`yes` / `optional` / `no`) is no longer pushed on the wire and is no
   longer persisted on the row. The daemon derives it at delivery time from
   `(kind, recipient, senderRole)`:
-  - `kind: 'event'`              → `'no'`  (journal-only)
+  - `kind: 'event'` → `'no'` (journal-only)
   - `recipient: '*'` (broadcast) → `'optional'`
-  - sender `daemon` / `system`   → `'optional'`
+  - sender `daemon` / `system` → `'optional'`
   - direct DM from a peer member → `'yes'`
 - **`messages.response_expected`** column dropped (migration v11).
 - **`dismissals` table** dropped (migration v11).
@@ -112,7 +152,7 @@ Wire-protocol bumped v2 → v3.
 - **`tribe.dismiss({message_id, reason?})`** — audit-trail acknowledgement
   without replying. Used as classifier-training signal.
 - **Channel envelope** now carries `responseExpected: "yes" | "optional" |
-  "no"` and `plugin_kind` on every push notification.
+"no"` and `plugin_kind` on every push notification.
 
 ### Changed — delivery routing
 
