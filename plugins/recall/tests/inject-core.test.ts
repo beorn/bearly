@@ -180,10 +180,7 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
       },
     ])
-    const result = await runInjectDelta(
-      "what did we decide about km-storage layering?",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("what did we decide about km-storage layering?", createMemorySeenStore())
     expect(result.skipped).toBe(false)
     if (result.skipped) return
     expect(result.footerOnly).toBeUndefined()
@@ -205,10 +202,7 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
       },
     ])
-    const result = await runInjectDelta(
-      "what did we decide about km-storage layering?",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("what did we decide about km-storage layering?", createMemorySeenStore())
     if (result.skipped) throw new Error("expected non-skipped result")
     expect(result.additionalContext).toContain('authority="reference"')
     expect(result.additionalContext).toContain('changes_goal="false"')
@@ -224,10 +218,7 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "create a bead that captures all of this context about the board refactor work.",
       },
     ])
-    const result = await runInjectDelta(
-      "pick up where we left off on km-board the refactor",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("pick up where we left off on km-board the refactor", createMemorySeenStore())
     if (result.skipped) throw new Error("expected non-skipped result")
     expect(result.additionalContext).toContain("[historical")
     // The original imperative text remains, just prefixed.
@@ -241,10 +232,7 @@ describe("runInjectDelta — V2 gates", () => {
   })
 
   test("low-salience meta-prompt (no IDs/paths/backticks) skips before recall fires", async () => {
-    const result = await runInjectDelta(
-      "how should we improve things?",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("how should we improve things?", createMemorySeenStore())
     expect(result.skipped).toBe(true)
     if (!result.skipped) return
     expect(result.reason).toBe("low_salience")
@@ -308,10 +296,7 @@ describe("runInjectDelta — V2 gates", () => {
         snippet: 'Earlier analysis: "verdict": "orthogonal", "why": "discusses unrelated framework".',
       },
     ])
-    const result = await runInjectDelta(
-      "what did we learn about km-storage cognitive types?",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("what did we learn about km-storage cognitive types?", createMemorySeenStore())
     // Filtered-out by content gate; was the only hit → all_seen path
     // (the rank gate passed, content gate didn't).
     expect(result.skipped).toBe(true)
@@ -340,10 +325,7 @@ describe("runInjectDelta — V2 gates", () => {
         snippet: "Third match — should not appear when default limit is 1.",
       },
     ])
-    const result = await runInjectDelta(
-      "tell me about km-board the refactor",
-      createMemorySeenStore(),
-    )
+    const result = await runInjectDelta("tell me about km-board the refactor", createMemorySeenStore())
     if (result.skipped) throw new Error("expected non-skipped result")
     // Only the first session id appears in the framed output.
     expect(result.additionalContext).toContain("sess-bes")
