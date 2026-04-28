@@ -6,6 +6,9 @@
  */
 
 import { describe, test, expect } from "vitest"
+import { writeFileSync, existsSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   collectOsMetrics,
@@ -29,6 +32,8 @@ import {
   formatLockMessage,
   formatStaleLockMessage,
   LOCK_STALE_THRESHOLD_MS,
+  LOCK_REAP_AGE_MS,
+  reapStaleLock,
   parseEtime,
   type HealthMetrics,
   type HealthThresholds,
@@ -1246,5 +1251,66 @@ describe("parseEtime", () => {
 
   test("trims whitespace", () => {
     expect(parseEtime("  05:30  ")).toBe(5)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reapStaleLock — auto-reap of holderless .git/index.lock
+// ---------------------------------------------------------------------------
+
+describe("reapStaleLock", () => {
+  test("does not reap when a holder exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reap-test-"))
+    const path = join(dir, "index.lock")
+    writeFileSync(path, "")
+    const lock: GitLockInfo = {
+      path,
+      label: "main",
+      holder: { pid: 1234, command: "git" },
+    }
+    const reaped = reapStaleLock(lock, Date.now() + LOCK_REAP_AGE_MS * 10)
+    expect(reaped).toBe(false)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  test("does not reap when lock is younger than the race-guard threshold", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reap-test-"))
+    const path = join(dir, "index.lock")
+    writeFileSync(path, "")
+    const lock: GitLockInfo = { path, label: "main", holder: null }
+    // now == mtime → age = 0
+    const reaped = reapStaleLock(lock, Date.now())
+    expect(reaped).toBe(false)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  test("reaps holderless lock once race-guard threshold has passed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reap-test-"))
+    const path = join(dir, "index.lock")
+    writeFileSync(path, "")
+    const lock: GitLockInfo = { path, label: "main", holder: null }
+    // Simulate a lock that's been around longer than the guard.
+    const reaped = reapStaleLock(lock, Date.now() + LOCK_REAP_AGE_MS + 100)
+    expect(reaped).toBe(true)
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test("reaps non-empty holderless lock (size doesn't matter, holder does)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reap-test-"))
+    const path = join(dir, "index.lock")
+    writeFileSync(path, "partial index data left behind by killed git")
+    const lock: GitLockInfo = { path, label: "main", holder: null }
+    const reaped = reapStaleLock(lock, Date.now() + LOCK_REAP_AGE_MS + 100)
+    expect(reaped).toBe(true)
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test("returns true if the lock has already been removed", () => {
+    const lock: GitLockInfo = {
+      path: "/nonexistent/index.lock",
+      label: "main",
+      holder: null,
+    }
+    expect(reapStaleLock(lock, Date.now() + LOCK_REAP_AGE_MS * 10)).toBe(true)
   })
 })

@@ -21,7 +21,7 @@
  *   HEALTH_REAPER_GRACE_SAMPLES — samples to wait after asking before kill (default: 6)
  */
 
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { cpus, totalmem, freemem, loadavg } from "node:os"
 import { createLogger } from "loggily"
 import { createTimers } from "./timers.ts"
@@ -562,6 +562,46 @@ export const LOCK_ALERT_THRESHOLD_MS = 15_000
 
 /** Threshold in ms for escalating a lock to a stale warning */
 export const LOCK_STALE_THRESHOLD_MS = 30_000
+
+/**
+ * Minimum age in ms before auto-reaping a holderless lock.
+ *
+ * Git acquires `.git/index.lock` via `open(O_CREAT|O_EXCL)` and an active
+ * holder is always visible via `lsof`. A lock with no holder is stale by
+ * definition — there's no process to atomically rename it into place.
+ *
+ * The TOCTOU race between O_EXCL succeeding and the kernel registering the
+ * FD visibly to lsof is sub-millisecond. A 1s guard closes it with zero
+ * practical cost; real git ops complete in milliseconds.
+ */
+export const LOCK_REAP_AGE_MS = 1_000
+
+/**
+ * Attempt to reap a stale lock if it has no holder and has aged past the
+ * race-guard threshold. Returns true if the lock was removed.
+ *
+ * Uses file mtime (when the lock was created) for age, not poll-based
+ * "first-seen" — a fresh lock gets the full 1s grace regardless of when
+ * the daemon noticed it.
+ */
+export function reapStaleLock(lock: GitLockInfo, nowMs: number = Date.now()): boolean {
+  if (lock.holder) return false
+  let fileMtimeMs: number
+  try {
+    fileMtimeMs = statSync(lock.path).mtimeMs
+  } catch {
+    // Already gone — treat as reaped.
+    return true
+  }
+  if (nowMs - fileMtimeMs < LOCK_REAP_AGE_MS) return false
+  try {
+    unlinkSync(lock.path)
+    return true
+  } catch {
+    // Race: another process reaped it, or we lack permissions.
+    return false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Alert evaluation
@@ -1217,6 +1257,19 @@ export const healthMonitorPlugin: TribePluginApi = {
 
         for (const lock of locks) {
           activeLockPaths.add(lock.path)
+
+          // Auto-reap holderless locks: git uses O_EXCL, no holder = stale.
+          // Silent + logged on daemon (not broadcast) so reaps are observable
+          // for incident analysis without flooding agent channels.
+          if (!lock.holder && reapStaleLock(lock, now)) {
+            log.info?.(`git-lock reaped: path=${lock.path} label=${lock.label} (no holder)`)
+            // Drop tracking for this lock — it's gone.
+            alertState.lockFirstSeen.delete(lock.path)
+            alertState.lockStaleWarned.delete(lock.path)
+            alertState.firedAlerts.delete(`git-lock:${lock.path}`)
+            activeLockPaths.delete(lock.path)
+            continue
+          }
 
           // Track when we first saw this lock
           if (!alertState.lockFirstSeen.has(lock.path)) {
