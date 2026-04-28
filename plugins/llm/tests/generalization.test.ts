@@ -168,7 +168,12 @@ describe("bundled skills directory", () => {
 
   it("package.json `files` field includes skills so they ship in the tarball", () => {
     const pkgPath = path.resolve(import.meta.dirname ?? __dirname, "..", "package.json")
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { files?: string[]; private?: boolean; version?: string; bin?: Record<string, string> }
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+      files?: string[]
+      private?: boolean
+      version?: string
+      bin?: Record<string, string>
+    }
     expect(pkg.files).toBeDefined()
     expect(pkg.files).toContain("skills")
     expect(pkg.files).toContain("src")
@@ -186,7 +191,8 @@ describe("bundled skills directory", () => {
     // versions without user sign-off — see project memory). The package
     // shape is publish-ready (bin, files, exports, peerDeps), so flipping
     // private:false at 1.0 release time is a one-line change.
-    expect(pkg.version).toMatch(/^0\.[9-9]\.\d+|^[1-9]\d*\.\d+\.\d+/)
+    // Accept 0.9.x, 0.10+, or 1.x+ — pre-1.0 minor bumps land regularly.
+    expect(pkg.version).toMatch(/^0\.(9|[1-9]\d+)\.\d+|^[1-9]\d*\.\d+\.\d+/)
     expect(pkg.bin?.["bearly-llm"]).toBeTruthy()
     expect(pkg.files).toContain("skills")
   })

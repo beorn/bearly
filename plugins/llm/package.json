@@ -1,14 +1,14 @@
 {
   "name": "@bearly/llm",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Multi-provider LLM dispatch — race cheap models, consensus queries, deep research (OpenAI, Anthropic, Gemini, xAI, Ollama). Standalone CLI + library.",
   "keywords": [
     "ai",
     "anthropic",
     "claude",
-    "consensus",
     "cli",
+    "consensus",
     "deep-research",
     "deepseek",
     "dual-pro",
@@ -33,6 +33,9 @@
     "url": "https://github.com/beorn/bearly.git",
     "directory": "plugins/llm"
   },
+  "bin": {
+    "bearly-llm": "./src/cli.ts"
+  },
   "files": [
     "src",
     "skills",
@@ -44,15 +47,8 @@
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts"
   },
-  "bin": {
-    "bearly-llm": "./src/cli.ts"
-  },
   "publishConfig": {
     "access": "public"
-  },
-  "engines": {
-    "bun": ">=1.0",
-    "node": ">=20.0.0"
   },
   "peerDependencies": {
     "@bearly/recall": "*"
@@ -61,5 +57,9 @@
     "@bearly/recall": {
       "optional": true
     }
+  },
+  "engines": {
+    "bun": ">=1.0",
+    "node": ">=20.0.0"
   }
 }
