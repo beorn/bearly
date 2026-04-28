@@ -9,7 +9,7 @@ import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
 import { estimateCost, formatCost } from "./types"
-import { emitJson, isJsonMode } from "./output-mode"
+import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
 
@@ -317,7 +317,10 @@ export async function finalizeOutput(
     process.stderr.write(`Output written to: ${outputFile}\n`)
   }
   const envelope = buildResultJson(content, meta)
-  envelope.file = outputFile
+  // km-bearly.llm-path-leakage: relativize by default to avoid leaking
+  // /tmp absolute paths (username/hostname/project hashes) into CI logs.
+  // `--full-paths` opts back into the verbatim absolute path.
+  envelope.file = formatEnvelopeFile(outputFile, { fullPaths: isFullPaths(), cwd: process.cwd() })
   // Default status when caller didn't set one — successful completion.
   if (!envelope.status) envelope.status = "completed"
   emitJson(envelope)
@@ -384,7 +387,7 @@ export async function finishResponse(
     const result: Record<string, unknown> = {
       error: "empty_response",
       status: "failed",
-      file: outputFile,
+      file: formatEnvelopeFile(outputFile, { fullPaths: isFullPaths(), cwd: process.cwd() }),
       model: model.displayName,
       tokens: usage
         ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }

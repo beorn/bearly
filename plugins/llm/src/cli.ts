@@ -38,7 +38,7 @@ import {
   runAwait,
 } from "./lib/dispatch"
 import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/format"
-import { setJsonMode, emitJson } from "./lib/output-mode"
+import { setJsonMode, setFullPaths, emitJson } from "./lib/output-mode"
 
 import { readdirSync, statSync, unlinkSync } from "fs"
 
@@ -189,6 +189,11 @@ const skipConfirm = hasFlag("--yes") || hasFlag("-y")
 // Tied to --verbose: even in JSON mode, --verbose still streams tokens to
 // stderr (never stdout). The JSON line is the LAST thing on stdout, always.
 setJsonMode(hasFlag("--json"))
+// `--full-paths` opts back into absolute paths in `envelope.file`. Default
+// is relativized (basename or cwd-relative) so /tmp paths don't leak
+// username/hostname/project hashes into CI logs and log aggregators.
+// See km-bearly.llm-path-leakage.
+setFullPaths(hasFlag("--full-paths"))
 const streamToken = createStreamToken(hasFlag("--verbose"))
 
 /**
@@ -432,6 +437,12 @@ FLAGS
                          envelope (under the "quota" key). Zero extra HTTP.
                          The runtime quota cache is always updated regardless;
                          this flag just gates the per-call envelope surface.
+  --full-paths           Emit absolute paths in the JSON envelope's "file"
+                         field. Default: relativized (basename, or cwd-relative
+                         if under cwd) to avoid leaking /tmp paths
+                         (username/hostname/project hashes) into CI logs and
+                         log aggregators. Use --full-paths if you need to
+                         \`cat\` the file path from any cwd.
   --exclude <model>      Exclude a model from dual-pro challenger rotation for
                          this call. Repeat or comma-separate: --exclude a,b
                          or --exclude a --exclude b. Joins with the persistent
@@ -804,9 +815,7 @@ export async function main(): Promise<string | undefined> {
     case "install-skills": {
       const { runInstallSkills } = await import("./cmd/install-skills")
       // First non-flag positional after the keyword is the optional target dir.
-      const positional = dropCommandAndLeadingFlags(args).find(
-        (a) => !a.startsWith("-") && !VALUE_FLAGS.includes(a),
-      )
+      const positional = dropCommandAndLeadingFlags(args).find((a) => !a.startsWith("-") && !VALUE_FLAGS.includes(a))
       await runInstallSkills({ targetDir: positional, yes: skipConfirm })
       break
     }

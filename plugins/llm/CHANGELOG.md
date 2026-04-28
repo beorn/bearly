@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.10.0 (2026-04-28)
+
+User-visible behavior change: the JSON envelope's `file` field is now
+relativized by default to prevent leaking absolute `/tmp` paths
+(username, hostname, project hashes embedded in temp dir names) into CI
+logs and log aggregators (Splunk, Datadog).
+
+### Changed (BREAKING — output format)
+
+- **`envelope.file` is relativized by default.** `/tmp/llm-...txt` →
+  `llm-...txt` (basename), or `out/llm-x.txt` when the file lives under
+  cwd. The actual file location is unchanged; only the envelope surface.
+  Resolves [km-bearly.llm-path-leakage].
+- Consumers that read the `file` field with absolute-path expectations
+  must either pass `--full-paths` or join with `os.tmpdir()` /
+  `process.cwd()` themselves.
+
+### Added
+
+- **`--full-paths` flag.** Opt back into absolute paths in the envelope
+  `file` field. Useful when piping the envelope to a consumer that
+  `cat`s the path from a different cwd, or for debugging.
+- **`formatEnvelopeFile(filePath, { fullPaths, cwd })`** exported from
+  `lib/output-mode.ts` — pure helper for callers that build envelopes
+  outside of `finalizeOutput`. Takes explicit cwd so it's deterministic
+  across workers.
+- **`setFullPaths(value)` / `isFullPaths()`** on the output-mode shim —
+  parallel surface to `setJsonMode` / `isJsonMode`. Same deprecation
+  trajectory: eventually folds into `DispatchContext`.
+
 ## 0.9.0 (2026-04-27)
 
 Generalization sprint (Phase 5 of the @bearly/llm refactor). Package is now
@@ -36,7 +66,7 @@ until a 1.0 release is explicitly approved.
   tarball so consumers don't need the km repo to use them.
 - **`bin: { "bearly-llm": "./src/cli.ts" }`** — installs as
   `bearly-llm` on PATH (standalone consumers can invoke via `npx
-  bearly-llm` or after `npm i -g`).
+bearly-llm` or after `npm i -g`).
 - **README "Use without Claude Code" section** — quickstart for
   standalone usage covering env vars, install-skills, and CLAUDE_PROJECT_DIR
   back-compat.
