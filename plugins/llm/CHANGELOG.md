@@ -1,5 +1,138 @@
 # Changelog
 
+## 0.9.0 (2026-04-27)
+
+Generalization sprint (Phase 5 of the @bearly/llm refactor). Package is now
+shaped to be usable by non-Claude-Code consumers, but stays `private: true`
+until a 1.0 release is explicitly approved.
+
+### Changed — internal layout
+
+- **Memory dir resolution rewritten.** `getMemoryDir` now follows a 4-step
+  priority chain: `BEARLY_LLM_MEMORY_DIR` → `LLM_DIR` → (when
+  `CLAUDE_PROJECT_DIR` set) `~/.claude/projects/<encoded>/memory` →
+  `~/.config/llm/`. Existing Claude Code users keep their per-project
+  history (step 3); standalone consumers get a single combined
+  config+data dir at `~/.config/llm/`. Per user direction, we deliberately
+  don't split into XDG_CONFIG_HOME + XDG_DATA_HOME — too much magic.
+- **`@bearly/recall` is now an optional peer dependency.** Previously
+  imported via the relative path `../../recall/src/history/db`, which
+  coupled the package to the bearly monorepo layout. Now resolved at
+  runtime via `import("@bearly/recall/history/db")` with a fallback to
+  the sibling-source path for in-repo dev. Without recall installed, the
+  "📚 Similar past queries" hint is silently skipped — no crash.
+- **Output dir is configurable.** Previously hardcoded `/tmp/llm-*.txt`;
+  now derived from `BEARLY_LLM_OUTPUT_DIR` (default `os.tmpdir()`).
+  Affects `buildOutputPath` and the discover-models patch path.
+
+### Added
+
+- **`bearly-llm install-skills [<target-dir>]`** — copies the bundled
+  `skills/{ask,pro,deep,fresh,big}` markdowns into a Claude Code skills
+  directory. Default target: `process.env.CLAUDE_SKILLS_DIR` or
+  `~/.claude/skills`. Prompts before overwriting unless `--yes` is set.
+- **Bundled skill markdowns** under `skills/`. The 5 dispatch-related
+  skills (`/ask`, `/pro`, `/deep`, `/fresh`, `/big`) ship inside the npm
+  tarball so consumers don't need the km repo to use them.
+- **`bin: { "bearly-llm": "./src/cli.ts" }`** — installs as
+  `bearly-llm` on PATH (standalone consumers can invoke via `npx
+  bearly-llm` or after `npm i -g`).
+- **README "Use without Claude Code" section** — quickstart for
+  standalone usage covering env vars, install-skills, and CLAUDE_PROJECT_DIR
+  back-compat.
+
+### Changed
+
+- `package.json`: still `private: true` (kept until 1.0 is explicitly approved
+  — major-version releases require user sign-off). `files` now ships `src` +
+  `skills` + `README.md` + `CHANGELOG.md` so the package shape is publish-ready.
+  `peerDependencies.@bearly/recall` declared (optional).
+
+### Changed — Phase 6 over-engineering review
+
+- **`pro --discover-models` classifier is now opt-in.** Previously the
+  command always fired the cheap classifier (`gpt-5-nano`) over each
+  candidate to produce yes/no/needs-review decisions — ~$0.0005 × N
+  candidates (~$0.02 for 30). The empirical value of the LLM pre-filter
+  vs. raw discovery + human review was unproven. New default: emit a raw
+  discovery table (provider, id, pricing, capability hints) — free, fast,
+  same actionable info for someone reviewing manually. Pass `--classify`
+  to opt in to the LLM-driven decision table when you want a pre-filter
+  for a large candidate set.
+- `formatRawDiscoveryTable` exported from `lib/discover.ts` for the new
+  default render. `formatDecisionTable` retained for `--classify` mode.
+
+## 0.8.0 (2026-04-27)
+
+dispatch.ts shatter (Phase 4 of the @bearly/llm refactor). The 3061-LOC
+monolith that mixed TTY raw-mode prompts, HTTP fetch for pricing, JSONL
+persistence for the A/B log, signal handlers for SIGINT/SIGTERM, and 11
+sub-command runners is now split into per-feature modules. **Move-not-change
+refactor — no public CLI surface changes, no behavior changes, all 272
+tests pass.**
+
+### Changed — Module structure (km-bearly.llm-dispatch-shatter)
+
+- **`src/cmd/`** — per-feature dispatch entry points:
+  - `ask.ts` — `askAndFinish` (single-model dispatch + finalize)
+  - `pro.ts` — `runProDual` (4-leg fleet + pairwise judge + ab-pro.jsonl
+    append)
+  - `deep.ts` — `runDeep` (deep research, fire-and-forget)
+  - `debate.ts` — `runDebate` (multi-model consensus)
+  - `recover.ts` — `runRecover`, `runAwait`, `pollResponseToCompletion`,
+    `classifyRecovery`, `checkAndRecoverPartials` (provider-aware poll +
+    classification)
+  - `leaderboard.ts` — `runLeaderboard`, `runPromoteReview`, `runBacktest`
+  - `judge-history.ts` — `runJudgeHistory` + `parseOutputFileSections`
+  - `quota.ts` — `runQuota` (delegates to `lib/quota`)
+  - `discover.ts` — `runDiscoverModels` (Stage 2 auto-discovery)
+  - `diagnostics.ts` — `runDiagnostics`, `buildDiagnostics`, report types
+  - `pricing.ts` — `performPricingUpdate`, `maybeAutoUpdatePricing`,
+    `discoverNewModels`
+- **`src/ui/confirm.ts`** — `confirmOrExit` and `promptChoice`. Sole owner
+  of `process.stdin.setRawMode` in the entire plugin (verifiable via
+  `grep -rln "setRawMode" src/`).
+- **`src/lib/signals.ts`** — `withSignalAbort`. Sole owner of
+  `process.on/once("SIGINT" | "SIGTERM")` for signal coordination.
+- **`src/lib/context-files.ts`** — `buildContext` (FTS history + file/text
+  context builder). Owns the recall DB read path.
+- **`src/lib/dispatch.ts`** — thin re-export router (~60 LOC) that
+  preserves `./lib/dispatch` as a back-compat import path for `cli.ts` and
+  any external caller.
+
+### Deprecated — `output-mode.ts` singleton (km-bearly.llm-output-mode-singleton)
+
+- **`src/lib/context.ts`** — new canonical surface:
+  ```ts
+  export interface DispatchContext {
+    readonly jsonMode: boolean
+    emit(envelope: Record<string, unknown>): void
+    content(text: string): void
+    stderr(text: string): void
+  }
+  export function createDispatchContext(opts: { jsonMode: boolean }): DispatchContext
+  ```
+- **`src/lib/output-mode.ts`** is now a thin **deprecated** shim that
+  delegates to a default global `DispatchContext`. The singleton anti-
+  pattern (process-level mutable mode) still exists at the shim layer for
+  back-compat, but new code should construct an explicit ctx and pass it
+  through the dispatch chain. `setJsonMode` / `isJsonMode` / `emitJson` /
+  `emitContent` / `resetOutputMode` all still work and are still tested.
+- **Migration plan**: future PRs will thread `ctx: DispatchContext` through
+  `askAndFinish`, `runProDual`, `runDeep`, etc., and `cli.ts` will
+  construct ctx at startup. The shim retires once all dispatch paths take
+  ctx explicitly.
+
+### Acceptance gates
+
+- `dispatch.ts` is 60 LOC (target: ≤ 200) — re-export only, no logic.
+- TTY raw-mode (`process.stdin.setRawMode`) lives in exactly one file:
+  `src/ui/confirm.ts`.
+- SIGINT/SIGTERM signal handlers live in exactly one file:
+  `src/lib/signals.ts`.
+- All 272 tests pass; 0 TypeScript errors.
+- Public CLI surface (`bun llm`, all subcommands, all flags) is unchanged.
+
 ## 0.7.0 (2026-04-27)
 
 2+2 fleet dispatch (4 legs in parallel) + pairwise judge — endorsed by both
@@ -27,7 +160,7 @@ wins reproduce instead of pure pool exploration).
   single `Promise.all` round trip. Total runtime is dominated by the slowest
   leg, not the sum.
 - **Slot D = correlated re-test**: `pickSplitTestSlots(pool, strategy,
-  counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
+counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
   picks the most-recent winner from `ab-pro.jsonl` history that is in the
   pool, NOT a mainstay, and NOT slot C. Cold start (no winners) falls back
   to "next pool entry after slot C in pool-list order" so the two slots
@@ -38,9 +171,9 @@ wins reproduce instead of pure pool exploration).
   sends only TWO responses to the judge. With Gemini 2.5 Flash judge at
   ~$0.001/call, ~$0.003 total — usually cheaper than one bloated 4-way prompt.
 - **`buildPairwiseJudgePrompt`** + **`parsePairwiseJudgeResponse`**: pairwise
-  prompt builder + tolerant parser (strips ```` ```json ```` fences, handles
+  prompt builder + tolerant parser (strips ` ```json ` fences, handles
   prepended prose). Output: `{ winner: "A" | "B" | "tie", scoreA, scoreB,
-  reasoning }`.
+reasoning }`.
 - **`synthesizePairwiseFromV2`**: v2 → v3 reader. Historical v2 ab-pro.jsonl
   entries with N-way `judge.{a,b,c,winner}` fields surface a synthesized
   `judge.ab`/`ac` to keep leaderboard / judge-history / backtest consumers

@@ -92,20 +92,37 @@ export function slugify(text: string): string {
 }
 
 /**
- * Build the canonical /tmp/llm-*.txt output path used for both initial launches
- * and recover/await flows. Format: /tmp/llm-<session>-<slug-or-rand>-<hash>.txt
+ * Output dir for llm-*.txt files. Override via BEARLY_LLM_OUTPUT_DIR;
+ * defaults to the OS tmpdir. Cleanup logic in cli.ts honours the same env.
+ */
+export function getOutputDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.BEARLY_LLM_OUTPUT_DIR) return env.BEARLY_LLM_OUTPUT_DIR
+  // Lazy-load os to keep this module Node-version friendly (and to avoid
+  // top-of-file import noise for what is effectively a tiny helper).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const os = require("os") as typeof import("os")
+  return os.tmpdir()
+}
+
+/**
+ * Build the canonical llm-*.txt output path used for both initial launches
+ * and recover/await flows. Format: <outputDir>/llm-<session>-<slug-or-rand>-<hash>.txt
  *
  * If `topic` is empty/undefined, falls back to a millisecond timestamp slug so
  * the path is still unique. The 4-char random suffix prevents collisions when
  * two runs hit the same slug within the same millisecond.
+ *
+ * Output dir comes from `getOutputDir()` (BEARLY_LLM_OUTPUT_DIR or os.tmpdir).
  */
 export function buildOutputPath(sessionTag: string, topic?: string): string {
   const hash = Math.random().toString(36).slice(2, 6)
   const slug = topic ? slugify(topic) : ""
   // Treat slugs with no alphanumerics (e.g. "---") as empty — they'd produce
-  // visually broken filenames like /tmp/llm-manual-----abcd.txt.
+  // visually broken filenames like llm-manual-----abcd.txt.
   const middle = /[a-z0-9]/.test(slug) ? slug : String(Date.now())
-  return `/tmp/llm-${sessionTag}-${middle}-${hash}.txt`
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const path = require("path") as typeof import("path")
+  return path.join(getOutputDir(), `llm-${sessionTag}-${middle}-${hash}.txt`)
 }
 
 /**

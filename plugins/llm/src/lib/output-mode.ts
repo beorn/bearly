@@ -1,5 +1,16 @@
 /**
- * Output-mode singleton — `--json` vs human-text.
+ * @deprecated — use `createDispatchContext()` from `./context.ts` and pass
+ * the context object explicitly through the dispatch chain. This shim
+ * remains so that `cli.ts`, library callers, and existing tests keep
+ * working during the migration; new code should not import from here.
+ *
+ * The shim mutates a process-level singleton (`_defaultCtx` in context.ts).
+ * That singleton is the same anti-pattern this module documents — it is
+ * not safe across parallel test workers or library embedding. The whole
+ * point of the v0.8.0 migration is to replace it; this file just lets us
+ * do that without a giant flag-day.
+ *
+ * Original (legacy) docs preserved below for callers that still grep here.
  *
  * Why this exists: skills (.claude/skills/{pro,deep,ask}) used to regex
  * stderr or scrape the trailing JSON line on stdout to find the output
@@ -15,68 +26,34 @@
  *                 behavior; backward-compatible with existing scripts
  *                 that grep/regex stderr or read both streams)
  *       - stderr: progress + path line
- *
- * The mode is set once at CLI startup (cli.ts reads `--json` then calls
- * setJsonMode(true)). Library code reads it via isJsonMode(). Using a
- * module-level singleton (not env vars) keeps it test-isolated:
- * vitest can call resetOutputMode() between tests without leaking env
- * state across workers.
  */
 
-let jsonMode = false
+import { createDispatchContext, _setDefaultDispatchContext, _getDefaultDispatchContext } from "./context"
 
-/** Enable JSON output mode. Call once at CLI startup, before any dispatch. */
+/**
+ * @deprecated Pass `DispatchContext` through dispatch chain instead.
+ * Enables JSON output mode on the global default context.
+ */
 export function setJsonMode(value: boolean): void {
-  jsonMode = value
+  _setDefaultDispatchContext(createDispatchContext({ jsonMode: value }))
 }
 
-/** True when --json was passed. Library code reads this to route output. */
+/** @deprecated Read `ctx.jsonMode` from a passed-in DispatchContext instead. */
 export function isJsonMode(): boolean {
-  return jsonMode
+  return _getDefaultDispatchContext().jsonMode
 }
 
-/** Reset for tests. Not part of the public CLI surface. */
+/** @deprecated Construct a fresh DispatchContext per test instead. */
 export function resetOutputMode(): void {
-  jsonMode = false
+  _setDefaultDispatchContext(createDispatchContext({ jsonMode: false }))
 }
 
-/**
- * Emit the final JSON envelope on stdout.
- *
- * Mode-agnostic: the envelope ALWAYS goes to stdout (both in JSON mode
- * and legacy mode). The difference is what ELSE goes to stdout — in
- * JSON mode, nothing else does.
- *
- * Always writes exactly ONE line (newline-terminated). Use jq, grep,
- * or simple line-reads to consume.
- *
- * Implementation note: uses console.log (which writes to stdout with a
- * trailing newline) rather than process.stdout.write so vitest spies on
- * console.log catch the line. The behavior is identical from the
- * shell's perspective.
- */
+/** @deprecated Use `ctx.emit(envelope)` from a passed-in DispatchContext. */
 export function emitJson(envelope: Record<string, unknown>): void {
-  console.log(JSON.stringify(envelope))
+  _getDefaultDispatchContext().emit(envelope)
 }
 
-/**
- * Emit response content to the appropriate stream.
- *
- * Legacy mode → stdout (so callers piping `bun llm recover <id>` to
- * less / a file still see the response body).
- *
- * JSON mode → stderr (stdout is reserved for the single JSON line; the
- * caller is expected to read the file at envelope.file for content).
- *
- * Used by recover/await paths that print recovered content as a
- * preview. The canonical content is always written to a file via
- * finalizeOutput; this is just for the human-watching-the-terminal
- * case.
- */
+/** @deprecated Use `ctx.content(text)` from a passed-in DispatchContext. */
 export function emitContent(content: string): void {
-  if (jsonMode) {
-    console.error(content)
-  } else {
-    console.log(content)
-  }
+  _getDefaultDispatchContext().content(content)
 }

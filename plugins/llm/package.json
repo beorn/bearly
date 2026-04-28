@@ -1,9 +1,33 @@
 {
   "name": "@bearly/llm",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "private": true,
-  "description": "Multi-provider LLM dispatch — race cheap models, consensus queries, deep research (OpenAI, Anthropic, Gemini, xAI, Ollama)",
+  "description": "Multi-provider LLM dispatch — race cheap models, consensus queries, deep research (OpenAI, Anthropic, Gemini, xAI, Ollama). Standalone CLI + library.",
+  "keywords": [
+    "ai",
+    "anthropic",
+    "claude",
+    "consensus",
+    "cli",
+    "deep-research",
+    "deepseek",
+    "dual-pro",
+    "gemini",
+    "gpt",
+    "kimi",
+    "llm",
+    "moonshot",
+    "openai",
+    "openrouter",
+    "research",
+    "xai"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/plugins/llm",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
   "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git",
@@ -11,11 +35,31 @@
   },
   "files": [
     "src",
-    "README.md"
+    "skills",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "bearly-llm": "./src/cli.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.0",
+    "node": ">=20.0.0"
+  },
+  "peerDependencies": {
+    "@bearly/recall": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bearly/recall": {
+      "optional": true
+    }
   }
 }

@@ -220,7 +220,8 @@ describe("parsePairwiseJudgeResponse", () => {
   })
 
   it("strips ```json fences", () => {
-    const raw = '```json\n{"scoreA":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"scoreB":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"winner":"tie"}\n```'
+    const raw =
+      '```json\n{"scoreA":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"scoreB":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"winner":"tie"}\n```'
     expect(parsePairwiseJudgeResponse(raw)?.winner).toBe("tie")
   })
 
@@ -321,7 +322,11 @@ describe("4-leg dispatch + pairwise judge — integration", () => {
     vi.restoreAllMocks()
   })
 
-  function setupMocks(): { generateCalls: () => number; backgroundCalls: () => number; pairwiseJudgeCalls: () => number } {
+  function setupMocks(): {
+    generateCalls: () => number
+    backgroundCalls: () => number
+    pairwiseJudgeCalls: () => number
+  } {
     queryBackgroundMock.mockReset()
     queryBackgroundMock.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
       model,

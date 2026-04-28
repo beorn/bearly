@@ -25,7 +25,7 @@
 import { getAvailableProviders } from "./lib/providers"
 import { getModel, MODELS, type Model, type Provider } from "./lib/types"
 import { initializePricing, getStaleWarning } from "./lib/pricing"
-import { getDb, closeDb, findSimilarQueries } from "../../recall/src/history/db"
+import { loadRecall } from "./lib/recall-optional"
 import {
   performPricingUpdate,
   maybeAutoUpdatePricing,
@@ -92,6 +92,7 @@ const KEYWORDS = [
   "update-pricing",
   "list-models",
   "quota",
+  "install-skills",
   // Slash-prefixed synonyms for --deep / --ask. Without these in the list,
   // resolveCommand would return undefined and `llm /deep "topic"` would
   // fall through to the default-ask path instead of entering deep research.
@@ -394,8 +395,10 @@ KEYWORDS
   pro --judge-history    Retroactively score historical ab-pro.jsonl entries
                          (--limit N, --quick for cheap judge, --apply to write)
                          (--quick smoke-test mode; --no-old-fire skips OLD)
-  pro --discover-models  Classify auto-discovered models from new-models.json
-                         and (with --apply) emit /tmp/llm-new-models.patch
+  pro --discover-models  Show auto-discovered model candidates (raw, free).
+                         Add --classify to pre-filter via gpt-5-nano (~$0.02 / 30
+                         candidates). Add --apply to emit a unified diff at
+                         <outputDir>/llm-new-models.patch for manual git apply.
                          (run update-pricing first to populate the cache)
   opinion                Second opinion from different provider (~$0.02)
   debate                 Query 3 models, synthesize consensus (~$1-3, confirms)
@@ -403,6 +406,8 @@ KEYWORDS
   quota                  Show provider balance + rate limits + last-call cache
                          (--json for machine-readable envelope)
   update-pricing         Fetch latest model pricing from provider pages
+  install-skills [<dir>] Copy bundled SKILL.md files (ask/pro/deep/fresh/big)
+                         to ~/.claude/skills (or <dir>). Use --yes to overwrite.
 
 FLAGS
   --deep, /deep          Deep research with web search (~$2-5, confirms)
@@ -433,6 +438,15 @@ FLAGS
                          \`exclude\` list in dual-pro-config.json.
 
 ENVIRONMENT VARIABLES
+  LLM_DIR=/path/to/dir             Memory dir (config + ab-pro.jsonl + counters).
+                                   Defaults to ~/.config/llm. Alias:
+                                   BEARLY_LLM_MEMORY_DIR. When CLAUDE_PROJECT_DIR
+                                   is set, falls back to per-project Claude Code
+                                   layout for back-compat.
+  BEARLY_LLM_OUTPUT_DIR=/path      Where llm-*.txt response transcripts land.
+                                   Defaults to os.tmpdir().
+  BEARLY_LLM_NO_RECALL=1           Disable the @bearly/recall similar-queries
+                                   hint even when recall is installed.
   LLM_CHALLENGER_POOL=id1,id2,…    Override the dual-pro shadow challenger pool.
                                    Default pool comes from dual-pro-config.json.
   LLM_JUDGE_MODEL=<modelId>        Override the dual-pro judge model
@@ -562,30 +576,34 @@ export async function main(): Promise<string | undefined> {
     if (!question) usage()
     const outputFile = resolveOutputFile(question)
 
-    // Check history first. try/finally ensures closeDb() runs even if the
-    // FTS query throws (e.g., schema version drift, locked DB, malformed
-    // index) — previously the except path leaked the SQLite handle.
-    // Skip when LLM_NO_HISTORY=1 (set by tests; the real DB scan can take 20s+
-    // and stalls the vitest worker even when dispatch is mocked).
+    // Check history first via @bearly/recall (optional dep). If recall isn't
+    // installed, the hint is silently skipped — standalone @bearly/llm runs
+    // without crashing. try/finally ensures closeDb() runs even if the FTS
+    // query throws. Skip entirely when LLM_NO_HISTORY=1 (set by tests; the
+    // real DB scan can take 20s+ and stalls the vitest worker even when
+    // dispatch is mocked).
     if (!process.env.LLM_NO_HISTORY) {
-      try {
-        const db = getDb()
+      const recall = await loadRecall()
+      if (recall) {
         try {
-          const similar = findSimilarQueries(db, question, { limit: 2 })
-          if (similar.length > 0) {
-            console.error("📚 Similar past queries:\n")
-            for (const s of similar) {
-              const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
-              const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
-              console.error(`  ${relTime}: ${preview}...`)
+          const db = recall.getDb()
+          try {
+            const similar = recall.findSimilarQueries(db, question, { limit: 2 })
+            if (similar.length > 0) {
+              console.error("📚 Similar past queries:\n")
+              for (const s of similar) {
+                const relTime = formatRelativeTime(new Date(s.timestamp).getTime())
+                const preview = (s.user_content || "").slice(0, 100).replace(/\n/g, " ")
+                console.error(`  ${relTime}: ${preview}...`)
+              }
+              console.error()
             }
-            console.error()
+          } finally {
+            recall.closeDb()
           }
-        } finally {
-          closeDb()
+        } catch {
+          /* History not indexed */
         }
-      } catch {
-        /* History not indexed */
       }
     }
 
@@ -690,7 +708,7 @@ export async function main(): Promise<string | undefined> {
       }
       if (hasFlag("--discover-models")) {
         const { runDiscoverModels } = await import("./lib/dispatch")
-        await runDiscoverModels({ apply: hasFlag("--apply") })
+        await runDiscoverModels({ apply: hasFlag("--apply"), classify: hasFlag("--classify") })
         break
       }
       if (hasFlag("--diagnostics")) {
@@ -781,6 +799,15 @@ export async function main(): Promise<string | undefined> {
     case "quota": {
       const { runQuota } = await import("./lib/dispatch")
       await runQuota()
+      break
+    }
+    case "install-skills": {
+      const { runInstallSkills } = await import("./cmd/install-skills")
+      // First non-flag positional after the keyword is the optional target dir.
+      const positional = dropCommandAndLeadingFlags(args).find(
+        (a) => !a.startsWith("-") && !VALUE_FLAGS.includes(a),
+      )
+      await runInstallSkills({ targetDir: positional, yes: skipConfirm })
       break
     }
     case "update-pricing": {

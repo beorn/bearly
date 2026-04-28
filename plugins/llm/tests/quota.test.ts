@@ -232,7 +232,9 @@ describe("cache I/O (atomic write)", () => {
     const entries = readFileSync(join(cacheDir, "last-quota.json"), "utf-8")
     expect(entries).toContain("openai")
     // No `.last-quota-*.tmp` files left behind.
-    const tmpFiles = require("node:fs").readdirSync(cacheDir).filter((f: string) => f.includes(".tmp"))
+    const tmpFiles = require("node:fs")
+      .readdirSync(cacheDir)
+      .filter((f: string) => f.includes(".tmp"))
     expect(tmpFiles).toEqual([])
   })
 })

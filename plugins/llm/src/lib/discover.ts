@@ -111,7 +111,8 @@ export function extractCapabilityHints(text: string): CapabilityHints {
     webSearch: /\bweb[\s-]?search\b|\bbrowsing\b|\bbrowse the web\b/.test(t),
     vision: /\bvision\b|\bmultimodal\b|\bimage[\s-]?input\b|\baccepts? images?\b/.test(t),
     deepResearch: /\bdeep[\s-]?research\b/.test(t),
-    backgroundApi: /\bbackground[\s-]?(mode|api)\b|\bresponses\.create\b.*\b(async|background)\b|\basync polling\b/.test(t),
+    backgroundApi:
+      /\bbackground[\s-]?(mode|api)\b|\bresponses\.create\b.*\b(async|background)\b|\basync polling\b/.test(t),
   }
 }
 
@@ -127,9 +128,11 @@ export function extractCapabilityHints(text: string): CapabilityHints {
  * non-matches up front saves latency and keeps the artifact readable.
  */
 const SKU_PATTERNS: Record<string, RegExp> = {
-  openai: /\b(gpt-[5-9](?:\.\d+)?(?:-(?:pro|mini|nano|codex|codex-mini|codex-max|turbo|deep-research))?(?:-\d{4}-\d{2}-\d{2})?|o[3-9](?:-(?:pro|mini|deep-research))?(?:-\d{4}-\d{2}-\d{2})?)\b/g,
+  openai:
+    /\b(gpt-[5-9](?:\.\d+)?(?:-(?:pro|mini|nano|codex|codex-mini|codex-max|turbo|deep-research))?(?:-\d{4}-\d{2}-\d{2})?|o[3-9](?:-(?:pro|mini|deep-research))?(?:-\d{4}-\d{2}-\d{2})?)\b/g,
   anthropic: /\b(claude-(?:opus|sonnet|haiku|3|3-5|3-7|4|4-1|4-5|4-6|5)-[a-z0-9-]{2,40})\b/g,
-  google: /\b(gemini-[1-9](?:\.\d+)?-(?:pro|flash|flash-lite|nano)(?:-[a-z0-9-]{0,40})?|deep-research-pro-preview-\d{2}-\d{4})\b/g,
+  google:
+    /\b(gemini-[1-9](?:\.\d+)?-(?:pro|flash|flash-lite|nano)(?:-[a-z0-9-]{0,40})?|deep-research-pro-preview-\d{2}-\d{4})\b/g,
   xai: /\b(grok-[3-9](?:\.\d+)?(?:-\d+)?(?:-(?:fast-reasoning|fast|reasoning))?)\b/g,
   perplexity: /\b(sonar(?:-(?:pro|deep-research))?)\b/g,
 }
@@ -308,7 +311,10 @@ Output JSON only, no markdown fences:
  */
 export function parseClassifierResult(raw: string): ClassifierResult {
   // Strip fences.
-  let text = raw.replace(/```json?\n?/gi, "").replace(/```/g, "").trim()
+  let text = raw
+    .replace(/```json?\n?/gi, "")
+    .replace(/```/g, "")
+    .trim()
   // Find the first {...} block.
   const start = text.indexOf("{")
   const end = text.lastIndexOf("}")
@@ -406,12 +412,40 @@ export async function selectClassifierModel(): Promise<Model | null> {
 // ============================================================================
 
 /**
- * Format a markdown table summarizing classifier decisions. Stable column
- * order so the output is diffable.
+ * Format a raw discovery markdown table — every candidate, no LLM filter.
+ * Used when `--classify` is NOT passed (default). Cheaper, faster, and lets
+ * the human reviewer see the full set without paying classifier tokens.
+ *
+ * Phase 6 over-engineering review (2026-04-27): the classifier pre-filter
+ * had unproven empirical value. Default mode is now raw discovery; the
+ * classifier-driven `formatDecisionTable` is opt-in via `--classify`.
  */
-export function formatDecisionTable(
-  rows: Array<{ candidate: DiscoveredCandidate; result: ClassifierResult }>,
-): string {
+export function formatRawDiscoveryTable(candidates: readonly DiscoveredCandidate[]): string {
+  if (candidates.length === 0) return "_(no candidates)_\n"
+  const header =
+    "| Provider | ID | Display | Pricing in/out | Capabilities |\n" +
+    "| --- | --- | --- | --- | --- |\n"
+  const body = candidates
+    .map((c) => {
+      const caps =
+        Object.entries(c.capabilityHints)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join(", ") || "—"
+      const price =
+        c.inputPricePerM != null && c.outputPricePerM != null ? `$${c.inputPricePerM}/$${c.outputPricePerM}` : "?"
+      return `| ${c.provider} | \`${c.id}\` | ${c.displayName} | ${price} | ${caps} |`
+    })
+    .join("\n")
+  return header + body + "\n"
+}
+
+/**
+ * Format a markdown table summarizing classifier decisions. Stable column
+ * order so the output is diffable. Used when `--classify` is passed; for
+ * the default raw view, see `formatRawDiscoveryTable`.
+ */
+export function formatDecisionTable(rows: Array<{ candidate: DiscoveredCandidate; result: ClassifierResult }>): string {
   if (rows.length === 0) return "_(no candidates)_\n"
   const header =
     "| Decision | Provider | ID | Display | Pricing in/out | Capabilities | Reason |\n" +
@@ -424,9 +458,7 @@ export function formatDecisionTable(
           .map(([k]) => k)
           .join(", ") || "—"
       const price =
-        c.inputPricePerM != null && c.outputPricePerM != null
-          ? `$${c.inputPricePerM}/$${c.outputPricePerM}`
-          : "?"
+        c.inputPricePerM != null && c.outputPricePerM != null ? `$${c.inputPricePerM}/$${c.outputPricePerM}` : "?"
       const reason = (result.reason || "").replace(/\|/g, "\\|").replace(/\n/g, " ").slice(0, 160)
       return `| ${result.decision} | ${c.provider} | \`${c.id}\` | ${c.displayName} | ${price} | ${caps} | ${reason} |`
     })
@@ -485,25 +517,13 @@ export function generateRegistryPatch(
   if (endpointsCloseIdx < 0) return ""
 
   // Build the new SKU entries.
-  const skuEntries = approved
-    .map((c) => formatSkuEntry(c))
-    .join("\n")
+  const skuEntries = approved.map((c) => formatSkuEntry(c)).join("\n")
   const endpointEntries = approved.map((c) => formatEndpointEntry(c)).join("\n")
 
   // Construct the unified diff. We emit two hunks — one for SKUS_DATA close,
   // one for ENDPOINTS_DATA close. Context lines: 3 above, 3 below (git default).
-  const skusHunk = makeHunk(
-    typesTsPath,
-    lines,
-    skusCloseIdx,
-    skuEntries.split("\n"),
-  )
-  const endpointsHunk = makeHunk(
-    typesTsPath,
-    lines,
-    endpointsCloseIdx,
-    endpointEntries.split("\n"),
-  )
+  const skusHunk = makeHunk(typesTsPath, lines, skusCloseIdx, skuEntries.split("\n"))
+  const endpointsHunk = makeHunk(typesTsPath, lines, endpointsCloseIdx, endpointEntries.split("\n"))
 
   // Note: the second hunk's line numbers must account for the lines added by
   // the first hunk. makeHunk uses pre-edit line numbers; we adjust the second
@@ -551,12 +571,7 @@ function formatEndpointEntry(c: DiscoveredCandidate): string {
  * before line index `beforeIndex` (0-based). 3 lines of context above and
  * below.
  */
-function makeHunk(
-  _path: string,
-  origLines: string[],
-  beforeIndex: number,
-  addedLines: string[],
-): string {
+function makeHunk(_path: string, origLines: string[], beforeIndex: number, addedLines: string[]): string {
   const ctxBefore = 3
   const ctxAfter = 3
   const startCtx = Math.max(0, beforeIndex - ctxBefore)
