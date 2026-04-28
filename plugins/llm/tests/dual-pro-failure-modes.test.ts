@@ -52,7 +52,10 @@ async function runDualPro() {
   // --no-challenger keeps these tests focused on the legacy 2-leg failure
   // modes. The 3-leg path (km-bearly.llm-dual-pro-shadow-test) has its own
   // suite in dual-pro-shadow.test.ts.
-  process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "test question"]
+  // --full-paths so envelope.file is the absolute path — tests below
+  // readFileSync(envelope.file). Default mode (km-bearly.llm-path-leakage)
+  // emits a basename only.
+  process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "--full-paths", "test question"]
   const mod = await import("../src/cli")
   try {
     await mod.main()

@@ -192,7 +192,7 @@ Response always written to a file. JSON metadata on stdout (more fields with
 
 ```json
 {
-  "file": "/tmp/llm-abc12345.txt",
+  "file": "llm-abc12345.txt",
   "model": "GPT-5.4",
   "tokens": { "prompt": 1234, "completion": 567 },
   "cost": 0.02,
@@ -206,6 +206,28 @@ Response always written to a file. JSON metadata on stdout (more fields with
 per-leg `a`, `b`, and (when `--challenger` enabled) `c` envelopes plus a
 `judge` block with rubric scores. Read the output file — streaming tokens go
 to stderr only in interactive terminals.
+
+### `file` field — relativized by default
+
+The `file` field is relativized to avoid leaking absolute `/tmp` paths
+(which carry username, hostname, and project hashes embedded in temp dir
+names) into CI logs and log aggregators (Splunk, Datadog, etc.).
+
+- **Default**: basename only (or cwd-relative path when the file lives
+  under cwd). E.g. `/tmp/llm-abc.txt` → `llm-abc.txt`,
+  `<cwd>/out/llm-x.txt` → `out/llm-x.txt`.
+- **`--full-paths`**: restores the absolute path verbatim. Use this when a
+  consumer needs to `cat` the file from a different cwd, or for debugging.
+
+```bash
+bun tools/llm.ts "ping" --json | jq .file              # "llm-abc.txt"
+bun tools/llm.ts "ping" --json --full-paths | jq .file # "/tmp/llm-abc.txt"
+```
+
+The actual file location is unchanged — only the envelope's surface
+representation. The output dir is still `os.tmpdir()` by default
+(`BEARLY_LLM_OUTPUT_DIR` overrides). To resolve the basename back to a
+full path: `path.join(os.tmpdir(), envelope.file)`.
 
 ## API Keys
 
