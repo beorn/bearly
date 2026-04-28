@@ -36,6 +36,22 @@ export type PendingBroadcast = {
   replyHint: "yes" | "no" | "optional"
   /** Originating plugin event id (e.g. `git:commit`); null for human messages. */
   pluginKind: string | null
+  /** Fresh bead state read from `.beads/backup/issues.jsonl` at delivery time
+   *  for `type='assign'` envelopes — see km-tribe.task-assignment-stale-snapshot.
+   *  null/absent for non-assign messages or when the journal is unavailable. */
+  beadState?: {
+    title: string
+    status: string
+    priority: string | null
+    notes_excerpt: string
+    notes_truncated: boolean
+    updated_at: string | null
+  } | null
+  /** Number of prior `type='assign'` messages with the same sender + recipient
+   *  + bead_id. Surfaces re-issued assignments to the receiver so it can show
+   *  prior evidence rather than entering an A/B/C escalation loop. 0 for the
+   *  first delivery. */
+  reissueCount?: number
 }
 
 export type Notification = string // pre-serialized JSON-RPC line

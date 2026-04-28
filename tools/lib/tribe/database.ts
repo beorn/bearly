@@ -605,5 +605,27 @@ export function createStatements(db: Database) {
 
     /** Read the session's current filter (mode + optional until + optional kinds). */
     getSessionFilter: db.prepare("SELECT filter_mode, filter_until, filter_kinds FROM sessions WHERE id = $id"),
+
+    /**
+     * Count prior `type='assign'` messages with the same sender → recipient →
+     * bead, strictly before the given rowid. Used by the broadcast pipeline
+     * to surface `reissue_count` on assign-typed channel envelopes so the
+     * receiver can detect a re-firing of the same task and respond with prior
+     * evidence instead of getting trapped in an A/B/C escalation loop.
+     *
+     * Comparing on `rowid` (monotonic per the SQLite ROWID guarantee) is
+     * strictly correct even when two sends fall in the same millisecond — `ts`
+     * resolution is too coarse for back-to-back assigns and would under-count.
+     *
+     * See bead `km-tribe.task-assignment-stale-snapshot`.
+     */
+    countPriorAssigns: db.prepare(`
+      SELECT COUNT(*) as count FROM messages
+      WHERE type = 'assign'
+        AND sender = $sender
+        AND recipient = $recipient
+        AND bead_id = $bead_id
+        AND rowid < $rowid
+    `),
   }
 }

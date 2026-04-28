@@ -23,11 +23,9 @@
  */
 
 import { addWriter, createLogger } from "loggily"
-import {
-  type MessageInsertedInfo,
-  type TribeContext,
-} from "../context.ts"
+import { type MessageInsertedInfo, type TribeContext } from "../context.ts"
 import { activityFromMessage, writeActivity } from "../activity-log.ts"
+import { type BeadSnapshot, readBeadSnapshot } from "../bead-snapshot.ts"
 import { createCoalescer, type PendingBroadcast } from "../broadcast-coalescer.ts"
 import { deriveReplyHint, sendMessage, type ReplyHint } from "../messaging.ts"
 import { makeNotification } from "../socket.ts"
@@ -36,6 +34,7 @@ import type { BaseTribe } from "./base.ts"
 import type { WithClientRegistry } from "./with-client-registry.ts"
 import type { WithDaemonContext } from "./with-daemon-context.ts"
 import type { WithDatabase } from "./with-database.ts"
+import type { WithProjectRoot } from "./with-project-root.ts"
 
 const log = createLogger("tribe:broadcast")
 
@@ -59,14 +58,22 @@ function markedType(type: string): string {
 }
 
 function singleEventNotification(ev: PendingBroadcast): string {
-  return makeNotification("channel", {
+  const params: Record<string, unknown> = {
     from: ev.sender,
     type: markedType(ev.type),
     content: ev.content,
     bead_id: ev.bead_id,
     message_id: ev.id,
     plugin_kind: ev.pluginKind,
-  })
+  }
+  // km-tribe.task-assignment-stale-snapshot: surface fresh bead state +
+  // re-issue counter on assign envelopes so the receiver can see current
+  // status/title/notes regardless of how stale the chief's in-context cache
+  // is. Only attached when both fields are populated by the broadcast
+  // pipeline (i.e. type === 'assign' and bead_id is set).
+  if (ev.beadState) params.bead_state = ev.beadState
+  if (ev.reissueCount !== undefined) params.reissue_count = ev.reissueCount
+  return makeNotification("channel", params)
 }
 
 function batchedNotification(events: PendingBroadcast[], dropped: number): string {
@@ -190,14 +197,16 @@ export interface WithBroadcast {
 /**
  * withBroadcast — install the broadcast capability on the daemon value and
  * route the daemon's own ctx.onMessageInserted through the activity-log +
- * fanout tap. Must come AFTER withClientRegistry, withDatabase, and
- * withDaemonContext in the pipe.
+ * fanout tap. Must come AFTER withClientRegistry, withDatabase,
+ * withDaemonContext, AND withProjectRoot in the pipe — projectRoot is read on
+ * every assign-typed delivery to enrich the channel envelope with fresh bead
+ * state (see km-tribe.task-assignment-stale-snapshot).
  */
-export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonContext & WithClientRegistry>(): (
-  t: T,
-) => T & WithBroadcast {
+export function withBroadcast<
+  T extends BaseTribe & WithDatabase & WithDaemonContext & WithClientRegistry & WithProjectRoot,
+>(): (t: T) => T & WithBroadcast {
   return (t) => {
-    const { db, stmts, daemonCtx, registry } = t
+    const { db, stmts, daemonCtx, registry, projectRoot } = t
     const { clients } = registry
 
     function notify(method: string, params?: Record<string, unknown>, exclude?: string): void {
@@ -279,6 +288,30 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         senderRole: info.senderRole,
       })
 
+      // km-tribe.task-assignment-stale-snapshot: enrich assign-typed envelopes
+      // with fresh bead state from `.beads/backup/issues.jsonl` and a re-issue
+      // counter so receivers don't have to trust the sender's in-context
+      // snapshot. Both lookups are best-effort and silently fall back when the
+      // bead journal isn't reachable.
+      let beadState: BeadSnapshot | null = null
+      let reissueCount: number | undefined
+      if (info.type === "assign" && info.bead_id) {
+        beadState = readBeadSnapshot(info.bead_id, projectRoot)
+        try {
+          const row = stmts.countPriorAssigns.get({
+            $sender: info.sender,
+            $recipient: info.recipient,
+            $bead_id: info.bead_id,
+            $rowid: info.rowid,
+          }) as { count: number } | undefined
+          // Prior count is exclusive of this message — first delivery → 0,
+          // second delivery for the same triple → 1.
+          reissueCount = row?.count ?? 0
+        } catch {
+          /* statement absent (e.g. unmigrated DB) — leave reissueCount undefined */
+        }
+      }
+
       const pending: PendingBroadcast = {
         id: info.id,
         ts: info.ts,
@@ -289,6 +322,8 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         bead_id: info.bead_id,
         replyHint,
         pluginKind: info.pluginKind,
+        beadState,
+        reissueCount,
       }
 
       for (const [connId, client] of clients) {
@@ -304,9 +339,7 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         // (mode + time-bounded mute + per-kind globs). Direct messages bypass
         // the kinds/until dimensions — only `mode: focus` filters DMs.
         if (info.kind !== "direct" && !isWatch) {
-          const sessionFilter = stmts.getSessionFilter.get({ $id: client.ctx.sessionId }) as
-            | SessionFilter
-            | undefined
+          const sessionFilter = stmts.getSessionFilter.get({ $id: client.ctx.sessionId }) as SessionFilter | undefined
           if (!shouldDeliver({ replyHint, pluginKind: info.pluginKind }, sessionFilter)) continue
         }
 
