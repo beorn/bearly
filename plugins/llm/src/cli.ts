@@ -163,6 +163,27 @@ function getArg(name: string): string | undefined {
   return args[idx + 1]
 }
 
+function getAllArgs(name: string): string[] {
+  // Multi-occurrence variant of getArg: collect every `--name value` and
+  // `--name=value` in argv. Used by flags that legitimately repeat
+  // (`--context-file A --context-file B` should concatenate, not silently
+  // drop the second). Single-getArg silently dropping repeated flags was
+  // load-bearing for multi-context-file delegation calls; the rewrite-the-doc
+  // workflow burned 19 minutes on a stalled call before we caught it.
+  const prefix = `${name}=`
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith(prefix)) {
+      out.push(a.slice(prefix.length))
+    } else if (a === name && i + 1 < args.length) {
+      out.push(args[i + 1]!)
+      i++ // skip the value so we don't re-read it as an arg next iteration
+    }
+  }
+  return out
+}
+
 function hasFlag(name: string): boolean {
   return args.includes(name)
 }
@@ -278,7 +299,7 @@ if (imagePath) {
 function buildContextFromFlags(topic: string): Promise<string | undefined> {
   return buildContext(topic, {
     contextArg: getArg("--context"),
-    contextFile: getArg("--context-file"),
+    contextFiles: getAllArgs("--context-file"),
     withHistory: hasFlag("--with-history"),
   })
 }

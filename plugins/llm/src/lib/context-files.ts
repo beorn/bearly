@@ -7,22 +7,35 @@
 import { getDb, closeDb, ftsSearchWithSnippet } from "../../../recall/src/history/db"
 import { emitJson } from "./output-mode"
 
-/** Build context from explicit text, file, and session history */
+/** Build context from explicit text, file(s), and session history.
+ *
+ * Multiple files concatenate in argv order (each separated by the same
+ * `\n\n---\n\n` divider used between context, files, and history). Single
+ * `contextFile` is supported for legacy callers; `contextFiles` is preferred.
+ * Earlier the CLI accepted multiple `--context-file` flags but `getArg`
+ * returned only the first occurrence, silently dropping the rest — caused a
+ * 19-minute stalled rewrite call on 2026-04-28 before the bug was caught.
+ */
 export async function buildContext(
   topic: string,
   options: {
     contextArg?: string
     contextFile?: string
+    contextFiles?: string[]
     withHistory: boolean
   },
 ): Promise<string | undefined> {
   const parts: string[] = []
   if (options.contextArg) parts.push(options.contextArg)
-  if (options.contextFile) {
+  const files = [
+    ...(options.contextFile ? [options.contextFile] : []),
+    ...(options.contextFiles ?? []),
+  ]
+  for (const file of files) {
     try {
-      parts.push(await Bun.file(options.contextFile).text())
+      parts.push(await Bun.file(file).text())
     } catch {
-      emitJson({ error: `Failed to read context file: ${options.contextFile}`, status: "failed" })
+      emitJson({ error: `Failed to read context file: ${file}`, status: "failed" })
       process.exit(1)
     }
   }
