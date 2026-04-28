@@ -46,11 +46,7 @@ function makeOpts(): HandlerOpts {
   }
 }
 
-function ctxFor(
-  db: ReturnType<typeof openDatabase>,
-  stmts: ReturnType<typeof createStatements>,
-  name: string,
-) {
+function ctxFor(db: ReturnType<typeof openDatabase>, stmts: ReturnType<typeof createStatements>, name: string) {
   const sessionId = randomUUID()
   const now = Date.now()
   db.prepare(
@@ -70,9 +66,7 @@ function ctxFor(
 }
 
 function readFilter(db: ReturnType<typeof openDatabase>, sessionId: string) {
-  return db
-    .prepare("SELECT filter_mode, filter_until, filter_kinds FROM sessions WHERE id = ?")
-    .get(sessionId) as {
+  return db.prepare("SELECT filter_mode, filter_until, filter_kinds FROM sessions WHERE id = ?").get(sessionId) as {
     filter_mode: string
     filter_until: number | null
     filter_kinds: string | null

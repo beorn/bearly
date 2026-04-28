@@ -306,9 +306,9 @@ describe("backfillDefaultRoomMembers — startup invariant", () => {
     f.db.run("DELETE FROM room_members")
 
     backfillDefaultRoomMembers(a)
-    const member = f.db
-      .prepare("SELECT room_id FROM room_members WHERE session_id = ?")
-      .get(a.sessionId) as { room_id: string } | null
+    const member = f.db.prepare("SELECT room_id FROM room_members WHERE session_id = ?").get(a.sessionId) as {
+      room_id: string
+    } | null
     expect(member?.room_id).toBe("room:default")
   })
 
@@ -363,20 +363,16 @@ describe("daemon end-to-end — register, kill row, restart, backfill", () => {
     let daemon: ChildProcess | null = null
     try {
       // ---- First boot: register one session, verify room_members has 1 row.
-      daemon = spawn(
-        process.execPath,
-        [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2"],
-        {
-          stdio: ["ignore", "ignore", "pipe"],
-          env: {
-            ...process.env,
-            TRIBE_DB: dbPath,
-            TRIBE_NO_SUPPRESS: "1",
-            TRIBE_NO_PLUGINS: "1",
-            TRIBE_ACTIVITY_LOG: "off",
-          },
+      daemon = spawn(process.execPath, [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: {
+          ...process.env,
+          TRIBE_DB: dbPath,
+          TRIBE_NO_SUPPRESS: "1",
+          TRIBE_NO_PLUGINS: "1",
+          TRIBE_ACTIVITY_LOG: "off",
         },
-      )
+      })
       await waitFor(() => existsSync(socketPath), 5000)
 
       const c1 = await connectToDaemon(socketPath)
@@ -388,9 +384,7 @@ describe("daemon end-to-end — register, kill row, restart, backfill", () => {
       const rowsBefore = db1.prepare("SELECT COUNT(*) AS n FROM room_members").get() as { n: number }
       expect(rowsBefore.n).toBeGreaterThanOrEqual(1)
       // Capture the session id so we can target the deletion.
-      const session = db1
-        .prepare("SELECT id FROM sessions WHERE name = ?")
-        .get("rooms-e2e") as { id: string } | null
+      const session = db1.prepare("SELECT id FROM sessions WHERE name = ?").get("rooms-e2e") as { id: string } | null
       expect(session).not.toBeNull()
       db1.close()
 
@@ -415,27 +409,23 @@ describe("daemon end-to-end — register, kill row, restart, backfill", () => {
       // historic state from before the invariant existed).
       const db2 = openDatabase(dbPath)
       db2.prepare("DELETE FROM room_members WHERE session_id = ?").run(session!.id)
-      const rowsAfterDelete = db2.prepare("SELECT COUNT(*) AS n FROM room_members WHERE session_id = ?").get(
-        session!.id,
-      ) as { n: number }
+      const rowsAfterDelete = db2
+        .prepare("SELECT COUNT(*) AS n FROM room_members WHERE session_id = ?")
+        .get(session!.id) as { n: number }
       expect(rowsAfterDelete.n).toBe(0)
       db2.close()
 
       // ---- Second boot: invariant should backfill.
-      daemon = spawn(
-        process.execPath,
-        [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2"],
-        {
-          stdio: ["ignore", "ignore", "pipe"],
-          env: {
-            ...process.env,
-            TRIBE_DB: dbPath,
-            TRIBE_NO_SUPPRESS: "1",
-            TRIBE_NO_PLUGINS: "1",
-            TRIBE_ACTIVITY_LOG: "off",
-          },
+      daemon = spawn(process.execPath, [DAEMON_SCRIPT, "--socket", socketPath, "--quit-timeout", "2"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: {
+          ...process.env,
+          TRIBE_DB: dbPath,
+          TRIBE_NO_SUPPRESS: "1",
+          TRIBE_NO_PLUGINS: "1",
+          TRIBE_ACTIVITY_LOG: "off",
         },
-      )
+      })
       await waitFor(() => existsSync(socketPath), 5000)
       // Give the daemon a moment to run withRuntime's startup backfill.
       await new Promise((r) => setTimeout(r, 250))

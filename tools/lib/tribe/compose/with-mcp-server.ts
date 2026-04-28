@@ -104,11 +104,7 @@ export interface WithMCPServerOpts {
    * `dispatch` returns `undefined` (signaling the tool isn't dispatcher-
    * mounted).
    */
-  dispatch?: (
-    toolName: string,
-    args: Record<string, unknown>,
-    ctx: { connId: string },
-  ) => Promise<unknown> | undefined
+  dispatch?: (toolName: string, args: Record<string, unknown>, ctx: { connId: string }) => Promise<unknown> | undefined
 }
 
 export interface WithMCPServer {
@@ -175,9 +171,7 @@ export function withMCPServer<T extends BaseTribe & WithDispatcher & WithTools>(
       version: t.daemonVersion,
     }
     const capabilities: McpServerCapabilities = opts.capabilities ?? { tools: {} }
-    const metadataByName = new Map<string, McpToolMetadata>(
-      (opts.metadata ?? []).map((m) => [m.name, m]),
-    )
+    const metadataByName = new Map<string, McpToolMetadata>((opts.metadata ?? []).map((m) => [m.name, m]))
 
     // initialize — minimal MCP handshake.
     t.dispatcher.register("initialize", () => {
@@ -194,9 +188,7 @@ export function withMCPServer<T extends BaseTribe & WithDispatcher & WithTools>(
     t.dispatcher.register("tools/list", () => {
       const tools: McpToolMetadata[] = []
       for (const tool of t.tools.values()) {
-        tools.push(
-          buildToolListEntry(tool.name, tool.description, tool.schema, metadataByName.get(tool.name)),
-        )
+        tools.push(buildToolListEntry(tool.name, tool.description, tool.schema, metadataByName.get(tool.name)))
       }
       return { tools }
     })

@@ -703,7 +703,10 @@ function handleFilter(ctx: TribeContext, a: ToolArgs): ToolResult {
   if (rawMode !== undefined && rawMode !== "focus" && rawMode !== "normal" && rawMode !== "ambient") {
     return {
       content: [
-        { type: "text", text: JSON.stringify({ error: `Invalid mode: "${String(rawMode)}". Use focus|normal|ambient.` }) },
+        {
+          type: "text",
+          text: JSON.stringify({ error: `Invalid mode: "${String(rawMode)}". Use focus|normal|ambient.` }),
+        },
       ],
     }
   }
