@@ -27,10 +27,7 @@ export async function buildContext(
 ): Promise<string | undefined> {
   const parts: string[] = []
   if (options.contextArg) parts.push(options.contextArg)
-  const files = [
-    ...(options.contextFile ? [options.contextFile] : []),
-    ...(options.contextFiles ?? []),
-  ]
+  const files = [...(options.contextFile ? [options.contextFile] : []), ...(options.contextFiles ?? [])]
   for (const file of files) {
     try {
       parts.push(await Bun.file(file).text())
