@@ -545,18 +545,16 @@ export async function detectGitLocks(gitDir: string): Promise<GitLockInfo[]> {
 }
 
 /**
- * Threshold in ms before alerting about a git lock.
+ * Threshold in ms before alerting about a git lock with a live holder.
  *
- * At the default 10s poll interval, a 2s threshold meant ANY lock visible
- * on two consecutive polls fired a warning — including fast concurrent
- * commits across sibling sessions that happened to overlap the poll
- * window. With multiple Claude sessions active, the tribe channel
- * flooded with "held by unknown for 10s" noise where every commit was
- * <500ms.
+ * Holderless locks never reach this threshold — they're reaped silently
+ * after LOCK_REAP_AGE_MS (see below). This threshold applies only to locks
+ * with an attributable holder via lsof: a slow git op, a hook running
+ * lint/format/tsc, or a genuinely stuck process.
  *
- * Bumped to 15s (1.5x the default poll interval) so the lock must
- * genuinely span more than one poll cycle before we warn. Attribution
- * (see below) further filters noise.
+ * 15s = 1.5x the default 10s poll interval, so the lock must genuinely
+ * span more than one poll cycle before warning. Attribution (the holder's
+ * session name when known) further filters noise.
  */
 export const LOCK_ALERT_THRESHOLD_MS = 15_000
 
