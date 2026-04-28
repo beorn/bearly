@@ -32,8 +32,26 @@ vi.mock("../src/history/project-sources.ts", () => ({
 import { recall } from "../src/history/search.ts"
 const recallMock = recall as unknown as ReturnType<typeof vi.fn>
 
-function mockRecall(results: Array<{ sessionId: string; sessionTitle?: string; type: string; snippet: string }>): void {
-  recallMock.mockResolvedValue({ results })
+function mockRecall(
+  results: Array<{
+    sessionId: string
+    sessionTitle?: string
+    type: string
+    snippet: string
+    rank?: number
+    timestamp?: number
+  }>,
+): void {
+  // V2 gates require rank + timestamp on every result. Default to a strong
+  // BM25-shape rank (-10 is well below MIN_RANK_THRESHOLD = -3) and a recent
+  // timestamp so tests focused on dedup/emit don't trip the quality gates.
+  recallMock.mockResolvedValue({
+    results: results.map((r) => ({
+      rank: -10,
+      timestamp: Date.now(),
+      ...r,
+    })),
+  })
 }
 
 describe("rewriteImperativeAsReported", () => {
@@ -126,7 +144,9 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
     // footer turned into mysterious "H:" scrollback. Now: no framed content
     // → no emission. See emit.ts CONTEXT_PROTOCOL_FOOTER docstring.
     mockRecall([])
-    const result = await runInjectDelta("what is the status of the kanban board?", createMemorySeenStore())
+    // Salient prompt (kebab-ID `km-storage`) so V2 salience gate doesn't fire
+    // before recall — we want to test the no-results branch specifically.
+    const result = await runInjectDelta("what is the status of km-storage right now?", createMemorySeenStore())
     expect(result.skipped).toBe(true)
     if (!result.skipped) return
     expect(result.reason).toBe("no_results")
@@ -143,9 +163,9 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
       },
     ])
     // First call marks it as seen.
-    await runInjectDelta("what was the last thing we worked on in the board?", store)
+    await runInjectDelta("what did we last do on km-board for the kanban work?", store)
     // Second call with same prompt — dedup kicks in, snippet is all_seen.
-    const result = await runInjectDelta("what was the last thing we worked on in the board?", store)
+    const result = await runInjectDelta("what did we last do on km-board for the kanban work?", store)
     expect(result.skipped).toBe(true)
     if (!result.skipped) return
     expect(result.reason).toBe("all_seen")
@@ -160,7 +180,10 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
       },
     ])
-    const result = await runInjectDelta("what did we decide about the storage layer?", createMemorySeenStore())
+    const result = await runInjectDelta(
+      "what did we decide about km-storage layering?",
+      createMemorySeenStore(),
+    )
     expect(result.skipped).toBe(false)
     if (result.skipped) return
     expect(result.footerOnly).toBeUndefined()
@@ -182,7 +205,10 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
       },
     ])
-    const result = await runInjectDelta("what did we decide about the storage layer?", createMemorySeenStore())
+    const result = await runInjectDelta(
+      "what did we decide about km-storage layering?",
+      createMemorySeenStore(),
+    )
     if (result.skipped) throw new Error("expected non-skipped result")
     expect(result.additionalContext).toContain('authority="reference"')
     expect(result.additionalContext).toContain('changes_goal="false"')
@@ -198,11 +224,154 @@ describe("runInjectDelta — emit only when there's content to frame", () => {
         snippet: "create a bead that captures all of this context about the board refactor work.",
       },
     ])
-    const result = await runInjectDelta("pick up where we left off on the board refactor", createMemorySeenStore())
+    const result = await runInjectDelta(
+      "pick up where we left off on km-board the refactor",
+      createMemorySeenStore(),
+    )
     if (result.skipped) throw new Error("expected non-skipped result")
     expect(result.additionalContext).toContain("[historical")
     // The original imperative text remains, just prefixed.
     expect(result.additionalContext).toContain("create a bead that captures")
+  })
+})
+
+describe("runInjectDelta — V2 gates", () => {
+  beforeEach(() => {
+    recallMock.mockReset()
+  })
+
+  test("low-salience meta-prompt (no IDs/paths/backticks) skips before recall fires", async () => {
+    const result = await runInjectDelta(
+      "how should we improve things?",
+      createMemorySeenStore(),
+    )
+    expect(result.skipped).toBe(true)
+    if (!result.skipped) return
+    expect(result.reason).toBe("low_salience")
+    expect(recallMock).not.toHaveBeenCalled()
+  })
+
+  test("long substantive prompt bypasses salience gate even without IDs", async () => {
+    mockRecall([
+      {
+        sessionId: "sess-longprompt",
+        sessionTitle: "long",
+        type: "message",
+        snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
+      },
+    ])
+    // 121 chars, no kebab IDs / paths / backticks — but length alone is enough
+    // signal for FTS to find anchors. Salience gate must bypass.
+    const longPrompt =
+      "I would like a thorough explanation of how the rendering pipeline behaves when several large lists are mounted simultaneously."
+    expect(longPrompt.length).toBeGreaterThanOrEqual(120)
+    const result = await runInjectDelta(longPrompt, createMemorySeenStore())
+    expect(result.skipped).toBe(false)
+  })
+
+  test("kebab-case identifier counts as salience even on a short prompt", async () => {
+    mockRecall([
+      {
+        sessionId: "sess-kebab",
+        sessionTitle: "kebab",
+        type: "message",
+        snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
+      },
+    ])
+    const result = await runInjectDelta("how is km-tribe.recall going?", createMemorySeenStore())
+    expect(result.skipped).toBe(false)
+  })
+
+  test("low FTS rank is filtered out (low_quality skip)", async () => {
+    mockRecall([
+      {
+        sessionId: "sess-weak",
+        sessionTitle: "weak match",
+        type: "message",
+        snippet: "Tangential content that happens to share a token but is otherwise unrelated.",
+        rank: -1, // weaker than MIN_RANK_THRESHOLD = -3 → filtered
+        timestamp: Date.now(),
+      },
+    ])
+    const result = await runInjectDelta("what about km-board kanban?", createMemorySeenStore())
+    expect(result.skipped).toBe(true)
+    if (!result.skipped) return
+    expect(result.reason).toBe("low_quality")
+  })
+
+  test("snippet body matching rejected-signal pattern is dropped", async () => {
+    mockRecall([
+      {
+        sessionId: "sess-orthogonal",
+        sessionTitle: "research",
+        type: "llm_research",
+        snippet: 'Earlier analysis: "verdict": "orthogonal", "why": "discusses unrelated framework".',
+      },
+    ])
+    const result = await runInjectDelta(
+      "what did we learn about km-storage cognitive types?",
+      createMemorySeenStore(),
+    )
+    // Filtered-out by content gate; was the only hit → all_seen path
+    // (the rank gate passed, content gate didn't).
+    expect(result.skipped).toBe(true)
+    if (!result.skipped) return
+    expect(result.reason).toBe("all_seen")
+  })
+
+  test("default limit is 1 — multi-hit recall emits only the best match", async () => {
+    mockRecall([
+      {
+        sessionId: "sess-best",
+        sessionTitle: "best",
+        type: "message",
+        snippet: "First match — strong, descriptive, clearly the best result for this query.",
+      },
+      {
+        sessionId: "sess-okay",
+        sessionTitle: "okay",
+        type: "message",
+        snippet: "Second match — also relevant but lower-priority among the FTS hits.",
+      },
+      {
+        sessionId: "sess-third",
+        sessionTitle: "third",
+        type: "message",
+        snippet: "Third match — should not appear when default limit is 1.",
+      },
+    ])
+    const result = await runInjectDelta(
+      "tell me about km-board the refactor",
+      createMemorySeenStore(),
+    )
+    if (result.skipped) throw new Error("expected non-skipped result")
+    // Only the first session id appears in the framed output.
+    expect(result.additionalContext).toContain("sess-bes")
+    expect(result.additionalContext).not.toContain("sess-oka")
+    expect(result.additionalContext).not.toContain("sess-thi")
+    expect(result.newKeys).toEqual(["sess-best:message"])
+  })
+
+  test("dedup TTL is 100 turns — same chunk doesn't re-inject within a session", async () => {
+    const store = createMemorySeenStore()
+    mockRecall([
+      {
+        sessionId: "sess-ttl",
+        sessionTitle: "ttl",
+        type: "message",
+        snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
+      },
+    ])
+    // First emit
+    const first = await runInjectDelta("status of km-tribe.recall please", store)
+    if (first.skipped) throw new Error("expected first call to emit")
+    // Simulate ~50 turns of unrelated activity (well under V2's TTL of 100)
+    for (let i = 0; i < 50; i++) store.advanceTurn()
+    // Same chunk would re-inject if TTL were 10 (V1); under V2 it must not
+    const second = await runInjectDelta("status of km-tribe.recall please", store)
+    expect(second.skipped).toBe(true)
+    if (!second.skipped) return
+    expect(second.reason).toBe("all_seen")
   })
 })
 
@@ -221,11 +390,11 @@ describe("runInjectDelta — dedup tracking still works", () => {
         snippet: "A descriptive snippet that is plenty long enough to pass the minimum filter.",
       },
     ])
-    const first = await runInjectDelta("tell me about the kanban refactor status please", store)
+    const first = await runInjectDelta("tell me about km-board the refactor status please", store)
     if (first.skipped) throw new Error("expected non-skipped first call")
     expect(first.newKeys).toContain("sess-dedup001:message")
 
-    const second = await runInjectDelta("tell me about the kanban refactor status please", store)
+    const second = await runInjectDelta("tell me about km-board the refactor status please", store)
     // Second call dedup → all_seen → skipped (was footerOnly emit, now skip).
     expect(second.skipped).toBe(true)
     if (!second.skipped) return

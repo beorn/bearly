@@ -395,9 +395,7 @@ export function pruneOldSessions(
  * Run on every rebuild (full or incremental) so quarantine takes effect
  * the first time the indexer runs after the ignore file is updated.
  */
-export function pruneIgnoredSessions(
-  db: Database,
-): { sessions: number; messages: number; writes: number } {
+export function pruneIgnoredSessions(db: Database): { sessions: number; messages: number; writes: number } {
   const allSessions = db.prepare(`SELECT id, jsonl_path FROM sessions`).all() as {
     id: string
     jsonl_path: string

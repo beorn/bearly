@@ -285,19 +285,22 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
     // assert anything about returned snippets (depends on the recall index
     // in this test environment); we only check that the daemon stays alive
     // and keeps per-session turn counters separate.
+    // Salience anchors (kebab-IDs) so the V2 salience gate doesn't short-
+    // circuit before the turn counter advances — the test cares about
+    // per-session counter semantics, not retrieval quality.
     const r1 = (await h.client.call(TRIBE_METHODS.injectDelta, {
-      prompt: "tell me about the lore workspace daemon plan",
+      prompt: "tell me about km-tribe.lore the workspace daemon plan",
       sessionId: "sess-A",
     })) as InjectDeltaResult
     const r2 = (await h.client.call(TRIBE_METHODS.injectDelta, {
-      prompt: "tell me about the lore workspace daemon plan",
+      prompt: "tell me about km-tribe.lore the workspace daemon plan",
       sessionId: "sess-B",
     })) as InjectDeltaResult
     expect(r1.turnNumber).toBe(1)
     expect(r2.turnNumber).toBe(1)
 
     const r1b = (await h.client.call(TRIBE_METHODS.injectDelta, {
-      prompt: "another substantive prompt for sess A only",
+      prompt: "another substantive prompt for km-tribe.recall A only",
       sessionId: "sess-A",
     })) as InjectDeltaResult
     expect(r1b.turnNumber).toBe(2)
@@ -315,7 +318,9 @@ describe("lore daemon — inject_delta (Phase 5)", () => {
     let lastTurn = 0
     for (let i = 1; i <= 5; i++) {
       const r = (await h.client.call(TRIBE_METHODS.injectDelta, {
-        prompt: `substantive prompt number ${i} for ttl turn counter verification`,
+        // Salience anchor (km-test-counter) so V2 salience gate doesn't
+        // short-circuit — the test asserts turn-counter advancement.
+        prompt: `substantive prompt km-test-counter number ${i} for ttl turn counter verification`,
         sessionId,
         ttlTurns: 3,
       })) as InjectDeltaResult

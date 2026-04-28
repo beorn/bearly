@@ -16,7 +16,15 @@
  * km-bearly.injection-envelope-lib for the phase-2 extraction.
  */
 
-import { classifyPromptSkip, cleanSnippet, type InjectSkipReason } from "./prompt-filter.ts"
+import {
+  classifyPromptSkip,
+  cleanSnippet,
+  containsRejectedSignal,
+  hasSalience,
+  LONG_PROMPT_BYPASS_LENGTH,
+  MIN_RANK_THRESHOLD,
+  type InjectSkipReason,
+} from "./prompt-filter.ts"
 import { recall } from "../history/search.ts"
 import { ensureProjectSourcesIndexed } from "../history/project-sources.ts"
 // Envelope framing primitives live in the shared library. Re-exported here so
@@ -58,14 +66,32 @@ export interface SeenStore {
 }
 
 export interface RunInjectDeltaOptions {
-  /** Max snippets to include. Default 3. */
+  /**
+   * Max snippets to include. Default 1.
+   *
+   * V2 lowered this from 3 → 1: dogfooding showed multi-snippet emits dilute
+   * the hit rate (one strong hit + two weak hits drags the perceived signal
+   * below "useful"). One tight emit beats three loose ones.
+   */
   limit?: number
-  /** Number of turns a key stays in the seen set. Default 10. */
+  /**
+   * Number of turns a key stays in the seen set. Default 100.
+   *
+   * V2 raised this from 10 → 100: the same chunk re-injected within a session
+   * is by construction redundant. 100 turns ≈ "never re-inject in a normal
+   * session" without being literally infinite (gc still works).
+   */
   ttlTurns?: number
   /** Min length after cleaning to include a snippet. Default 20. */
   minSnippetLength?: number
   /** Chars per snippet. Default 300. */
   snippetChars?: number
+  /**
+   * Minimum FTS5 BM25 rank to consider. Ranks are negative; closer to 0 =
+   * weaker match. Default `MIN_RANK_THRESHOLD` (-3) drops marginal hits.
+   * Override for callers that want to see all results (e.g., debug tools).
+   */
+  minRank?: number
 }
 
 /**
@@ -107,10 +133,11 @@ export async function runInjectDelta(
   store: SeenStore,
   opts: RunInjectDeltaOptions = {},
 ): Promise<RunInjectDeltaResult> {
-  const limitSnippets = opts.limit ?? 3
-  const ttlTurns = opts.ttlTurns ?? 10
+  const limitSnippets = opts.limit ?? 1
+  const ttlTurns = opts.ttlTurns ?? 100
   const minLength = opts.minSnippetLength ?? 20
   const snippetChars = opts.snippetChars ?? 300
+  const minRank = opts.minRank ?? MIN_RANK_THRESHOLD
 
   const skipReason = classifyPromptSkip(prompt)
   if (skipReason && TRIVIAL_SKIP_REASONS.has(skipReason)) {
@@ -121,6 +148,20 @@ export async function runInjectDelta(
       prompt: prompt.slice(0, 200),
     })
     return { skipped: true, reason: skipReason }
+  }
+
+  // V2 salience gate: short meta-prompts ("improve this", "what now?") have
+  // no anchor for FTS to retrieve against — every match is incidental. Long
+  // substantive prompts bypass the gate (the question itself is enough
+  // signal). See prompt-filter.ts for the identifier shapes we recognize.
+  if (prompt.length < LONG_PROMPT_BYPASS_LENGTH && !hasSalience(prompt)) {
+    emitInjectionDebugEvent({
+      source: "recall",
+      action: "skip",
+      reason: "low_salience",
+      prompt: prompt.slice(0, 200),
+    })
+    return { skipped: true, reason: "low_salience" }
   }
 
   ensureProjectSourcesIndexed()
@@ -154,12 +195,23 @@ export async function runInjectDelta(
 
   const snippets: string[] = []
   const newKeys: string[] = []
+  let sawAnyAfterRankGate = false
   for (const r of result.results) {
+    // V2 quality gate: drop weak FTS matches before any other work.
+    if (r.rank > minRank) continue
+    sawAnyAfterRankGate = true
+
     const key = `${r.sessionId}:${r.type}`
     const lastTurn = store.get(key)
     if (lastTurn !== undefined && turn - lastTurn < ttlTurns) continue
     const text = cleanSnippet(r.snippet)
     if (text.length < minLength) continue
+    // V2 content gate: drop snippets that are their own evidence of
+    // irrelevance — stored verdicts ("orthogonal"/"incidental"), beads in
+    // SUPERSEDED/REJECTED state, etc. Catches the literal "verdict: orthogonal"
+    // emit we observed in dogfooding.
+    if (containsRejectedSignal(text)) continue
+
     const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
     const rewritten = rewriteImperativeAsReported(text.slice(0, snippetChars))
     const body = escapeSnippetBody(rewritten)
@@ -176,16 +228,18 @@ export async function runInjectDelta(
   store.flush?.()
 
   if (snippets.length === 0) {
-    // Substantive prompt, recall matched but everything was already surfaced
-    // in a recent turn — skip. Same rationale as no_results above: no framed
-    // content means the footer has nothing to frame.
+    // V2 distinguishes two empty-after-recall cases:
+    //   - low_quality: all results failed the rank/content gates (noise)
+    //   - all_seen:    everything surviving the gates was already injected
+    // Both result in no emit; the reason helps debugging which gate is firing.
+    const reason: InjectSkipReason = sawAnyAfterRankGate ? "all_seen" : "low_quality"
     emitInjectionDebugEvent({
       source: "recall",
       action: "skip",
-      reason: "all_seen",
+      reason,
       prompt: prompt.slice(0, 200),
     })
-    return { skipped: true, reason: "all_seen" }
+    return { skipped: true, reason }
   }
 
   const recallBlock =

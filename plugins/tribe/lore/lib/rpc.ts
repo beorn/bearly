@@ -254,7 +254,15 @@ export type InjectDeltaParams = {
 }
 
 /** Reasons the daemon / library path might skip injection. */
-export type InjectSkipReason = "empty" | "short" | "trivial" | "slash_command" | "no_results" | "all_seen"
+export type InjectSkipReason =
+  | "empty"
+  | "short"
+  | "trivial"
+  | "slash_command"
+  | "no_results"
+  | "all_seen"
+  | "low_salience"
+  | "low_quality"
 
 export type InjectDeltaResult = {
   skipped: boolean

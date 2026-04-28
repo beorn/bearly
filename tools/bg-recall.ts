@@ -62,10 +62,7 @@ function resolveDaemonScript(): string {
 // ---------------------------------------------------------------------------
 
 function installBgRecallFileWriter(): void {
-  const path =
-    process.env.LOGGILY_FILE_BG_RECALL ??
-    process.env.LOGGILY_FILE ??
-    process.env.BG_RECALL_DEBUG_LOG
+  const path = process.env.LOGGILY_FILE_BG_RECALL ?? process.env.LOGGILY_FILE ?? process.env.BG_RECALL_DEBUG_LOG
   if (!path) return
   const writer = createFileWriter(path)
   addWriter({ ns: "bg-recall:*" }, (_formatted, _level, _ns, event) => {
