@@ -67,7 +67,13 @@ export function classifyPromptSkip(prompt: string): InjectSkipReason | null {
  *  - error-string shapes (CamelCase ending in Error/Exception/Warning)
  *  - explicit @scope/pkg or scoped package names
  */
-const RE_KEBAB_ID = /\b[a-z]+(?:-[a-z0-9]+){1,}\b/
+// Kebab IDs need to look like real project identifiers, not English
+// phrasal compounds ("kind-of", "out-of") or numeric quantities ("4-line",
+// "7-day"). Require either:
+//  - 2+ hyphens (test-system-migration), OR
+//  - 1 hyphen AND BOTH sides ≥3 letters AND letters-only (test-system,
+//    fork-isolation, parent-death — but NOT kind-of, out-of, sub-3)
+const RE_KEBAB_ID = /\b(?:[a-z]+(?:-[a-z0-9]+){2,}|[a-z]{3,}-[a-z]{3,}[a-z0-9]*)\b/
 const RE_PATH =
   /\b[a-zA-Z0-9_./-]*\/[a-zA-Z0-9_./-]+\.[a-z]{1,5}\b|\b(?:tools|packages|apps|hub|docs|vendor)\/[a-zA-Z0-9_./-]+/
 const RE_BACKTICKED = /`[^`\n]{2,}`/

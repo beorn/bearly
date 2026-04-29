@@ -1,0 +1,153 @@
+/**
+ * Vault glossary — distinctive, file-backed vault terms that count as
+ * salience anchors even when they don't match the regex shapes in
+ * prompt-filter.ts.
+ *
+ * Built lazily from `.km/state.db` on first use. Strict whitelist: only
+ * pulls names from positions where being "named" implies project vocab,
+ * not arbitrary `name` fields. Specifically:
+ *
+ *  - top-level directory names under vendor/, apps/, packages/, hub/,
+ *    .claude/skills/ (e.g. "termless", "silvercode", "km-tui")
+ *  - npm scope names like @silvery, @bearly, @flexily, @termless
+ *  - per-vault bead scope segments from canonical bead paths
+ *    (`@km/<scope>/<slug>` → both <scope> and <slug>)
+ *
+ * Plus a small explicit alias list for camelCase code-symbol terms that
+ * never surface as path basenames (testEnv, createTestApp, etc).
+ *
+ * Anti-goal: this list is NOT a full project lexicon. Common words that
+ * happen to be node names ("test", "check", "slow", "migration") must
+ * NOT end up in here — that turns the salience override into a no-op.
+ * Past 200 entries is a smell; past 500 means we're indexing noise.
+ */
+
+import { getVaultDb } from "./vault-fts.ts"
+
+let glossarySet: Set<string> | null = null
+let buildAttempted = false
+
+const EXPLICIT_ALIASES: ReadonlyArray<string> = [
+  // camelCase code-symbol terms
+  "testenv",
+  "createtestapp",
+  // Frequently-named files
+  "claude.md",
+  "agents.md",
+  "readme.md",
+]
+
+/**
+ * Top-level directories whose immediate children are project-vocab terms.
+ * "vendor/termless/..." → "termless". "apps/km-tui/..." → "km-tui".
+ */
+const PROJECT_DIRS: ReadonlyArray<string> = [
+  "vendor/",
+  "apps/",
+  "packages/",
+  "hub/",
+  ".claude/skills/",
+]
+
+function buildGlossary(): Set<string> | null {
+  if (glossarySet) return glossarySet
+  if (buildAttempted) return null
+  buildAttempted = true
+
+  const db = getVaultDb()
+  if (!db) return null
+
+  const out = new Set<string>(EXPLICIT_ALIASES.map((s) => s.toLowerCase()))
+
+  try {
+    const pathRows = db
+      .prepare(
+        `SELECT DISTINCT fs_path FROM nodes WHERE fs_path IS NOT NULL`,
+      )
+      .all() as Array<{ fs_path: string }>
+
+    for (const { fs_path } of pathRows) {
+      // Direct file basenames (strict — only when the file looks like a
+      // dotfile-or-readme variant; full lowercase basenames are too noisy
+      // to whitelist wholesale).
+      const lastSlash = fs_path.lastIndexOf("/")
+      const basename = lastSlash >= 0 ? fs_path.slice(lastSlash + 1) : fs_path
+      const lower = basename.toLowerCase()
+      if (
+        lower === "claude.md" ||
+        lower === "agents.md" ||
+        lower === "readme.md" ||
+        lower === "package.json" ||
+        lower === "tsconfig.json"
+      ) {
+        out.add(lower)
+        out.add(lower.replace(/\.[a-z0-9]+$/, ""))
+      }
+
+      // Project-dir children: vendor/<NAME>/..., apps/<NAME>/...
+      for (const prefix of PROJECT_DIRS) {
+        if (!fs_path.startsWith(prefix)) continue
+        const rest = fs_path.slice(prefix.length)
+        const slash = rest.indexOf("/")
+        const name = slash >= 0 ? rest.slice(0, slash) : rest
+        if (name.length >= 3 && /^[a-z][a-z0-9-]*$/.test(name)) {
+          out.add(name)
+        }
+        break
+      }
+    }
+
+    // Bead canonical-form scopes from sigil-prefixed paths.
+    // `@km/<scope>/<slug>` → add only <scope> when the scope is a
+    // distinctive project area (km-tui, km-storage, km-beads, ...). Slugs
+    // are too varied and almost always contain common English words —
+    // including them would let "migration" / "testing" / "performance"
+    // through as anchors.
+    const beadRows = db
+      .prepare(
+        `SELECT DISTINCT fs_path FROM nodes
+         WHERE fs_path LIKE '@%/%'`,
+      )
+      .all() as Array<{ fs_path: string }>
+
+    for (const { fs_path } of beadRows) {
+      const parts = fs_path.replace(/\.md$/, "").split("/")
+      // parts[0] = "@km", parts[1] = scope. Only the scope.
+      const scope = parts[1]
+      if (scope && scope.length >= 4 && /^[a-z][a-z0-9-]*$/.test(scope)) {
+        out.add(scope)
+      }
+    }
+
+    glossarySet = out
+    return out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Tokenize a prompt and return the first matching glossary term, or null.
+ *
+ * Tokens are lowercased; tokens shorter than 4 chars are ignored to
+ * suppress common-word matches.
+ */
+export function findGlossaryAnchor(prompt: string): string | null {
+  const glossary = buildGlossary()
+  if (!glossary || glossary.size === 0) return null
+
+  const tokens = prompt.split(/[^A-Za-z0-9.]+/)
+  for (const t of tokens) {
+    if (t.length < 4) continue
+    const lower = t.toLowerCase()
+    if (glossary.has(lower)) return lower
+    const stripped = lower.replace(/[?!.,;:]+$/, "")
+    if (stripped !== lower && stripped.length >= 4 && glossary.has(stripped)) return stripped
+  }
+  return null
+}
+
+export function glossarySize(): number {
+  const g = buildGlossary()
+  return g?.size ?? 0
+}
