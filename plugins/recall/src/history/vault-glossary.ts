@@ -54,13 +54,21 @@ const SHORT_EXPLICIT_ALIASES: ReadonlySet<string> = new Set([
 /**
  * Top-level directories whose immediate children are project-vocab terms.
  * "vendor/termless/..." → "termless". "apps/km-tui/..." → "km-tui".
+ *
+ * `.claude/skills/` is intentionally EXCLUDED. Skill invocation goes
+ * through slash-command syntax (`/pro`, `/max`) which the slash-filter
+ * already routes; bare mentions of skill names are almost always
+ * conversational English ("Claude", "code", "open", "why", "pro", "max",
+ * "big", "deep", "fresh", "complete", "discuss", "docs", "tests",
+ * "tui", "sync", "release", "recall"). Auto-adding 50+ skill dir
+ * names to the glossary would let conversational prompts trigger
+ * retrieval — exactly the false_emit pattern we worked to eliminate.
  */
 const PROJECT_DIRS: ReadonlyArray<string> = [
   "vendor/",
   "apps/",
   "packages/",
   "hub/",
-  ".claude/skills/",
 ]
 
 function buildGlossary(): Set<string> | null {
@@ -94,8 +102,11 @@ function buildGlossary(): Set<string> | null {
         lower === "package.json" ||
         lower === "tsconfig.json"
       ) {
+        // Add the full filename only — NOT the stem. "claude" / "agents"
+        // / "readme" / "package" / "tsconfig" are too common as bare
+        // English words to use as salience anchors. The dotted form
+        // ("CLAUDE.md") is itself the distinctive marker.
         out.add(lower)
-        out.add(lower.replace(/\.[a-z0-9]+$/, ""))
       }
 
       // Project-dir children: vendor/<NAME>/..., apps/<NAME>/...
