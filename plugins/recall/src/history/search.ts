@@ -20,6 +20,7 @@ import type { RecallOptions, RecallResult, RecallSearchResult } from "./recall-s
 
 import { existsSync, readFileSync } from "node:fs"
 import { resolve, basename } from "node:path"
+import { searchVault, getVaultDbPath } from "./vault-fts.ts"
 
 // Re-export shared items so existing internal imports continue to work
 export { setRecallLogging, log, ONE_HOUR_MS, ONE_DAY_MS, THIRTY_DAYS_MS } from "./recall-shared.ts"
@@ -275,7 +276,17 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
  * and optionally passes them through a cheap LLM for synthesis.
  */
 export async function recall(query: string, options: RecallOptions = {}): Promise<RecallResult> {
-  const { limit = 10, raw = false, since, json = false, timeout = 4000, snippetTokens = 200, projectFilter } = options
+  const {
+    limit = 10,
+    raw = false,
+    since,
+    json = false,
+    timeout = 4000,
+    snippetTokens = 200,
+    projectFilter,
+    excludeCurrentSession = false,
+  } = options
+  const currentSessionId = excludeCurrentSession ? process.env.CLAUDE_SESSION_ID : undefined
 
   const startTime = Date.now()
   const sinceLabel = since ?? "30d"
@@ -338,6 +349,19 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
 
     const projectContentResults = searchAll(db, query, projectContentOpts)
     const projectMs = Date.now() - projectStart
+
+    // Vault FTS — opt-in: searches the km tree db (.km/state.db) when found.
+    // Beads, design docs, CLAUDE.md, and hub/* docs are higher signal than
+    // transcript fragments, so we boost vault hits with a strong negative
+    // rank (more negative = better).
+    const vaultStart = Date.now()
+    const vaultMatches = searchVault(query, limit * 2)
+    const vaultMs = Date.now() - vaultStart
+    if (vaultMatches.length > 0) {
+      log(`vault FTS: ${vaultMatches.length} matches (${vaultMs}ms) [${getVaultDbPath() ?? "?"}]`)
+    } else if (getVaultDbPath()) {
+      log(`vault FTS: 0 matches (${vaultMs}ms)`)
+    }
 
     // Query expansion: search with synonym variants for broader recall
     const SYNONYM_RANK_PENALTY = 5 // Penalize synonym matches to rank below exact matches
@@ -447,12 +471,17 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
       log(`corroboration: ${sessionDepths.size} sessions, max depth=${maxDepth} (${corroborationMs}ms)`)
     }
 
-    // Search current (live) session — not yet indexed
+    // Search current (live) session — not yet indexed.
+    // Skipped when excludeCurrentSession is set (the inject path uses this to
+    // break the autocatalytic loop where current-session transcript fragments
+    // get re-emitted as if they were prior memory).
     const liveStart = Date.now()
-    const liveResults = searchLiveSession(query, limit)
+    const liveResults = excludeCurrentSession ? [] : searchLiveSession(query, limit)
     const liveMs = Date.now() - liveStart
     if (liveResults.length > 0) {
       log(`live session: ${liveResults.length} matches (${liveMs}ms)`)
+    } else if (excludeCurrentSession) {
+      log(`live session: skipped (excludeCurrentSession=true)`)
     }
 
     // Merge results into a unified list
@@ -463,7 +492,12 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
       merged.push(r)
     }
 
+    let droppedCurrent = 0
     for (const r of messageResults.results) {
+      if (currentSessionId && r.session_id === currentSessionId) {
+        droppedCurrent++
+        continue
+      }
       // Apply corroboration boost: divide BM25 rank by log2(depth+1)
       // BM25 is negative (more negative = better), so dividing by >1 makes it more negative = better
       const depth = sessionDepths.get(r.session_id) ?? 1
@@ -490,6 +524,21 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
       })
     }
 
+    // Vault matches — typed as "vault" so the inject path can render a
+    // pointer (path + title + snippet) instead of a transcript fragment.
+    // sessionId here is the node fs_path so dedup-by-session works naturally
+    // and titles are vault-relative paths.
+    for (const v of vaultMatches) {
+      merged.push({
+        type: "vault",
+        sessionId: v.fsPath ?? v.id,
+        sessionTitle: v.title ?? v.fsPath ?? v.name ?? null,
+        timestamp: Date.now(),
+        snippet: v.snippet,
+        rank: v.rank,
+      })
+    }
+
     // Sort by recency-boosted rank (bm25 * recency_factor — lower is better)
     merged.sort((a, b) => boostedRank(a.rank, a.timestamp) - boostedRank(b.rank, b.timestamp))
 
@@ -506,8 +555,9 @@ export async function recall(query: string, options: RecallOptions = {}): Promis
     }
 
     const uniqueSessions = new Set(deduped.map((r) => r.sessionId)).size
+    const dropMsg = droppedCurrent > 0 ? ` [dropped ${droppedCurrent} current-session]` : ""
     log(
-      `merged: ${merged.length} raw → ${deduped.length} deduped from ${uniqueSessions} sessions (${Date.now() - searchStart}ms total search)`,
+      `merged: ${merged.length} raw → ${deduped.length} deduped from ${uniqueSessions} sessions${dropMsg} (${Date.now() - searchStart}ms total search)`,
     )
 
     // Session proximity: expand top message results with neighboring context

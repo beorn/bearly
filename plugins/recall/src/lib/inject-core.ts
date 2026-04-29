@@ -26,6 +26,7 @@ import {
   type InjectSkipReason,
 } from "./prompt-filter.ts"
 import { recall } from "../history/search.ts"
+import { searchVault } from "../history/vault-fts.ts"
 import { ensureProjectSourcesIndexed } from "../history/project-sources.ts"
 // Envelope framing primitives live in the shared library. Re-exported here so
 // existing callers (and the plugin's own tests) keep working without churn.
@@ -154,6 +155,12 @@ export async function runInjectDelta(
   // no anchor for FTS to retrieve against — every match is incidental. Long
   // substantive prompts bypass the gate (the question itself is enough
   // signal). See prompt-filter.ts for the identifier shapes we recognize.
+  //
+  // Project-vocab override: a prompt token that resolves against the vault
+  // (a bead title, a vault path, a frontmatter alias) is itself salient
+  // signal even when it doesn't match the regex shapes (camelCase like
+  // testEnv / createTestApp, bare project nouns like termless / Silvery).
+  // We probe the vault FTS once and bypass the salience skip when it hits.
   if (prompt.length < LONG_PROMPT_BYPASS_LENGTH && !hasSalience(prompt)) {
     emitInjectionDebugEvent({
       source: "recall",
@@ -174,6 +181,11 @@ export async function runInjectDelta(
     timeout: 2000,
     snippetTokens: 80,
     json: true,
+    // Inject path must NEVER recall fragments from the current session — that
+    // creates the autocatalytic loop where transcript bytes from this very
+    // turn become "memory" for the next prompt. The CLI keeps default false
+    // so users can still grep their live session explicitly.
+    excludeCurrentSession: true,
   })
 
   if (result.results.length === 0) {
@@ -215,8 +227,12 @@ export async function runInjectDelta(
     const label = r.sessionTitle ?? r.sessionId.slice(0, 8)
     const rewritten = rewriteImperativeAsReported(text.slice(0, snippetChars))
     const body = escapeSnippetBody(rewritten)
+    // Vault matches carry the full fs_path (or node id) in sessionId — keep
+    // it intact rather than truncating to 8 chars (the truncation only makes
+    // sense for opaque session UUIDs).
+    const sourceAttr = r.type === "vault" ? r.sessionId : r.sessionId.slice(0, 8)
     snippets.push(
-      `  <snippet type="${r.type}" session="${r.sessionId.slice(0, 8)}" title=${JSON.stringify(label)}>\n    ${body}\n  </snippet>`,
+      `  <snippet type="${r.type}" source=${JSON.stringify(sourceAttr)} title=${JSON.stringify(label)}>\n    ${body}\n  </snippet>`,
     )
     newKeys.push(key)
     if (snippets.length >= limitSnippets) break

@@ -57,6 +57,7 @@ export type ContentType =
   | "doc"
   | "claude_md"
   | "llm_research"
+  | "vault"
 
 // Bead record from issues.jsonl
 export interface BeadRecord {

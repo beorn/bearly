@@ -36,6 +36,7 @@ export interface RecallOptions {
   timeout?: number // Total timeout in ms (default 4000)
   snippetTokens?: number // Snippet window size (default 200)
   projectFilter?: string // Project filter
+  excludeCurrentSession?: boolean // Drop matches from CLAUDE_SESSION_ID (default false)
 }
 
 export interface RecallResult {
