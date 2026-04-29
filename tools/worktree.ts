@@ -908,10 +908,37 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 export interface MergeOptions {
   deleteBranch?: boolean
   fullTests?: boolean
+  /**
+   * Skip the `git fetch origin <integration-target>` preflight that detects
+   * concurrent integrations. Default `false` — only set when the user knows
+   * origin can't have moved (e.g. offline merge, single-session work).
+   * See: km-bearly.worktree-merge-origin-race-preflight.
+   */
+  noFetch?: boolean
 }
 
+/**
+ * Merge a worktree branch into main and clean up.
+ *
+ * Origin race preflight (km-bearly.worktree-merge-origin-race-preflight)
+ * ----------------------------------------------------------------------
+ * Two sessions running independent integrations of the same source branch
+ * concurrently can race. Witnessed 2026-04-29: share-resolveTask did
+ * `bun worktree merge X` (--no-ff merge onto local main) while silvercode2
+ * cherry-picked the same commits onto main and pushed first. Local main
+ * ended up 4 commits ahead of origin with content-equivalent but
+ * SHA-different history; recovery only worked because trees were byte-identical.
+ *
+ * Mitigation: before `git merge` runs we
+ *   1. `git fetch origin <integration-target>`,
+ *   2. compare local <integration-target> vs origin/<integration-target>,
+ *   3. abort with a fix-up command if origin has commits we don't.
+ *
+ * `--no-fetch` (MergeOptions.noFetch) bypasses the preflight when needed
+ * (offline, ad-hoc, single-session work).
+ */
 export async function mergeWorktree(name: string, options: MergeOptions = {}): Promise<void> {
-  const { deleteBranch = true, fullTests = false } = options
+  const { deleteBranch = true, fullTests = false, noFetch = false } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -980,6 +1007,54 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
     if (subStatus.dirty) {
       error(`Submodule ${submodule} has uncommitted changes`)
       process.exit(1)
+    }
+  }
+
+  // Origin race preflight — see function-level doc and
+  // km-bearly.worktree-merge-origin-race-preflight.
+  //
+  // Two sessions can independently integrate the same source branch and
+  // race; if origin/<currentBranch> has commits we don't, our local merge
+  // will produce content-equivalent but SHA-different history that's a pain
+  // to reconcile. Abort early with a clear fix-up command. Skipped when
+  // (a) --no-fetch was passed, or (b) origin doesn't track currentBranch.
+  if (!noFetch) {
+    const remoteCheck = await safeExec(
+      $`cd ${gitRoot} && git rev-parse --verify --quiet refs/remotes/origin/${currentBranch}`,
+    )
+    if (remoteCheck.exitCode === 0) {
+      info(`Fetching origin/${currentBranch} (preflight — pass --no-fetch to skip)`)
+      const fetchResult = await safeExec($`cd ${gitRoot} && git fetch origin ${currentBranch}`)
+      if (fetchResult.exitCode !== 0) {
+        warn(`git fetch origin ${currentBranch} failed — proceeding without preflight`)
+      } else {
+        // Commits on origin that we don't have locally → origin moved ahead.
+        const aheadResult = await safeExec(
+          $`cd ${gitRoot} && git rev-list --count ${currentBranch}..origin/${currentBranch}`,
+        )
+        const aheadCount = parseInt(aheadResult.stdout.trim(), 10) || 0
+        if (aheadCount > 0) {
+          const localShaResult = await safeExec($`cd ${gitRoot} && git rev-parse ${currentBranch}`)
+          const originShaResult = await safeExec(
+            $`cd ${gitRoot} && git rev-parse origin/${currentBranch}`,
+          )
+          const localSha = localShaResult.stdout.trim().slice(0, 12)
+          const originSha = originShaResult.stdout.trim().slice(0, 12)
+          error(`origin/${currentBranch} moved since local ${currentBranch} was last updated.`)
+          console.log(DIM + `  local:  ${localSha}` + RESET)
+          console.log(DIM + `  origin: ${originSha} (${aheadCount} commit${aheadCount === 1 ? "" : "s"} ahead)` + RESET)
+          console.log("")
+          console.log("Pull first:")
+          console.log(CYAN + `  cd ${gitRoot} && git pull --ff-only origin ${currentBranch}` + RESET)
+          console.log("")
+          console.log("Then retry:")
+          console.log(CYAN + `  bun worktree merge ${name}` + RESET)
+          console.log("")
+          console.log(DIM + "Bypass (offline / single-session): bun worktree merge " + name + " --no-fetch" + RESET)
+          process.exit(1)
+        }
+        success(`origin/${currentBranch} is in sync (no race)`)
+      }
     }
   }
 
@@ -1284,6 +1359,7 @@ ${BOLD}CREATE OPTIONS${RESET}
 ${BOLD}MERGE OPTIONS${RESET}
   --keep-branch     Don't delete the branch after merging
   --full-tests      Run test:all instead of test:fast
+  --no-fetch        Skip the origin race preflight (offline / single-session)
 
 ${BOLD}REMOVE OPTIONS${RESET}
   --delete-branch   Also delete the branch
@@ -1302,6 +1378,7 @@ ${BOLD}EXAMPLES${RESET}
   bun worktree create test main                            # Track main branch
   bun worktree merge my-feature                    # Merge, test, remove, delete branch
   bun worktree merge my-feature --keep-branch      # Merge but keep branch
+  bun worktree merge my-feature --no-fetch         # Skip origin race preflight
   bun worktree remove my-feature --delete-branch   # Remove and delete branch
 
 ${BOLD}HOW IT WORKS${RESET}
@@ -1400,6 +1477,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await mergeWorktree(name, {
         deleteBranch: !hasFlag("--keep-branch"),
         fullTests: hasFlag("--full-tests"),
+        noFetch: hasFlag("--no-fetch"),
       })
       break
     }
