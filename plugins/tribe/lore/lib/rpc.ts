@@ -263,6 +263,7 @@ export type InjectSkipReason =
   | "all_seen"
   | "low_salience"
   | "low_quality"
+  | "no_anchor_overlap"
 
 export type InjectDeltaResult = {
   skipped: boolean
