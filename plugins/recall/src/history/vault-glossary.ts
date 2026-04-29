@@ -38,6 +38,20 @@ const EXPLICIT_ALIASES: ReadonlyArray<string> = [
 ]
 
 /**
+ * 3-char project terms that are too short to pass the default token-length
+ * gate but ARE distinctive in this codebase. Allowed at the lookup site
+ * only — never auto-discovered. Each entry must be a project-specific
+ * abbreviation that almost never appears as common English; "max", "big",
+ * "why", "sop", "pro" are deliberately EXCLUDED because they clash with
+ * conversational English ("max value", "big deal", "why...?", "I'm a pro
+ * at this").
+ */
+const SHORT_EXPLICIT_ALIASES: ReadonlySet<string> = new Set([
+  "tdd", // .claude/skills/tdd/SKILL.md — test-driven dev
+  "csw", // .claude/skills/csw/SKILL.md — complete staff work
+])
+
+/**
  * Top-level directories whose immediate children are project-vocab terms.
  * "vendor/termless/..." → "termless". "apps/km-tui/..." → "km-tui".
  */
@@ -138,8 +152,15 @@ export function findGlossaryAnchor(prompt: string): string | null {
 
   const tokens = prompt.split(/[^A-Za-z0-9.]+/)
   for (const t of tokens) {
-    if (t.length < 4) continue
+    if (t.length < 3) continue
     const lower = t.toLowerCase()
+    // 3-char tokens only match against the explicit short-alias set
+    // (skill names like "pro", "tdd"). Auto-discovered glossary entries
+    // require length 4+ to suppress common-word matches.
+    if (t.length === 3) {
+      if (SHORT_EXPLICIT_ALIASES.has(lower)) return lower
+      continue
+    }
     if (glossary.has(lower)) return lower
     const stripped = lower.replace(/[?!.,;:]+$/, "")
     if (stripped !== lower && stripped.length >= 4 && glossary.has(stripped)) return stripped

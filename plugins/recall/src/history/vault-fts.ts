@@ -186,7 +186,10 @@ export function searchVault(
         fsPath: r.fs_path,
         name: r.name,
         title: r.title,
-        snippet: r.snippet,
+        // FTS5 snippet() can return null when the matched column is empty
+        // (e.g. a node titled but with no body). Fall back to title or
+        // path so downstream cleanSnippet/render get a non-null string.
+        snippet: r.snippet ?? r.title ?? r.fs_path ?? "",
         rank: r.rank * titleBoost * pathBoost,
       })
       if (out.length >= limit) break

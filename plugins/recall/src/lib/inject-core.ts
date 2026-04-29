@@ -215,23 +215,34 @@ export async function runInjectDelta(
     return { skipped: true, reason: "low_salience" }
   }
 
-  // The glossary hit (when present) seeds the recall query so the
-  // canonical bead/doc for the matched term wins over generic FTS noise.
-  // null → use full prompt as query.
-  let recallQuerySeed: string | null = null
+  // Glossary lookup is the salience-of-last-resort signal. Three cases:
+  //   1. Has regex salience          → use full prompt (don't override)
+  //   2. No salience, glossary hits  → seed recall with the anchor token
+  //   3. No salience, no glossary    → skip
+  // The fallback retry below covers a 4th case: prompt has BOTH a regex
+  // salience pattern AND a glossary anchor (e.g. "white-box ...
+  // createTestApp ..."). The full prompt runs first; if it returns no
+  // results, we retry with the glossary anchor before giving up.
+  const promptHasSalience = hasSalience(prompt)
+  const glossaryHit = findGlossaryAnchor(prompt)
+  let recallQuerySeed: string | null = !promptHasSalience ? glossaryHit : null
 
-  if (prompt.length < LONG_PROMPT_BYPASS_LENGTH && !hasSalience(prompt)) {
-    const glossaryHit = findGlossaryAnchor(prompt)
-    if (!glossaryHit) {
-      emitInjectionDebugEvent({
-        source: "recall",
-        action: "skip",
-        reason: "low_salience",
-        prompt: prompt.slice(0, 200),
-      })
-      return { skipped: true, reason: "low_salience" }
-    }
-    recallQuerySeed = glossaryHit
+  // Question-shaped prompts get a more permissive bypass threshold:
+  // "which env vars do we flip on/off?" (102 chars) is genuinely a
+  // query against vault content even though it has no kebab/path
+  // anchor. Statements and directives need the full 120 to guard
+  // against false_emits on long meta-comments.
+  const questionShape = /[?]|^\s*(?:what|which|where|how|why|when|who)\b/i.test(prompt)
+  const bypassLength = questionShape ? 100 : LONG_PROMPT_BYPASS_LENGTH
+
+  if (prompt.length < bypassLength && !promptHasSalience && !glossaryHit) {
+    emitInjectionDebugEvent({
+      source: "recall",
+      action: "skip",
+      reason: "low_salience",
+      prompt: prompt.slice(0, 200),
+    })
+    return { skipped: true, reason: "low_salience" }
   }
 
   ensureProjectSourcesIndexed()
@@ -242,7 +253,7 @@ export async function runInjectDelta(
   // the recall query — it's the highest-signal token in the prompt and
   // produces a tightly-targeted result instead of broad lexical noise.
   const recallQuery = recallQuerySeed ?? prompt
-  const result = await recall(recallQuery, {
+  const recallOpts = {
     limit: 5,
     raw: true,
     timeout: 2000,
@@ -253,7 +264,16 @@ export async function runInjectDelta(
     // turn become "memory" for the next prompt. The CLI keeps default false
     // so users can still grep their live session explicitly.
     excludeCurrentSession: true,
-  })
+  } as const
+  let result = await recall(recallQuery, recallOpts)
+
+  // Fallback: full-prompt FTS found nothing, but the prompt has a known
+  // project anchor (camelCase symbol, framework name) buried in generic
+  // English. Retry with the glossary anchor alone — this rescues prompts
+  // where the salient term is dominated by surrounding common words.
+  if (result.results.length === 0 && glossaryHit && recallQuery !== glossaryHit) {
+    result = await recall(glossaryHit, recallOpts)
+  }
 
   if (result.results.length === 0) {
     // Substantive prompt but no recall hits — skip entirely. Previously we
