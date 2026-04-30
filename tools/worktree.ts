@@ -1035,9 +1035,7 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
         const aheadCount = parseInt(aheadResult.stdout.trim(), 10) || 0
         if (aheadCount > 0) {
           const localShaResult = await safeExec($`cd ${gitRoot} && git rev-parse ${currentBranch}`)
-          const originShaResult = await safeExec(
-            $`cd ${gitRoot} && git rev-parse origin/${currentBranch}`,
-          )
+          const originShaResult = await safeExec($`cd ${gitRoot} && git rev-parse origin/${currentBranch}`)
           const localSha = localShaResult.stdout.trim().slice(0, 12)
           const originSha = originShaResult.stdout.trim().slice(0, 12)
           error(`origin/${currentBranch} moved since local ${currentBranch} was last updated.`)

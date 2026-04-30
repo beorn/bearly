@@ -64,12 +64,7 @@ const SHORT_EXPLICIT_ALIASES: ReadonlySet<string> = new Set([
  * names to the glossary would let conversational prompts trigger
  * retrieval — exactly the false_emit pattern we worked to eliminate.
  */
-const PROJECT_DIRS: ReadonlyArray<string> = [
-  "vendor/",
-  "apps/",
-  "packages/",
-  "hub/",
-]
+const PROJECT_DIRS: ReadonlyArray<string> = ["vendor/", "apps/", "packages/", "hub/"]
 
 function buildGlossary(): Set<string> | null {
   if (glossarySet) return glossarySet
@@ -82,11 +77,9 @@ function buildGlossary(): Set<string> | null {
   const out = new Set<string>(EXPLICIT_ALIASES.map((s) => s.toLowerCase()))
 
   try {
-    const pathRows = db
-      .prepare(
-        `SELECT DISTINCT fs_path FROM nodes WHERE fs_path IS NOT NULL`,
-      )
-      .all() as Array<{ fs_path: string }>
+    const pathRows = db.prepare(`SELECT DISTINCT fs_path FROM nodes WHERE fs_path IS NOT NULL`).all() as Array<{
+      fs_path: string
+    }>
 
     for (const { fs_path } of pathRows) {
       // Direct file basenames (strict — only when the file looks like a

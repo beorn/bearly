@@ -110,9 +110,7 @@ describe("worktree merge — origin race preflight (km-bearly.worktree-merge-ori
     await $`cd ${alice} && git checkout -q main`.quiet()
 
     // createWorktree expects to run from inside alice; chdir for the call.
-    const aliceLocalMainBefore = (await $`cd ${alice} && git rev-parse main`.quiet()).stdout
-      .toString()
-      .trim()
+    const aliceLocalMainBefore = (await $`cd ${alice} && git rev-parse main`.quiet()).stdout.toString().trim()
 
     const origCwd = process.cwd()
     try {
@@ -155,9 +153,7 @@ describe("worktree merge — origin race preflight (km-bearly.worktree-merge-ori
     expect(allLog).toMatch(/--no-fetch/)
 
     // Local main must be unchanged — no destructive merge happened.
-    const aliceLocalMainAfter = (await $`cd ${alice} && git rev-parse main`.quiet()).stdout
-      .toString()
-      .trim()
+    const aliceLocalMainAfter = (await $`cd ${alice} && git rev-parse main`.quiet()).stdout.toString().trim()
     expect(aliceLocalMainAfter).toBe(aliceLocalMainBefore)
   }, 60_000)
 
