@@ -21,7 +21,12 @@ import {
   resolveProjectName,
   resolveProjectId,
 } from "./lib/tribe/config.ts"
-import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/tribe/socket.ts"
+import {
+  resolveSocketPath,
+  createReconnectingClient,
+  TRIBE_PROTOCOL_VERSION,
+  type DaemonClient,
+} from "./lib/tribe/socket.ts"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
@@ -562,35 +567,39 @@ function drainDaemonInbox(): void {
 
 // Forward daemon notifications to Claude Code. Registered once the
 // background daemon connect resolves; handlers persist across reconnects.
-void daemonReady.then((d) => d.onNotification((method, params) => {
-  if (method === "wakeup") {
-    drainDaemonInbox()
-    return
-  }
-  if (method === "channel") {
-    const content = String(params?.content ?? "")
-    const type = markedType(String(params?.type ?? "notify"))
-    // Auto-rename on bead claim by this session
-    if (type === "bead:claimed") tryAutoRenameOnClaim(content)
-    sendChannel(content, {
-      from: String(params?.from ?? "unknown"),
-      type,
-      bead: params?.bead_id ? String(params.bead_id) : undefined,
-      message_id: params?.message_id ? String(params.message_id) : undefined,
-    })
-  } else if (method === "session.joined" || method === "session.left") {
-    const action = method === "session.joined" ? "joined" : "left"
-    sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
-  } else if (method === "reload") {
-    log.info?.(`Daemon requests reload: ${params?.reason}`)
-    timers.setTimeout(() => {
-      d.close()
-      spawn(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
-        "exit",
-        (code: number | null) => process.exit(code ?? 0),
-      )
-    }, 500)
-  }
-})).catch(() => {
-  /* daemon never came up — the CallTool handler surfaces this to callers */
-})
+void daemonReady
+  .then((d) =>
+    d.onNotification((method, params) => {
+      if (method === "wakeup") {
+        drainDaemonInbox()
+        return
+      }
+      if (method === "channel") {
+        const content = String(params?.content ?? "")
+        const type = markedType(String(params?.type ?? "notify"))
+        // Auto-rename on bead claim by this session
+        if (type === "bead:claimed") tryAutoRenameOnClaim(content)
+        sendChannel(content, {
+          from: String(params?.from ?? "unknown"),
+          type,
+          bead: params?.bead_id ? String(params.bead_id) : undefined,
+          message_id: params?.message_id ? String(params.message_id) : undefined,
+        })
+      } else if (method === "session.joined" || method === "session.left") {
+        const action = method === "session.joined" ? "joined" : "left"
+        sendChannel(`${params?.name ?? "unknown"} ${action} the tribe`, { from: "daemon", type: "status" })
+      } else if (method === "reload") {
+        log.info?.(`Daemon requests reload: ${params?.reason}`)
+        timers.setTimeout(() => {
+          d.close()
+          spawn(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
+            "exit",
+            (code: number | null) => process.exit(code ?? 0),
+          )
+        }, 500)
+      }
+    }),
+  )
+  .catch(() => {
+    /* daemon never came up — the CallTool handler surfaces this to callers */
+  })
