@@ -21,7 +21,7 @@ import {
   resolveProjectName,
   resolveProjectId,
 } from "./lib/tribe/config.ts"
-import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION } from "./lib/tribe/socket.ts"
+import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/tribe/socket.ts"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
@@ -70,10 +70,18 @@ let myRole = "member"
 const mySessionId = randomUUID()
 const PROJECT_NAME = resolveProjectName()
 
-// MCP server reference — assigned after daemon connect, before channel
-// notifications are forwarded.
+// MCP server reference — constructed + connected to Claude Code BEFORE the
+// daemon connection resolves, so the MCP `initialize` handshake is answered
+// in milliseconds rather than blocked on daemon spawn/connect.
 // oxlint-disable-next-line eslint(prefer-const) -- deferred init, assigned before use
 let mcp: Server
+// Daemon client — populated asynchronously by `daemonReady` (the daemon
+// block below). Stays `undefined` until the background connect resolves;
+// call sites either `await daemonReady` (when they need a guaranteed
+// client) or use `daemon?.` (best-effort).
+let daemon: DaemonClient | undefined
+// oxlint-disable-next-line eslint(prefer-const) -- assigned in the daemon block below
+let daemonReady: Promise<DaemonClient>
 
 /**
  * Forward a channel notification to Claude Code.
@@ -177,7 +185,14 @@ const registerParams = {
   delivery: DELIVERY,
 }
 
-const daemon = await createReconnectingClient({
+// NON-BLOCKING: the daemon connect runs in the background. We do NOT await
+// it here — module evaluation continues straight through to `mcp.connect()`
+// so the MCP `initialize` handshake is answered immediately. Without this, a
+// slow daemon connect (cold start, or spawn + retry backoff) stalled the
+// handshake long enough for codex's MCP launcher to time out and relaunch
+// the server — the double-spawn seen in the connect logs. Tool calls that
+// arrive before the daemon is ready `await daemonReady` in the handler.
+daemonReady = createReconnectingClient({
   socketPath: SOCKET_PATH,
   async onConnect(client) {
     const reg = (await client.call("register", registerParams)) as {
@@ -219,6 +234,9 @@ const daemon = await createReconnectingClient({
   onReconnect() {
     log.info?.(`Reconnected to daemon`)
   },
+}).then((client) => {
+  daemon = client
+  return client
 })
 
 // ---------------------------------------------------------------------------
@@ -320,7 +338,12 @@ mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: myRole === "chief" ? chiefInstructions : memberInstructions,
+    // Role for the `initialize` instructions must be known synchronously
+    // (the daemon hasn't connected yet — see the non-blocking daemon block).
+    // `args.role` is the launch-time hint; daemon-assigned role isn't
+    // available this early. Members are the common case; a chief is launched
+    // with the role hint.
+    instructions: args.role === "chief" ? chiefInstructions : memberInstructions,
   },
 )
 
@@ -357,7 +380,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const payload = name === "join" ? { ...a, identity_token: identityToken } : a
     // Tool names are bare verbs ("send", "fetch"); daemon wire methods use "tribe." prefix
     const daemonMethod = `tribe.${name}`
-    const result = await daemon.call(daemonMethod, payload)
+    // A tool call may arrive before the background daemon connect resolves
+    // (the daemon block is non-blocking) — await `daemonReady` in that case.
+    const d = daemon ?? (await daemonReady)
+    const result = await d.call(daemonMethod, payload)
     // Update local name/role after join/rename
     if (name === "join" || name === "rename") {
       const r = result as { content: Array<{ type: string; text: string }> }
@@ -388,17 +414,17 @@ import { setupHotReload } from "./lib/tribe/hot-reload.ts"
 using _reload = setupHotReload({
   importMetaUrl: import.meta.url,
   logActivity: (type, content) => {
-    daemon.call("log_event", { type, content }).catch(() => {})
+    daemon?.call("log_event", { type, content }).catch(() => {})
   },
   onReload: () => {
     proxyAc.abort()
-    daemon.close()
+    daemon?.close()
   },
 })
 
 const shutdown = () => {
   proxyAc.abort()
-  daemon.close()
+  daemon?.close()
   process.exit(0)
 }
 process.on("SIGINT", shutdown)
@@ -416,7 +442,7 @@ if (CWD_EVAL.kind === "warn" || CWD_EVAL.kind === "refuse") {
     sendChannel(CWD_EVAL.message, { from: "stdio-adapter", type: prefix })
     // Also log to the daemon's activity stream so diagnostics can surface it.
     daemon
-      .call("log_event", {
+      ?.call("log_event", {
         type: CWD_EVAL.kind === "refuse" ? "cwd_guardrail_refuse" : "cwd_guardrail_warn",
         content: CWD_EVAL.message,
       })
@@ -439,7 +465,7 @@ import { watch as fsWatch } from "node:fs"
       lastSlug = slug
       autoRenamed = true
       daemon
-        .call("tribe.rename", { new_name: slug })
+        ?.call("tribe.rename", { new_name: slug })
         .then((result) => {
           const r = result as { content: Array<{ type: string; text: string }> }
           try {
@@ -478,7 +504,7 @@ function tryAutoRenameOnClaim(content: string): void {
   if (scope === myName) return
   autoRenamed = true
   daemon
-    .call("tribe.rename", { new_name: scope })
+    ?.call("tribe.rename", { new_name: scope })
     .then((result) => {
       const r = result as { content: Array<{ type: string; text: string }> }
       try {
@@ -519,7 +545,7 @@ function drainDaemonInbox(): void {
       do {
         drainAgain = false
         for (;;) {
-          const result = parseToolText<TribeFetchResult>(await daemon.call("tribe.fetch", { limit: 500 }))
+          const result = parseToolText<TribeFetchResult>(await daemon?.call("tribe.fetch", { limit: 500 }))
           const events = result?.events ?? []
           for (const event of events) forwardFetchedEvent(event)
           if (events.length < 500) break
@@ -534,8 +560,9 @@ function drainDaemonInbox(): void {
   })()
 }
 
-// Forward daemon notifications to Claude Code
-daemon.onNotification((method, params) => {
+// Forward daemon notifications to Claude Code. Registered once the
+// background daemon connect resolves; handlers persist across reconnects.
+void daemonReady.then((d) => d.onNotification((method, params) => {
   if (method === "wakeup") {
     drainDaemonInbox()
     return
@@ -557,11 +584,13 @@ daemon.onNotification((method, params) => {
   } else if (method === "reload") {
     log.info?.(`Daemon requests reload: ${params?.reason}`)
     timers.setTimeout(() => {
-      daemon.close()
+      d.close()
       spawn(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on(
         "exit",
         (code: number | null) => process.exit(code ?? 0),
       )
     }, 500)
   }
+})).catch(() => {
+  /* daemon never came up — the CallTool handler surfaces this to callers */
 })

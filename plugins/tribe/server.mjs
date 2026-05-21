@@ -1989,7 +1989,7 @@ function tryAutoRenameOnClaim(content) {
   if (scope === myName)
     return;
   autoRenamed = true;
-  daemon.call("tribe.rename", { new_name: scope }).then((result) => {
+  daemon?.call("tribe.rename", { new_name: scope }).then((result) => {
     const r = result;
     try {
       const data = JSON.parse(r.content[0]?.text ?? "{}");
@@ -2021,7 +2021,7 @@ function drainDaemonInbox() {
       do {
         drainAgain = false;
         for (;; ) {
-          const result = parseToolText(await daemon.call("tribe.fetch", { limit: 500 }));
+          const result = parseToolText(await daemon?.call("tribe.fetch", { limit: 500 }));
           const events = result?.events ?? [];
           for (const event of events)
             forwardFetchedEvent(event);
@@ -2065,6 +2065,8 @@ try {
   var mySessionId = randomUUID();
   var PROJECT_NAME = resolveProjectName();
   var mcp;
+  var daemon;
+  var daemonReady;
   var NOTIFICATION_ONLY_MARKER = "notification-only:do-not-acknowledge-or-respond-to";
   var identityToken = createHash3("sha256").update(`${CLAUDE_SESSION_ID ?? ""}|${process.cwd()}|${args.role ?? "member"}`).digest("hex").slice(0, 16);
   var DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push";
@@ -2083,7 +2085,7 @@ try {
     identityToken,
     delivery: DELIVERY
   };
-  var daemon = await createReconnectingClient2({
+  daemonReady = createReconnectingClient2({
     socketPath: SOCKET_PATH,
     async onConnect(client) {
       const reg = await client.call("register", registerParams);
@@ -2110,6 +2112,9 @@ try {
     onReconnect() {
       log5.info?.(`Reconnected to daemon`);
     }
+  }).then((client) => {
+    daemon = client;
+    return client;
   });
   var joinInstruction = `If you receive a stdio-adapter auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter \u2014 the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.fetch afterward \u2014 just join silently and continue.`;
   var chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
@@ -2182,7 +2187,7 @@ Tribe messages:
       experimental: { "claude/channel": {} },
       tools: {}
     },
-    instructions: myRole === "chief" ? chiefInstructions : memberInstructions
+    instructions: args.role === "chief" ? chiefInstructions : memberInstructions
   });
   var nudgeSent = false;
   mcp.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -2200,7 +2205,8 @@ Tribe messages:
     try {
       const payload = name === "join" ? { ...a, identity_token: identityToken } : a;
       const daemonMethod = `tribe.${name}`;
-      const result = await daemon.call(daemonMethod, payload);
+      const d = daemon ?? await daemonReady;
+      const result = await d.call(daemonMethod, payload);
       if (name === "join" || name === "rename") {
         const r = result;
         try {
@@ -2222,16 +2228,16 @@ Tribe messages:
   var _reload = __using(__stack, setupHotReload({
     importMetaUrl: import.meta.url,
     logActivity: (type, content) => {
-      daemon.call("log_event", { type, content }).catch(() => {});
+      daemon?.call("log_event", { type, content }).catch(() => {});
     },
     onReload: () => {
       proxyAc.abort();
-      daemon.close();
+      daemon?.close();
     }
   }), 0);
   var shutdown = () => {
     proxyAc.abort();
-    daemon.close();
+    daemon?.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -2241,7 +2247,7 @@ Tribe messages:
     const prefix = CWD_EVAL.kind === "refuse" ? "system" : "warning";
     timers.setTimeout(() => {
       sendChannel(CWD_EVAL.message, { from: "stdio-adapter", type: prefix });
-      daemon.call("log_event", {
+      daemon?.call("log_event", {
         type: CWD_EVAL.kind === "refuse" ? "cwd_guardrail_refuse" : "cwd_guardrail_warn",
         content: CWD_EVAL.message
       }).catch(() => {});
@@ -2257,7 +2263,7 @@ Tribe messages:
           return;
         lastSlug = slug;
         autoRenamed = true;
-        daemon.call("tribe.rename", { new_name: slug }).then((result) => {
+        daemon?.call("tribe.rename", { new_name: slug }).then((result) => {
           const r = result;
           try {
             const data = JSON.parse(r.content[0]?.text ?? "{}");
@@ -2273,7 +2279,7 @@ Tribe messages:
   var autoRenamed = false;
   var drainInFlight = false;
   var drainAgain = false;
-  daemon.onNotification((method, params) => {
+  daemonReady.then((d) => d.onNotification((method, params) => {
     if (method === "wakeup") {
       drainDaemonInbox();
       return;
@@ -2295,11 +2301,11 @@ Tribe messages:
     } else if (method === "reload") {
       log5.info?.(`Daemon requests reload: ${params?.reason}`);
       timers.setTimeout(() => {
-        daemon.close();
+        d.close();
         spawn3(process.execPath, process.argv.slice(1), { stdio: "inherit", env: process.env }).on("exit", (code) => process.exit(code ?? 0));
       }, 500);
     }
-  });
+  })).catch(() => {});
 } catch (_catch) {
   var _err = _catch, _hasErr = 1;
 } finally {
