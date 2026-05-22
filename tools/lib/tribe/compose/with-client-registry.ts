@@ -47,6 +47,12 @@ export type ClientSession = {
   conn: string
   ctx: TribeContext
   registeredAt: number
+  /** Wall-clock ms at the last dispatched method from this client. Touched
+   *  in `with-dispatcher.ts` for every inbound request; consumers compute
+   *  `idleMs = Date.now() - lastActivityAt`. Initialised to `registeredAt`
+   *  on connection so a brand-new session reads as 0ms idle. Spec:
+   *  `@km/tribe/15588-tribe-list-sessions`. */
+  lastActivityAt: number
   /** Per-connection recall state — tracks sessionId/claudePid for recall handlers
    *  (set on tribe.hello / tribe.session_register). Kept separate from the
    *  tribe-side sessionId because a single proxy connection may carry both

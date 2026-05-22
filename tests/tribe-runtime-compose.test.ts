@@ -118,6 +118,7 @@ describe("withClientRegistry", () => {
       conn: "",
       ctx: t.daemonCtx,
       registeredAt: Date.now(),
+      lastActivityAt: Date.now(),
       recall: { sessionId: null, claudePid: null },
     })
     expect(t.registry.clients.size).toBe(1)

@@ -236,6 +236,7 @@ function attachFakeReceiver(
     conn: "",
     ctx: { ...t.daemonCtx, sessionId },
     registeredAt: Date.now(),
+    lastActivityAt: Date.now(),
     recall: { sessionId: null, claudePid: null },
   })
   return { frames, connId }

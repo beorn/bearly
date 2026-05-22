@@ -104,8 +104,29 @@ interface SessionInfo {
   claudeSessionId: string | null
   connectedAt: number
   uptimeMs: number
+  /** Wall-clock ms since this session's last inbound request. Drives the
+   *  `IDLE` column in `tribe sessions` / `tribe health`. Spec:
+   *  `@km/tribe/15588-tribe-list-sessions`. */
+  idleMs?: number
+  /** Working directory the session registered from. Same value as the
+   *  daemon's internal `project` field, surfaced under the `cwd`
+   *  alias to match the bead's vocabulary. */
+  cwd?: string
   source: "daemon" | "db"
   conn?: string
+}
+
+/** Compact a cwd path for table display — strips the user's home prefix and
+ *  truncates to a reasonable width. `~/Code/pim/km-wt7` is more scannable
+ *  than `/Users/beorn/Code/pim/km-wt7`. */
+function fmtCwd(cwd: string | undefined, maxWidth: number = 30): string {
+  if (!cwd) return "—"
+  const home = process.env.HOME ?? ""
+  let display = home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd
+  if (display.length > maxWidth) {
+    display = "…" + display.slice(display.length - (maxWidth - 1))
+  }
+  return display
 }
 
 interface Msg {
@@ -171,10 +192,16 @@ async function cmdSessions(showAll: boolean): Promise<void> {
   console.log(`TRIBE SESSIONS \u2014 ${sessions.length} ${showAll ? "all" : "active"}\n`)
   const nW = Math.max(4, ...sessions.map((r) => r.name.length))
   const rW = Math.max(4, ...sessions.map((r) => r.role.length))
-  console.log(`  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  SOURCE`)
-  for (const r of sessions) {
+  const cwds = sessions.map((r) => fmtCwd(r.cwd))
+  const cW = Math.max(3, ...cwds.map((c) => c.length))
+  console.log(
+    `  ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  ${pad("IDLE", 8)}  ${pad("CWD", cW)}  SOURCE`,
+  )
+  for (let i = 0; i < sessions.length; i++) {
+    const r = sessions[i]!
+    const idle = typeof r.idleMs === "number" ? fmtDur(r.idleMs) : "\u2014"
     console.log(
-      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${r.source}`,
+      `  ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${pad(idle, 8)}  ${pad(cwds[i]!, cW)}  ${r.source}`,
     )
   }
 }
@@ -251,6 +278,7 @@ async function cmdSend(to: string, message: string): Promise<void> {
 async function cmdHealth(): Promise<void> {
   const result = (await callDaemon("cli_health")) as {
     content: Array<{ type: string; text: string }>
+    sessions?: Array<{ name: string; role: string; pid: number; cwd?: string; uptimeMs: number; idleMs: number }>
     daemon: { pid: number; uptime: number; clients: number }
   }
 
@@ -260,18 +288,33 @@ async function cmdHealth(): Promise<void> {
     const text = result.content?.[0]?.text ?? JSON.stringify(result)
     const data = JSON.parse(text) as Record<string, unknown>
     for (const [key, value] of Object.entries(data)) {
-      if (key === "sessions" && Array.isArray(value)) {
-        console.log(`  Sessions: ${(value as Array<Record<string, unknown>>).length}`)
-        for (const s of value as Array<Record<string, string>>) {
-          console.log(`    ${s.name} (${s.role}) — ${s.status}`)
-        }
-      } else if (key === "issues" && Array.isArray(value)) {
+      if (key === "issues" && Array.isArray(value)) {
         if ((value as unknown[]).length) {
           console.log("\n  Issues:")
           for (const i of value as string[]) console.log(`    ${i}`)
         } else {
-          console.log("\n  No issues detected.")
+          console.log("  No issues detected.")
         }
+      }
+    }
+    // 15588 — show the live roster section so chief can answer "who is
+    // connected / who is idle >15min" with one command. Roster comes from
+    // the dispatcher's cli_health response (live `clients` map, not the
+    // DB), so it reflects active connections.
+    if (Array.isArray(result.sessions) && result.sessions.length > 0) {
+      console.log(`\n  Sessions: ${result.sessions.length} active`)
+      const nW = Math.max(4, ...result.sessions.map((r) => r.name.length))
+      const rW = Math.max(4, ...result.sessions.map((r) => r.role.length))
+      const cwds = result.sessions.map((r) => fmtCwd(r.cwd))
+      const cW = Math.max(3, ...cwds.map((c) => c.length))
+      console.log(
+        `    ${pad("NAME", nW)}  ${pad("ROLE", rW)}  ${pad("PID", 7)}  ${pad("UPTIME", 10)}  ${pad("IDLE", 8)}  CWD`,
+      )
+      for (let i = 0; i < result.sessions.length; i++) {
+        const r = result.sessions[i]!
+        console.log(
+          `    ${pad(r.name, nW)}  ${pad(r.role, rW)}  ${pad(String(r.pid), 7)}  ${pad(fmtDur(r.uptimeMs), 10)}  ${pad(fmtDur(r.idleMs), 8)}  ${cwds[i]}`,
+        )
       }
     }
     if (result.daemon) {

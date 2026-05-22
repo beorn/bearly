@@ -211,6 +211,7 @@ export function withDispatcher<
         conn: relPath(socket.socketPath),
         ctx: fields.ctx,
         registeredAt: Date.now(),
+        lastActivityAt: Date.now(),
         recall: existing.recall,
       }
       clients.set(connId, client)
@@ -243,6 +244,12 @@ export function withDispatcher<
     async function handleRequest(req: JsonRpcRequest, connId: string): Promise<string> {
       const { method, params, id } = req
       const p = (params ?? {}) as Record<string, unknown>
+
+      // Touch lastActivityAt for THIS client on every inbound request —
+      // drives the idle column in `tribe sessions` / `tribe health`.
+      // Spec: @km/tribe/15588-tribe-list-sessions.
+      const liveClient = clients.get(connId)
+      if (liveClient) liveClient.lastActivityAt = Date.now()
 
       try {
         switch (method) {
@@ -416,6 +423,13 @@ export function withDispatcher<
                 peerSocket: c.peerSocket,
                 connectedAt: c.registeredAt,
                 uptimeMs: now - c.registeredAt,
+                /** Wall-clock ms since this client's last inbound request.
+                 *  15588 — drives the idle column. */
+                idleMs: now - c.lastActivityAt,
+                /** Working directory the session registered from. The
+                 *  daemon already tracks this as `project`; surfaced here
+                 *  under the `cwd` alias to match the bead's vocabulary. */
+                cwd: c.project,
                 source: "daemon" as const,
                 conn: c.conn,
                 resources: [] as string[],
@@ -444,9 +458,25 @@ export function withDispatcher<
             } catch {
               /* health snapshot unavailable */
             }
+            // 15588: fold the live roster into the health response so chief
+            // can answer "who is connected / who is idle >15min" with one
+            // command. Same shape as the cli_status response — name,
+            // role, pid, cwd, idleMs, uptimeMs — minus the bookkeeping
+            // fields (peerSocket, conn, projectId, etc.) that aren't
+            // useful in a health overview.
+            const nowH = Date.now()
+            const roster = Array.from(clients.values()).map((c) => ({
+              name: c.name,
+              role: c.role,
+              pid: c.pid,
+              cwd: c.project,
+              uptimeMs: nowH - c.registeredAt,
+              idleMs: nowH - c.lastActivityAt,
+            }))
             return makeResponse(id, {
               ...health,
               machine,
+              sessions: roster,
               daemon: {
                 pid: process.pid,
                 uptime: Math.floor((Date.now() - socket.startedAt) / 1000),
@@ -612,6 +642,7 @@ export function withDispatcher<
         conn: "",
         ctx: daemonCtx,
         registeredAt: Date.now(),
+        lastActivityAt: Date.now(),
         recall: { sessionId: null, claudePid: null },
       }
       clients.set(connId, placeholder)
