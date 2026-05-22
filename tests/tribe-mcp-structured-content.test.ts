@@ -160,9 +160,8 @@ describe("tools/list — outputSchema flows through composer to wire (15623)", (
     })(stack)
 
     const resp = await callJsonRpc(t.dispatcher, "tools/list")
-    const tools = (
-      resp.result as { tools: Array<{ name: string; inputSchema: unknown; outputSchema?: unknown }> }
-    ).tools
+    const tools = (resp.result as { tools: Array<{ name: string; inputSchema: unknown; outputSchema?: unknown }> })
+      .tools
     const sendTool = tools.find((entry) => entry.name === "tribe.send")
     expect(sendTool).toBeDefined()
     expect(sendTool?.outputSchema).toMatchObject({
@@ -244,7 +243,7 @@ describe("tools/call — auto-wrap emits both content AND structuredContent (156
       description: "returns a preshaped MCP envelope with structuredContent",
       schema: { type: "object" },
       handler: () => ({
-        content: [{ type: "text" as const, text: "{\"ok\":true}" }],
+        content: [{ type: "text" as const, text: '{"ok":true}' }],
         structuredContent: { ok: true },
       }),
     }
