@@ -1,4 +1,5 @@
 ---
+name: big
 description: "META-PROTOCOL for reframing the problem (10-20 hypotheses, 2 rounds, find the design where the bug can't happen). Calls /pro or /deep internally — not itself an LLM tool. Use when the fix feels like a patch or the same area keeps breaking. Subsumes /fresh."
 argument-hint: [problem or area]
 benefits-from: [recall, pm, gbrain]

@@ -1,3 +1,8 @@
+---
+name: llm
+description: Multi-LLM research with deep research, second opinions, and multi-model debate. Use for second opinions from other AI models, deep research with web search, building consensus across models, or escaping single-model blindspots.
+---
+
 # LLM Skill
 
 Multi-LLM research with deep research, second opinions, and multi-model debate.

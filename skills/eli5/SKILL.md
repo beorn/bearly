@@ -1,4 +1,5 @@
 ---
+name: eli5
 description: Re-explain to a teammate who just walked in. Strips task-shorthand, names mechanisms, caps at one screen. Use when the user signals they're lost ("explain", "wait what?", "I don't have your context", "ELI5"), or when you catch yourself using terms specific to the current task (option names, numbered suspects, file paths without gloss).
 argument-hint: [topic, or empty = "what we're doing right now"]
 ---
