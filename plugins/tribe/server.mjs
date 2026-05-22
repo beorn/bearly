@@ -47,7 +47,9 @@ function parseTribeArgs() {
       domains: { type: "string", default: process.env.TRIBE_DOMAINS ?? "" },
       db: { type: "string", default: process.env.TRIBE_DB },
       socket: { type: "string", default: process.env.TRIBE_SOCKET },
-      "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" }
+      "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
+      account: { type: "string", default: process.env.TRIBE_ACCOUNT },
+      provider: { type: "string", default: process.env.TRIBE_PROVIDER }
     },
     strict: false
   });
@@ -2181,7 +2183,9 @@ try {
     claudeSessionId: CLAUDE_SESSION_ID,
     claudeSessionName: CLAUDE_SESSION_NAME,
     identityToken,
-    delivery: DELIVERY
+    delivery: DELIVERY,
+    ...args.account ? { account: args.account } : {},
+    ...args.provider ? { provider: args.provider } : {}
   };
   daemonReady = createReconnectingClient2({
     socketPath: SOCKET_PATH,
