@@ -35,6 +35,7 @@ import {
   LOCK_REAP_AGE_MS,
   reapStaleLock,
   parseEtime,
+  computeBroadcastTargets,
   type HealthMetrics,
   type HealthThresholds,
   type GitLockInfo,
@@ -1366,5 +1367,91 @@ describe("reapStaleLock", () => {
       holder: null,
     }
     expect(reapStaleLock(lock, Date.now() + LOCK_REAP_AGE_MS * 10)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// computeBroadcastTargets — `@km/tribe/15591-cpu-alert-noise`
+// ---------------------------------------------------------------------------
+
+describe("computeBroadcastTargets — 15591 DM/broadcast non-overlap", () => {
+  test("critical: broadcast targets EXCLUDE the attributed sessions", () => {
+    // chief + @agent/7 both connected; chief is the CPU contributor → DM'd
+    // separately. Broadcast must reach @agent/7 only (chief already
+    // got the DM).
+    const targets = computeBroadcastTargets({
+      severity: "critical",
+      attributedSessions: new Set(["@chief"]),
+      allSessionNames: ["@chief", "@agent/7"],
+      hasUnattributed: false,
+    })
+    expect(targets).toEqual(["@agent/7"])
+  })
+
+  test("critical: broadcasts to everyone when no session is attributable", () => {
+    // CPU spike from a `unattributed` process (e.g. dasd, framework). No
+    // attributed session got a DM. Every connected session gets the
+    // broadcast.
+    const targets = computeBroadcastTargets({
+      severity: "critical",
+      attributedSessions: new Set(),
+      allSessionNames: ["@chief", "@agent/7", "@agent/8"],
+      hasUnattributed: true,
+    })
+    expect(targets).toEqual(["@chief", "@agent/7", "@agent/8"])
+  })
+
+  test("warning with attributed sessions only: NO broadcast (DM path covers it)", () => {
+    // Pre-15591 this case still broadcast; post-15591 it does not, because
+    // every load contributor already got a DM and there is no unattributed
+    // component for chief to investigate.
+    const targets = computeBroadcastTargets({
+      severity: "warning",
+      attributedSessions: new Set(["@agent/6"]),
+      allSessionNames: ["@chief", "@agent/6", "@agent/7"],
+      hasUnattributed: false,
+    })
+    expect(targets).toEqual([])
+  })
+
+  test("warning with unattributed component: broadcast to non-DM'd sessions", () => {
+    // Mixed load: @agent/6 contributing + unattributed processes. @agent/6
+    // gets the DM (handled outside this helper); everyone else gets the
+    // fan-out so chief sees the unattributed signal.
+    const targets = computeBroadcastTargets({
+      severity: "warning",
+      attributedSessions: new Set(["@agent/6"]),
+      allSessionNames: ["@chief", "@agent/6", "@agent/7"],
+      hasUnattributed: true,
+    })
+    expect(targets).toEqual(["@chief", "@agent/7"])
+  })
+
+  test("warning with no contributors at all: broadcasts to everyone", () => {
+    // Disk/worktree-style warning where there's no per-session
+    // attribution at all (sessionLoad is empty). The fallback fan-out
+    // delivers to the whole tribe.
+    const targets = computeBroadcastTargets({
+      severity: "warning",
+      attributedSessions: new Set(),
+      allSessionNames: ["@chief", "@agent/7"],
+      hasUnattributed: false,
+    })
+    expect(targets).toEqual(["@chief", "@agent/7"])
+  })
+
+  test("critical: a session that is BOTH attributed and connected gets ONE delivery (no overlap)", () => {
+    // The original 15591 user-visible bug: chief is the load contributor
+    // AND the only broadcast recipient -> chief saw every critical twice.
+    // The fix ensures chief gets exactly one delivery (the DM path
+    // outside this helper); this helper returns [] so the broadcast
+    // loop does not re-send.
+    const targets = computeBroadcastTargets({
+      severity: "critical",
+      attributedSessions: new Set(["@chief"]),
+      allSessionNames: ["@chief"],
+      hasUnattributed: false,
+    })
+    expect(targets).toEqual([])
   })
 })

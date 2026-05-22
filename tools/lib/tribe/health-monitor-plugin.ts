@@ -152,6 +152,45 @@ export function defaultThresholds(): HealthThresholds {
 }
 
 // ---------------------------------------------------------------------------
+// Alert delivery — pure helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide which connected sessions should receive a CPU-style alert via the
+ * broadcast/fan-out path, given the sessions already DM'd as load
+ * contributors. Spec: `@km/tribe/15591-cpu-alert-noise`.
+ *
+ * Pre-15591 the alert path did two deliveries: (1) DM each load-contributing
+ * session, then (2) `api.broadcast` to everyone. A session that was BOTH a
+ * load contributor AND a broadcast recipient (the chief, typically) received
+ * the same alert twice. This helper computes the broadcast-recipient set
+ * with the DM-recipients excluded, so the delivery is exactly-once per
+ * session.
+ *
+ * Fan-out runs for:
+ *   - `critical` (always — chief gets notified even when chief is not the
+ *     load contributor),
+ *   - `warning` when no session is attributable (e.g. disk, worktree, or
+ *     the load came from `unattributed` processes) — the daemon is
+ *     role-agnostic (F12); whoever holds the `@chief` lease (an L3 fact)
+ *     picks up the broadcast.
+ *
+ * Returns an empty array when the alert is a `warning` with attributed
+ * contributors AND no unattributed component — the DM path covers it.
+ */
+export function computeBroadcastTargets(args: {
+  severity: "warning" | "critical"
+  attributedSessions: Set<string>
+  allSessionNames: string[]
+  hasUnattributed: boolean
+}): string[] {
+  const shouldFanOut =
+    args.severity === "critical" || args.attributedSessions.size === 0 || args.hasUnattributed
+  if (!shouldFanOut) return []
+  return args.allSessionNames.filter((name) => !args.attributedSessions.has(name))
+}
+
+// ---------------------------------------------------------------------------
 // Metrics collection
 // ---------------------------------------------------------------------------
 
@@ -1267,15 +1306,18 @@ export const healthMonitorPlugin: TribePluginApi = {
             }
           }
 
-          // Critical: also broadcast to everyone.
-          if (alert.severity === "critical") {
-            api.broadcast(msg, `health:${alert.type}:${alert.severity}`, undefined, broadcastClass)
-          } else if (attributedSessions.size === 0 || sessionLoad.has("unattributed")) {
-            // Warning with no attributed sessions (e.g. disk, worktree) or with
-            // unattributed processes: the daemon is role-agnostic (F12) — there
-            // is no "chief" recipient, so broadcast to the whole tribe and let
-            // whoever holds the @chief lease (an L3 fact) act on it.
-            api.broadcast(msg, `health:${alert.type}:${alert.severity}`, undefined, broadcastClass)
+          // Fan-out: DM every connected session that did NOT just get the
+          // targeted DM above — same end result as `api.broadcast` but
+          // without the double-delivery to load contributors. Spec:
+          // @km/tribe/15591-cpu-alert-noise.
+          const broadcastTargets = computeBroadcastTargets({
+            severity: alert.severity,
+            attributedSessions,
+            allSessionNames: api.getSessionNames(),
+            hasUnattributed: sessionLoad.has("unattributed"),
+          })
+          for (const name of broadcastTargets) {
+            api.send(name, msg, `health:${alert.type}:${alert.severity}`, undefined, broadcastClass)
           }
         }
 
