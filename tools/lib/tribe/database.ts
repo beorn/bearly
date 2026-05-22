@@ -32,7 +32,9 @@ export function openDatabase(path: string): Database {
 		filter_mode  TEXT NOT NULL DEFAULT 'normal',
 		filter_until INTEGER,
 		filter_mute TEXT,
-		delivery     TEXT NOT NULL DEFAULT 'push'
+		delivery     TEXT NOT NULL DEFAULT 'push',
+		account    TEXT,
+		provider   TEXT
 	)`)
 
   // Migrations table — tracks schema version so we can evolve the DB without
@@ -618,6 +620,27 @@ const MIGRATIONS: readonly Migration[] = [
       db.run("CREATE INDEX IF NOT EXISTS idx_messages_archive_seq ON messages_archive(seq)")
     },
   },
+  {
+    version: 15,
+    name: "session-account-provider",
+    up(db) {
+      // @km/infra/15641 Phase 1 — per-session account/provider label.
+      // ag (the source of truth for account/quota) sets TRIBE_ACCOUNT +
+      // TRIBE_PROVIDER env vars when launching backends; the tribe
+      // adapter forwards them in registration. Tribe stays uncoupled
+      // from quota logic — it just stores the label so members listing
+      // can answer "which account is each session on?".
+      const hasSessions = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get() as {
+        name: string
+      } | null
+      if (!hasSessions) return
+      const cols = new Set(
+        (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((r) => r.name),
+      )
+      if (!cols.has("account")) db.run("ALTER TABLE sessions ADD COLUMN account TEXT")
+      if (!cols.has("provider")) db.run("ALTER TABLE sessions ADD COLUMN provider TEXT")
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -629,13 +652,15 @@ export type TribeStatements = ReturnType<typeof createStatements>
 export function createStatements(db: Database) {
   return {
     upsertSession: db.prepare(`
-		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, identity_token, started_at, updated_at, delivery)
-		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $identity_token, $now, $now, COALESCE($delivery, 'push'))
+		INSERT INTO sessions (id, name, role, domains, pid, cwd, project_id, claude_session_id, claude_session_name, identity_token, started_at, updated_at, delivery, account, provider)
+		VALUES ($id, $name, $role, $domains, $pid, $cwd, $project_id, $claude_session_id, $claude_session_name, $identity_token, $now, $now, COALESCE($delivery, 'push'), $account, $provider)
 		ON CONFLICT(id) DO UPDATE SET
 			name = $name, role = $role, domains = $domains,
 			pid = $pid, cwd = $cwd, project_id = $project_id, claude_session_id = $claude_session_id,
 			claude_session_name = $claude_session_name, identity_token = $identity_token, started_at = $now, updated_at = $now,
-			delivery = COALESCE($delivery, delivery, 'push')
+			delivery = COALESCE($delivery, delivery, 'push'),
+			account = COALESCE($account, account),
+			provider = COALESCE($provider, provider)
 	`),
 
     insertMessage: db.prepare(`

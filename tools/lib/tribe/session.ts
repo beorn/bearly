@@ -88,6 +88,8 @@ export function registerSession(
   clientPid?: number,
   delivery?: "push" | "pull",
   clientCwd?: string,
+  account?: string | null,
+  provider?: string | null,
 ): void {
   const desiredName = ctx.getName()
   const now = Date.now()
@@ -164,6 +166,8 @@ export function registerSession(
       $identity_token: identityToken ?? null,
       $now: now,
       $delivery: delivery ?? "push",
+      $account: account ?? null,
+      $provider: provider ?? null,
     })
   } catch {
     // Shouldn't happen after auto-suffix, but surface as typed error if it does.

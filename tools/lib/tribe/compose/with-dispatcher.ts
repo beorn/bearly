@@ -340,6 +340,13 @@ export function withDispatcher<
 
             const deliveryRaw = (p.delivery as string) ?? "push"
             const delivery: "push" | "pull" = deliveryRaw === "pull" ? "pull" : "push"
+            // @km/infra/15641 Phase 1 — per-session account/provider label
+            // sourced from `ag` (which sets TRIBE_ACCOUNT/TRIBE_PROVIDER env
+            // vars at backend-launch time). Tribe just stores the label so
+            // tribe.members can answer "which account is each session on?";
+            // quota poll + threshold logic live in ag, not tribe.
+            const account = typeof p.account === "string" ? p.account : null
+            const provider = typeof p.provider === "string" ? p.provider : null
             registerSession(
               clientCtx,
               projectId,
@@ -348,6 +355,8 @@ export function withDispatcher<
               pid,
               delivery,
               project,
+              account,
+              provider,
             )
 
             const client = applyClient(connId, {

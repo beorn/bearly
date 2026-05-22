@@ -57,6 +57,15 @@ export type TribeArgs = {
   db?: string
   socket?: string
   "auto-report"?: boolean
+  /**
+   * @km/infra/15641 Phase 1 — per-session account label. `ag` sets
+   * `TRIBE_ACCOUNT` when launching backends; the adapter forwards it
+   * in registration so `tribe.members` can show "which account is
+   * each session on?". Tribe doesn't poll quotas — that lives in `ag`.
+   */
+  account?: string
+  /** Companion to `account` — the provider (claude, codex, etc.). */
+  provider?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +81,10 @@ export function parseTribeArgs(): TribeArgs {
       db: { type: "string", default: process.env.TRIBE_DB },
       socket: { type: "string", default: process.env.TRIBE_SOCKET },
       "auto-report": { type: "boolean", default: (process.env.TRIBE_AUTO_REPORT ?? "1") === "1" },
+      // @km/infra/15641 Phase 1 — account/provider label, sourced from
+      // ag via TRIBE_ACCOUNT / TRIBE_PROVIDER env vars at spawn time.
+      account: { type: "string", default: process.env.TRIBE_ACCOUNT },
+      provider: { type: "string", default: process.env.TRIBE_PROVIDER },
     },
     strict: false,
   })

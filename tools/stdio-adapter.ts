@@ -188,6 +188,12 @@ const registerParams = {
   claudeSessionName: CLAUDE_SESSION_NAME,
   identityToken,
   delivery: DELIVERY,
+  // @km/infra/15641 Phase 1 — per-session account/provider label sourced
+  // from `ag` via TRIBE_ACCOUNT / TRIBE_PROVIDER env vars (which ag sets
+  // at backend-launch time). Tribe stores them; quota visibility lives in
+  // ag, not here.
+  ...(args.account ? { account: args.account } : {}),
+  ...(args.provider ? { provider: args.provider } : {}),
 }
 
 // NON-BLOCKING: the daemon connect runs in the background. We do NOT await

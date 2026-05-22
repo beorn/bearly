@@ -317,7 +317,8 @@ function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): Tool
   const rows = ctx.db
     .prepare(`
       SELECT DISTINCT s.id, s.name, s.role, s.domains, s.pid, s.cwd,
-        s.claude_session_id, s.claude_session_name, s.started_at, s.updated_at
+        s.claude_session_id, s.claude_session_name, s.started_at, s.updated_at,
+        s.account, s.provider
       FROM sessions s
       INNER JOIN room_members rm ON rm.session_id = s.id
       ORDER BY s.started_at
@@ -333,6 +334,8 @@ function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): Tool
     claude_session_name: string | null
     started_at: number
     updated_at: number
+    account: string | null
+    provider: string | null
   }>
 
   // By default return only currently-connected sessions. `a.all` exposes the
@@ -362,6 +365,11 @@ function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): Tool
       uptime_min: Math.round((Date.now() - r.started_at) / 60_000),
       last_seen_sec: Math.round((Date.now() - r.updated_at) / 1000),
       parent: parent && parent !== r.name ? parent : undefined,
+      // @km/infra/15641 Phase 1 — surface per-session account/provider
+      // (omit when null so the output stays compact for sessions that
+      // weren't spawned through ag).
+      ...(r.account ? { account: r.account } : {}),
+      ...(r.provider ? { provider: r.provider } : {}),
     }
   })
   return jsonResult({ sessions })
