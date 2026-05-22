@@ -135,6 +135,10 @@ const withMCPShape = withMCPServer<typeof withDispatcherShape>({
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
+    // MCP outputSchema — paired with handler `structuredContent` emission.
+    // Tools published before @km/infra/15623 lacked outputSchema; the
+    // post-15623 TOOLS_LIST entries declare it for every tool.
+    outputSchema: t.outputSchema,
   })),
   dispatch: async (toolName, args, ctx) => {
     // Route every registered tool through the dispatcher's handleRequest.

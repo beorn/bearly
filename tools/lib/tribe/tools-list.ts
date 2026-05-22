@@ -4,7 +4,38 @@
  * Public coordination surface:
  *   tribe.send, tribe.fetch, tribe.members, tribe.filter, tribe.join.
  * Admin/diagnostic verbs remain separate.
+ *
+ * Every tool also declares an `outputSchema` that mirrors the
+ * `structuredContent` shape emitted by `handlers.ts::jsonResult`. Hosts
+ * with MCP structuredContent support render that payload natively
+ * instead of the historical `[{type:"text",text:"<escaped-json>"}]`
+ * envelope. See `@km/infra/15623-mcp-tools-structuredcontent`.
+ *
+ * Schema convention: outputSchemas are intentionally loose
+ * (`additionalProperties: true`) so handler refinements don't break
+ * already-deployed clients. The documented shape lives in the
+ * `description`; full strict schemas can be tightened per-tool over
+ * time without renaming the contract.
  */
+
+const ERROR_SHAPE = {
+  error: { type: "string", description: "Error message — present when the tool refused or hit an exception." },
+} as const
+
+const OBJ = (
+  properties: Record<string, unknown>,
+  description: string,
+): {
+  type: "object"
+  description: string
+  properties: Record<string, unknown>
+  additionalProperties: true
+} => ({
+  type: "object",
+  description,
+  properties,
+  additionalProperties: true,
+})
 
 export const TOOLS_LIST = [
   {
@@ -27,6 +58,14 @@ export const TOOLS_LIST = [
       },
       required: ["to", "message"],
     },
+    outputSchema: OBJ(
+      {
+        sent: { type: "boolean", description: "True on successful send." },
+        id: { type: "string", description: "Message id assigned by the daemon." },
+        ...ERROR_SHAPE,
+      },
+      "Send result: { sent, id } on success, { error } on validation failure.",
+    ),
   },
   {
     name: "fetch",
@@ -59,6 +98,19 @@ export const TOOLS_LIST = [
         },
       },
     },
+    outputSchema: OBJ(
+      {
+        events: {
+          type: "array",
+          description:
+            "Visible messages. Each: { id, rowid, type, from, to, content, bead?, ref?, ts (ISO), delivery, topic?, room_id? }.",
+          items: { type: "object", additionalProperties: true },
+        },
+        cursor: { type: "number", description: "Highest rowid returned (or unchanged when no rows matched)." },
+        ...ERROR_SHAPE,
+      },
+      "Fetch result: { events, cursor } on success, { error } on argument validation failure.",
+    ),
   },
   {
     name: "members",
@@ -69,6 +121,17 @@ export const TOOLS_LIST = [
         all: { type: "boolean", description: "Include dead sessions (default: false)" },
       },
     },
+    outputSchema: OBJ(
+      {
+        sessions: {
+          type: "array",
+          description:
+            "Per-session rows: { name, role, domains, pid, cwd, claude_session_id?, claude_session_name?, alive, uptime_min, last_seen_sec, parent? }.",
+          items: { type: "object", additionalProperties: true },
+        },
+      },
+      "Members list — array of session records under `sessions`.",
+    ),
   },
   {
     name: "rename",
@@ -80,6 +143,21 @@ export const TOOLS_LIST = [
       },
       required: ["new_name"],
     },
+    outputSchema: OBJ(
+      {
+        renamed: { type: "boolean" },
+        old_name: { type: "string" },
+        new_name: { type: "string" },
+        name: { type: "string", description: "Present on rename-to-self no-op." },
+        existing_names: {
+          type: "array",
+          items: { type: "string" },
+          description: "On collision: active session names already in use.",
+        },
+        ...ERROR_SHAPE,
+      },
+      "Rename result: { renamed, old_name, new_name } on success, { renamed:false, name } on no-op, { error, existing_names? } on collision.",
+    ),
   },
   {
     name: "health",
@@ -88,6 +166,24 @@ export const TOOLS_LIST = [
       type: "object" as const,
       properties: {},
     },
+    outputSchema: OBJ(
+      {
+        members: {
+          type: "array",
+          description: "Per-member diagnostic: { name, role, domains, pid, alive, warnings: string[], ... }.",
+          items: { type: "object", additionalProperties: true },
+        },
+        stale_beads: { type: "number", description: "Count of beads claimed but idle past threshold." },
+        unread: { type: "number", description: "Messages addressed to this session not yet drained." },
+        reconciler: {
+          type: "object",
+          description:
+            "Optional chief-reconciler snapshot (opt-in via TRIBE_RECONCILER_SNAPSHOT env var). Field shape mirrors @km/tribe/stable-coordination L4.",
+          additionalProperties: true,
+        },
+      },
+      "Health snapshot — members + counts + optional reconciler snapshot.",
+    ),
   },
   {
     name: "join",
@@ -110,6 +206,21 @@ export const TOOLS_LIST = [
       },
       required: ["name"],
     },
+    outputSchema: OBJ(
+      {
+        joined: { type: "boolean" },
+        name: { type: "string" },
+        role: { type: "string" },
+        domains: { type: "array", items: { type: "string" } },
+        delivery: { type: "string", enum: ["push", "pull"] },
+        previous_name: {
+          type: "string",
+          description: "Set when this join performed a rename relative to the prior session name.",
+        },
+        ...ERROR_SHAPE,
+      },
+      "Join result: { joined, name, role, domains, delivery, previous_name? }. { error } on name validation failure.",
+    ),
   },
   {
     name: "reload",
@@ -121,6 +232,14 @@ export const TOOLS_LIST = [
         reason: { type: "string", description: "Why the reload is needed (logged to events)" },
       },
     },
+    outputSchema: OBJ(
+      {
+        reloading: { type: "boolean" },
+        reason: { type: "string" },
+        pid: { type: "number", description: "PID of the daemon about to re-exec." },
+      },
+      "Reload acknowledgment — the actual re-exec happens shortly after this response flushes.",
+    ),
   },
   {
     name: "retro",
@@ -141,6 +260,17 @@ export const TOOLS_LIST = [
         },
       },
     },
+    outputSchema: OBJ(
+      {
+        text: {
+          type: "string",
+          description:
+            "Markdown retro report. Present when format=markdown (default). For format=json the structured payload is the full retro report object instead — properties such as session count, message volume, per-member breakdowns.",
+        },
+        ...ERROR_SHAPE,
+      },
+      "Retro result: { text } for markdown, full report object for json, { error } on invalid duration.",
+    ),
   },
   {
     name: "debug",
@@ -149,6 +279,13 @@ export const TOOLS_LIST = [
       type: "object" as const,
       properties: {},
     },
+    outputSchema: OBJ(
+      {
+        clients: { type: "array", items: { type: "object", additionalProperties: true } },
+        cursors: { type: "array", items: { type: "object", additionalProperties: true } },
+      },
+      "Daemon internals — shape varies by daemon build; always at least { clients, cursors }.",
+    ),
   },
   {
     name: "filter",
@@ -174,5 +311,22 @@ export const TOOLS_LIST = [
       },
       required: [],
     },
+    outputSchema: OBJ(
+      {
+        set: { type: "boolean" },
+        mode: { type: "string", enum: ["focus", "normal", "ambient"] },
+        until: {
+          type: ["string", "null"],
+          description: "ISO timestamp at which mute expires; null when no expiry.",
+        },
+        mute: {
+          type: ["array", "null"],
+          items: { type: "string" },
+          description: "Topic globs being silenced; null when not muting anything.",
+        },
+        ...ERROR_SHAPE,
+      },
+      "Filter result: { set, mode, until, mute } on success, { error } on argument validation failure.",
+    ),
   },
 ]

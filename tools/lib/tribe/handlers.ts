@@ -141,8 +141,55 @@ export function removedTribeMethodMessage(name: string): string {
 // Types
 // ---------------------------------------------------------------------------
 
-type ToolResult = { content: Array<{ type: string; text: string }> }
+type ToolResult = {
+  content: Array<{ type: string; text: string }>
+  /**
+   * MCP-spec first-class structured payload, paired with the tool's
+   * `outputSchema` (see `tools-list.ts`). Hosts can render / validate /
+   * consume this directly instead of double-parsing an escaped-JSON-string
+   * out of `content[0].text`. Spec:
+   * `@km/infra/15623-mcp-tools-structuredcontent`.
+   *
+   * The MCP `CallToolResult` schema requires structuredContent to be an
+   * *object* — array / primitive payloads must be wrapped (the `jsonResult`
+   * helper below does this automatically: arrays go under `items`,
+   * primitives under `value`).
+   */
+  structuredContent?: Record<string, unknown>
+  isError?: boolean
+}
 type ToolArgs = Record<string, unknown>
+
+/**
+ * Wrap a JSON-able payload as a dual content + structuredContent MCP tool
+ * result. The `content[0].text` mirrors the payload as pretty-printed JSON
+ * (backward compatible — pre-15623 hosts that only know `content` still see
+ * the data); the `structuredContent` field carries the same payload as a
+ * first-class object so structuredContent-aware hosts can render it
+ * natively without the escaped-string envelope.
+ *
+ * For string-typed responses (e.g. retro markdown), pass `text` to override
+ * the JSON-stringified text with a raw human-readable variant; the
+ * structured payload is still wrapped as `{ text }` so the schema match
+ * holds.
+ *
+ * Spec: @km/infra/15623-mcp-tools-structuredcontent.
+ */
+function jsonResult(payload: unknown, opts?: { text?: string }): ToolResult {
+  const structured = ensureRecord(payload)
+  const text = opts?.text ?? JSON.stringify(payload, null, 2)
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: structured,
+  }
+}
+
+function ensureRecord(payload: unknown): Record<string, unknown> {
+  if (payload === null || payload === undefined) return {}
+  if (Array.isArray(payload)) return { items: payload }
+  if (typeof payload === "object") return payload as Record<string, unknown>
+  return { value: payload }
+}
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -250,14 +297,7 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
     to: a.to,
     message_id: result.id,
   })
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ sent: true, id: result.id }),
-      },
-    ],
-  }
+  return jsonResult({ sent: true, id: result.id })
 }
 
 function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
@@ -324,7 +364,7 @@ function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): Tool
       parent: parent && parent !== r.name ? parent : undefined,
     }
   })
-  return { content: [{ type: "text", text: JSON.stringify({ sessions }, null, 2) }] }
+  return jsonResult({ sessions })
 }
 
 function handleRename(
@@ -342,12 +382,12 @@ function handleRename(
   // handler still validates, broadcasts "Member X is now X", and emits a
   // session.renamed event — pure noise.
   if (newName === ctx.getName()) {
-    return { content: [{ type: "text", text: JSON.stringify({ renamed: false, name: newName }) }] }
+    return jsonResult({ renamed: false, name: newName })
   }
   // Validate name format
   const nameError = validateName(newName)
   if (nameError) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: nameError }) }] }
+    return jsonResult({ error: nameError })
   }
   // Check if name is taken. If the holder is a non-active (dead / disconnected)
   // session, reclaim the name — tombstone the old row so journaled messages
@@ -361,14 +401,7 @@ function handleRename(
     const isActive = activeIds ? activeIds.has(existing.id) : true
     if (isActive) {
       const existing_names = listActiveSessionNames(ctx, activeIds)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: `Name "${newName}" is already taken`, existing_names }),
-          },
-        ],
-      }
+      return jsonResult({ error: `Name "${newName}" is already taken`, existing_names })
     }
     // Tombstone the dead holder's name so the current session can claim it.
     // Format: `<name>-dead-<8-char-id-prefix>` — deterministic, preserves the
@@ -391,9 +424,7 @@ function handleRename(
   // Broadcast the rename
   sendMessage(ctx, "*", `Member "${oldName}" is now "${newName}"`, "notify")
   logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: newName })
-  return {
-    content: [{ type: "text", text: JSON.stringify({ renamed: true, old_name: oldName, new_name: newName }) }],
-  }
+  return jsonResult({ renamed: true, old_name: oldName, new_name: newName })
 }
 
 function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
@@ -427,7 +458,7 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
   // Validate name format
   const joinNameError = validateName(joinName)
   if (joinNameError) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: joinNameError }) }] }
+    return jsonResult({ error: joinNameError })
   }
 
   // Check if name is taken. Like handleRename, reclaim from non-active holders
@@ -501,21 +532,14 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
     rejoin: true,
   })
 
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          joined: true,
-          name: joinName,
-          role: joinRole,
-          domains: joinDomains,
-          delivery,
-          previous_name: joinName !== prevName ? prevName : undefined,
-        }),
-      },
-    ],
-  }
+  return jsonResult({
+    joined: true,
+    name: joinName,
+    role: joinRole,
+    domains: joinDomains,
+    delivery,
+    previous_name: joinName !== prevName ? prevName : undefined,
+  })
 }
 
 function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
@@ -605,14 +629,7 @@ function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
   // the bearly daemon stays km-agnostic for standalone deployments.
   const reconciler = readReconcilerSnapshot()
   if (reconciler) result.reconciler = reconciler
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(result, null, 2),
-      },
-    ],
-  }
+  return jsonResult(result)
 }
 
 function handleReload(ctx: TribeContext, a: ToolArgs, cleanup: () => void): ToolResult {
@@ -641,9 +658,7 @@ function handleReload(ctx: TribeContext, a: ToolArgs, cleanup: () => void): Tool
     process.kill(process.pid, "SIGHUP")
   }, 100) // small delay so the tool response gets sent first
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ reloading: true, reason, pid: process.pid }) }],
-  }
+  return jsonResult({ reloading: true, reason, pid: process.pid })
 }
 
 async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> {
@@ -654,13 +669,19 @@ async function handleRetro(ctx: TribeContext, a: ToolArgs): Promise<ToolResult> 
     try {
       sinceMs = parseDuration(sinceStr)
     } catch {
-      return { content: [{ type: "text", text: JSON.stringify({ error: `Invalid duration: "${sinceStr}"` }) }] }
+      return jsonResult({ error: `Invalid duration: "${sinceStr}"` })
     }
   }
   const fmt = (a.format as string) ?? "markdown"
   const report = generateRetro(ctx.db, sinceMs)
-  const text = fmt === "json" ? JSON.stringify(report, null, 2) : formatMarkdown(report)
-  return { content: [{ type: "text", text }] }
+  // Retro is one of the two string-typed tool results (markdown vs json) —
+  // we still emit `structuredContent: { text }` so the shape contract is
+  // uniform; chat-surface shows the markdown / pretty JSON as-is.
+  if (fmt === "json") {
+    return jsonResult(report)
+  }
+  const markdown = formatMarkdown(report)
+  return jsonResult({ text: markdown }, { text: markdown })
 }
 
 function handleDebug(_ctx: TribeContext, _a: ToolArgs, opts: HandlerOpts): ToolResult {
@@ -674,7 +695,7 @@ function handleDebug(_ctx: TribeContext, _a: ToolArgs, opts: HandlerOpts): ToolR
         clients: opts.getActiveSessionInfo(),
         cursors: [],
       }
-  return { content: [{ type: "text", text: JSON.stringify(state) }] }
+  return jsonResult(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +731,7 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
   const limit = typeof a.limit === "number" && a.limit > 0 && a.limit <= 500 ? a.limit : 50
   const topics = normalizeStringArray(a.topics)
   if (a.topics !== undefined && topics === null) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: "topics must be an array of strings." }) }] }
+    return jsonResult({ error: "topics must be an array of strings." })
   }
 
   const cursor = ctx.stmts.getInboxCursor.get({ $id: ctx.sessionId }) as { last_inbox_pull_seq: number } | null
@@ -721,7 +742,7 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
 
   const ids = normalizeStringArray(a.ids)
   if (a.ids !== undefined && ids === null) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: "ids must be an array of strings." }) }] }
+    return jsonResult({ error: "ids must be an array of strings." })
   }
 
   if (ids && ids.length > 0) {
@@ -817,14 +838,7 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
     topic: r.topic,
     room_id: r.room_id,
   }))
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ events, cursor: outputCursor }, null, 2),
-      },
-    ],
-  }
+  return jsonResult({ events, cursor: outputCursor })
 }
 
 function normalizeStringArray(value: unknown): string[] | null {
@@ -858,30 +872,19 @@ function matchesGlob(globs: string[], value: string | null): boolean {
 function handleFilter(ctx: TribeContext, a: ToolArgs): ToolResult {
   const rawMode = a.mode
   if (rawMode !== undefined && rawMode !== "focus" && rawMode !== "normal" && rawMode !== "ambient") {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ error: `Invalid mode: "${String(rawMode)}". Use focus|normal|ambient.` }),
-        },
-      ],
-    }
+    return jsonResult({ error: `Invalid mode: "${String(rawMode)}". Use focus|normal|ambient.` })
   }
   const mode = (rawMode as string | undefined) ?? "normal"
 
   const rawUntil = a.until
   if (rawUntil !== undefined && (typeof rawUntil !== "number" || rawUntil < 0)) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ error: "until must be a non-negative unix-ms timestamp." }) }],
-    }
+    return jsonResult({ error: "until must be a non-negative unix-ms timestamp." })
   }
   const until = (rawUntil as number | undefined) ?? null
 
   const rawMute = a.mute
   if (rawMute !== undefined && (!Array.isArray(rawMute) || rawMute.some((topic) => typeof topic !== "string"))) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ error: "mute must be an array of strings." }) }],
-    }
+    return jsonResult({ error: "mute must be an array of strings." })
   }
   const mute = Array.isArray(rawMute) && rawMute.length > 0 ? JSON.stringify(rawMute) : null
 
@@ -893,17 +896,10 @@ function handleFilter(ctx: TribeContext, a: ToolArgs): ToolResult {
     $now: Date.now(),
   })
 
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          set: true,
-          mode,
-          until: until !== null ? new Date(until).toISOString() : null,
-          mute: Array.isArray(rawMute) ? rawMute : null,
-        }),
-      },
-    ],
-  }
+  return jsonResult({
+    set: true,
+    mode,
+    until: until !== null ? new Date(until).toISOString() : null,
+    mute: Array.isArray(rawMute) ? rawMute : null,
+  })
 }

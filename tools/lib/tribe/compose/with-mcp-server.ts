@@ -54,6 +54,19 @@ export interface McpToolMetadata {
     readonly properties?: Record<string, unknown>
     readonly required?: readonly string[]
   } & Record<string, unknown>
+  /**
+   * MCP-spec output schema declaring the shape of `structuredContent` the
+   * tool's result will carry. Paired with the tool's
+   * `result.structuredContent`. Hosts that consume structuredContent can
+   * validate / render the payload directly instead of double-parsing an
+   * escaped-JSON string out of `content[0].text`. See
+   * `@km/infra/15623-mcp-tools-structuredcontent`.
+   */
+  readonly outputSchema?: {
+    readonly type: "object"
+    readonly properties?: Record<string, unknown>
+    readonly required?: readonly string[]
+  } & Record<string, unknown>
 }
 
 /** Minimal capabilities surface — extend if/when the daemon adds resources etc. */
@@ -118,10 +131,34 @@ export interface WithMCPServer {
   }
 }
 
-/** MCP `tools/call` content shape. */
+/** MCP `tools/call` content shape — content + optional structuredContent. */
 interface McpToolCallResult {
   content: Array<{ type: "text"; text: string }>
+  /**
+   * MCP-spec first-class structured payload. Hosts that consume this
+   * skip the JSON-string-in-text round-trip. See
+   * `@km/infra/15623-mcp-tools-structuredcontent`. The fallback wrappers
+   * in this file (auto-wrap of registry handlers that return raw payloads
+   * instead of MCP-shaped results) emit BOTH content + structuredContent
+   * so structuredContent-aware hosts get the clean payload and pre-15623
+   * hosts still see the JSON-text fallback.
+   */
+  structuredContent?: Record<string, unknown>
   isError?: boolean
+}
+
+function ensureRecordContent(payload: unknown): Record<string, unknown> {
+  if (payload === null || payload === undefined) return {}
+  if (Array.isArray(payload)) return { items: payload }
+  if (typeof payload === "object") return payload as Record<string, unknown>
+  return { value: payload }
+}
+
+function wrapAsToolResult(result: unknown): McpToolCallResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(result) }],
+    structuredContent: ensureRecordContent(result),
+  }
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-03-26"
@@ -133,16 +170,28 @@ function buildToolListEntry(
   metadata: McpToolMetadata | undefined,
 ): McpToolMetadata {
   // Prefer registry-native metadata; fall back to the passed-in catalog;
-  // last resort is a permissive empty-object schema.
+  // last resort is a permissive empty-object schema. outputSchema only
+  // comes from the metadata catalog today — there is no registry-native
+  // outputSchema field — but adding it later is backward-compatible.
   if (description !== undefined && schema !== undefined) {
-    return { name, description, inputSchema: schema as McpToolMetadata["inputSchema"] }
+    const entry: McpToolMetadata = { name, description, inputSchema: schema as McpToolMetadata["inputSchema"] }
+    if (metadata?.outputSchema) {
+      // Reattach catalog outputSchema even when the registry provided the
+      // primary metadata — outputSchema is a separate axis. See
+      // @km/infra/15623-mcp-tools-structuredcontent.
+      return { ...entry, outputSchema: metadata.outputSchema }
+    }
+    return entry
   }
   if (metadata) {
-    return {
+    const inputSchema = (schema as McpToolMetadata["inputSchema"] | undefined) ?? metadata.inputSchema
+    const entry: McpToolMetadata = {
       name,
       description: description ?? metadata.description,
-      inputSchema: (schema as McpToolMetadata["inputSchema"] | undefined) ?? metadata.inputSchema,
+      inputSchema,
     }
+    if (metadata.outputSchema) return { ...entry, outputSchema: metadata.outputSchema }
+    return entry
   }
   return {
     name,
@@ -206,7 +255,7 @@ export function withMCPServer<T extends BaseTribe & WithDispatcher & WithTools>(
         if (dispatchPromise !== undefined) {
           const result = await dispatchPromise
           if (isMcpContentResult(result)) return result
-          return { content: [{ type: "text", text: JSON.stringify(result) }] }
+          return wrapAsToolResult(result)
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -228,7 +277,7 @@ export function withMCPServer<T extends BaseTribe & WithDispatcher & WithTools>(
       try {
         const result = await tool.handler(args, { connId: ctx.connId, extra })
         if (isMcpContentResult(result)) return result
-        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+        return wrapAsToolResult(result)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return {
