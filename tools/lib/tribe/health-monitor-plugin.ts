@@ -184,8 +184,7 @@ export function computeBroadcastTargets(args: {
   allSessionNames: string[]
   hasUnattributed: boolean
 }): string[] {
-  const shouldFanOut =
-    args.severity === "critical" || args.attributedSessions.size === 0 || args.hasUnattributed
+  const shouldFanOut = args.severity === "critical" || args.attributedSessions.size === 0 || args.hasUnattributed
   if (!shouldFanOut) return []
   return args.allSessionNames.filter((name) => !args.attributedSessions.has(name))
 }
