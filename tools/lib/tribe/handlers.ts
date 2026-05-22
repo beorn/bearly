@@ -109,6 +109,33 @@ export const TRIBE_COORD_METHODS = {
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
 
+/**
+ * Notification-semantics primer returned in every `tribe.join` response. Host-
+ * agnostic — every agent calls `tribe.join` exactly once at startup, so this is
+ * the one reliable injection point for the convention (works for silvercode,
+ * raw Claude Code, codex, anything that speaks tribe MCP). The text teaches:
+ *
+ *   1. Notifications (`from: daemon`, broadcasts `to: "*"`) are AMBIENT —
+ *      surface them in fetch reads but never act on them.
+ *   2. Direct messages addressed `to: <your name>` OR any `assign` / `query` /
+ *      `request` / `verdict` typed message are the ACTIONABLE channel.
+ *   3. When an actionable message needs no response and no comment, reply with
+ *      ONLY `<ack/>` (or `<ack id="<msgid>"/>` to correlate) — silvercode
+ *      suppresses bare-ack replies from the chat bubble, so a quiet
+ *      acknowledgement is invisible while a real reply renders normally.
+ *
+ * Bead: `@km/code/15654` (Part 1).
+ */
+export const TRIBE_JOIN_PRIMER =
+  "Tribe notification semantics: messages from `from: daemon` (github:push, " +
+  'session events, health) and broadcasts (`to: "*"`) are AMBIENT awareness ' +
+  "only — surface in `tribe.fetch` reads but DO NOT act on them. Direct " +
+  "messages addressed `to: <your name>`, or any message with " +
+  "`type: assign`/`query`/`request`/`verdict`, are the actionable channel. " +
+  "When an actionable message needs no response and no comment, reply with " +
+  '`<ack/>` (or `<ack id="<msgid>"/>` to correlate) and nothing else — ' +
+  "silvercode suppresses bare-ack replies from the chat bubble."
+
 const REMOVED_TRIBE_METHODS = new Set([
   "tribe.broadcast",
   "tribe.history",
@@ -547,6 +574,8 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
     domains: joinDomains,
     delivery,
     previous_name: joinName !== prevName ? prevName : undefined,
+    // 15654 Part 1 — notification-semantics primer. See TRIBE_JOIN_PRIMER docstring.
+    primer: TRIBE_JOIN_PRIMER,
   })
 }
 
