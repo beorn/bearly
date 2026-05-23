@@ -37,7 +37,8 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 5000, int
 async function spawnDaemon(socketPath: string, dbPath: string, extra: string[] = []): Promise<ChildProcess> {
   const child = spawn(
     process.execPath,
-    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "-1", ...extra],
+    // @km/agent/15071 — bumped off `-1` to clean up daemons after test crashes.
+    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "120", ...extra],
     {
       stdio: ["ignore", "ignore", "pipe"],
       env: {

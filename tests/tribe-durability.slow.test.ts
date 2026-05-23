@@ -43,7 +43,10 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 5000, int
 async function spawnDaemon(socketPath: string, dbPath: string): Promise<ChildProcess> {
   const child = spawn(
     process.execPath,
-    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "-1"],
+    // @km/agent/15071 — `-1` (infinite) leaked daemons after test crashes;
+    // `120` keeps the daemon alive across the test (runs in seconds) but
+    // self-terminates within ~2min of last client socket close.
+    [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "120"],
     {
       stdio: ["ignore", "ignore", "pipe"],
       env: {

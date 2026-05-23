@@ -53,7 +53,8 @@ function killProcess(proc: ChildProcess | null, signal: NodeJS.Signals = "SIGTER
 
 async function spawnDaemon(socketPath: string, dbPath: string): Promise<ChildProcess> {
   let stderr = ""
-  const child = spawn(BUN_BIN, [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "-1"], {
+  // @km/agent/15071 — bumped off `-1` to clean up daemons after test crashes.
+  const child = spawn(BUN_BIN, [DAEMON_SCRIPT, "--socket", socketPath, "--db", dbPath, "--quit-timeout", "120"], {
     cwd: BEARLY_ROOT,
     stdio: ["ignore", "ignore", "pipe"],
     env: {
