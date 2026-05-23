@@ -26,6 +26,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { withSocketServer } from "../tools/lib/tribe/compose/with-socket-server.ts"
+import type { BaseTribe } from "../tools/lib/tribe/compose/base.ts"
+import type { WithConfig } from "../tools/lib/tribe/compose/with-config.ts"
 
 interface DeferredScope {
   defer(fn: () => void): void
@@ -101,7 +103,7 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     const socketPath = freshSocketPath()
     const tribe = makeFakeTribe({ socketPath, inheritFd: null }, scope)
 
-    const result = withSocketServer<typeof tribe>()(tribe as never)
+    const result = withSocketServer<BaseTribe & WithConfig>()(tribe as never)
     // Bind is async (server.listen with callback); wait one tick for the
     // chmod path so the socket file definitively exists on disk.
     await new Promise<void>((resolve) => {
@@ -129,7 +131,7 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     const socketPath = freshSocketPath()
     const tribe = makeFakeTribe({ socketPath, inheritFd: null }, scope)
 
-    const result = withSocketServer<typeof tribe>()(tribe as never)
+    const result = withSocketServer<BaseTribe & WithConfig>()(tribe as never)
     await new Promise<void>((resolve) => {
       const ready = (): void => {
         if (existsSync(socketPath)) resolve()
@@ -176,7 +178,7 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     const socketPath = freshSocketPath()
     const tribe = makeFakeTribe({ socketPath, inheritFd: null }, scope)
 
-    const result = withSocketServer<typeof tribe>()(tribe as never)
+    const result = withSocketServer<BaseTribe & WithConfig>()(tribe as never)
     await new Promise<void>((resolve) => {
       const ready = (): void => {
         if (existsSync(socketPath)) resolve()
@@ -199,7 +201,7 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     const scope = makeScope()
     const socketPath = freshSocketPath()
     const tribe = makeFakeTribe({ socketPath, inheritFd: null }, scope)
-    const result = withSocketServer<typeof tribe>()(tribe as never)
+    const result = withSocketServer<BaseTribe & WithConfig>()(tribe as never)
     expect(result.socket.handedOff).toBe(false)
     scope.dispose()
   })
