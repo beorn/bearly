@@ -329,4 +329,65 @@ export const TOOLS_LIST = [
       "Filter result: { set, mode, until, mute } on success, { error } on argument validation failure.",
     ),
   },
+  {
+    name: "lifecycle.publish",
+    description:
+      "Publish this session's latest tool-call-lifecycle snapshot. Daemon caches last-write-wins per session name; chief / observers read via tribe.lifecycle. Payload schema is opaque to the daemon (owned by the publisher).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        snapshot: {
+          type: "object",
+          description:
+            "Opaque lifecycle snapshot. Publisher-owned shape (e.g. { currentState, activeTool, elapsedMs, softDeadlineMs, hardDeadlineMs }). Daemon stores verbatim.",
+          additionalProperties: true,
+        },
+      },
+      required: ["snapshot"],
+    },
+    outputSchema: OBJ(
+      {
+        published: { type: "boolean" },
+        sessionName: { type: "string", description: "The publishing session's tribe name (lookup key)." },
+        receivedAt: { type: "string", description: "ISO timestamp when the daemon received the snapshot." },
+        ...ERROR_SHAPE,
+      },
+      "Publish result: { published, sessionName, receivedAt } on success, { error } when the daemon's lifecycle store is unavailable or snapshot is missing.",
+    ),
+  },
+  {
+    name: "lifecycle",
+    description:
+      "Read the latest tool-call-lifecycle snapshot for a session (or all sessions). Diagnostic surface for chief / observers — see @km/infra/15630-stuck-agent-observability § S4.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        session: {
+          type: "string",
+          description: "Tribe session name (e.g. @agent/8). Omit to list every cached snapshot, newest first.",
+        },
+      },
+    },
+    outputSchema: OBJ(
+      {
+        session: {
+          type: "string",
+          description: "Echoed back when querying a single session. Omitted on list-all.",
+        },
+        snapshot: {
+          type: ["object", "null"],
+          description:
+            "Single-session result: { sessionName, sessionId, receivedAt (ISO), payload } or null when nothing has been published. Omitted on list-all.",
+          additionalProperties: true,
+        },
+        snapshots: {
+          type: "array",
+          description: "List-all result: every cached snapshot, newest first. Omitted when querying a single session.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ...ERROR_SHAPE,
+      },
+      "Lifecycle result: { session, snapshot } per-session, { snapshots } list-all, { error } on validation failure.",
+    ),
+  },
 ]

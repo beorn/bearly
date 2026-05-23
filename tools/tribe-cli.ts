@@ -503,6 +503,47 @@ program
     }
   })
 
+program
+  .command("lifecycle")
+  .description(
+    "Show the latest tool-call-lifecycle snapshot for a session (or all sessions). Diagnostic surface for chief — see @km/infra/15630-stuck-agent-observability § S4.",
+  )
+  .argument("[session]", "Session name to inspect (e.g. @agent/8). Omit to list every cached snapshot, newest first.")
+  .option("--json", "Emit raw JSON (default: pretty-printed)")
+  .action(async (session: string | undefined, opts: { json?: boolean }) => {
+    const params: Record<string, unknown> = {}
+    if (session) params.session = session
+    const result = (await callDaemon("tribe.lifecycle", params)) as
+      | { session?: string; snapshot?: unknown; snapshots?: unknown[]; error?: string }
+      | undefined
+    if (!result) {
+      console.error("tribe lifecycle: empty response from daemon")
+      process.exit(1)
+    }
+    if (result.error) {
+      console.error(`tribe lifecycle: ${result.error}`)
+      process.exit(1)
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2))
+      return
+    }
+    if (session) {
+      if (result.snapshot === null) {
+        console.log(`No lifecycle snapshot published for ${session}.`)
+        return
+      }
+      console.log(JSON.stringify(result.snapshot, null, 2))
+      return
+    }
+    const snapshots = Array.isArray(result.snapshots) ? result.snapshots : []
+    if (snapshots.length === 0) {
+      console.log("No lifecycle snapshots cached. Sessions publish on each tool-call state transition.")
+      return
+    }
+    for (const snap of snapshots) console.log(JSON.stringify(snap, null, 2))
+  })
+
 // ── install / uninstall / doctor — Claude Code setup ────────────────────
 
 program

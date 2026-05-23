@@ -42,6 +42,7 @@ import {
 import { detectRole, resolveProjectId, type TribeRole } from "../config.ts"
 import { createTribeContext, type TribeContext } from "../context.ts"
 import { handleToolCall, isRemovedTribeMethod, removedTribeMethodMessage, TRIBE_COORD_METHODS } from "../handlers.ts"
+import { createLifecycleStore } from "../lifecycle-store.ts"
 import { logEvent, sendMessage } from "../messaging.ts"
 import { registerSession, NameConflictError } from "../session.ts"
 import { adoptByPidCwd, adoptIdentity, resolveName, type PriorSession } from "../resolve-name.ts"
@@ -135,6 +136,13 @@ export function withDispatcher<
       })
     }
 
+    /** In-memory per-session lifecycle-snapshot cache. Last-write-wins;
+     *  lost on daemon restart by design (sessions re-publish on the next
+     *  state transition). Wired via `getLifecycleStore` so direct-handler
+     *  callers (smoke harness, tests) can opt out by omitting the
+     *  accessor. See `@km/infra/15630-stuck-agent-observability` § S4. */
+    const lifecycleStore = createLifecycleStore()
+
     /** No-op handler opts for daemon-side tool calls. */
     const DAEMON_HANDLER_OPTS = {
       cleanup: () => {},
@@ -142,6 +150,7 @@ export function withDispatcher<
       setUserRenamed: () => {},
       getActiveSessionIds: () => registry.getActiveSessionIds(),
       getActiveSessionInfo: () => registry.getActiveSessionInfo(),
+      getLifecycleStore: () => lifecycleStore,
       getDebugState: () => ({
         clients: Array.from(clients.values()).map((c) => ({
           id: c.ctx.sessionId,
@@ -398,7 +407,9 @@ export function withDispatcher<
           case TRIBE_COORD_METHODS.reload:
           case TRIBE_COORD_METHODS.retro:
           case TRIBE_COORD_METHODS.debug:
-          case TRIBE_COORD_METHODS.filter: {
+          case TRIBE_COORD_METHODS.filter:
+          case TRIBE_COORD_METHODS.lifecyclePublish:
+          case TRIBE_COORD_METHODS.lifecycle: {
             const client = clients.get(connId)
             const ctx = client?.ctx ?? daemonCtx
             const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)

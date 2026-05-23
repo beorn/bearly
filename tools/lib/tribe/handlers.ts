@@ -12,6 +12,7 @@ import { validateName, sanitizeMessage } from "./validation.ts"
 import { sendMessage, logEvent } from "./messaging.ts"
 import { isPidAlive as pidStillAlive } from "./session.ts"
 import { senderMayUseRegisteredTrustTopic, type SessionRoster } from "./trust.ts"
+import type { LifecycleStore, LifecycleSnapshotRecord } from "./lifecycle-store.ts"
 
 // ---------------------------------------------------------------------------
 // Reconciler snapshot — read-only view into chief-reconciler output, surfaced
@@ -105,6 +106,8 @@ export const TRIBE_COORD_METHODS = {
   retro: "tribe.retro",
   debug: "tribe.debug",
   filter: "tribe.filter",
+  lifecyclePublish: "tribe.lifecycle.publish",
+  lifecycle: "tribe.lifecycle",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -247,6 +250,13 @@ export type HandlerOpts = {
    *  handlers directly can omit this — `tribe.debug` then returns a minimal
    *  snapshot synthesized from the other accessors). */
   getDebugState?: () => Record<string, unknown>
+  /** Optional: per-session lifecycle-snapshot cache (last-write-wins).
+   *  Returns the daemon's singleton store; omitted when running handlers
+   *  outside the daemon (tests, smoke harness) — `tribe.lifecycle.publish`
+   *  / `tribe.lifecycle` then return an `error` field explaining that the
+   *  store isn't available, instead of throwing. See `lifecycle-store.ts`
+   *  + `@km/infra/15630-stuck-agent-observability` § S4. */
+  getLifecycleStore?: () => LifecycleStore
 }
 
 export function handleToolCall(
@@ -276,6 +286,10 @@ export function handleToolCall(
       return handleDebug(ctx, a, opts)
     case TRIBE_COORD_METHODS.filter:
       return handleFilter(ctx, a)
+    case TRIBE_COORD_METHODS.lifecyclePublish:
+      return handleLifecyclePublish(ctx, a, opts)
+    case TRIBE_COORD_METHODS.lifecycle:
+      return handleLifecycle(a, opts)
     default:
       if (REMOVED_TRIBE_METHODS.has(name)) {
         throw new Error(removedTribeMethodMessage(name))
@@ -939,4 +953,62 @@ function handleFilter(ctx: TribeContext, a: ToolArgs): ToolResult {
     until: until !== null ? new Date(until).toISOString() : null,
     mute: Array.isArray(rawMute) ? rawMute : null,
   })
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle snapshots — per-session diagnostic cache.
+//
+// A session publishes its tool-call-lifecycle snapshot on every state
+// transition (S1 of `@km/infra/15630-stuck-agent-observability`); chief
+// / observers read the latest snapshot to diagnose stuck-agent situations.
+// The daemon is opaque about the payload shape — the publisher owns the
+// schema. See `lifecycle-store.ts` for the in-memory store, and the bead
+// body for the larger architecture (S1 reducer, S2 observer, S3 typed
+// diagnostic ChatEvent, S4 = this surface + chief introspection).
+// ---------------------------------------------------------------------------
+
+function lifecycleSnapshotJson(record: LifecycleSnapshotRecord): Record<string, unknown> {
+  return {
+    sessionName: record.sessionName,
+    sessionId: record.sessionId,
+    receivedAt: new Date(record.receivedAt).toISOString(),
+    payload: record.payload,
+  }
+}
+
+function handleLifecyclePublish(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
+  const store = opts.getLifecycleStore?.()
+  if (!store) {
+    return jsonResult({ error: "lifecycle store unavailable (daemon required)" })
+  }
+  const payload = a.snapshot
+  if (payload === undefined || payload === null) {
+    return jsonResult({ error: "snapshot field is required" })
+  }
+  const record = store.set(ctx.getName(), ctx.sessionId, payload, Date.now())
+  return jsonResult({
+    published: true,
+    sessionName: record.sessionName,
+    receivedAt: new Date(record.receivedAt).toISOString(),
+  })
+}
+
+function handleLifecycle(a: ToolArgs, opts: HandlerOpts): ToolResult {
+  const store = opts.getLifecycleStore?.()
+  if (!store) {
+    return jsonResult({ error: "lifecycle store unavailable (daemon required)" })
+  }
+  const sessionArg = a.session
+  if (sessionArg !== undefined && typeof sessionArg !== "string") {
+    return jsonResult({ error: "session field must be a string when provided" })
+  }
+  if (typeof sessionArg === "string" && sessionArg.length > 0) {
+    const record = store.get(sessionArg)
+    if (!record) {
+      return jsonResult({ session: sessionArg, snapshot: null })
+    }
+    return jsonResult({ session: sessionArg, snapshot: lifecycleSnapshotJson(record) })
+  }
+  // No session arg → return all known snapshots, newest first.
+  return jsonResult({ snapshots: store.list().map(lifecycleSnapshotJson) })
 }

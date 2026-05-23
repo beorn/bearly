@@ -76,7 +76,20 @@ describe("tribe API minimal surface", () => {
   it("registers only the public verbs plus admin verbs — no chief verbs (F12)", () => {
     const names = TOOLS_LIST.map((t) => t.name).sort()
     expect(names).toEqual(
-      ["debug", "fetch", "filter", "health", "join", "members", "reload", "rename", "retro", "send"].sort(),
+      [
+        "debug",
+        "fetch",
+        "filter",
+        "health",
+        "join",
+        "lifecycle",
+        "lifecycle.publish",
+        "members",
+        "reload",
+        "rename",
+        "retro",
+        "send",
+      ].sort(),
     )
     // F12 of @km/tribe/15496-coordination-drift — the tribe-wire daemon is
     // role-agnostic; chief coordination verbs were removed entirely.
