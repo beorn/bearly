@@ -77,7 +77,9 @@ export function openDatabase(path: string): Database {
 		ts         INTEGER NOT NULL,
 		delivery   TEXT NOT NULL DEFAULT 'push',
 		topic      TEXT,
-		room_id    TEXT
+		room_id    TEXT,
+		request    TEXT,
+		reply      TEXT
 	)`)
 
   db.run(`CREATE TABLE IF NOT EXISTS messages_archive (
@@ -94,7 +96,24 @@ export function openDatabase(path: string): Database {
 		delivery    TEXT NOT NULL DEFAULT 'push',
 		topic       TEXT,
 		room_id     TEXT,
-		archived_at INTEGER NOT NULL
+		archived_at INTEGER NOT NULL,
+		request     TEXT,
+		reply       TEXT
+	)`)
+
+  // Ball-tracker: per-(request_id, recipient) row for every open request.
+  // See @km/tribe/message-ball-tracker. Sender opens a tracked request by
+  // sending a message with `request=<id>`; recipient closes it by replying
+  // with `reply=<id>`. Multi-target (`to: [...]`) and broadcast (`to: "*"`)
+  // both produce one row per resolved recipient.
+  db.run(`CREATE TABLE IF NOT EXISTS pending_request (
+		request_id TEXT NOT NULL,
+		recipient  TEXT NOT NULL,
+		sender     TEXT NOT NULL,
+		opened_at  INTEGER NOT NULL,
+		message_id TEXT NOT NULL,
+		fanout     TEXT NOT NULL DEFAULT 'first',
+		PRIMARY KEY (request_id, recipient)
 	)`)
 
   // `cursors` and `reads` tables removed by migration v9 — the event-bus
@@ -169,6 +188,8 @@ export function openDatabase(path: string): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_archive_ts ON messages_archive(ts)")
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_archive_seq ON messages_archive(seq)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_pending_recipient ON pending_request(recipient)")
+  db.run("CREATE INDEX IF NOT EXISTS idx_pending_sender ON pending_request(sender)")
 
   return db
 }
@@ -639,6 +660,48 @@ const MIGRATIONS: readonly Migration[] = [
       )
       if (!cols.has("account")) db.run("ALTER TABLE sessions ADD COLUMN account TEXT")
       if (!cols.has("provider")) db.run("ALTER TABLE sessions ADD COLUMN provider TEXT")
+    },
+  },
+  {
+    version: 16,
+    name: "ball-tracker-request-reply",
+    up(db) {
+      // @km/tribe/message-ball-tracker — add `request` + `reply` columns to
+      // messages + messages_archive so the daemon can track "who has the
+      // ball" on tracked requests. Plus pending_request table holds one row
+      // per (request_id, recipient) for fanout semantics (1:1, multi-target,
+      // broadcast). See bead body for full design.
+      const hasMessages = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get() as {
+        name: string
+      } | null
+      if (hasMessages) {
+        const msgCols = new Set(
+          (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name),
+        )
+        if (!msgCols.has("request")) db.run("ALTER TABLE messages ADD COLUMN request TEXT")
+        if (!msgCols.has("reply")) db.run("ALTER TABLE messages ADD COLUMN reply TEXT")
+      }
+      const hasArchive = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_archive'")
+        .get() as { name: string } | null
+      if (hasArchive) {
+        const archCols = new Set(
+          (db.prepare("PRAGMA table_info(messages_archive)").all() as Array<{ name: string }>).map((r) => r.name),
+        )
+        if (!archCols.has("request")) db.run("ALTER TABLE messages_archive ADD COLUMN request TEXT")
+        if (!archCols.has("reply")) db.run("ALTER TABLE messages_archive ADD COLUMN reply TEXT")
+      }
+      db.run(`CREATE TABLE IF NOT EXISTS pending_request (
+				request_id TEXT NOT NULL,
+				recipient  TEXT NOT NULL,
+				sender     TEXT NOT NULL,
+				opened_at  INTEGER NOT NULL,
+				message_id TEXT NOT NULL,
+				fanout     TEXT NOT NULL DEFAULT 'first',
+				PRIMARY KEY (request_id, recipient)
+			)`)
+      db.run("CREATE INDEX IF NOT EXISTS idx_pending_recipient ON pending_request(recipient)")
+      db.run("CREATE INDEX IF NOT EXISTS idx_pending_sender ON pending_request(sender)")
     },
   },
 ]
