@@ -55,6 +55,22 @@ export const TOOLS_LIST = [
         },
         bead: { type: "string", description: "Associated bead ID (optional)" },
         ref: { type: "string", description: "Reference to a previous message ID (optional)" },
+        request: {
+          oneOf: [{ type: "string" }, { type: "boolean" }],
+          description:
+            "Ball-tracker: open a tracked request. Pass `true` for the convention `request_id == message_id` (most common), or a string to bind to an existing request id. Recipient(s) own the ball until a message with `reply=<id>` arrives. See @km/tribe/message-ball-tracker.",
+        },
+        reply: {
+          type: "string",
+          description: "Ball-tracker: close the tracked request with the given id. Releases the ball.",
+        },
+        fanout: {
+          type: "string",
+          enum: ["first", "all"],
+          description:
+            "Multi-recipient ball routing: 'first' (default, AMQP competing-consumers) or 'all' (per-recipient ball). Phase 2a applies only to single-recipient/explicit cases; broadcast/multi-target fanout is Phase 2b.",
+          default: "first",
+        },
       },
       required: ["to", "message"],
     },
@@ -65,6 +81,38 @@ export const TOOLS_LIST = [
         ...ERROR_SHAPE,
       },
       "Send result: { sent, id } on success, { error } on validation failure.",
+    ),
+  },
+  {
+    name: "pending",
+    description:
+      "Ball-tracker query: list open requests where the given owner is responsible for replying. Default owner is the caller's session. See @km/tribe/message-ball-tracker.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        owner: {
+          type: "string",
+          description: "Session name that owns the open ball. Defaults to the caller's own session.",
+        },
+        stale_ms: {
+          type: "number",
+          description: "Filter to requests opened more than this many milliseconds ago (stale-detection).",
+        },
+      },
+    },
+    outputSchema: OBJ(
+      {
+        owner: { type: "string", description: "The session whose open requests are listed." },
+        pending: {
+          type: "array",
+          description:
+            "Open requests owned by this session. Each: { request_id, sender, opened_at (ISO), age_ms, message_id, fanout }.",
+          items: { type: "object", additionalProperties: true },
+        },
+        count: { type: "number", description: "Number of open requests in the pending list." },
+        ...ERROR_SHAPE,
+      },
+      "Pending requests for owner.",
     ),
   },
   {

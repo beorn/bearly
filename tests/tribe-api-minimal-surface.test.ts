@@ -85,6 +85,7 @@ describe("tribe API minimal surface", () => {
         "lifecycle",
         "lifecycle.publish",
         "members",
+        "pending",
         "reload",
         "rename",
         "retro",

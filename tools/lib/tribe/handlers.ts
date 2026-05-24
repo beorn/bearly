@@ -108,6 +108,7 @@ export const TRIBE_COORD_METHODS = {
   filter: "tribe.filter",
   lifecyclePublish: "tribe.lifecycle.publish",
   lifecycle: "tribe.lifecycle",
+  pending: "tribe.pending",
 } as const
 
 export type TribeCoordMethod = (typeof TRIBE_COORD_METHODS)[keyof typeof TRIBE_COORD_METHODS]
@@ -290,6 +291,8 @@ export function handleToolCall(
       return handleLifecyclePublish(ctx, a, opts)
     case TRIBE_COORD_METHODS.lifecycle:
       return handleLifecycle(a, opts)
+    case TRIBE_COORD_METHODS.pending:
+      return handlePending(ctx, a, opts)
     default:
       if (REMOVED_TRIBE_METHODS.has(name)) {
         throw new Error(removedTribeMethodMessage(name))
@@ -326,6 +329,21 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
   // message types — coordination authority is an L3 concern, not a daemon one.
   const msgType = (a.type as string) ?? "notify"
   const sanitized = sanitizeMessage(a.message as string)
+  // Ball-tracker fields (@km/tribe/message-ball-tracker Phase 2a):
+  // both optional, orthogonal to `type`. `request: true` is the
+  // shorthand for "this message IS its own request id" — we resolve it
+  // post-send by passing the message id through. Explicit string forms
+  // bind to an existing request id.
+  const requestArg = a.request
+  const replyArg = a.reply
+  const fanoutArg = a.fanout as "first" | "all" | undefined
+  // For `request: true`, the request id IS the message id. sendMessage
+  // generates the message id internally, so for the truthy-shorthand case
+  // we open the pending row AFTER the insert. For string-form, we open
+  // immediately with the supplied id.
+  const requestFlag = requestArg === true
+  const requestId = typeof requestArg === "string" ? requestArg : null
+  const replyId = typeof replyArg === "string" ? replyArg : null
   const result = sendMessage(
     ctx,
     a.to as string,
@@ -333,12 +351,60 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
     msgType,
     a.bead as string | undefined,
     a.ref as string | undefined,
+    "direct",
+    {},
+    {
+      request: requestFlag ? undefined : requestId ?? undefined,
+      reply: replyId ?? undefined,
+      fanout: fanoutArg,
+    },
   )
+  // Truthy-shorthand fixup: the canonical convention is request_id == message_id.
+  // sendMessage already wrote the message; we now open the pending row using
+  // the freshly-assigned id (no second SQL insert path — same statement).
+  // Skipped for broadcast/event rows since Phase 2a is single-recipient-only.
+  if (requestFlag && (a.to as string) !== "*") {
+    ctx.stmts.openPendingRequest.run({
+      $request_id: result.id,
+      $recipient: a.to as string,
+      $sender: ctx.getName(),
+      $opened_at: result.ts,
+      $message_id: result.id,
+      $fanout: fanoutArg ?? "first",
+    })
+  }
   logEvent(ctx, `message.sent.${msgType}`, a.bead as string | undefined, {
     to: a.to,
     message_id: result.id,
   })
   return jsonResult({ sent: true, id: result.id })
+}
+
+function handlePending(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolResult {
+  // Ball-tracker pending-query (@km/tribe/message-ball-tracker Phase 2a):
+  // return open requests addressed to the given recipient (the "owner" of
+  // the open ball). Default recipient is the caller's own session name.
+  // Optional `stale_ms` filters to requests older than that threshold.
+  const owner = (a.owner as string) ?? ctx.getName()
+  const staleMs = typeof a.stale_ms === "number" ? a.stale_ms : null
+  const now = Date.now()
+  const rows = ctx.stmts.selectPendingForRecipient.all({ $recipient: owner }) as Array<{
+    request_id: string
+    sender: string
+    opened_at: number
+    message_id: string
+    fanout: string
+  }>
+  const filtered = staleMs === null ? rows : rows.filter((r) => now - r.opened_at >= staleMs)
+  const pending = filtered.map((r) => ({
+    request_id: r.request_id,
+    sender: r.sender,
+    opened_at: new Date(r.opened_at).toISOString(),
+    age_ms: now - r.opened_at,
+    message_id: r.message_id,
+    fanout: r.fanout,
+  }))
+  return jsonResult({ owner, pending, count: pending.length })
 }
 
 function handleSessions(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {

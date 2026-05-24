@@ -728,9 +728,38 @@ export function createStatements(db: Database) {
 
     insertMessage: db.prepare(`
 		INSERT INTO messages (id, type, sender, recipient, kind, content, bead_id, ref, ts,
-			delivery, topic, room_id)
+			delivery, topic, room_id, request, reply)
 		VALUES ($id, $type, $sender, $recipient, $kind, $content, $bead_id, $ref, $ts,
-			$delivery, $topic, $room_id)
+			$delivery, $topic, $room_id, $request, $reply)
+	`),
+
+    /** Ball-tracker insert: opens a new pending request (one row per recipient).
+     *  See @km/tribe/message-ball-tracker Phase 2. */
+    openPendingRequest: db.prepare(`
+		INSERT INTO pending_request (request_id, recipient, sender, opened_at, message_id, fanout)
+		VALUES ($request_id, $recipient, $sender, $opened_at, $message_id, $fanout)
+		ON CONFLICT(request_id, recipient) DO NOTHING
+	`),
+
+    /** Ball-tracker close: deletes pending_request rows for a given (request_id, recipient).
+     *  In single-recipient and multi-target cases this matches one row; in broadcast cases
+     *  with fanout='first' it deletes all rows for the request when ANY recipient replies. */
+    closePendingRequest: db.prepare(`
+		DELETE FROM pending_request WHERE request_id = $request_id AND recipient = $recipient
+	`),
+
+    /** Ball-tracker close-all: for fanout='first' on broadcast, deletes ALL rows on first reply. */
+    closePendingRequestAll: db.prepare(`
+		DELETE FROM pending_request WHERE request_id = $request_id
+	`),
+
+    /** Ball-tracker query: open requests addressed to a particular recipient (the "owner"
+     *  of the open ball). Sorted oldest-first so callers can act on the longest-pending. */
+    selectPendingForRecipient: db.prepare(`
+		SELECT request_id, sender, opened_at, message_id, fanout
+		FROM pending_request
+		WHERE recipient = $recipient
+		ORDER BY opened_at ASC
 	`),
 
     allSessions: db.prepare(

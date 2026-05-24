@@ -59,6 +59,37 @@ export type Classification = {
 }
 
 /**
+ * Ball-tracker fields — see @km/tribe/message-ball-tracker. A message with
+ * `request` opens a tracked request; a message with `reply` closes one.
+ * Both fields are optional and orthogonal to `type` (the message's
+ * free-form metadata label). Phase 2a handles single-recipient (1:1)
+ * semantics; multi-target (`to: [...]`) and broadcast (`to: "*"`) fanout
+ * is Phase 2b.
+ */
+export type BallTracker = {
+  /**
+   * If set, this message OPENS a tracked request with this id. Convention:
+   * the message id IS its own request id (the daemon stamps the message id
+   * and copies it here). Recipient(s) own the ball until a message with
+   * `reply=<id>` arrives.
+   */
+  request?: string
+  /**
+   * If set, this message CLOSES the request with the given id. The ball is
+   * released from the recipient(s).
+   */
+  reply?: string
+  /**
+   * Multi-recipient ball-routing policy when this message opens a request.
+   * - `'first'` (default): first recipient to reply closes the ball for all
+   *   others (AMQP competing-consumers shape).
+   * - `'all'`: every recipient owns their own ball; closed individually.
+   * Ignored if `request` is not set.
+   */
+  fanout?: "first" | "all"
+}
+
+/**
  * Derive the channel-envelope reply hint from the durable message metadata.
  * Replaces the persisted column dropped by migration v11 — every consumer
  * that needs the hint computes it on demand.
@@ -103,6 +134,7 @@ export function sendMessage(
   ref?: string,
   kind: MessageKind = "direct",
   classification: Classification = {},
+  ballTracker: BallTracker = {},
 ): { id: string; ts: number; rowid: number } {
   const id = randomUUID()
   const ts = Date.now()
@@ -113,6 +145,13 @@ export function sendMessage(
   // never delivered, so delivery is irrelevant — keep the column populated for
   // schema invariants.
   const delivery: Delivery = classification.delivery ?? "push"
+  // Ball-tracker: if request is set, treat it as the message-id-as-request-id
+  // convention by default (per @km/tribe/message-ball-tracker bead). Callers
+  // can pass an explicit `request` id to bind to an existing tracker, but the
+  // most common case is `request: true` semantics which we model as
+  // `request === id` post-send.
+  const requestId = ballTracker.request ?? null
+  const replyId = ballTracker.reply ?? null
   const result = ctx.stmts.insertMessage.run({
     $id: id,
     $type: type,
@@ -126,8 +165,38 @@ export function sendMessage(
     $delivery: delivery,
     $topic: classification.topic ?? null,
     $room_id: classification.roomId ?? null,
+    $request: requestId,
+    $reply: replyId,
   })
   const rowid = Number(result.lastInsertRowid)
+  // Ball-tracker side-effects: open or close pending_request rows.
+  // Phase 2a scope is single-recipient (kind='direct') only. Broadcast (`*`)
+  // and multi-target (`to: [...]`) fanout land in Phase 2b — they require
+  // recipient-snapshot resolution via room_members / explicit list. Event
+  // rows are journal-only and never participate. Closing a reply is allowed
+  // on direct rows; non-direct kinds silently skip the close as well.
+  if (resolvedKind === "direct") {
+    if (requestId) {
+      ctx.stmts.openPendingRequest.run({
+        $request_id: requestId,
+        $recipient: recipient,
+        $sender: ctx.getName(),
+        $opened_at: ts,
+        $message_id: id,
+        $fanout: ballTracker.fanout ?? "first",
+      })
+    }
+    if (replyId) {
+      // For Phase 2a we always close exactly the (request_id, recipient) row.
+      // Phase 2b will read the request's `fanout` column and close-all when
+      // fanout='first'. Single-recipient 1:1 case is unaffected — there's
+      // only one row to close.
+      ctx.stmts.closePendingRequest.run({
+        $request_id: replyId,
+        $recipient: ctx.getName(),
+      })
+    }
+  }
   ctx.onMessageInserted?.({
     id,
     ts,
@@ -173,5 +242,10 @@ export function logEvent(ctx: TribeContext, type: string, bead_id?: string, data
     $delivery: "push",
     $topic: null,
     $room_id: null,
+    // Event rows never participate in ball-tracking — they're journal-only,
+    // not addressed to anyone in particular. Columns stay populated for
+    // schema invariants.
+    $request: null,
+    $reply: null,
   })
 }
