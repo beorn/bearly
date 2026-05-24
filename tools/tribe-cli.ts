@@ -275,6 +275,71 @@ async function cmdSend(to: string, message: string): Promise<void> {
   console.log(`Sent message to ${to}`)
 }
 
+/**
+ * Parse a `tribe pending --stale <duration>` argument (NNs|NNm|NNh) into
+ * milliseconds. Returns undefined on unparseable input — the caller exits
+ * with an error so the bad arg is loud.
+ */
+function parseStaleMs(spec: string): number | undefined {
+  const match = spec.match(/^(\d+)([smh])$/)
+  if (!match) return undefined
+  const n = Number(match[1])
+  if (!Number.isFinite(n) || n < 0) return undefined
+  switch (match[2]) {
+    case "s":
+      return n * 1000
+    case "m":
+      return n * 60_000
+    case "h":
+      return n * 3_600_000
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Ball-tracker query — list open requests where `owner` is responsible for
+ * replying. Wraps the `tribe.pending` MCP tool added in
+ * @km/tribe/message-ball-tracker Phase 2a. Used by §C1 chief loop step 0.5
+ * (call with `--owner @chief --stale 15m` to surface dropped balls).
+ */
+async function cmdPending(owner: string | undefined, staleMs: number | undefined): Promise<void> {
+  const args: Record<string, unknown> = {}
+  if (owner) args.owner = owner
+  if (staleMs !== undefined) args.stale_ms = staleMs
+  const result = (await callDaemon("tribe.pending", args)) as {
+    structuredContent?: {
+      owner?: string
+      pending?: Array<{
+        request_id: string
+        sender: string
+        opened_at: string
+        age_ms: number
+        message_id: string
+        fanout: string
+      }>
+      count?: number
+    }
+  }
+  const payload = result.structuredContent
+  if (!payload) {
+    console.log("No structured result returned.")
+    return
+  }
+  const count = payload.count ?? 0
+  const displayOwner = payload.owner ?? owner ?? "(caller)"
+  if (count === 0) {
+    console.log(`No pending requests for ${displayOwner}.`)
+    return
+  }
+  console.log(`${count} pending request(s) for ${displayOwner}:`)
+  for (const p of payload.pending ?? []) {
+    const ageSec = Math.floor(p.age_ms / 1000)
+    const age = ageSec >= 60 ? `${Math.floor(ageSec / 60)}m` : `${ageSec}s`
+    console.log(`  ${p.request_id}  from ${p.sender}  ${age} ago  fanout=${p.fanout}  (msg ${p.message_id})`)
+  }
+}
+
 async function cmdHealth(): Promise<void> {
   const result = (await callDaemon("cli_health")) as {
     content: Array<{ type: string; text: string }>
@@ -443,6 +508,20 @@ program
   .argument("<to>", "Target session name")
   .argument("<message...>", "Message text")
   .action((to, message) => void cmdSend(to, message.join(" ")))
+
+program
+  .command("pending")
+  .description("List open ball-tracker requests for an owner (§C1 chief loop step 0.5)")
+  .option("-o, --owner <name>", "Owner session name (default: caller)")
+  .option("-s, --stale <duration>", "Only show requests older than this (e.g. 15m, 1h)")
+  .action((opts: { owner?: string; stale?: string }) => {
+    const stale = opts.stale ? parseStaleMs(opts.stale) : undefined
+    if (opts.stale && stale === undefined) {
+      console.error(`tribe pending: bad --stale '${opts.stale}' (expected NNs|NNm|NNh)`)
+      process.exit(2)
+    }
+    void cmdPending(opts.owner, stale)
+  })
 
 program
   .command("log")
