@@ -510,10 +510,7 @@ program
   .description("Send a message to a session")
   .argument("<to>", "Target session name")
   .argument("<message...>", "Message text")
-  .option(
-    "-t, --type <type>",
-    `Message type: ${VALID_MESSAGE_TYPES.join("|")} (default: notify)`,
-  )
+  .option("-t, --type <type>", `Message type: ${VALID_MESSAGE_TYPES.join("|")} (default: notify)`)
   .action((to, message, opts: { type?: string }) => {
     const type = opts.type ?? "notify"
     if (!(VALID_MESSAGE_TYPES as readonly string[]).includes(type)) {

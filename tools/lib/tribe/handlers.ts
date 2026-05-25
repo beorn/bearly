@@ -354,7 +354,7 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
     "direct",
     {},
     {
-      request: requestFlag ? undefined : requestId ?? undefined,
+      request: requestFlag ? undefined : (requestId ?? undefined),
       reply: replyId ?? undefined,
       fanout: fanoutArg,
     },
