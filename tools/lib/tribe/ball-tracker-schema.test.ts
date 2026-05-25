@@ -32,9 +32,7 @@ describe("ball-tracker schema (migration v16)", () => {
     const dbPath = join(tmpDir, "tribe.db")
     const db = openDatabase(dbPath)
     try {
-      const cols = (
-        db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>
-      ).map((r) => r.name)
+      const cols = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name)
       expect(cols).toContain("request")
       expect(cols).toContain("reply")
     } finally {
@@ -46,9 +44,9 @@ describe("ball-tracker schema (migration v16)", () => {
     const dbPath = join(tmpDir, "tribe.db")
     const db = openDatabase(dbPath)
     try {
-      const cols = (
-        db.prepare("PRAGMA table_info(messages_archive)").all() as Array<{ name: string }>
-      ).map((r) => r.name)
+      const cols = (db.prepare("PRAGMA table_info(messages_archive)").all() as Array<{ name: string }>).map(
+        (r) => r.name,
+      )
       expect(cols).toContain("request")
       expect(cols).toContain("reply")
     } finally {
@@ -68,7 +66,10 @@ describe("ball-tracker schema (migration v16)", () => {
       expect(names).toEqual(
         expect.arrayContaining(["request_id", "recipient", "sender", "opened_at", "message_id", "fanout"]),
       )
-      const pkCols = cols.filter((r) => r.pk > 0).map((r) => r.name).sort()
+      const pkCols = cols
+        .filter((r) => r.pk > 0)
+        .map((r) => r.name)
+        .sort()
       expect(pkCols).toEqual(["recipient", "request_id"])
     } finally {
       db.close()
@@ -91,9 +92,11 @@ describe("ball-tracker schema (migration v16)", () => {
       db.run(
         "INSERT INTO pending_request (request_id, recipient, sender, opened_at, message_id, fanout) VALUES ('req-1', '@agent/0', '@chief', 1000, 'msg-1', 'all')",
       )
-      const count = (db.prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = 'req-1'").get() as {
-        c: number
-      }).c
+      const count = (
+        db.prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = 'req-1'").get() as {
+          c: number
+        }
+      ).c
       expect(count).toBe(2)
     } finally {
       db.close()
@@ -127,16 +130,12 @@ describe("ball-tracker schema (migration v16)", () => {
     // Reopen — migration v16 should fire.
     const db = openDatabase(dbPath)
     try {
-      const cols = (
-        db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>
-      ).map((r) => r.name)
+      const cols = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((r) => r.name)
       expect(cols).toContain("request")
       expect(cols).toContain("reply")
 
       // Existing data preserved.
-      const row = db.prepare("SELECT content FROM messages WHERE id = 'm1'").get() as
-        | { content: string }
-        | null
+      const row = db.prepare("SELECT content FROM messages WHERE id = 'm1'").get() as { content: string } | null
       expect(row?.content).toBe("hello")
 
       // pending_request table created.
@@ -146,9 +145,9 @@ describe("ball-tracker schema (migration v16)", () => {
       expect(tableRow?.name).toBe("pending_request")
 
       // Schema version bumped to 16.
-      const versionRow = db.prepare("SELECT value FROM _schema_meta WHERE key = 'version'").get() as
-        | { value: string }
-        | null
+      const versionRow = db.prepare("SELECT value FROM _schema_meta WHERE key = 'version'").get() as {
+        value: string
+      } | null
       expect(Number(versionRow?.value)).toBeGreaterThanOrEqual(16)
     } finally {
       db.close()
