@@ -1,5 +1,34 @@
 # @bearly/tribe-client
 
+## 0.4.0 — 2026-05-25
+
+### Added
+
+- **`tribe` CLI binary (Phase A.MVP of `@km/bearly/tribe-cli-unify-phase-a-substrate`).**
+  The package now ships a `tribe` bin entry (`./src/cli.ts` in local dev,
+  `./dist/cli.mjs` post-publish). Subcommand dispatcher with `tribe mcp`
+  as the only subcommand in this release — runs the stdio MCP adapter
+  with the same flag surface (`--name`, `--role`, `--socket`, `--account`,
+  `--provider`, `--domains`) as the underlying `stdio-adapter.ts`. The
+  `mcp` subcommand exists to be invocable as `tribe mcp` from the bin
+  entry rather than `bun packages/tribe-client/src/stdio-adapter.ts`.
+- **`@bearly/tribe-client/cli` subpath export.** Importing the cli module
+  directly is supported for embedding scenarios; the bin entry is the
+  primary surface.
+
+### Not yet (deferred to Phase A.2)
+
+- Verb subcommands (`status`, `sessions`, `send`, `log`, `retro`,
+  `install`, `uninstall`, `doctor`, `lifecycle`, `hook`, …) — these
+  remain in `vendor/bearly/tools/tribe-cli.ts` for now. The verb
+  migration adds ~6 transitive deps from `tools/lib/tribe/`
+  (`retro.ts`, `install.ts`, `hook-dispatch.ts`, `activity-watch.ts`,
+  `autostart-config.ts`, `hooks/index.ts`); some are daemon-internal
+  (retro reads DB directly). The scope-split was chief-approved per the
+  "rename first, split later" refactor lesson — `tribe mcp` ships first
+  to unblock downstream consumers (`@bearly/tribe` plugin, daemon
+  hardening, notification renderer), verb migration follows.
+
 ## 0.3.0 — 2026-05-25
 
 ### Added
@@ -23,9 +52,9 @@
 - **`@bearly/tribe-client/lib/hot-reload`** — file-watch + re-exec helper
   (moved from `tools/lib/tribe/hot-reload.ts`).
 - **`@bearly/tribe-client/lib/transcript`** — pure `resolveTranscriptPath`
-  + `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
-  (the rest of session.ts stays in `tools/` because it is TribeContext-
-  coupled).
+  - `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
+    (the rest of session.ts stays in `tools/` because it is TribeContext-
+    coupled).
 - **`@bearly/tribe-client/lib/defang`** — vendored copy of
   `defangModelInput` from `@bearly/injection-envelope`, so the published
   tribe-client has zero plugin-cross dependencies.

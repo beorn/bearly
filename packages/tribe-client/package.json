@@ -1,9 +1,10 @@
 {
   "name": "@bearly/tribe-client",
-  "version": "0.3.0",
-  "description": "Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, parser, daemon client, auto-start, reconnection, composition primitives (pipe/Scope/Tool registry), and the stdio MCP adapter that bridges Claude Code's stdio wire to the tribe daemon socket",
+  "version": "0.4.0",
+  "description": "Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, parser, daemon client, auto-start, reconnection, composition primitives (pipe/Scope/Tool registry), the stdio MCP adapter that bridges Claude Code's stdio wire to the tribe daemon socket, and a unified `tribe` CLI binary (Phase A.MVP: `tribe mcp` subcommand only)",
   "keywords": [
     "claude-code",
+    "cli",
     "client",
     "ipc",
     "json-rpc",
@@ -22,12 +23,16 @@
     "type": "git",
     "url": "https://github.com/beorn/bearly.git"
   },
+  "bin": {
+    "tribe": "./src/cli.ts"
+  },
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./cli": "./src/cli.ts",
     "./stdio": "./src/stdio-adapter.ts",
     "./lib/socket": "./src/lib/socket.ts",
     "./lib/config": "./src/lib/config.ts",
@@ -38,10 +43,17 @@
     "./lib/defang": "./src/lib/defang.ts"
   },
   "publishConfig": {
+    "bin": {
+      "tribe": "./dist/cli.mjs"
+    },
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs"
+      },
+      "./cli": {
+        "types": "./dist/cli.d.mts",
+        "import": "./dist/cli.mjs"
       },
       "./stdio": {
         "types": "./dist/stdio-adapter.d.mts",
@@ -94,6 +106,7 @@
     "dts": true,
     "entry": [
       "src/index.ts",
+      "src/cli.ts",
       "src/stdio-adapter.ts",
       "src/lib/socket.ts",
       "src/lib/config.ts",
