@@ -96,4 +96,17 @@ export interface TribeClientApi {
 
   /** Optional: bare list of currently-connected session names. */
   getSessionNames(): string[]
+
+  /**
+   * Count + oldest-timestamp of actionable DMs addressed to `sessionName` that
+   * the session has NOT drained via `tribe.fetch` yet (rowid > last_inbox_pull_seq).
+   * Actionable = `type IN (request, query, verdict, assign)` and `kind='direct'`.
+   * Returns `{count: 0, oldestTs: 0}` when no unread or the session is unknown.
+   *
+   * Used by the chief-silent watchdog (chief-silent-watchdog-relay-pattern-detection):
+   * push delivery puts a message in the session's MCP context but does NOT advance
+   * the pull cursor — only an explicit `tribe.fetch` does. A long-lagging pull
+   * cursor is the relay-pattern signal we want to catch.
+   */
+  getUnreadDms(sessionName: string): { count: number; oldestTs: number }
 }

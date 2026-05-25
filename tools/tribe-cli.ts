@@ -343,6 +343,78 @@ async function cmdPending(owner: string | undefined, staleMs: number | undefined
   }
 }
 
+/**
+ * Inbox status — count + age of actionable DMs the target session hasn't
+ * drained via `tribe.fetch` yet. JSON when `--json` is set; otherwise a
+ * human-readable summary. Used by `.claude/hooks/chief-drain-check.sh`.
+ * Spec: @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection (Layer 2).
+ */
+async function cmdInboxStatus(opts: { session?: string; json?: boolean }): Promise<void> {
+  const session = opts.session ?? "@chief"
+  const result = (await callDaemon("cli_inbox_status", { session })) as {
+    session: string
+    unread_count: number
+    oldest_unread_age_min: number
+    oldest_unread_ts: number
+  }
+  if (opts.json) {
+    console.log(JSON.stringify(result))
+    return
+  }
+  const n = result.unread_count
+  if (n === 0) {
+    console.log(`${session}: inbox drained (0 unread actionable DMs).`)
+    return
+  }
+  console.log(
+    `${session}: ${n} unread actionable DM${n === 1 ? "" : "s"}, ` + `oldest ${result.oldest_unread_age_min}min ago.`,
+  )
+}
+
+/**
+ * Andon-pull alarm — `tribe alarm <reason>` sets a project-wide stop-the-line
+ * flag. The chief-drain-check.sh PreToolUse hook reads it and HARD-BLOCKS
+ * chief's tool calls until `tribe alarm-ack` clears it.
+ * Spec: @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection (Layer 3).
+ */
+async function cmdAlarmSet(reason: string, opts: { by?: string }): Promise<void> {
+  const by = opts.by ?? process.env.USER ?? "anonymous"
+  const result = (await callDaemon("cli_alarm_set", { reason, by })) as { ok: boolean }
+  if (!result.ok) {
+    console.error("tribe alarm: daemon refused")
+    process.exit(1)
+  }
+  console.log(`ALARM SET — chief tool calls will block until 'tribe alarm-ack' is run.`)
+  console.log(`  Reason: ${reason}`)
+  console.log(`  By:     ${by}`)
+}
+
+async function cmdAlarmStatus(opts: { json?: boolean }): Promise<void> {
+  const result = (await callDaemon("cli_alarm_get")) as
+    | { active: false }
+    | { active: true; reason: string; by: string; ts: number; age_min: number }
+  if (opts.json) {
+    console.log(JSON.stringify(result))
+    return
+  }
+  if (!result.active) {
+    console.log("No alarm active.")
+    return
+  }
+  console.log(`ALARM ACTIVE (${result.age_min}min):`)
+  console.log(`  Reason: ${result.reason}`)
+  console.log(`  By:     ${result.by}`)
+}
+
+async function cmdAlarmAck(): Promise<void> {
+  const result = (await callDaemon("cli_alarm_ack")) as { ok: boolean }
+  if (!result.ok) {
+    console.error("tribe alarm-ack: daemon refused")
+    process.exit(1)
+  }
+  console.log("ALARM CLEARED — chief tool calls unblocked.")
+}
+
 async function cmdHealth(): Promise<void> {
   const result = (await callDaemon("cli_health")) as {
     content: Array<{ type: string; text: string }>
@@ -545,6 +617,30 @@ program
   .command("health")
   .description("Run health diagnostics")
   .action(() => void cmdHealth())
+
+program
+  .command("inbox-status")
+  .description("Show actionable DMs the target session hasn't drained yet (chief-silent watchdog Layer 2)")
+  .option("--session <name>", "Session to inspect (default: @chief)", "@chief")
+  .option("--json", "Emit machine-readable JSON (for hooks)")
+  .action((opts: { session?: string; json?: boolean }) => void cmdInboxStatus(opts))
+
+program
+  .command("alarm <reason>")
+  .description("Andon-pull stop-the-line — blocks chief tool calls until 'alarm-ack' (Layer 3)")
+  .option("--by <name>", "Set the author of the alarm (default: $USER)")
+  .action((reason: string, opts: { by?: string }) => void cmdAlarmSet(reason, opts))
+
+program
+  .command("alarm-status")
+  .description("Show current andon-pull alarm state (active reason + age, or 'no alarm active')")
+  .option("--json", "Emit machine-readable JSON (for hooks)")
+  .action((opts: { json?: boolean }) => void cmdAlarmStatus(opts))
+
+program
+  .command("alarm-ack")
+  .description("Clear the andon-pull alarm — unblocks chief tool calls")
+  .action(() => void cmdAlarmAck())
 
 program
   .command("retro")

@@ -93,6 +93,7 @@ const noopApi: TribeClientApi = {
   hasRecentMessage: () => false,
   getActiveSessions: () => [],
   getSessionNames: () => [],
+  getUnreadDms: () => ({ count: 0, oldestTs: 0 }),
 }
 
 /**

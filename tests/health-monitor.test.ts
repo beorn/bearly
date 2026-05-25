@@ -92,6 +92,7 @@ function makeThresholds(overrides: Partial<HealthThresholds> = {}): HealthThresh
     reaperCpuThreshold: 80,
     reaperAgeMinutes: 30,
     reaperGraceSamples: 6,
+    chiefSilentMinUnreadAgeMin: 10,
     ...overrides,
   }
 }
