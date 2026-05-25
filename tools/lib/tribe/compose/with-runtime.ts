@@ -110,6 +110,13 @@ function defaultBuildPluginApi<T extends RuntimeShape>(t: T): TribeClientApi {
         .filter((c) => c.role !== "watch" && c.role !== "pending")
         .map((c) => c.name)
     },
+    getUnreadDms(sessionName) {
+      const row = stmts.getUnreadDms.get({ $name: sessionName }) as { count: number; oldest_ts: number } | undefined
+      return {
+        count: row?.count ?? 0,
+        oldestTs: row?.oldest_ts ?? 0,
+      }
+    },
   }
 }
 

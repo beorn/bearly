@@ -45,6 +45,7 @@ describe("loadPlugins", () => {
       hasRecentMessage: () => false,
       getActiveSessions: () => [],
       getSessionNames: () => [],
+      getUnreadDms: () => ({ count: 0, oldestTs: 0 }),
     }
     return { api, broadcasts }
   }
@@ -185,6 +186,7 @@ async function attachPlugin(
     hasRecentMessage: () => false,
     getActiveSessions: () => [],
     getSessionNames: () => [],
+    getUnreadDms: () => ({ count: 0, oldestTs: 0 }),
   }
   return { api, close: () => client.close() }
 }

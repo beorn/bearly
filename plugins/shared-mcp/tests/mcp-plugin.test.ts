@@ -37,6 +37,7 @@ const noopApi: TribeClientApi = {
   hasRecentMessage: () => false,
   getActiveSessions: () => [],
   getSessionNames: () => [],
+  getUnreadDms: () => ({ count: 0, oldestTs: 0 }),
 }
 
 /** Allocate a per-test socket path. Tmpdir keeps macOS's 104-byte path limit safe. */

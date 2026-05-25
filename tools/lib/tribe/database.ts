@@ -797,6 +797,21 @@ export function createStatements(db: Database) {
     // Atomic dedup: INSERT OR IGNORE — first session to claim a key wins, others get changes=0
     claimDedup: db.prepare("INSERT OR IGNORE INTO dedup (key, session_id, ts) VALUES ($key, $session_id, $ts)"),
 
+    // Chief-silent watchdog: count actionable DMs the recipient hasn't drained via
+    // tribe.fetch (rowid > last_inbox_pull_seq). Push delivery does NOT advance the
+    // pull cursor — only an explicit fetch does — so a lagging pull cursor is the
+    // relay-pattern signal. See @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection.
+    getUnreadDms: db.prepare(`
+      SELECT
+        COUNT(*) AS count,
+        COALESCE(MIN(ts), 0) AS oldest_ts
+      FROM messages
+      WHERE recipient = $name
+        AND kind = 'direct'
+        AND type IN ('request', 'query', 'verdict', 'assign')
+        AND rowid > COALESCE((SELECT last_inbox_pull_seq FROM sessions WHERE name = $name), 0)
+    `),
+
     // Cleanup old dedup entries (called by retention)
     cleanupDedup: db.prepare("DELETE FROM dedup WHERE ts < $cutoff"),
 
