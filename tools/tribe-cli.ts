@@ -270,8 +270,11 @@ function fmtMsg(m: Msg): void {
   console.log(`  ${fmtTime(m.ts)}  ${pad(`${m.sender} \u2192 ${to}`, 28)}  [${m.type}]${bead} "${txt}"`)
 }
 
-async function cmdSend(to: string, message: string): Promise<void> {
-  await callDaemon("tribe.send", { to, message, type: "notify" })
+const VALID_MESSAGE_TYPES = ["assign", "status", "query", "response", "notify", "request", "verdict"] as const
+type MessageType = (typeof VALID_MESSAGE_TYPES)[number]
+
+async function cmdSend(to: string, message: string, type: MessageType = "notify"): Promise<void> {
+  await callDaemon("tribe.send", { to, message, type })
   console.log(`Sent message to ${to}`)
 }
 
@@ -507,7 +510,18 @@ program
   .description("Send a message to a session")
   .argument("<to>", "Target session name")
   .argument("<message...>", "Message text")
-  .action((to, message) => void cmdSend(to, message.join(" ")))
+  .option(
+    "-t, --type <type>",
+    `Message type: ${VALID_MESSAGE_TYPES.join("|")} (default: notify)`,
+  )
+  .action((to, message, opts: { type?: string }) => {
+    const type = opts.type ?? "notify"
+    if (!(VALID_MESSAGE_TYPES as readonly string[]).includes(type)) {
+      console.error(`tribe send: invalid --type '${type}' — expected one of: ${VALID_MESSAGE_TYPES.join(", ")}`)
+      process.exit(2)
+    }
+    void cmdSend(to, message.join(" "), type as MessageType)
+  })
 
 program
   .command("pending")
