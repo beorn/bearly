@@ -354,7 +354,7 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
     "direct",
     {},
     {
-      request: requestFlag ? undefined : requestId ?? undefined,
+      request: requestFlag ? undefined : (requestId ?? undefined),
       reply: replyId ?? undefined,
       fanout: fanoutArg,
     },
@@ -844,11 +844,76 @@ function filterRowsByTrust(ctx: TribeContext, rows: FetchRow[]): FetchRow[] {
   return rows.filter((r) => senderMayUseRegisteredTrustTopic(r.topic, r.sender, roster))
 }
 
-function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
+/**
+ * Default time-window for peer-filtered fetches (with/from/to) — bead
+ * `@km/tribe/fetch-with-recent-default`. When the caller does not pass
+ * `since` or `all: true`, the filtered branches default to the last 24h
+ * so `tribe.fetch({with: "@X"})` returns RECENT conversation (the use
+ * case people actually want), not page-1 of an oldest-first paginate.
+ */
+const FETCH_DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/** Parse a duration string like "30s" / "10m" / "24h" / "7d" → ms. */
+export function parseFetchDurationMs(raw: string): number | null {
+  const m = /^(\d+)([smhd])$/.exec(raw.trim())
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n < 0) return null
+  switch (m[2]) {
+    case "s":
+      return n * 1000
+    case "m":
+      return n * 60_000
+    case "h":
+      return n * 3_600_000
+    case "d":
+      return n * 86_400_000
+    default:
+      return null
+  }
+}
+
+function isFetchOrderArg(v: unknown): v is "asc" | "desc" {
+  return v === "asc" || v === "desc"
+}
+
+export function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
   const limit = typeof a.limit === "number" && a.limit > 0 && a.limit <= 500 ? a.limit : 50
   const topics = normalizeStringArray(a.topics)
   if (a.topics !== undefined && topics === null) {
     return jsonResult({ error: "topics must be an array of strings." })
+  }
+
+  // Validate `order` — peer-filtered branches default DESC (newest-first);
+  // default-drain stays ASC (cursor advancement requires monotonic rowid).
+  if (a.order !== undefined && !isFetchOrderArg(a.order)) {
+    return jsonResult({ error: 'order must be "asc" or "desc".' })
+  }
+  const explicitOrder = (a.order as "asc" | "desc" | undefined) ?? null
+
+  // Validate `all` — peer-filtered branches drop the 24h time-window when true.
+  if (a.all !== undefined && typeof a.all !== "boolean") {
+    return jsonResult({ error: "all must be a boolean." })
+  }
+  const allFlag = a.all === true
+
+  // Validate `since` — number (epoch ms for peer-filtered, rowid for
+  // default-drain) OR duration string ("30m" / "24h" / "7d").
+  let sinceNum: number | null = null
+  let sinceDurationMs: number | null = null
+  if (a.since !== undefined) {
+    if (typeof a.since === "number") {
+      sinceNum = a.since
+    } else if (typeof a.since === "string") {
+      sinceDurationMs = parseFetchDurationMs(a.since)
+      if (sinceDurationMs === null) {
+        return jsonResult({
+          error: `since must be a number (epoch ms / rowid) or duration string like "24h"|"7d"|"30m"; got ${JSON.stringify(a.since)}.`,
+        })
+      }
+    } else {
+      return jsonResult({ error: "since must be a number or duration string." })
+    }
   }
 
   const cursor = ctx.stmts.getInboxCursor.get({ $id: ctx.sessionId }) as { last_inbox_pull_seq: number } | null
@@ -861,6 +926,18 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
   if (a.ids !== undefined && ids === null) {
     return jsonResult({ error: "ids must be an array of strings." })
   }
+
+  // Compute time-floor for peer-filtered branches (with/from/to).
+  // Precedence: explicit duration > explicit epoch-ms > all:true > default 24h.
+  const now = Date.now()
+  const sinceTsForFilter: number = (() => {
+    if (sinceDurationMs !== null) return now - sinceDurationMs
+    if (sinceNum !== null) return sinceNum
+    if (allFlag) return 0
+    return now - FETCH_DEFAULT_WINDOW_MS
+  })()
+  // Validated enum → safe to interpolate into SQL.
+  const filteredOrderSql = (explicitOrder ?? "desc").toUpperCase()
 
   if (ids && ids.length > 0) {
     const placeholders = ids.map(() => "?").join(", ")
@@ -883,41 +960,52 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
+          AND ts >= $sinceTs
           AND (
             (sender = $self AND recipient = $peer)
             OR (sender = $peer AND recipient = $self)
           )
-        ORDER BY rowid ASC
+        ORDER BY ts ${filteredOrderSql}, rowid ${filteredOrderSql}
         LIMIT $limit
       `)
-      .all({ $self: currentName, $peer: a.with, $limit: limit }) as FetchRow[]
+      .all({ $self: currentName, $peer: a.with, $limit: limit, $sinceTs: sinceTsForFilter }) as FetchRow[]
   } else if (typeof a.from === "string" && a.from.length > 0) {
     rows = ctx.db
       .prepare(`
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
+          AND ts >= $sinceTs
           AND sender = $from
           AND (sender = $self OR recipient = $self OR recipient = '*')
-        ORDER BY rowid ASC
+        ORDER BY ts ${filteredOrderSql}, rowid ${filteredOrderSql}
         LIMIT $limit
       `)
-      .all({ $from: a.from, $self: currentName, $limit: limit }) as FetchRow[]
+      .all({ $from: a.from, $self: currentName, $limit: limit, $sinceTs: sinceTsForFilter }) as FetchRow[]
   } else if (typeof a.to === "string" && a.to.length > 0) {
     rows = ctx.db
       .prepare(`
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
+          AND ts >= $sinceTs
           AND recipient = $to
           AND (sender = $self OR recipient = $self OR recipient = '*')
-        ORDER BY rowid ASC
+        ORDER BY ts ${filteredOrderSql}, rowid ${filteredOrderSql}
         LIMIT $limit
       `)
-      .all({ $to: a.to, $self: currentName, $limit: limit }) as FetchRow[]
+      .all({ $to: a.to, $self: currentName, $limit: limit, $sinceTs: sinceTsForFilter }) as FetchRow[]
   } else {
-    const hasSince = typeof a.since === "number"
-    const since = hasSince ? (a.since as number) : cursorBase
+    // Default-drain — `since` here is a rowid cursor (legacy contract,
+    // unchanged). Duration strings are rejected on this branch since the
+    // semantics differ and silently coercing would be surprising.
+    if (sinceDurationMs !== null) {
+      return jsonResult({
+        error: "Duration `since` is only valid with with/from/to filters; default-drain `since` is a rowid cursor.",
+      })
+    }
+    const hasSince = sinceNum !== null
+    const since = hasSince ? (sinceNum as number) : cursorBase
     cursorBase = since
     rows = ctx.stmts.getInboxRows.all({
       $since: since,

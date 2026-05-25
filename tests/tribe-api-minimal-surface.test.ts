@@ -172,8 +172,10 @@ describe("tribe.fetch", () => {
     const cursorAfterScan = f.stmts.getInboxCursor.get({ $id: bob.sessionId }) as { last_inbox_pull_seq: number }
     expect(cursorAfterScan.last_inbox_pull_seq).toBe(0)
 
+    // `with:` defaults to newest-first per @km/tribe/fetch-with-recent-default.
+    // Pass `order: "asc"` to preserve the chronological assertion shape here.
     const history = parseTool<{ events: Array<{ content: string }> }>(
-      await handleToolCall(alice, "tribe.fetch", { with: "bob", limit: 50 }, makeOpts()),
+      await handleToolCall(alice, "tribe.fetch", { with: "bob", limit: 50, order: "asc" }, makeOpts()),
     )
     expect(history.events.map((e) => e.content)).toEqual(["dm-1", "dm-2"])
   })

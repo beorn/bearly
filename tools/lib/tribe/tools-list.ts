@@ -118,7 +118,7 @@ export const TOOLS_LIST = [
   {
     name: "fetch",
     description:
-      "Read tribe messages. Default drains this session's pending queue and advances its cursor. ids/with/from/to reads are snapshots. since scans the journal and advances only with advance:true.",
+      'Read tribe messages. Default drains this session\'s pending queue and advances its cursor. ids/with/from/to reads are snapshots — when filtering by peer (with/from/to) the default is the last 24h newest-first; pass `all: true` for full history or `since: "7d"` / `order: "asc"` to override.',
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -133,8 +133,8 @@ export const TOOLS_LIST = [
           description: "Optional topic globs, e.g. ['github:*', 'git:commit'].",
         },
         since: {
-          type: "number",
-          description: "Scan rows with rowid > since. Default mode uses the session cursor.",
+          description:
+            'Peer-filtered (with/from/to): time threshold — number (epoch ms) or duration string ("24h"|"7d"|"30m"). Defaults to 24h ago when omitted; pass `all: true` to disable. Default-drain mode: rowid cursor (number only); duration strings rejected.',
         },
         with: { type: "string", description: "Bilateral history with this session name." },
         from: { type: "string", description: "One-sided history from this sender." },
@@ -143,6 +143,17 @@ export const TOOLS_LIST = [
         advance: {
           type: "boolean",
           description: "Advance the session cursor after a since/default scan. Default: true only for default drain.",
+        },
+        all: {
+          type: "boolean",
+          description:
+            "Peer-filtered branches only: bypass the 24h time-window default and return full history (still bounded by `limit`).",
+        },
+        order: {
+          type: "string",
+          enum: ["asc", "desc"],
+          description:
+            "Peer-filtered branches only: row order. Default `desc` (newest-first when filtering by peer). Default-drain stays asc regardless.",
         },
       },
     },
