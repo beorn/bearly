@@ -262,14 +262,93 @@ function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
 // Recall output (synthesis mode)
 // ============================================================================
 
+/**
+ * NO SILENT ERRORS — recall output prelude.
+ *
+ * Per `docs/principles.md` § "Fail Loud, Fail Now" + @km/all/silent-errors-enforcement
+ * violations #3, #4, #5: search results MUST surface what was searched, where we
+ * looked, and what was excluded. Prepends warnings to result output:
+ *
+ *   #5 — stale index: when last_rebuild > 1h ago, warn that recent sessions
+ *        may not be in the FTS index yet. Status command already says "(stale)";
+ *        search results need the same warn so users don't trust empty results.
+ *   #3 — project scope: when no --project filter passed AND sibling -wtN dirs
+ *        exist in ~/.claude/projects, warn that those sessions are NOT excluded
+ *        by default (the filter only narrows; absence means "all projects").
+ *        This catches the "silent empty when wrong scope expected" failure mode.
+ */
+function emitSearchPrelude(projectFilter: string | undefined): void {
+  // #5 — stale index check
+  try {
+    const { getDb, getIndexMeta } = require("../history/db")
+    const db = getDb()
+    const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
+    if (lastRebuild) {
+      const ageMs = Date.now() - new Date(lastRebuild).getTime()
+      const ONE_HOUR_MS = 60 * 60 * 1000
+      if (ageMs > ONE_HOUR_MS) {
+        const ageH = Math.round(ageMs / ONE_HOUR_MS)
+        console.error(
+          `${YELLOW}⚠ recall: FTS5 index last rebuilt ${ageH}h ago — recent sessions may be missing.${RESET}\n` +
+            `  Run \`bun recall index --incremental\` to refresh, or just start a new session\n` +
+            `  (SessionStart hook auto-refreshes if index is >1h stale).`,
+        )
+      }
+    }
+  } catch {
+    // Best-effort — never break search on prelude errors.
+  }
+
+  // #3 — sibling -wtN project dirs check
+  try {
+    const home = process.env.HOME ?? ""
+    const projectsDir = path.join(home, ".claude", "projects")
+    if (fs.existsSync(projectsDir)) {
+      const cwd = process.cwd()
+      const cwdSlug = "-" + cwd.slice(1).replace(/\//g, "-")
+      const matchesCwd = fs.existsSync(path.join(projectsDir, cwdSlug))
+      if (matchesCwd) {
+        // Find sibling dirs that share the base name (e.g., -...-km-wt0 alongside -...-km)
+        const siblings = fs
+          .readdirSync(projectsDir)
+          .filter((d) => d.startsWith(cwdSlug + "-wt") || (d.startsWith(cwdSlug) && d !== cwdSlug && /^-wt\d+/.test(d.slice(cwdSlug.length))))
+        if (siblings.length > 0 && !projectFilter) {
+          const basename = cwd.split("/").pop() ?? "project"
+          console.error(
+            `${YELLOW}⚠ recall: ${siblings.length} sibling worktree project dir(s) detected (${siblings.slice(0, 3).join(", ")}${siblings.length > 3 ? "…" : ""}).${RESET}\n` +
+              `  Default scope = ALL projects (no current-project narrowing), but if the\n` +
+              `  planner-generated variants are project-context-scoped, sibling -wtN\n` +
+              `  sessions may be missed. Pass \`--project '*${basename}*'\` to aggregate.`,
+          )
+        }
+      }
+    }
+  } catch {
+    // Best-effort — never break search on prelude errors.
+  }
+}
+
 function formatRecallOutput(result: RecallResult, options: { json?: boolean }): void {
   if (options.json) {
     console.log(JSON.stringify(result, null, 2))
     return
   }
 
+  // NO SILENT ERRORS — surface stale-index + worktree-scope warnings BEFORE result.
+  emitSearchPrelude((result as RecallResult & { projectFilter?: string }).projectFilter)
+
   if (result.results.length === 0) {
+    // #4 — agent zero-result lie. When agent mode returns 0 but the literal
+    // query is non-empty + non-trivial, surface explicitly that the FTS fanout
+    // returned 0 and suggest --raw fallback. The previous "No results found"
+    // looked authoritative when it wasn't — raw mode with the same token
+    // may return matches (variant-construction bug class).
     console.log(`No results found for "${result.query}"`)
+    if (result.query.trim().length > 0) {
+      console.log(
+        `${DIM}  Note: if you expect matches, try \`bun recall --raw "${result.query.split(/\s+/)[0]}"\`. Agent mode's planner-generated FTS variants may not cover the literal token.${RESET}`,
+      )
+    }
     console.log(`${DIM}(searched in ${result.durationMs}ms)${RESET}`)
     return
   }
