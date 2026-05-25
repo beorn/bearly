@@ -409,7 +409,8 @@ export function withDispatcher<
           case TRIBE_COORD_METHODS.debug:
           case TRIBE_COORD_METHODS.filter:
           case TRIBE_COORD_METHODS.lifecyclePublish:
-          case TRIBE_COORD_METHODS.lifecycle: {
+          case TRIBE_COORD_METHODS.lifecycle:
+          case TRIBE_COORD_METHODS.pending: {
             const client = clients.get(connId)
             const ctx = client?.ctx ?? daemonCtx
             const result = await handleToolCall(ctx, method, p, DAEMON_HANDLER_OPTS)
