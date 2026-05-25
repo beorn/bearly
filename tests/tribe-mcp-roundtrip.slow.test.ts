@@ -17,8 +17,8 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Database } from "bun:sqlite"
-import { resolveProjectId } from "../tools/lib/tribe/config.ts"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { resolveProjectId } from "@bearly/tribe-client/lib/config"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 
 const BEARLY_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const DAEMON_SCRIPT = resolve(BEARLY_ROOT, "tools/tribe-daemon.ts")

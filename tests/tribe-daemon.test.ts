@@ -29,7 +29,7 @@ import {
   type JsonRpcRequest,
   type JsonRpcResponse,
   type DaemonClient,
-} from "../tools/lib/tribe/socket.ts"
+} from "@bearly/tribe-client/lib/socket"
 
 // ---------------------------------------------------------------------------
 // Helpers

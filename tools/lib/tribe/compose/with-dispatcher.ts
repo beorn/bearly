@@ -38,8 +38,8 @@ import {
   TRIBE_PROTOCOL_VERSION,
   type JsonRpcMessage,
   type JsonRpcRequest,
-} from "../socket.ts"
-import { detectRole, resolveProjectId, type TribeRole } from "../config.ts"
+} from "@bearly/tribe-client/lib/socket"
+import { detectRole, resolveProjectId, type TribeRole } from "@bearly/tribe-client/lib/config"
 import { createTribeContext, type TribeContext } from "../context.ts"
 import { handleToolCall, isRemovedTribeMethod, removedTribeMethodMessage, TRIBE_COORD_METHODS } from "../handlers.ts"
 import { createLifecycleStore } from "../lifecycle-store.ts"

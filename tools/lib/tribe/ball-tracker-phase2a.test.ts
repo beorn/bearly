@@ -73,9 +73,10 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
     )
 
     // Message row carries the request column.
-    const msgRow = db
-      .prepare("SELECT request, reply FROM messages WHERE id = ?")
-      .get(result.id) as { request: string | null; reply: string | null }
+    const msgRow = db.prepare("SELECT request, reply FROM messages WHERE id = ?").get(result.id) as {
+      request: string | null
+      reply: string | null
+    }
     expect(msgRow.request).toBe("req-abc-123")
     expect(msgRow.reply).toBeNull()
 
@@ -104,18 +105,38 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
     const agent = makeContext(db, stmts, "@agent/8")
 
     // Open: chief → agent/8
-    sendMessage(chief, "@agent/8", "verdict needed", "query", undefined, undefined, "direct", {}, {
-      request: "req-xyz-789",
-    })
+    sendMessage(
+      chief,
+      "@agent/8",
+      "verdict needed",
+      "query",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        request: "req-xyz-789",
+      },
+    )
     expect(
       (db.prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = ?").get("req-xyz-789") as { c: number })
         .c,
     ).toBe(1)
 
     // Close: agent/8 → chief with reply
-    sendMessage(agent, "@chief", "yes, ship it", "response", undefined, undefined, "direct", {}, {
-      reply: "req-xyz-789",
-    })
+    sendMessage(
+      agent,
+      "@chief",
+      "yes, ship it",
+      "response",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        reply: "req-xyz-789",
+      },
+    )
 
     // Pending row gone.
     expect(
@@ -143,21 +164,41 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
 
   it("fanout='all' is recorded but Phase 2a still uses per-recipient close semantics", () => {
     const chief = makeContext(db, stmts, "@chief")
-    sendMessage(chief, "@agent/8", "individual ack please", "request", undefined, undefined, "direct", {}, {
-      request: "req-fanout-all",
-      fanout: "all",
-    })
-    const row = db
-      .prepare("SELECT fanout FROM pending_request WHERE request_id = ?")
-      .get("req-fanout-all") as { fanout: string } | null
+    sendMessage(
+      chief,
+      "@agent/8",
+      "individual ack please",
+      "request",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        request: "req-fanout-all",
+        fanout: "all",
+      },
+    )
+    const row = db.prepare("SELECT fanout FROM pending_request WHERE request_id = ?").get("req-fanout-all") as {
+      fanout: string
+    } | null
     expect(row?.fanout).toBe("all")
   })
 
   it("event-kind rows never write pending_request even with request set", () => {
     const chief = makeContext(db, stmts, "@chief")
-    sendMessage(chief, "@agent/8", "shouldn't track", "notify", undefined, undefined, "event", {}, {
-      request: "req-event-should-be-skipped",
-    })
+    sendMessage(
+      chief,
+      "@agent/8",
+      "shouldn't track",
+      "notify",
+      undefined,
+      undefined,
+      "event",
+      {},
+      {
+        request: "req-event-should-be-skipped",
+      },
+    )
     const rows = db
       .prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = ?")
       .get("req-event-should-be-skipped") as { c: number }
@@ -166,9 +207,19 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
 
   it("broadcast (`*`) skips pending_request — Phase 2b will resolve recipient snapshot", () => {
     const chief = makeContext(db, stmts, "@chief")
-    sendMessage(chief, "*", "all-hands", "notify", undefined, undefined, "direct", {}, {
-      request: "req-broadcast-deferred",
-    })
+    sendMessage(
+      chief,
+      "*",
+      "all-hands",
+      "notify",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        request: "req-broadcast-deferred",
+      },
+    )
     // Phase 2a: broadcast doesn't open a tracker (requires room_members snapshot).
     const rows = db
       .prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = ?")
@@ -176,9 +227,10 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
     expect(rows.c).toBe(0)
     // But the message row itself records the request id — Phase 2b can backfill
     // pending_request from the broadcast message + room_members.
-    const msg = db
-      .prepare("SELECT request, kind FROM messages WHERE request = ?")
-      .get("req-broadcast-deferred") as { request: string; kind: string } | null
+    const msg = db.prepare("SELECT request, kind FROM messages WHERE request = ?").get("req-broadcast-deferred") as {
+      request: string
+      kind: string
+    } | null
     expect(msg?.request).toBe("req-broadcast-deferred")
     expect(msg?.kind).toBe("broadcast")
   })
@@ -208,15 +260,37 @@ describe("ball-tracker Phase 2a — 1:1 wire-up", () => {
 
   it("idempotent: re-opening same (request_id, recipient) is a no-op (ON CONFLICT DO NOTHING)", () => {
     const chief = makeContext(db, stmts, "@chief")
-    sendMessage(chief, "@agent/8", "first send", "request", undefined, undefined, "direct", {}, {
-      request: "req-dedup",
-    })
-    sendMessage(chief, "@agent/8", "second send", "request", undefined, undefined, "direct", {}, {
-      request: "req-dedup",
-    })
-    const rows = (db.prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = ?").get("req-dedup") as {
-      c: number
-    }).c
+    sendMessage(
+      chief,
+      "@agent/8",
+      "first send",
+      "request",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        request: "req-dedup",
+      },
+    )
+    sendMessage(
+      chief,
+      "@agent/8",
+      "second send",
+      "request",
+      undefined,
+      undefined,
+      "direct",
+      {},
+      {
+        request: "req-dedup",
+      },
+    )
+    const rows = (
+      db.prepare("SELECT COUNT(*) as c FROM pending_request WHERE request_id = ?").get("req-dedup") as {
+        c: number
+      }
+    ).c
     expect(rows).toBe(1)
   })
 })

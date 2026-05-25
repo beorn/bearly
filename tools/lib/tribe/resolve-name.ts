@@ -30,7 +30,7 @@
  *   - Persistent identity across daemon restarts (cold daemon = fresh 1).
  */
 
-import type { TribeRole } from "./config.ts"
+import type { TribeRole } from "@bearly/tribe-client/lib/config"
 
 export type PriorSession = { id: string; name: string; role: string }
 

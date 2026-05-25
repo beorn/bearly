@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, relative, resolve } from "node:path"
-import { resolveSocketPath, probeDaemonPid } from "./socket.ts"
+import { resolveSocketPath, probeDaemonPid } from "@bearly/tribe-client/lib/socket"
 import {
   DEFAULT_AUTOSTART,
   readTribeConfig,

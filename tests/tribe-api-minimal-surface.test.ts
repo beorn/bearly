@@ -24,7 +24,7 @@ import {
   type HandlerOpts,
 } from "../tools/lib/tribe/handlers.ts"
 import { sendMessage } from "../tools/lib/tribe/messaging.ts"
-import { TOOLS_LIST } from "../tools/lib/tribe/tools-list.ts"
+import { TOOLS_LIST } from "@bearly/tribe-client/lib/tools-list"
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "tribe-api-surface-"))

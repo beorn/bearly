@@ -2,9 +2,8 @@
  * Tribe session — registration, delivery offsets, transcript naming, cleanup.
  */
 
-import { existsSync, readFileSync } from "node:fs"
-import { resolve } from "node:path"
 import { createLogger } from "loggily"
+import { readTranscriptSlug } from "@bearly/tribe-client/lib/transcript"
 import type { TribeContext } from "./context.ts"
 
 const log = createLogger("tribe:session")
@@ -254,35 +253,10 @@ export function backfillDefaultRoomMembers(ctx: TribeContext): number {
 }
 
 // ---------------------------------------------------------------------------
-// Transcript-based naming
+// Transcript-based naming — moved to `@bearly/tribe-client/lib/transcript`
+// (the pure file-reader half; this file keeps the TribeContext-coupled
+// `tryInitialRename` below, which imports the readers from the new home).
 // ---------------------------------------------------------------------------
-
-export function resolveTranscriptPath(claudeSessionId: string | null): string | null {
-  if (!claudeSessionId) return null
-  const cwd = process.cwd()
-  const projectKey = "-" + cwd.replace(/\//g, "-")
-  const transcriptPath = resolve(process.env.HOME ?? "~", ".claude/projects", projectKey, `${claudeSessionId}.jsonl`)
-  return existsSync(transcriptPath) ? transcriptPath : null
-}
-
-/** Read the slug from the transcript — used once at startup to set initial name */
-export function readTranscriptSlug(transcriptPath: string | null): string | null {
-  if (!transcriptPath) return null
-  try {
-    const size = Bun.file(transcriptPath).size
-    if (size === 0) return null
-    const text = new TextDecoder().decode(
-      new Uint8Array(readFileSync(transcriptPath).buffer.slice(Math.max(0, size - 4096))),
-    )
-    const lines = text.trimEnd().split("\n")
-    const lastLine = lines[lines.length - 1]
-    if (!lastLine) return null
-    const data = JSON.parse(lastLine) as { slug?: string }
-    return data.slug ?? null
-  } catch {
-    return null
-  }
-}
 
 /** One-time: if session has a generic member-N name, try to set it from the transcript slug */
 export function tryInitialRename(ctx: TribeContext, transcriptPath: string | null): void {

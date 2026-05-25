@@ -4,7 +4,7 @@
 
 import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
-import type { TribeRole } from "./config.ts"
+import type { TribeRole } from "@bearly/tribe-client/lib/config"
 
 const log = createLogger("tribe:handlers")
 import { existsSync, readFileSync, statSync } from "node:fs"
@@ -354,7 +354,7 @@ function handleSend(ctx: TribeContext, a: ToolArgs, _opts: HandlerOpts): ToolRes
     "direct",
     {},
     {
-      request: requestFlag ? undefined : requestId ?? undefined,
+      request: requestFlag ? undefined : (requestId ?? undefined),
       reply: replyId ?? undefined,
       fanout: fanoutArg,
     },

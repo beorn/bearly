@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
-import { resolveDbPath } from "../tools/lib/tribe/config.ts"
+import { resolveDbPath } from "@bearly/tribe-client/lib/config"
 
 function makeTmp(): string {
   return mkdtempSync(resolve(tmpdir(), "tribe-config-test-"))

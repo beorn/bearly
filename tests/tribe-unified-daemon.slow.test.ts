@@ -26,7 +26,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 import {
   TRIBE_METHODS,
   RECALL_PROTOCOL_VERSION,

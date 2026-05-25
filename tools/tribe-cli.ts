@@ -9,7 +9,7 @@ import { existsSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { Database } from "bun:sqlite"
 import { Command, int } from "@silvery/commander"
-import { resolveSocketPath, connectToDaemon, probeDaemonPid } from "./lib/tribe/socket.ts"
+import { resolveSocketPath, connectToDaemon, probeDaemonPid } from "@bearly/tribe-client/lib/socket"
 import { generateRetro, formatMarkdown, parseDuration } from "./lib/tribe/retro.ts"
 import {
   defaultInstallEnv,
@@ -33,7 +33,7 @@ import {
   runNotify,
 } from "./lib/hooks/index.ts"
 import { VALID_AUTOSTART_MODES, type TribeAutostart } from "./lib/tribe/autostart-config.ts"
-import { resolveDbPath } from "./lib/tribe/config.ts"
+import { resolveDbPath } from "@bearly/tribe-client/lib/config"
 
 /** Thin wrapper so `retro` uses the same DB resolution as the daemon. */
 function resolveDbPathFromCli(): string {
@@ -510,10 +510,7 @@ program
   .description("Send a message to a session")
   .argument("<to>", "Target session name")
   .argument("<message...>", "Message text")
-  .option(
-    "-t, --type <type>",
-    `Message type: ${VALID_MESSAGE_TYPES.join("|")} (default: notify)`,
-  )
+  .option("-t, --type <type>", `Message type: ${VALID_MESSAGE_TYPES.join("|")} (default: notify)`)
   .action((to, message, opts: { type?: string }) => {
     const type = opts.type ?? "notify"
     if (!(VALID_MESSAGE_TYPES as readonly string[]).includes(type)) {

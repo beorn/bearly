@@ -28,7 +28,7 @@ import { spawn } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { createLogger } from "loggily"
 import { resolveAutostart, type TribeAutostart } from "./autostart-config.ts"
-import { resolveSocketPath as resolveTribeSocketPath } from "./socket.ts"
+import { resolveSocketPath as resolveTribeSocketPath } from "@bearly/tribe-client/lib/socket"
 
 // Diagnostic output goes through loggily — never `process.stderr.write`.
 // Hook entry points (`tools/lib/tribe/hook-dispatch.ts`) call

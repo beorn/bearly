@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, unlinkSync } from "node:fs"
 import { spawn, type ChildProcess } from "node:child_process"
 import { resolve, dirname } from "node:path"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 
 const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../tools/tribe-daemon.ts")
 

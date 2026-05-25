@@ -36,7 +36,7 @@ import { buildQueryContext } from "../../recall/src/lib/context.ts"
 import { getCurrentSessionContext } from "../../recall/src/lib/session-context.ts"
 import { setRecallLogging } from "../../recall/src/history/recall-shared.ts"
 import { createReconnectingClient, type LoreClient } from "./lib/socket.ts"
-import { resolveSocketPath as resolveTribeSocketPath } from "../../../tools/lib/tribe/socket.ts"
+import { resolveSocketPath as resolveTribeSocketPath } from "@bearly/tribe-client/lib/socket"
 import { ensureTribeDaemonIfConfigured } from "../../../tools/lib/tribe/autostart.ts"
 import {
   TRIBE_METHODS,

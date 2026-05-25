@@ -42,7 +42,7 @@ import {
   withSignals,
   withSocketServer,
 } from "./lib/tribe/compose/index.ts"
-import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
+import { TOOLS_LIST } from "@bearly/tribe-client/lib/tools-list"
 import { pruneOldActivityLogs } from "./lib/tribe/activity-log.ts"
 
 const log = createLogger("tribe:daemon")

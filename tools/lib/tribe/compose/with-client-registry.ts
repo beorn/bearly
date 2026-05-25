@@ -21,7 +21,7 @@
 import type { Socket as NetSocket } from "node:net"
 import type { RecallConnState } from "../recall-handlers.ts"
 import type { TribeContext } from "../context.ts"
-import type { TribeRole } from "../config.ts"
+import type { TribeRole } from "@bearly/tribe-client/lib/config"
 import type { BaseTribe } from "./base.ts"
 
 /** A session participates as a regular tribe member iff it is not the daemon
