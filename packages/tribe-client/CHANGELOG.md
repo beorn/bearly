@@ -23,9 +23,9 @@
 - **`@bearly/tribe-client/lib/hot-reload`** — file-watch + re-exec helper
   (moved from `tools/lib/tribe/hot-reload.ts`).
 - **`@bearly/tribe-client/lib/transcript`** — pure `resolveTranscriptPath`
-  + `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
-  (the rest of session.ts stays in `tools/` because it is TribeContext-
-  coupled).
+  - `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
+    (the rest of session.ts stays in `tools/` because it is TribeContext-
+    coupled).
 - **`@bearly/tribe-client/lib/defang`** — vendored copy of
   `defangModelInput` from `@bearly/injection-envelope`, so the published
   tribe-client has zero plugin-cross dependencies.
