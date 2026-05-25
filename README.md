@@ -37,8 +37,10 @@ Tribe (and any other MCP-channel plugin) can be wired into Claude Code two ways 
 - **Marketplace route** — for external users. `claude plugin marketplace add beorn/bearly` then
   `claude plugin install tribe@bearly`. Claude Code resolves the plugin from this repo and caches it.
 - **Inline `.mcp.json` route** — for developers who vendor bearly as a git submodule. The host repo's
-  `.mcp.json` points an `mcpServers` entry directly at `vendor/bearly/plugins/tribe/server.mjs`. This
+  `.mcp.json` points an `mcpServers` entry directly at `vendor/bearly/plugins/tribe/server.ts`. This
   always tracks the vendored submodule commit — no marketplace cache to go stale. (km uses this route.)
+  The plugin's `server.ts` is a thin wrapper that imports `@bearly/tribe-client/stdio`; the stdio
+  adapter runtime ships in the published `@bearly/tribe-client` npm package — no committed bundle.
 
 Do not enable both routes for the same plugin in one project — two `tribe` MCP registrations shadow
 each other, and the cached marketplace copy can drift from the vendored source.

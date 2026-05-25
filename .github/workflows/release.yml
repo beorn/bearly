@@ -32,22 +32,29 @@ jobs:
       - name: Parse tag
         id: parse
         run: |
-          TAG="${GITHUB_REF_NAME}"                                  # e.g. alien-trees-v0.1.0
-          PKG="${TAG%-v*}"                                          # alien-trees
-          VERSION="${TAG##*-v}"                                     # 0.1.0
-          if [[ ! -d "packages/$PKG" ]]; then
-            echo "::error::tag $TAG does not map to a packages/$PKG directory"
+          TAG="${GITHUB_REF_NAME}"                                  # e.g. alien-trees-v0.1.0 or tribe-v0.15.0
+          PKG="${TAG%-v*}"                                          # alien-trees / tribe
+          VERSION="${TAG##*-v}"                                     # 0.1.0 / 0.15.0
+          # Resolve package directory: packages/ first, plugins/ as fallback.
+          # Most publishable packages live in packages/; the `tribe` Claude
+          # Code plugin (and other published plugins) lives in plugins/.
+          if [[ -d "packages/$PKG" ]]; then
+            DIR="packages/$PKG"
+          elif [[ -d "plugins/$PKG" ]]; then
+            DIR="plugins/$PKG"
+          else
+            echo "::error::tag $TAG matches neither packages/$PKG nor plugins/$PKG"
             exit 1
           fi
-          MANIFEST_VERSION=$(jq -r .version "packages/$PKG/package.json")
+          MANIFEST_VERSION=$(jq -r .version "$DIR/package.json")
           if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
-            echo "::error::tag version $VERSION does not match packages/$PKG/package.json version $MANIFEST_VERSION"
+            echo "::error::tag version $VERSION does not match $DIR/package.json version $MANIFEST_VERSION"
             exit 1
           fi
           echo "pkg=$PKG"          >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
-          echo "dir=packages/$PKG" >> "$GITHUB_OUTPUT"
-          echo "Publishing $PKG@$VERSION from packages/$PKG"
+          echo "dir=$DIR"          >> "$GITHUB_OUTPUT"
+          echo "Publishing $PKG@$VERSION from $DIR"
 
       - uses: oven-sh/setup-bun@v2
 

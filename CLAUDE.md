@@ -22,10 +22,13 @@ See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#doma
 
 ### Supporting primitives
 
-| Package          | npm               | Role                                                                                                    | Entry Point       |
-| ---------------- | ----------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
-| `@bearly/recall` | _private (0.1.0)_ | Session-history search primitive — FTS5 + LLM planner/agent. Used by tribe internally; also standalone. | `plugins/recall/` |
-| `@bearly/llm`    | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                                | `plugins/llm/`    |
+| Package                 | npm                                                       | Role                                                                                                                                                                                                                                                                  | Entry Point              |
+| ----------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `@bearly/tribe-client`  | [npm](https://www.npmjs.com/package/@bearly/tribe-client) | Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, line parser, daemon client, auto-start, reconnection, composition primitives, **and the `stdio` MCP adapter** (`@bearly/tribe-client/stdio`) the `@bearly/tribe` plugin invokes from its `server.ts`. | `packages/tribe-client/` |
+| `@bearly/recall`        | _private (0.1.0)_                                         | Session-history search primitive — FTS5 + LLM planner/agent. Used by tribe internally; also standalone.                                                                                                                                                               | `plugins/recall/`        |
+| `@bearly/llm`           | _private (0.1.0)_                                         | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                                                                                                                                                                                              | `plugins/llm/`           |
+
+**0.3.0 — bundle removed (2026-05-25)** — `@bearly/tribe-client` now ships the stdio MCP adapter (formerly `tools/stdio-adapter.ts`); the `@bearly/tribe` plugin's `server.mjs` committed bundle is gone, replaced by a one-line `server.ts` that imports `@bearly/tribe-client/stdio`. Eliminates the recurring drift class (CI built-artifacts gate failures, monorepo-vs-standalone build mismatch, stale MCP schema). See `packages/tribe-client/CHANGELOG.md` 0.3.0 + `plugins/tribe/CHANGELOG.md` 0.15.0 + `@km/bearly/tribe-stdio-adapter-as-npm-dep`.
 
 Future packages (not yet extracted): `@bearly/refactor`, `@bearly/tty`, `@bearly/worktree`.
 
