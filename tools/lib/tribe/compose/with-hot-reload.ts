@@ -67,6 +67,7 @@ function buildSourceFiles(sourceDir: string, libTribeDir: string): string[] {
           .sort()
           .map((f) => pathResolve(libTribeDir, f))
       } catch {
+        // silent-fallback-allow: unreadable plugin source dir just omits extra files from hot-reload hashing.
         return []
       }
     })(),

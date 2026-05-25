@@ -76,6 +76,7 @@ export function getSessionSummaryCache(sessionId: string): string | null {
   try {
     return fs.readFileSync(cachePath, "utf8")
   } catch {
+    // silent-fallback-allow: absent summary cache falls through to live summarization.
     return null
   }
 }

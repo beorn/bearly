@@ -19,6 +19,7 @@ export function findFiles(glob: string, searchPath: string, excludeNodeModules =
     }
     return files
   } catch {
+    // silent-fallback-allow: rg no-match or unavailable path means no discovered files for this scanner.
     return []
   }
 }

@@ -101,6 +101,7 @@ function readSessionMeta(jsonlPath: string): SessionMeta | undefined {
   try {
     content = readFileSync(jsonlPath, "utf-8")
   } catch {
+    // silent-fallback-allow: unreadable transcript cannot contribute qmd session metadata.
     return undefined
   }
   const lines = content.split("\n").filter((l) => l.trim().length > 0)

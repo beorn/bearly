@@ -288,6 +288,7 @@ function loadRecentBeads(db: Database, max: number): RecentBead[] {
       status: extractBeadStatus(r.content),
     }))
   } catch {
+    // silent-fallback-allow: bead context is optional recall enrichment when the content DB is unavailable.
     return []
   }
 }
@@ -320,6 +321,7 @@ function loadRareVocabulary(db: Database, max: number): string[] {
       )
       .all(CORPUS_LIMIT) as { content: string }[]
   } catch {
+    // silent-fallback-allow: missing context corpus disables keyword extraction for this recall run.
     return []
   }
 
@@ -367,6 +369,7 @@ function loadRecentCommits(cwd: string, max: number): string[] {
       .map((l) => l.trim())
       .filter(Boolean)
   } catch {
+    // silent-fallback-allow: git history is optional recall context.
     return []
   }
 }

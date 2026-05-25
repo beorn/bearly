@@ -420,6 +420,7 @@ export function parseGhRateLimit(jsonOutput: string): { remaining: number; limit
     }
     return null
   } catch {
+    // silent-fallback-allow: malformed gh rate-limit JSON disables optional GitHub quota telemetry.
     return null
   }
 }
@@ -554,7 +555,7 @@ export async function detectGitLock(gitDir: string): Promise<{ pid: number; comm
     const output = await new Response(proc.stdout).text()
     return parseLsofOutput(output)
   } catch {
-    // lsof failed — lock exists but we can't determine holder (stale lock)
+    // silent-fallback-allow: lsof failed, so the existing lock is reported without holder details.
     return null
   }
 }

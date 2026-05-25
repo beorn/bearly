@@ -99,6 +99,7 @@ export async function summarizeTail(
         `[lore-summarizer] ${model.modelId} failed after ${Date.now() - startedAt}ms: ${err instanceof Error ? err.message : err}\n`,
       )
     }
+    // silent-fallback-allow: failed lore LLM summarization falls back to no summary for this model.
     return null
   }
 }
@@ -127,6 +128,7 @@ export function parseSummary(raw: string): { focus: string; loose_ends: string[]
       .map((s) => s.trim())
     return { focus, loose_ends: looseEnds }
   } catch {
+    // silent-fallback-allow: malformed LLM JSON makes this summary candidate unusable.
     return null
   }
 }

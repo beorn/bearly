@@ -114,6 +114,7 @@ async function getDaemon(): Promise<LoreClient | null> {
       )
     }
     daemonDisabled = true
+    // silent-fallback-allow: daemon connection failure intentionally falls back to in-process library mode.
     return null
   }
 }

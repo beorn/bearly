@@ -102,6 +102,7 @@ function getContext(file: string, line: number, radius: number): string[] {
     const end = Math.min(lines.length, line + radius)
     return lines.slice(start, end)
   } catch {
+    // silent-fallback-allow: unreadable match file contributes no LLM context lines.
     return []
   }
 }

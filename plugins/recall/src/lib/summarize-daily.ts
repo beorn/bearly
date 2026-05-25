@@ -770,6 +770,7 @@ async function extractBeadsActivity(
     }
     return lines.join("\n")
   } catch {
+    // silent-fallback-allow: unavailable bead DB means the daily summary omits bead activity.
     return null
   } finally {
     closeDb()
@@ -822,6 +823,7 @@ function loadMemoryMd(log: (msg: string) => void): string | null {
     log(`loaded MEMORY.md (${content.length} chars)`)
     return `### Current MEMORY.md\n\n${content}`
   } catch {
+    // silent-fallback-allow: missing MEMORY.md is optional daily-summary context.
     return null
   }
 }
@@ -846,6 +848,7 @@ async function extractGitCommits(date: string, log: (msg: string) => void): Prom
 
     return `### Git Commits\n\n\`\`\`\n${stdout.trim()}\n\`\`\``
   } catch {
+    // silent-fallback-allow: git log failure means no commit section for the daily summary.
     return null
   }
 }

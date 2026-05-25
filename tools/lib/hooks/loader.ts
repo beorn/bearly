@@ -42,6 +42,7 @@ async function loadDir(dir: string): Promise<Listener[]> {
   try {
     entries = await readdir(dir)
   } catch {
+    // silent-fallback-allow: missing/unreadable hook directory means no dynamic hooks to load.
     return []
   }
   const listeners: Listener[] = []

@@ -78,6 +78,7 @@ export function writeTrace(payload: TracePayload): string | null {
     fs.writeFileSync(file, JSON.stringify(payload, null, 2))
     return file
   } catch {
+    // silent-fallback-allow: trace persistence failure should not fail the recall query itself.
     return null
   }
 }

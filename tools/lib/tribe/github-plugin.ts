@@ -31,6 +31,7 @@ export function getGitHubToken(): string | null {
   try {
     return execSync("gh auth token", { encoding: "utf-8", stdio: "pipe" }).trim()
   } catch {
+    // silent-fallback-allow: absent gh auth token disables the optional GitHub plugin.
     return null
   }
 }
@@ -49,6 +50,7 @@ export function detectRepoFromGit(dir?: string): string | null {
     const match = url.match(/github\.com[:/](.+?)(?:\.git)?$/)
     return match?.[1] ?? null
   } catch {
+    // silent-fallback-allow: non-git cwd or missing origin means no GitHub repo context.
     return null
   }
 }

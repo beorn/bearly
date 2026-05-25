@@ -48,7 +48,7 @@ function writeJson(path: string, data: unknown): void {
 function setupFixture(): string {
   const root = mkdtempSync(resolve(tmpdir(), "tribe-install-test-"))
   mkdirSync(resolve(root, "bearly/tools/lib/tribe"), { recursive: true })
-  mkdirSync(resolve(root, "bearly/plugins/tribe/lore"), { recursive: true })
+  mkdirSync(resolve(root, "bearly/plugins/tribe/recall"), { recursive: true })
   mkdirSync(resolve(root, "project"), { recursive: true })
   // Create the tribe-cli.ts and server.ts files so existence checks pass.
   writeFileSync(resolve(root, "bearly/tools/tribe-cli.ts"), "// stub")
@@ -155,10 +155,24 @@ describe("planInstall", () => {
     expect(plan.nextSettings.permissions).toEqual({ allow: ["Bash"] })
   })
 
+  test("refuses malformed settings.json instead of planning an overwrite", () => {
+    mkdirSync(resolve(env.claudeSettingsPath, ".."), { recursive: true })
+    writeFileSync(env.claudeSettingsPath, "{ not json", "utf-8")
+
+    expect(() => planInstall(env)).toThrow(/Invalid JSON in .*settings\.json/)
+  })
+
   test("skips .mcp.json when absent", () => {
     const plan = planInstall(env)
     expect(plan.mcp.action).toBe("skip")
     expect(plan.nextMcp).toBeNull()
+  })
+
+  test("refuses malformed .mcp.json instead of planning an overwrite", () => {
+    writeJson(env.claudeSettingsPath, { hooks: {} })
+    writeFileSync(resolve(env.cwd, ".mcp.json"), "{ not json", "utf-8")
+
+    expect(() => planInstall(env)).toThrow(/Invalid JSON in .*\.mcp\.json/)
   })
 
   test("adds mcpServers.tribe when .mcp.json exists without it", () => {

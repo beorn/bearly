@@ -52,6 +52,7 @@ export function getVaultDb(): Database | null {
     cachedPath = path
     return db
   } catch {
+    // silent-fallback-allow: unavailable vault FTS DB disables vault search integration.
     return null
   }
 }
@@ -271,6 +272,7 @@ export function searchVault(query: string, limit: number, mode: "phrase" | "any-
     }
     return out
   } catch {
+    // silent-fallback-allow: failed vault FTS query contributes no vault recall hits.
     return []
   }
 }

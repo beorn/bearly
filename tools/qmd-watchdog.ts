@@ -129,6 +129,7 @@ async function getRssMB(pid: number): Promise<number | null> {
     if (isNaN(kb)) return null
     return Math.round(kb / 1024)
   } catch {
+    // silent-fallback-allow: RSS probing is advisory watchdog telemetry; process exit is tracked separately.
     return null
   }
 }

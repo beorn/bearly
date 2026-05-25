@@ -108,6 +108,7 @@ export function readBeadSnapshot(beadId: string, projectRoot: string): BeadSnaps
   try {
     content = readFileSync(path, "utf8")
   } catch {
+    // silent-fallback-allow: missing/unreadable bead snapshot only omits optional broadcast enrichment.
     return null
   }
 

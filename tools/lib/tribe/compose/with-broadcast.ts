@@ -101,6 +101,7 @@ function safeJsonArray(s: string): string[] | null {
     if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed as string[]
     return null
   } catch {
+    // silent-fallback-allow: malformed mute topic JSON disables the optional topic-specific mute list.
     return null
   }
 }
