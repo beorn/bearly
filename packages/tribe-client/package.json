@@ -1,6 +1,6 @@
 {
   "name": "@bearly/tribe-client",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, parser, daemon client, auto-start, reconnection, composition primitives (pipe/Scope/Tool registry), the stdio MCP adapter that bridges Claude Code's stdio wire to the tribe daemon socket, and a unified `tribe` CLI binary (Phase A.MVP: `tribe mcp` subcommand only)",
   "keywords": [
     "claude-code",

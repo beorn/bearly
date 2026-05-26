@@ -1,6 +1,30 @@
 # @bearly/tribe-client
 
+## 0.4.1 — 2026-05-25
+
+### Fixed
+
+- **`src/cli.ts` mode bit (chmod 755) — fixes recurring km CI format-check failures.**
+  `bun install` chmod's bin sources to 755 on every install (correct npm
+  behavior). When the source was committed at 644 in 0.4.0, every install
+  produced a one-line mode-only diff that dirtied the bearly submodule in
+  km's working tree → km format-check assert-clean-tree gate tripped on
+  every PR. Now committed at 755 so install is a no-op. See
+  `@km/bearly/tribe-client-cli-source-mode-bit`.
+- Sibling fix in `@bearly/llm` (`plugins/llm/src/cli.ts` had the same
+  shape) — both bin sources now ship at 755.
+
 ## 0.4.0 — 2026-05-25
+
+### Known issue (fixed in 0.4.1)
+
+- `src/cli.ts` was committed at mode 644. `bun install` chmod-fixed it
+  on every install, producing a mode-only diff that dirtied the bearly
+  submodule in km's working tree. Affects all installs against the 0.4.0
+  tag. Workaround for anyone pinning 0.4.0: `chmod +x
+  node_modules/@bearly/tribe-client/dist/cli.mjs` post-install. Upgrade
+  to 0.4.1 to fix.
+
 
 ### Added
 
