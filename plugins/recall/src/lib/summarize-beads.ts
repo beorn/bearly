@@ -260,6 +260,7 @@ async function detectBeadPrefix(): Promise<string | null> {
     const prefix = stdout.trim()
     return prefix || null
   } catch {
+    // silent-fallback-allow: missing bd CLI means bead summaries omit the project prefix.
     return null
   }
 }

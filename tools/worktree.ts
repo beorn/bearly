@@ -898,6 +898,7 @@ function listWorkspacePackages(rootPath: string): string[] {
   try {
     pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { workspaces?: string[] | { packages?: string[] } }
   } catch {
+    // silent-fallback-allow: malformed package.json disables optional workspace symlink repair only.
     return []
   }
   const globs = Array.isArray(pkg.workspaces)

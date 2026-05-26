@@ -34,7 +34,7 @@ import {
   createReconnectingClient as createTribeClient,
   TRIBE_PROTOCOL_VERSION,
   type DaemonClient,
-} from "./lib/tribe/socket.ts"
+} from "@bearly/tribe-client/lib/socket"
 import { createLineParser, makeRequest, makeResponse, makeError, isRequest } from "@bearly/tribe-client"
 import { recall as bearlyRecall } from "../plugins/recall/src/history/search.ts"
 

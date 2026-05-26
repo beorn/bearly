@@ -110,6 +110,7 @@ export function getCurrentSessionContext(opts: BuildSessionContextOptions = {}):
   try {
     lines = readLastLines(jsonlPath, tailLines)
   } catch {
+    // silent-fallback-allow: unreadable session tail means no current-session context.
     return null
   }
   if (lines.length === 0) return null
@@ -238,6 +239,7 @@ export function extractSessionFocus(
   try {
     lines = readLastLines(transcriptPath, tailLines)
   } catch {
+    // silent-fallback-allow: unreadable transcript tail means no extracted session focus.
     return null
   }
   if (lines.length === 0) return null

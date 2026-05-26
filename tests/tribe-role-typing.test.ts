@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { isValidRole, TRIBE_ROLES, type TribeRole } from "../tools/lib/tribe/config.ts"
+import { isValidRole, TRIBE_ROLES, type TribeRole } from "@bearly/tribe-client/lib/config"
 
 describe("TRIBE_ROLES enum", () => {
   it("covers exactly the four lifecycle roles — no chief/member split", () => {

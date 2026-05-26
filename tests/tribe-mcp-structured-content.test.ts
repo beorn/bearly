@@ -41,7 +41,7 @@ import {
   withProjectRoot,
   withSocketServer,
 } from "../tools/lib/tribe/compose/index.ts"
-import { TOOLS_LIST } from "../tools/lib/tribe/tools-list.ts"
+import { TOOLS_LIST } from "@bearly/tribe-client/lib/tools-list"
 
 const cleanupPaths: string[] = []
 function tmpDb(): string {

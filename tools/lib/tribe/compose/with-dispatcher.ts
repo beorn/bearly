@@ -38,8 +38,8 @@ import {
   TRIBE_PROTOCOL_VERSION,
   type JsonRpcMessage,
   type JsonRpcRequest,
-} from "../socket.ts"
-import { detectRole, resolveProjectId, type TribeRole } from "../config.ts"
+} from "@bearly/tribe-client/lib/socket"
+import { detectRole, resolveProjectId, type TribeRole } from "@bearly/tribe-client/lib/config"
 import { createTribeContext, type TribeContext } from "../context.ts"
 import { handleToolCall, isRemovedTribeMethod, removedTribeMethodMessage, TRIBE_COORD_METHODS } from "../handlers.ts"
 import { createLifecycleStore } from "../lifecycle-store.ts"
@@ -510,6 +510,75 @@ export function withDispatcher<
             const limit = Number(p.limit ?? 20)
             const rows = db.prepare("SELECT * FROM messages ORDER BY ts DESC LIMIT ?").all(limit)
             return makeResponse(id, { messages: (rows as unknown[]).reverse() })
+          }
+
+          /**
+           * Chief-silent watchdog Layer 2 — inbox status for any session
+           * (default `@chief`). Returns the count + age of actionable DMs
+           * the session hasn't drained via tribe.fetch.
+           * See @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection.
+           */
+          case "cli_inbox_status": {
+            const sessionName = String(p.session ?? "@chief")
+            const row = stmts.getUnreadDms.get({ $name: sessionName }) as
+              | { count: number; oldest_ts: number }
+              | undefined
+            const unread_count = row?.count ?? 0
+            const oldest_ts = row?.oldest_ts ?? 0
+            const oldest_unread_age_min = oldest_ts > 0 ? Math.floor((Date.now() - oldest_ts) / 60_000) : 0
+            return makeResponse(id, {
+              session: sessionName,
+              unread_count,
+              oldest_unread_age_min,
+              oldest_unread_ts: oldest_ts,
+            })
+          }
+
+          /**
+           * Layer 3 — andon-pull alarm set. Anyone (user via CLI, agent via
+           * tribe.send wrapper) can invoke. Stores reason + author in the
+           * coordination table under a fixed key. The chief-drain-check.sh
+           * PreToolUse hook reads it and hard-blocks chief tool calls until
+           * `cli_alarm_ack` clears it.
+           */
+          case "cli_alarm_set": {
+            const reason = String(p.reason ?? "(no reason given)")
+            const by = String(p.by ?? "anonymous")
+            const value = JSON.stringify({ reason, by, ts: Date.now() })
+            db.prepare(
+              "INSERT OR REPLACE INTO coordination (project_id, key, value, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ).run("", "alarm.active", value, by, Date.now())
+            return makeResponse(id, { ok: true, reason, by })
+          }
+
+          /** Layer 3 — read current alarm state (or {active:false}). */
+          case "cli_alarm_get": {
+            const row = db
+              .prepare("SELECT value FROM coordination WHERE project_id = ? AND key = ?")
+              .get("", "alarm.active") as { value: string | null } | undefined
+            if (!row || !row.value) {
+              return makeResponse(id, { active: false })
+            }
+            try {
+              const parsed = JSON.parse(row.value) as { reason: string; by: string; ts: number }
+              return makeResponse(id, {
+                active: true,
+                reason: parsed.reason,
+                by: parsed.by,
+                ts: parsed.ts,
+                age_min: Math.floor((Date.now() - parsed.ts) / 60_000),
+              })
+            } catch {
+              return makeResponse(id, { active: false })
+            }
+          }
+
+          /** Layer 3 — clear the alarm. Caller is expected to have already
+           *  sent a verdict-typed acknowledgement to @user describing the
+           *  action taken (the CLI surfaces this as `tribe alarm-ack`). */
+          case "cli_alarm_ack": {
+            db.prepare("DELETE FROM coordination WHERE project_id = ? AND key = ?").run("", "alarm.active")
+            return makeResponse(id, { ok: true })
           }
 
           case "cli_daemon": {

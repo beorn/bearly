@@ -4,7 +4,7 @@
 
 import { createLogger } from "loggily"
 import type { TribeContext } from "./context.ts"
-import type { TribeRole } from "./config.ts"
+import type { TribeRole } from "@bearly/tribe-client/lib/config"
 
 const log = createLogger("tribe:handlers")
 import { existsSync, readFileSync, statSync } from "node:fs"
@@ -878,8 +878,14 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
     const byId = new Map(rows.map((r) => [r.id, r]))
     rows = ids.map((id) => byId.get(id)).filter((r): r is FetchRow => !!r)
   } else if (typeof a.with === "string" && a.with.length > 0) {
-    rows = ctx.db
-      .prepare(`
+    // Snapshot mode (with-filter): return NEWEST N matches, not OLDEST.
+    // `ORDER BY rowid DESC LIMIT N` picks the newest; reverse for display so
+    // callers still iterate oldest-to-newest (newest at the end). Without the
+    // reverse, the rows were the wrong N entirely — week-old events when fresh
+    // ones existed. See @km/all/silent-errors-enforcement violation #1.
+    rows = (
+      ctx.db
+        .prepare(`
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
@@ -887,34 +893,43 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
             (sender = $self AND recipient = $peer)
             OR (sender = $peer AND recipient = $self)
           )
-        ORDER BY rowid ASC
+        ORDER BY rowid DESC
         LIMIT $limit
       `)
-      .all({ $self: currentName, $peer: a.with, $limit: limit }) as FetchRow[]
+        .all({ $self: currentName, $peer: a.with, $limit: limit }) as FetchRow[]
+    ).reverse()
   } else if (typeof a.from === "string" && a.from.length > 0) {
-    rows = ctx.db
-      .prepare(`
+    // Snapshot mode (from-filter): return NEWEST N matches, not OLDEST.
+    // See @km/all/silent-errors-enforcement violation #1 + repro
+    // 2026-05-25 00:10 (tribe.fetch({from:"@agent/0"}) returned week-old events).
+    rows = (
+      ctx.db
+        .prepare(`
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
           AND sender = $from
           AND (sender = $self OR recipient = $self OR recipient = '*')
-        ORDER BY rowid ASC
+        ORDER BY rowid DESC
         LIMIT $limit
       `)
-      .all({ $from: a.from, $self: currentName, $limit: limit }) as FetchRow[]
+        .all({ $from: a.from, $self: currentName, $limit: limit }) as FetchRow[]
+    ).reverse()
   } else if (typeof a.to === "string" && a.to.length > 0) {
-    rows = ctx.db
-      .prepare(`
+    // Snapshot mode (to-filter): return NEWEST N matches, not OLDEST.
+    rows = (
+      ctx.db
+        .prepare(`
         SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
         FROM messages
         WHERE kind != 'event'
           AND recipient = $to
           AND (sender = $self OR recipient = $self OR recipient = '*')
-        ORDER BY rowid ASC
+        ORDER BY rowid DESC
         LIMIT $limit
       `)
-      .all({ $to: a.to, $self: currentName, $limit: limit }) as FetchRow[]
+        .all({ $to: a.to, $self: currentName, $limit: limit }) as FetchRow[]
+    ).reverse()
   } else {
     const hasSince = typeof a.since === "number"
     const since = hasSince ? (a.since as number) : cursorBase

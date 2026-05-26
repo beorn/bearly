@@ -8,8 +8,8 @@
  */
 
 import { parseArgs } from "node:util"
-import { resolveSocketPath } from "../socket.ts"
-import { parseTribeArgs, resolveDbPath } from "../config.ts"
+import { resolveSocketPath } from "@bearly/tribe-client/lib/socket"
+import { parseTribeArgs, resolveDbPath } from "@bearly/tribe-client/lib/config"
 import { resolveRecallDbPath } from "../../../../plugins/tribe/recall/lib/config.ts"
 import { resolveSummarizerMode, type SummarizerMode } from "../../../../plugins/tribe/recall/lib/summarizer.ts"
 import type { BaseTribe } from "./base.ts"

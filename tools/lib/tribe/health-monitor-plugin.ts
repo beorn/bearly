@@ -84,6 +84,7 @@ export interface HealthAlert {
     | "fd-count"
     | "gh-rate-limit"
     | "reaper"
+    | "chief-silent"
   severity: "warning" | "critical"
   message: string
   metrics: Partial<HealthMetrics>
@@ -127,6 +128,12 @@ export interface HealthThresholds {
   reaperAgeMinutes: number
   /** Reaper: samples to wait after asking before killing (default: 6, i.e. 60s at 10s interval) */
   reaperGraceSamples: number
+  /**
+   * Chief-silent watchdog: minimum age (in minutes) of the oldest unread DM
+   * to @chief before broadcasting STOP-THE-LINE. Default 10. Set to 0 to
+   * disable the watchdog entirely.
+   */
+  chiefSilentMinUnreadAgeMin: number
 }
 
 export function defaultThresholds(): HealthThresholds {
@@ -148,6 +155,7 @@ export function defaultThresholds(): HealthThresholds {
     reaperCpuThreshold: parseInt(process.env.HEALTH_REAPER_CPU_THRESHOLD ?? "80", 10),
     reaperAgeMinutes: parseInt(process.env.HEALTH_REAPER_AGE_MINUTES ?? "30", 10),
     reaperGraceSamples: parseInt(process.env.HEALTH_REAPER_GRACE_SAMPLES ?? "6", 10),
+    chiefSilentMinUnreadAgeMin: parseInt(process.env.HEALTH_CHIEF_SILENT_MIN ?? "10", 10),
   }
 }
 
@@ -420,6 +428,7 @@ export function parseGhRateLimit(jsonOutput: string): { remaining: number; limit
     }
     return null
   } catch {
+    // silent-fallback-allow: malformed gh rate-limit JSON disables optional GitHub quota telemetry.
     return null
   }
 }
@@ -554,7 +563,7 @@ export async function detectGitLock(gitDir: string): Promise<{ pid: number; comm
     const output = await new Response(proc.stdout).text()
     return parseLsofOutput(output)
   } catch {
-    // lsof failed — lock exists but we can't determine holder (stale lock)
+    // silent-fallback-allow: lsof failed, so the existing lock is reported without holder details.
     return null
   }
 }
@@ -701,6 +710,50 @@ export function formatStaleLockMessage(lock: GitLockInfo, sessionName: string | 
   const holder = formatLockHolder(lock, sessionName)
   const lockTarget = lock.label === "main" ? ".git/index.lock" : `.git/modules/${lock.label}/index.lock`
   return `git lock WARNING: ${lockTarget} held >${Math.floor(durationSec)}s by ${holder} -- may be stale`
+}
+
+/**
+ * Chief-silent watchdog: detect "DMs to @chief unread + chief still emitting
+ * tool calls" (the relay-pattern bug). When @chief is online but has
+ * actionable DMs aged beyond `minUnreadAgeMin`, broadcast STOP-THE-LINE so
+ * chief sees it on the next tribe.fetch (or push delivery) and drains the
+ * inbox before continuing.
+ *
+ * Returns null when no alert should fire. Side-effects on `state.firedAlerts`
+ * so each silence-episode only emits once: the key is cleared when the unread
+ * count drops to 0 (chief drained).
+ *
+ * Spec: @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection (Layer 1).
+ */
+export function checkChiefSilent(
+  unread: { count: number; oldestTs: number },
+  chiefOnline: boolean,
+  state: AlertState,
+  thresholds: HealthThresholds,
+  now: number,
+): HealthAlert | null {
+  const KEY = "chief-silent:warning"
+  // No silence to report when chief is offline (no one to derail) or watchdog
+  // is disabled. Clear any prior firing so the next online+silent episode
+  // alerts cleanly.
+  if (!chiefOnline || thresholds.chiefSilentMinUnreadAgeMin <= 0 || unread.count === 0) {
+    state.firedAlerts.delete(KEY)
+    return null
+  }
+  const ageMin = (now - unread.oldestTs) / 60_000
+  if (ageMin < thresholds.chiefSilentMinUnreadAgeMin) return null
+  if (state.firedAlerts.has(KEY)) return null
+  state.firedAlerts.add(KEY)
+  return {
+    type: "chief-silent",
+    severity: "warning",
+    message:
+      `STOP-THE-LINE: @chief has ${unread.count} actionable DM${unread.count === 1 ? "" : "s"} unread ` +
+      `for ${Math.round(ageMin)}min. Relay-pattern likely; chief should ` +
+      `tribe.fetch({from:"@agent/*"}) BEFORE the next tool call.`,
+    metrics: {},
+    topOffenders: [],
+  }
 }
 
 /**
@@ -1249,6 +1302,7 @@ export const healthMonitorPlugin: TribePluginApi = {
 
     let ghRateSampleCount = 0
     let ioSampleCount = 0
+    let chiefSilentSampleCount = 0
 
     log.info?.(
       `starting: poll=${pollIntervalSec}s, cpu warn=${thresholds.cpuWarningMultiplier}x crit=${thresholds.cpuCriticalMultiplier}x, mem warn=${thresholds.memWarningPercent}% crit=${thresholds.memCriticalPercent}%`,
@@ -1317,6 +1371,29 @@ export const healthMonitorPlugin: TribePluginApi = {
           })
           for (const name of broadcastTargets) {
             api.send(name, msg, `health:${alert.type}:${alert.severity}`, undefined, broadcastClass)
+          }
+        }
+
+        // --- Chief-silent watchdog (every 3rd sample — ~30s) ---
+        // @km/all/silent-errors-enforcement/chief-silent-watchdog-relay-pattern-detection.
+        // Detects "DMs to @chief unread + chief still emitting tool calls" — the
+        // relay-pattern bug where push delivery succeeds but chief never drains
+        // via tribe.fetch, so messages sit invisible-to-action for hours.
+        chiefSilentSampleCount++
+        if (chiefSilentSampleCount % 3 === 0) {
+          try {
+            const unread = api.getUnreadDms("@chief")
+            const chiefOnline = sessions.some((s) => s.name === "@chief")
+            const chiefAlert = checkChiefSilent(unread, chiefOnline, alertState, thresholds, Date.now())
+            if (chiefAlert) {
+              log.info?.(`alert: ${chiefAlert.message}`)
+              api.broadcast(chiefAlert.message, `health:${chiefAlert.type}:${chiefAlert.severity}`, undefined, {
+                delivery: "push",
+                topic: `health:${chiefAlert.type}:${chiefAlert.severity}`,
+              })
+            }
+          } catch (err) {
+            log.error?.(`chief-silent check failed: ${err instanceof Error ? err.message : err}`)
           }
         }
 

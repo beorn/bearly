@@ -64,7 +64,7 @@ function loadRecallIgnore(): ((p: string) => boolean)[] {
   try {
     mtime = fs.statSync(ignorePath).mtime.getTime()
   } catch {
-    // missing file — empty ignore list
+    // silent-fallback-allow: missing .recall-ignore means an empty recall ignore list.
     if (_ignoreCache && _ignoreCache.mtime === 0) return _ignoreCache.matchers
     _ignoreCache = { mtime: 0, matchers: [] }
     return []

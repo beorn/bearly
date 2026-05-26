@@ -140,6 +140,7 @@ function buildGlossary(): Set<string> | null {
     glossarySet = out
     return out
   } catch {
+    // silent-fallback-allow: unavailable vault glossary only disables anchor-term boosting.
     return null
   }
 }

@@ -28,7 +28,7 @@ import { type MessageInsertedInfo, type TribeContext } from "../context.ts"
 import { activityFromMessage, writeActivity } from "../activity-log.ts"
 import { createCoalescer, type PendingBroadcast } from "../broadcast-coalescer.ts"
 import { deriveReplyHint, sendMessage, type ReplyHint } from "../messaging.ts"
-import { makeNotification } from "../socket.ts"
+import { makeNotification } from "@bearly/tribe-client/lib/socket"
 import { hasInjectionTrigger, rewriteViaHaiku, scrubInjectionShape } from "../broadcast-scrubber.ts"
 import type { BaseTribe } from "./base.ts"
 import type { WithClientRegistry } from "./with-client-registry.ts"
@@ -101,6 +101,7 @@ function safeJsonArray(s: string): string[] | null {
     if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed as string[]
     return null
   } catch {
+    // silent-fallback-allow: malformed mute topic JSON disables the optional topic-specific mute list.
     return null
   }
 }

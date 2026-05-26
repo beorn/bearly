@@ -54,7 +54,7 @@ export function inspectDoltServers(): DoltServerInfo[] {
   try {
     pgrepOut = execSync(`pgrep -f "dolt sql-server"`, { encoding: "utf8" }).toString()
   } catch {
-    // pgrep exits non-zero when nothing matches — that's fine, no servers.
+    // silent-fallback-allow: pgrep exits non-zero when nothing matches, which means no dolt servers.
     return []
   }
   const pids = pgrepOut

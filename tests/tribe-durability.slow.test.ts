@@ -22,7 +22,7 @@ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { Database } from "bun:sqlite"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 
 // ---------------------------------------------------------------------------
 // Harness — mirrors tribe-self-heal's conventions (same socket path style,

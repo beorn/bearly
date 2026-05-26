@@ -355,6 +355,7 @@ function safeParseArray(raw: string): string[] {
     const out = JSON.parse(raw)
     return Array.isArray(out) ? out.map(String) : []
   } catch {
+    // silent-fallback-allow: malformed persisted JSON array is treated as empty row metadata.
     return []
   }
 }

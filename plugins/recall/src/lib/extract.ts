@@ -45,6 +45,7 @@ export function findSessionJsonl(sessionId: string): string | null {
 
     return fs.existsSync(fullPath) ? fullPath : null
   } catch {
+    // silent-fallback-allow: missing session DB row means no transcript path for extraction.
     return null
   } finally {
     closeDb()
@@ -67,6 +68,7 @@ export function extractSessionContent(
   try {
     sizeBytes = fs.statSync(jsonlPath).size
   } catch {
+    // silent-fallback-allow: unreadable transcript stat makes this session unavailable for extraction.
     return null
   }
 
@@ -142,6 +144,7 @@ export function extractSessionContent(
       sizeBytes,
     }
   } catch {
+    // silent-fallback-allow: malformed transcript lines make this session unavailable for extraction.
     return null
   }
 }

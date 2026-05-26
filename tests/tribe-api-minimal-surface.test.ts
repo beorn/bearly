@@ -24,7 +24,7 @@ import {
   type HandlerOpts,
 } from "../tools/lib/tribe/handlers.ts"
 import { sendMessage } from "../tools/lib/tribe/messaging.ts"
-import { TOOLS_LIST } from "../tools/lib/tribe/tools-list.ts"
+import { TOOLS_LIST } from "@bearly/tribe-client/lib/tools-list"
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "tribe-api-surface-"))
@@ -176,6 +176,42 @@ describe("tribe.fetch", () => {
       await handleToolCall(alice, "tribe.fetch", { with: "bob", limit: 50 }, makeOpts()),
     )
     expect(history.events.map((e) => e.content)).toEqual(["dm-1", "dm-2"])
+  })
+
+  it("snapshot filters select the newest window and display it oldest-to-newest", async () => {
+    const alice = ctxFor(f.db, f.stmts, "alice")
+    const bob = ctxFor(f.db, f.stmts, "bob")
+    const carol = ctxFor(f.db, f.stmts, "carol")
+
+    for (let i = 0; i < 5; i++) {
+      sendMessage(alice, "*", `from-alice-${i}`, "notify", undefined, undefined, "broadcast")
+    }
+    sendMessage(carol, "*", "from-carol", "notify", undefined, undefined, "broadcast")
+
+    const fromAlice = parseTool<{ events: Array<{ content: string }> }>(
+      await handleToolCall(bob, "tribe.fetch", { from: "alice", limit: 3 }, makeOpts()),
+    )
+    expect(fromAlice.events.map((e) => e.content)).toEqual(["from-alice-2", "from-alice-3", "from-alice-4"])
+
+    for (let i = 0; i < 5; i++) {
+      sendMessage(alice, "bob", `to-bob-${i}`, "notify", undefined, undefined, "direct")
+    }
+    sendMessage(alice, "carol", "to-carol", "notify", undefined, undefined, "direct")
+
+    const toBob = parseTool<{ events: Array<{ content: string }> }>(
+      await handleToolCall(alice, "tribe.fetch", { to: "bob", limit: 3 }, makeOpts()),
+    )
+    expect(toBob.events.map((e) => e.content)).toEqual(["to-bob-2", "to-bob-3", "to-bob-4"])
+
+    for (let i = 0; i < 5; i++) {
+      sendMessage(i % 2 === 0 ? alice : bob, i % 2 === 0 ? "bob" : "alice", `with-bob-${i}`, "notify")
+    }
+    sendMessage(carol, "alice", "with-carol", "notify")
+
+    const withBob = parseTool<{ events: Array<{ content: string }> }>(
+      await handleToolCall(alice, "tribe.fetch", { with: "bob", limit: 3 }, makeOpts()),
+    )
+    expect(withBob.events.map((e) => e.content)).toEqual(["with-bob-2", "with-bob-3", "with-bob-4"])
   })
 })
 

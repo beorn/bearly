@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 
 const BEARLY_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const DAEMON_SCRIPT = resolve(BEARLY_ROOT, "tools/tribe-daemon.ts")

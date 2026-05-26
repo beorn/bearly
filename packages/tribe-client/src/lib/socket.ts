@@ -1,10 +1,12 @@
 /**
- * Tribe socket utilities — re-exports the shared `@bearly/tribe-client` IPC
- * primitives plus tribe-specific constants and the auto-start wrapper that
- * defaults to spawning `tools/tribe-daemon.ts`.
+ * Tribe socket utilities — tribe-flavored facade on top of the package's IPC
+ * primitives. Adds the tribe-specific protocol version and `probeDaemonPid`
+ * helper, plus a `createReconnectingClient` wrapper that resolves a default
+ * daemon script path for monorepo dev.
  *
  * The wire protocol, line parser, client, and reconnection logic live in
- * `@bearly/tribe-client`; this module is now a thin tribe-flavored facade.
+ * the surrounding tribe-client package; this module just adds the
+ * tribe-flavored ergonomics.
  */
 
 import { dirname, resolve } from "node:path"
@@ -16,7 +18,7 @@ import {
   type ConnectToDaemonOpts,
   type DaemonClient,
   type ReconnectingClientOpts as ClientReconnectingClientOpts,
-} from "@bearly/tribe-client"
+} from "../client.ts"
 
 // ---------------------------------------------------------------------------
 // Protocol version (tribe-specific)
@@ -39,31 +41,24 @@ import {
 export const TRIBE_PROTOCOL_VERSION = 5
 
 // ---------------------------------------------------------------------------
-// Re-exports from @bearly/tribe-client
+// Re-exports from the surrounding tribe-client package
 // ---------------------------------------------------------------------------
 
+export { connectToDaemon, isSocketAlive } from "../client.ts"
+export { createLineParser } from "../parser.ts"
 export {
-  connectToDaemon,
-  createLineParser,
   isNotification,
   isRequest,
   isResponse,
-  isSocketAlive,
   makeError,
   makeNotification,
   makeRequest,
   makeResponse,
-  resolvePeerSocketPath,
-  resolveSocketPath,
-} from "@bearly/tribe-client"
+} from "../rpc.ts"
+export { resolvePeerSocketPath, resolveSocketPath } from "../paths.ts"
 
-export type {
-  DaemonClient,
-  JsonRpcMessage,
-  JsonRpcNotification,
-  JsonRpcRequest,
-  JsonRpcResponse,
-} from "@bearly/tribe-client"
+export type { DaemonClient } from "../client.ts"
+export type { JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse } from "../rpc.ts"
 
 // ---------------------------------------------------------------------------
 // Tribe-flavored connectOrStart / createReconnectingClient
@@ -92,8 +87,9 @@ export type ReconnectingClientOpts = {
 }
 
 function defaultDaemonScript(): string {
-  // tools/lib/tribe/socket.ts → tools/tribe-daemon.ts (../../tribe-daemon.ts)
-  return resolve(dirname(new URL(import.meta.url).pathname), "../../tribe-daemon.ts")
+  if (process.env.TRIBE_DAEMON_SCRIPT) return process.env.TRIBE_DAEMON_SCRIPT
+  // Monorepo dev fallback: packages/tribe-client/src/lib/socket.ts → tools/tribe-daemon.ts
+  return resolve(dirname(new URL(import.meta.url).pathname), "../../../../tools/tribe-daemon.ts")
 }
 
 function toClientOpts(opts?: ConnectOrStartOpts): ClientConnectOrStartOpts {

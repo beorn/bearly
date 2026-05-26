@@ -3,11 +3,14 @@
  * Stdio Adapter — thin MCP server that bridges Claude Code's stdio MCP wire
  * to the tribe daemon's Unix-socket MCP wire.
  *
- * Per-agent transport translator: stdio ↔ daemon. Replaces the monolithic
- * tribe.ts. No direct DB access, no polling, no plugins — just MCP forwarding.
+ * Per-agent transport translator: stdio ↔ daemon. No direct DB access, no
+ * polling, no plugins — just MCP forwarding.
  *
- * Local dev (in .mcp.json): `bun tools/stdio-adapter.ts --name chief --role chief`
- * Published: bundled to `plugins/tribe/server.mjs` and invoked from there.
+ * Local dev (workspace .mcp.json):
+ *   `bun packages/tribe-client/src/stdio-adapter.ts --name chief --role chief`
+ * Published (plugin runtime): the plugin's `server.ts` calls
+ *   `import { runStdioAdapter } from "@bearly/tribe-client/stdio"`
+ * which transitively imports this file and invokes its module-level bootstrap.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -20,20 +23,15 @@ import {
   resolveClaudeSessionName,
   resolveProjectName,
   resolveProjectId,
-} from "./lib/tribe/config.ts"
-import {
-  resolveSocketPath,
-  createReconnectingClient,
-  TRIBE_PROTOCOL_VERSION,
-  type DaemonClient,
-} from "./lib/tribe/socket.ts"
+} from "./lib/config.ts"
+import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/socket.ts"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { TOOLS_LIST } from "./lib/tribe/tools-list.ts"
+import { TOOLS_LIST } from "./lib/tools-list.ts"
 import { createLogger, setSuppressConsole } from "loggily"
-import { createTimers } from "./lib/tribe/timers.ts"
-import { defangModelInput } from "../plugins/injection-envelope/src/defang.ts"
-import { evaluateCwdPolicy, probeCwd, readCwdPolicyFromEnv, type CwdEvaluation } from "./lib/tribe/cwd-guardrail.ts"
+import { createTimers } from "./timers.ts"
+import { defangModelInput } from "./lib/defang.ts"
+import { evaluateCwdPolicy, probeCwd, readCwdPolicyFromEnv, type CwdEvaluation } from "./lib/cwd-guardrail.ts"
 
 if (process.env.DEBUG_LOG) {
   process.env.LOG_FILE ??= process.env.DEBUG_LOG
@@ -421,7 +419,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // ---------------------------------------------------------------------------
 
 // Hot-reload: re-exec on source changes (only when running from source, not bundled)
-import { setupHotReload } from "./lib/tribe/hot-reload.ts"
+import { setupHotReload } from "./lib/hot-reload.ts"
 using _reload = setupHotReload({
   importMetaUrl: import.meta.url,
   logActivity: (type, content) => {
@@ -464,7 +462,7 @@ if (CWD_EVAL.kind === "warn" || CWD_EVAL.kind === "refuse") {
 }
 
 // Watch transcript file for /rename slug changes and auto-sync to tribe
-import { resolveTranscriptPath, readTranscriptSlug } from "./lib/tribe/session.ts"
+import { resolveTranscriptPath, readTranscriptSlug } from "./lib/transcript.ts"
 import { watch as fsWatch } from "node:fs"
 {
   const transcriptPath = resolveTranscriptPath(CLAUDE_SESSION_ID)

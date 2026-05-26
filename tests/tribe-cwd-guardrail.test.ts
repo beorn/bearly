@@ -20,7 +20,7 @@ import {
   probeCwd,
   readCwdPolicyFromEnv,
   type CwdProbe,
-} from "../tools/lib/tribe/cwd-guardrail.ts"
+} from "@bearly/tribe-client/lib/cwd-guardrail"
 
 // ---------------------------------------------------------------------------
 // Policy parsing

@@ -13,7 +13,7 @@ import { existsSync, statSync, readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { createLogger } from "loggily"
-import { findBeadsDir } from "./config.ts"
+import { findBeadsDir } from "@bearly/tribe-client/lib/config"
 import { createTimers } from "./timers.ts"
 import type { TribePluginApi, TribeClientApi } from "./plugin-api.ts"
 

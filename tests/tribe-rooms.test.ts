@@ -30,7 +30,7 @@ import {
 } from "../tools/lib/tribe/session.ts"
 import { handleToolCall } from "../tools/lib/tribe/handlers.ts"
 import type { ActiveSessionInfo, HandlerOpts } from "../tools/lib/tribe/handlers.ts"
-import { connectToDaemon, type DaemonClient } from "../tools/lib/tribe/socket.ts"
+import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/socket"
 
 // ---------------------------------------------------------------------------
 // In-process fixtures

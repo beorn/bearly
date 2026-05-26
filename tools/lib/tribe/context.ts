@@ -4,7 +4,7 @@
 
 import type { Database } from "bun:sqlite"
 import type { TribeStatements } from "./database.ts"
-import type { TribeRole } from "./config.ts"
+import type { TribeRole } from "@bearly/tribe-client/lib/config"
 import type { Delivery, MessageKind } from "./messaging.ts"
 
 // ---------------------------------------------------------------------------

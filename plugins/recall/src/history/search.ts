@@ -260,6 +260,7 @@ export function searchLiveSession(query: string, limit: number): RecallSearchRes
 
     return results
   } catch {
+    // silent-fallback-allow: current-session transcript scan is opportunistic recall enrichment.
     return []
   }
 }

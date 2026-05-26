@@ -7,13 +7,14 @@ import * as fs from "fs"
 import {
   getDb,
   closeDb,
+  getIndexMeta,
   PROJECTS_DIR,
   ftsSearchWithSnippet,
   searchAll,
   getAllSessionTitles,
   type MessageSearchOptions,
 } from "../history/db"
-import { recall, type RecallOptions, type RecallResult } from "../history/recall"
+import { recall, type RecallOptions, type RecallResult, type RecallSearchResult } from "../history/recall"
 import type { AgentRecallOptions, AgentRecallResult } from "./agent.ts"
 import type { QueryPlan } from "./plan.ts"
 import { searchLiveSession } from "../history/search"
@@ -164,6 +165,18 @@ async function runAgentSearch(query: string, options: SearchOptions, base: Recal
   // Always print the one-line per-round trace so users can see what was searched.
   printAgentTrace(result, !!options.debugPlan)
 
+  if (result.results.length === 0) {
+    const rawProbe = probeLiteralRawMatches(query, base)
+    if (rawProbe && rawProbe.result.results.length > 0) {
+      emitSearchPrelude(base.projectFilter)
+      console.log(
+        `${YELLOW}⚠ recall: agent variants missed literal raw matches; showing raw hits for "${rawProbe.token}".${RESET}\n`,
+      )
+      formatRawRecallResults(rawProbe.result)
+      return
+    }
+  }
+
   // Reuse the standard output formatter for the final answer.
   formatRecallOutput(result, { json: false })
 
@@ -178,6 +191,127 @@ async function runAgentSearch(query: string, options: SearchOptions, base: Recal
   if (result.traceFile) {
     console.log(`${DIM}trace: ${result.traceFile}${RESET}`)
   }
+}
+
+const RAW_PROBE_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "be",
+  "but",
+  "by",
+  "do",
+  "for",
+  "from",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "or",
+  "should",
+  "the",
+  "this",
+  "to",
+  "we",
+  "what",
+  "when",
+  "where",
+  "why",
+  "with",
+])
+
+function literalRawProbeTokens(query: string): string[] {
+  const seen = new Set<string>()
+  return (query.match(/[\p{L}\p{N}_@#./:-]+/gu) ?? [])
+    .map((token) => token.replace(/^[^\p{L}\p{N}_@#]+|[^\p{L}\p{N}_@#]+$/gu, ""))
+    .filter((token) => token.length >= 3)
+    .filter((token) => !RAW_PROBE_STOPWORDS.has(token.toLowerCase()))
+    .filter((token) => {
+      const key = token.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 5)
+}
+
+function probeLiteralRawMatches(query: string, base: RecallOptions): { token: string; result: RecallResult } | null {
+  const tokens = literalRawProbeTokens(query)
+  if (tokens.length === 0) return null
+
+  const db = getDb()
+  const sessionTitles = getAllSessionTitles()
+  const limit = base.limit ?? 10
+  const sinceTime = base.since ? parseTime(base.since) : Date.now() - THIRTY_DAYS_MS
+  const projectFilter = base.projectFilter
+
+  for (const token of tokens) {
+    const start = Date.now()
+    const messageResults = ftsSearchWithSnippet(db, token, {
+      limit,
+      sinceTime,
+      projectFilter,
+      snippetTokens: 200,
+    })
+    const contentResults = searchAll(db, token, {
+      limit,
+      projectFilter,
+      types: [
+        "plan",
+        "summary",
+        "todo",
+        "first_prompt",
+        "bead",
+        "session_memory",
+        "project_memory",
+        "doc",
+        "claude_md",
+        "llm_research",
+      ] as ContentType[],
+    })
+
+    const results: RecallSearchResult[] = [
+      ...messageResults.results.map((r) => ({
+        type: "message" as const,
+        sessionId: r.session_id,
+        sessionTitle: sessionTitles.get(r.session_id) ?? null,
+        timestamp: Number(r.timestamp),
+        snippet: r.snippet || (r.content?.slice(0, 500) ?? ""),
+        rank: r.rank,
+      })),
+      ...contentResults.results.map((r) => ({
+        type: r.content_type as RecallSearchResult["type"],
+        sessionId: r.source_id,
+        sessionTitle: r.title ?? sessionTitles.get(r.source_id) ?? null,
+        timestamp: Number(r.timestamp),
+        snippet: r.snippet || r.content.slice(0, 500),
+        rank: r.rank,
+      })),
+    ]
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, limit)
+
+    if (results.length > 0) {
+      const durationMs = Date.now() - start
+      return {
+        token,
+        result: {
+          query: token,
+          synthesis: null,
+          results,
+          durationMs,
+          timing: { searchMs: durationMs },
+        },
+      }
+    }
+  }
+
+  return null
 }
 
 function describeSynthPath(trace: AgentRecallResult["trace"]): string {
@@ -262,14 +396,97 @@ function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
 // Recall output (synthesis mode)
 // ============================================================================
 
+/**
+ * NO SILENT ERRORS — recall output prelude.
+ *
+ * Per `docs/principles.md` § "Fail Loud, Fail Now" + @km/all/silent-errors-enforcement
+ * violations #3, #4, #5: search results MUST surface what was searched, where we
+ * looked, and what was excluded. Prepends warnings to result output:
+ *
+ *   #5 — stale index: when last_rebuild > 1h ago, warn that recent sessions
+ *        may not be in the FTS index yet. Status command already says "(stale)";
+ *        search results need the same warn so users don't trust empty results.
+ *   #3 — project scope: when no --project filter passed AND sibling -wtN dirs
+ *        exist in ~/.claude/projects, warn that those sessions are NOT excluded
+ *        by default (the filter only narrows; absence means "all projects").
+ *        This catches the "silent empty when wrong scope expected" failure mode.
+ */
+function emitSearchPrelude(projectFilter: string | undefined): void {
+  // #5 — stale index check
+  try {
+    const db = getDb()
+    const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
+    if (lastRebuild) {
+      const ageMs = Date.now() - new Date(lastRebuild).getTime()
+      const ONE_HOUR_MS = 60 * 60 * 1000
+      if (ageMs > ONE_HOUR_MS) {
+        const ageH = Math.round(ageMs / ONE_HOUR_MS)
+        console.error(
+          `${YELLOW}⚠ recall: FTS5 index last rebuilt ${ageH}h ago — recent sessions may be missing.${RESET}\n` +
+            `  Run \`bun recall index --incremental\` to refresh, or just start a new session\n` +
+            `  (SessionStart hook auto-refreshes if index is >1h stale).`,
+        )
+      }
+    }
+  } catch {
+    // Best-effort — never break search on prelude errors.
+  }
+
+  // #3 — sibling -wtN project dirs check
+  try {
+    const home = process.env.HOME ?? ""
+    const projectsDir = path.join(home, ".claude", "projects")
+    if (fs.existsSync(projectsDir)) {
+      const cwd = process.cwd()
+      const cwdSlug = "-" + cwd.slice(1).replace(/\//g, "-")
+      const matchesCwd = fs.existsSync(path.join(projectsDir, cwdSlug))
+      if (matchesCwd) {
+        // Find sibling dirs that share the base name (e.g., -...-km-wt0 alongside -...-km)
+        const siblings = fs
+          .readdirSync(projectsDir)
+          .filter(
+            (d) =>
+              d.startsWith(cwdSlug + "-wt") ||
+              (d.startsWith(cwdSlug) && d !== cwdSlug && /^-wt\d+/.test(d.slice(cwdSlug.length))),
+          )
+        if (siblings.length > 0 && !projectFilter) {
+          const basename = cwd.split("/").pop() ?? "project"
+          console.error(
+            `${YELLOW}⚠ recall: ${siblings.length} sibling worktree project dir(s) detected (${siblings.slice(0, 3).join(", ")}${siblings.length > 3 ? "…" : ""}).${RESET}\n` +
+              `  Default scope = ALL projects (no current-project narrowing), but if the\n` +
+              `  planner-generated variants are project-context-scoped, sibling -wtN\n` +
+              `  sessions may be missed. Pass \`--project '*${basename}*'\` to aggregate.`,
+          )
+        }
+      }
+    }
+  } catch {
+    // Best-effort — never break search on prelude errors.
+  }
+}
+
 function formatRecallOutput(result: RecallResult, options: { json?: boolean }): void {
   if (options.json) {
     console.log(JSON.stringify(result, null, 2))
     return
   }
 
+  // NO SILENT ERRORS — surface stale-index + worktree-scope warnings BEFORE result.
+  emitSearchPrelude((result as RecallResult & { projectFilter?: string }).projectFilter)
+
   if (result.results.length === 0) {
+    // #4 — agent zero-result lie. When agent mode returns 0 but the literal
+    // query is non-empty + non-trivial, surface explicitly that the FTS fanout
+    // returned 0 and suggest --raw fallback. The previous "No results found"
+    // looked authoritative when it wasn't — raw mode with the same token
+    // may return matches (variant-construction bug class).
     console.log(`No results found for "${result.query}"`)
+    if (result.query.trim().length > 0) {
+      const probeToken = literalRawProbeTokens(result.query)[0] ?? result.query.split(/\s+/)[0]
+      console.log(
+        `${DIM}  Note: if you expect matches, try \`bun recall --raw "${probeToken}"\`. Agent mode's planner-generated FTS variants may not cover the literal token.${RESET}`,
+      )
+    }
     console.log(`${DIM}(searched in ${result.durationMs}ms)${RESET}`)
     return
   }

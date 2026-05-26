@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, relative, resolve } from "node:path"
-import { resolveSocketPath, probeDaemonPid } from "./socket.ts"
+import { resolveSocketPath, probeDaemonPid } from "@bearly/tribe-client/lib/socket"
 import {
   DEFAULT_AUTOSTART,
   readTribeConfig,
@@ -89,17 +89,19 @@ export function defaultInstallEnv(overrides: Partial<InstallEnv> = {}): InstallE
 
 function readJsonOrEmpty(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {}
+  const raw = readFileSync(path, "utf-8")
+  if (!raw.trim()) return {}
+  let parsed: unknown
   try {
-    const raw = readFileSync(path, "utf-8")
-    if (!raw.trim()) return {}
-    const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-    return {}
-  } catch {
-    return {}
+    parsed = JSON.parse(raw) as unknown
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`Invalid JSON in ${path}: ${message}`)
   }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>
+  }
+  throw new Error(`Expected JSON object in ${path}`)
 }
 
 function writeJson(path: string, data: unknown): void {

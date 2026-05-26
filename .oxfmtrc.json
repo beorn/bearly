@@ -6,5 +6,5 @@
   "printWidth": 120,
   "tabWidth": 2,
   "useTabs": false,
-  "ignorePatterns": ["dist/", "build/", "out/", "node_modules/", "plugins/tribe/server.mjs"]
+  "ignorePatterns": ["dist/", "build/", "out/", "node_modules/"]
 }

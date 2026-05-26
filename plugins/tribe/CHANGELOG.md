@@ -5,6 +5,44 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.15.0 — 2026-05-25 — Bundle removed; stdio adapter ships via npm
+
+### Changed
+
+- **`server.ts` replaces the bundled `server.mjs`.** The plugin's MCP
+  entry point is now a one-line wrapper that `import`s the stdio adapter
+  from `@bearly/tribe-client/stdio`. Install pulls the runtime via normal
+  npm resolution.
+- **`.mcp.json` invokes `bun server.ts`** (was `bun server.mjs`).
+- **`package.json` declares `@bearly/tribe-client@^0.3.0`** as a runtime
+  dependency. `npm install` (or `bun install`) inside the installed plugin
+  resolves it from the npm registry.
+- **`files`** list drops `server.mjs`, adds `server.ts`.
+
+### Removed
+
+- **`server.mjs`** — the committed 2415-LOC bundled adapter is gone.
+  Recurring drift class (CI built-artifacts gate failures, monorepo-vs-
+  standalone build mismatch, stale MCP schema) eliminated structurally.
+- **`scripts/check-build-env.ts`** — the prebuild guard that asserted
+  bundles were built against the published `loggily`, not a workspace
+  copy. No longer relevant.
+- **`scripts/` directory** — empty after the above; deleted.
+- **`.github/workflows/built-artifacts.yml`** — the CI freshness gate for
+  the committed bundle. No bundle, no gate.
+- **`build` / `prebuild` / `prepublishOnly` scripts** — there is nothing
+  to build at publish time; the wire-protocol runtime lives in the
+  separately-published `@bearly/tribe-client`.
+
+### Migration
+
+End-user install (`/plugin install tribe@bearly`) is unchanged in
+behavior — the plugin still exposes the same MCP tools. Developers who
+vendor bearly as a submodule and wire `.mcp.json` inline should point at
+`vendor/bearly/plugins/tribe/server.ts` (was `server.mjs`).
+
+Tracking: `@km/bearly/tribe-stdio-adapter-as-npm-dep`.
+
 ## 0.14.1 — MCP server identity cleanup
 
 ### Changed

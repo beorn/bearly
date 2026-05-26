@@ -1,13 +1,15 @@
 {
   "name": "@bearly/tribe-client",
-  "version": "0.2.0",
-  "private": true,
-  "description": "Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, parser, daemon client, auto-start, reconnection, and composition primitives (pipe/Scope/Tool registry)",
+  "version": "0.4.0",
+  "description": "Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, parser, daemon client, auto-start, reconnection, composition primitives (pipe/Scope/Tool registry), the stdio MCP adapter that bridges Claude Code's stdio wire to the tribe daemon socket, and a unified `tribe` CLI binary (Phase A.MVP: `tribe mcp` subcommand only)",
   "keywords": [
     "claude-code",
+    "cli",
     "client",
     "ipc",
     "json-rpc",
+    "mcp",
+    "stdio-adapter",
     "tribe",
     "unix-socket"
   ],
@@ -21,18 +23,69 @@
     "type": "git",
     "url": "https://github.com/beorn/bearly.git"
   },
+  "bin": {
+    "tribe": "./src/cli.ts"
+  },
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts",
+    "./stdio": "./src/stdio-adapter.ts",
+    "./lib/socket": "./src/lib/socket.ts",
+    "./lib/config": "./src/lib/config.ts",
+    "./lib/tools-list": "./src/lib/tools-list.ts",
+    "./lib/cwd-guardrail": "./src/lib/cwd-guardrail.ts",
+    "./lib/hot-reload": "./src/lib/hot-reload.ts",
+    "./lib/transcript": "./src/lib/transcript.ts",
+    "./lib/defang": "./src/lib/defang.ts"
   },
   "publishConfig": {
+    "bin": {
+      "tribe": "./dist/cli.mjs"
+    },
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs"
+      },
+      "./cli": {
+        "types": "./dist/cli.d.mts",
+        "import": "./dist/cli.mjs"
+      },
+      "./stdio": {
+        "types": "./dist/stdio-adapter.d.mts",
+        "import": "./dist/stdio-adapter.mjs"
+      },
+      "./lib/socket": {
+        "types": "./dist/lib/socket.d.mts",
+        "import": "./dist/lib/socket.mjs"
+      },
+      "./lib/config": {
+        "types": "./dist/lib/config.d.mts",
+        "import": "./dist/lib/config.mjs"
+      },
+      "./lib/tools-list": {
+        "types": "./dist/lib/tools-list.d.mts",
+        "import": "./dist/lib/tools-list.mjs"
+      },
+      "./lib/cwd-guardrail": {
+        "types": "./dist/lib/cwd-guardrail.d.mts",
+        "import": "./dist/lib/cwd-guardrail.mjs"
+      },
+      "./lib/hot-reload": {
+        "types": "./dist/lib/hot-reload.d.mts",
+        "import": "./dist/lib/hot-reload.mjs"
+      },
+      "./lib/transcript": {
+        "types": "./dist/lib/transcript.d.mts",
+        "import": "./dist/lib/transcript.mjs"
+      },
+      "./lib/defang": {
+        "types": "./dist/lib/defang.d.mts",
+        "import": "./dist/lib/defang.mjs"
       }
     }
   },
@@ -41,6 +94,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "loggily": "^0.8.0"
   },
   "devDependencies": {
@@ -50,7 +104,18 @@
   "tsdown": {
     "clean": true,
     "dts": true,
-    "entry": "src/index.ts",
+    "entry": [
+      "src/index.ts",
+      "src/cli.ts",
+      "src/stdio-adapter.ts",
+      "src/lib/socket.ts",
+      "src/lib/config.ts",
+      "src/lib/tools-list.ts",
+      "src/lib/cwd-guardrail.ts",
+      "src/lib/hot-reload.ts",
+      "src/lib/transcript.ts",
+      "src/lib/defang.ts"
+    ],
     "format": "esm"
   },
   "engines": {
