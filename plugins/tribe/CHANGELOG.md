@@ -113,9 +113,10 @@ client-initiated pull.
   delivered since the caller's cursor, in a single call. Designed for clients
   that can't keep a socket subscription open (MCP stdio adapters with no
   long-lived event channel).
-- **`TRIBE_DELIVERY` env var** — read by `stdio-adapter` and propagated to
-  `tribe.join`. Defaults to `'push'`. MCP-only clients (codex, gemini) should
-  set `TRIBE_DELIVERY=pull` in their MCP server config.
+- **Delivery-mode auto-detection** — the stdio adapter honors explicit
+  `TRIBE_DELIVERY=push|pull`, then defaults known MCP-only clients (Codex
+  Desktop / `TRIBE_PROVIDER=codex|gemini`) to `'pull'`. Claude Code remains
+  `'push'` by default.
 
 ### Changed
 
@@ -133,9 +134,11 @@ client-initiated pull.
 
 - **Existing sessions**: no-op. The new column defaults to `'push'`, preserving
   current socket-fanout behaviour for everyone already connected.
-- **MCP-only clients (codex, gemini, …)**: set `TRIBE_DELIVERY=pull` in the
-  MCP server entry. The stdio adapter forwards it to `tribe.join`, and the
-  client should periodically call `tribe.ping` to drain pending traffic.
+- **MCP-only clients (codex, gemini, …)**: no config is required for Codex
+  Desktop or launchers that set `TRIBE_PROVIDER=codex|gemini`; they default to
+  pull. Set `TRIBE_DELIVERY=pull` only for another MCP-only host the adapter
+  cannot identify, and call `tribe.fetch` / `tribe.ping` to drain pending
+  traffic.
 - **Push-mode clients (Claude Code, watch TUI)**: unchanged — no config edit
   required.
 

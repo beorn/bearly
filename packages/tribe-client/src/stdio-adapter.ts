@@ -21,6 +21,7 @@ import {
   parseSessionDomains,
   resolveClaudeSessionId,
   resolveClaudeSessionName,
+  resolveDeliveryMode,
   resolveProjectName,
   resolveProjectId,
 } from "./lib/config.ts"
@@ -163,10 +164,11 @@ const identityToken = createHash("sha256")
 
 // km-bearly.tribe-dm-delivery-gap: declare delivery mode. MCP-only clients
 // without a notification reader (codex, gemini, etc.) should run with
-// TRIBE_DELIVERY=pull so the daemon queues events for tribe.fetch instead of
-// fanning them out down a channel that has no consumer. Default 'push' keeps
-// Claude Code behavior unchanged.
-const DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push"
+// pull delivery so the daemon queues events for tribe.fetch instead of
+// fanning them out down a channel that has no consumer. TRIBE_DELIVERY remains
+// an explicit override; otherwise Codex/Gemini-like environments default to
+// pull while Claude Code keeps push.
+const DELIVERY = resolveDeliveryMode()
 
 const registerParams = {
   ...(args.name ? { name: args.name } : {}),
@@ -386,7 +388,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     // Attach identity_token to join so the daemon can adopt prior
     // session state when Claude Code restarts and the agent calls join again.
-    const payload = name === "join" ? { ...a, identity_token: identityToken } : a
+    const payload = name === "join" ? { delivery: DELIVERY, ...a, identity_token: identityToken } : a
     // Tool names are bare verbs ("send", "fetch"); daemon wire methods use "tribe." prefix
     const daemonMethod = `tribe.${name}`
     // A tool call may arrive before the background daemon connect resolves

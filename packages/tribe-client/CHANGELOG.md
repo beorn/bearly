@@ -1,5 +1,14 @@
 # @bearly/tribe-client
 
+## Unreleased
+
+### Changed
+
+- **Codex/Gemini stdio adapters default to pull delivery.** `resolveDeliveryMode`
+  now honors explicit `TRIBE_DELIVERY=push|pull`, then auto-detects MCP-only
+  hosts (`TRIBE_PROVIDER=codex|gemini`, Codex Desktop env vars) and registers
+  them as `delivery: "pull"`. Claude Code stays on push by default.
+
 ## 0.3.0 — 2026-05-25
 
 ### Added
@@ -23,7 +32,7 @@
 - **`@bearly/tribe-client/lib/hot-reload`** — file-watch + re-exec helper
   (moved from `tools/lib/tribe/hot-reload.ts`).
 - **`@bearly/tribe-client/lib/transcript`** — pure `resolveTranscriptPath`
-  + `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
+  and `readTranscriptSlug` readers extracted from `tools/lib/tribe/session.ts`
   (the rest of session.ts stays in `tools/` because it is TribeContext-
   coupled).
 - **`@bearly/tribe-client/lib/defang`** — vendored copy of

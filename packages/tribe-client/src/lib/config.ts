@@ -68,6 +68,8 @@ export type TribeArgs = {
   provider?: string
 }
 
+export type TribeDeliveryMode = "push" | "pull"
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -95,6 +97,21 @@ export function parseSessionDomains(args: TribeArgs): string[] {
   return String(args.domains ?? "")
     .split(",")
     .filter(Boolean)
+}
+
+export function resolveDeliveryMode(env: Record<string, string | undefined> = process.env): TribeDeliveryMode {
+  if (env.TRIBE_DELIVERY === "push" || env.TRIBE_DELIVERY === "pull") return env.TRIBE_DELIVERY
+
+  const provider = env.TRIBE_PROVIDER?.toLowerCase()
+  if (provider === "codex" || provider === "gemini") return "pull"
+
+  if (env.CODEX_SHELL === "1") return "pull"
+  if (env.CODEX_THREAD_ID) return "pull"
+  if (env.CODEX_SANDBOX) return "pull"
+  if (env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE?.toLowerCase().includes("codex")) return "pull"
+  if (env.__CFBundleIdentifier === "com.openai.codex") return "pull"
+
+  return "push"
 }
 
 /** Find .beads/ directory by walking up from cwd (returns null if not found) */

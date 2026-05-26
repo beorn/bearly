@@ -83,9 +83,9 @@ Each session declares a delivery mode at join time. The daemon routes broadcasts
 | **push** | Default. Claude Code, Agent SDK, or any client with an MCP notification-channel reader. | Daemon fans events out on the MCP channel; client sees them as `<channel source="tribe">`. |
 | **pull** | Codex, Gemini, or any MCP-only client without a notification reader.                    | Events queue in SQLite; client drains via `tribe.fetch`.                                   |
 
-**How to declare on join.** Pass `delivery: "push" | "pull"` to `tribe.join`. The stdio-adapter reads the `TRIBE_DELIVERY` env var and threads it into the join call automatically — pull-mode clients usually never call `tribe.join` directly; setting the env on the MCP server entry is enough.
+**How to declare on join.** Pass `delivery: "push" | "pull"` to `tribe.join`. The stdio-adapter auto-detects Codex Desktop / `TRIBE_PROVIDER=codex|gemini` and joins as pull; Claude Code stays push. `TRIBE_DELIVERY=push|pull` is the explicit override for hosts the adapter cannot identify.
 
-**Codex example** (`~/.codex/config.toml`):
+**Unknown MCP-only host example**:
 
 ```toml
 [mcp_servers.tribe.env]
