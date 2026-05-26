@@ -1,16 +1,31 @@
 # @bearly/tribe-client
 
+> Migration note: this workspace package is the pre-split home of what is
+> becoming `tribe-wire` in `github.com/beorn/tribe`. New remote-agent
+> integrations should target the standalone package name `tribe-wire` and the
+> installed binary `tribe`.
+
 Tribe client library + unified `tribe` CLI binary. Connects to the [tribe daemon][tribe] (the multi-agent coordination + memory daemon) via Unix-socket IPC over JSON-RPC 2.0.
 
 [tribe]: https://www.npmjs.com/package/@bearly/tribe
 
+Target package-runner entrypoint after the split:
+
 ```bash
-npm install -g @bearly/tribe-client
+bunx tribe-wire mcp --socket /path/to/tribe.sock
+npx -y tribe-wire mcp --socket /path/to/tribe.sock
+```
+
+If installed globally, the command remains `tribe`:
+
+```bash
+tribe mcp --socket /path/to/tribe.sock
+tribe status
 ```
 
 ## What's in the box
 
-This package is the **npm-consumer protocol surface** for the tribe daemon — everything an external coding agent (Claude Code, Codex, Gemini, etc.) needs to participate in a tribe without bundling the daemon itself.
+This package is the **wire/protocol surface** for the tribe daemon — everything an external coding agent (Claude Code, Codex, Gemini, etc.) needs to participate in a tribe without bundling the daemon itself.
 
 ### `tribe` CLI
 
@@ -32,6 +47,15 @@ tribe mcp --name '@agent/3' --role member    # argv-forwarded; what .mcp.json in
 
 ### Library exports
 
+New code after the split should import from `tribe-wire`:
+
+```ts
+import { connectToDaemon, resolveSocketPath } from "tribe-wire/lib/socket"
+import { TRIBE_PROTOCOL_VERSION } from "tribe-wire/lib/socket"
+```
+
+Current bearly-internal code still imports the transitional workspace package:
+
 ```ts
 import { connectToDaemon, resolveSocketPath } from "@bearly/tribe-client/lib/socket"
 import { TRIBE_PROTOCOL_VERSION } from "@bearly/tribe-client/lib/socket"
@@ -41,9 +65,9 @@ JSON-RPC client, reconnecting client, line parser, composition primitives (pipe 
 
 ## Surface delineation — protocol vs dev tooling
 
-If a verb belongs on the daemon protocol, it lives **here** (`@bearly/tribe-client`). If a verb is bearly-monorepo internal dev tooling, it lives in `vendor/bearly/tools/tribe-cli.ts` — a separate Bun script that bundles daemon-spawn lifecycle (`start`/`stop`/`reload`/`watch`), Claude Code install/uninstall/doctor (which wires up sibling plugin paths like `plugins/tribe/recall/server.ts`), and the bearly-tools-wide pluggable hook router (`tools/lib/hooks/`).
+If a verb belongs on the daemon protocol, it lives **here** (future `tribe-wire`). If a verb owns daemon lifecycle, it belongs in `tribe-daemon` after the split. If a verb is bearly-monorepo internal dev tooling, it lives in `vendor/bearly/tools/tribe-cli.ts` during migration — a separate Bun script that bundles daemon-spawn lifecycle (`start`/`stop`/`reload`/`watch`), Claude Code install/uninstall/doctor (which wires up sibling plugin paths like `plugins/tribe/recall/server.ts`), and the bearly-tools-wide pluggable hook router (`tools/lib/hooks/`).
 
-This split is intentional. Standalone npm consumers shouldn't pull in `tribe-daemon.ts`, the recall server-path wiring, or the bearly-internal hook router just to talk to a daemon. The 12 protocol verbs above are sufficient for any external agent that wants to participate in a tribe; daemon lifecycle + install + hook integration stay bundled with the source-tree dev tooling.
+This split is intentional. Standalone npm consumers shouldn't pull in `tribe-daemon.ts`, the recall server-path wiring, or the bearly-internal hook router just to talk to a daemon. The protocol verbs above are sufficient for any external agent that wants to participate in a tribe; daemon lifecycle + install + hook integration move to daemon/plugin surfaces.
 
 See [`@km/bearly/19231-tribe-cli-unify-phase-a2-verbs`](https://github.com/beorn/km/blob/main/%40km/bearly/19231-tribe-cli-unify-phase-a2-verbs.md) for the architectural decision (chief verdict 2026-05-26 — "Q3 approved").
 

@@ -1,5 +1,11 @@
 # @bearly/tribe
 
+> Migration note: Tribe is being extracted from bearly into
+> `github.com/beorn/tribe`. This directory is the transitional Claude Code
+> plugin location. The target architecture has `tribe-wire` for the reusable
+> client/MCP adapter, `tribe-daemon` for the broker, and a thin Claude Code
+> plugin in the Tribe repo.
+
 Cross-session coordination for Claude Code. Multiple sessions discover each other, exchange messages, and coordinate work through a shared daemon.
 
 One session becomes **chief** (coordinator); the rest are **members** (workers). Role is auto-detected — the first session becomes chief.
@@ -48,9 +54,20 @@ A chief may spawn agents (short-lived sub-processes) to run parallel work.
 Agents are not tribe members; they serve the chief and terminate when done.
 ```
 
-### Packages
+### Components
 
-`@bearly/tribe` is a single package containing the coordination layer, memory daemon, wire protocol, MCP tools, CLI, watch TUI, and plugins. Everything a tribe of Claude Code sessions needs to work together — presence, broadcasts, events, focus cache, LLM summaries, per-session hook dedup — lives in this one package.
+The clean post-split model is:
+
+| Component | Target home | What it owns |
+| --- | --- | --- |
+| `tribe-wire` | `beorn/tribe/packages/wire` | Protocol client, reconnecting Unix-socket transport, MCP stdio adapter, and protocol CLI (`tribe mcp`, `tribe send`, `tribe status`) |
+| `tribe-daemon` | `beorn/tribe/packages/daemon` | Long-running broker, SQLite state, session registry, message journal, daemon plugins |
+| Claude Code plugin | `beorn/tribe` plugin package | Host integration, MCP registration, autostart wiring |
+| km tent/SOP | km repo | Project-specific roles and workflow (`@chief`, `@agent/N`, beads, worktrees) |
+
+The current `@bearly/tribe` package combines several of these surfaces during
+the migration. Avoid adding new km/tent workflow assumptions here; reusable
+Tribe should stay project-agnostic.
 
 `@bearly/recall` is a separate companion package providing the FTS search primitive that tribe uses internally for session-history lookup; it can also be used standalone (e.g., `bun recall "query"` from the CLI).
 
@@ -117,23 +134,30 @@ Without the flag, tribe's MCP tools still work (you can send messages and query 
 
 ### Alternatives
 
-Per-project MCP install (legacy, no channel push):
+Per-project MCP install while vendoring bearly (legacy, no channel push):
 
 ```json
 {
   "mcpServers": {
     "tribe": {
-      "command": "bunx",
-      "args": ["--bun", "@bearly/tribe"]
+      "command": "bun",
+      "args": ["vendor/bearly/plugins/tribe/server.ts"]
     }
   }
 }
 ```
 
-Or install the CLI on its own:
+Target standalone MCP install after the split:
 
 ```bash
-npm install -g @bearly/tribe
+bunx tribe-wire mcp --socket /path/to/tribe.sock
+npx -y tribe-wire mcp --socket /path/to/tribe.sock
+```
+
+Or install the CLI on its own after the split:
+
+```bash
+npm install -g tribe-wire
 ```
 
 ## tribe watch — Live Dashboard
