@@ -69,6 +69,84 @@ export interface SearchOptions {
    * Default (undefined) = speculative synth enabled.
    */
   speculativeSynth?: boolean
+  /**
+   * Commander maps --no-refresh to refresh:false. Default (undefined) = auto-refresh
+   * the FTS5 index before search when stale. Pass --no-refresh for batch/scripted
+   * use that doesn't want the subprocess side-effect.
+   */
+  refresh?: boolean
+}
+
+// ============================================================================
+// Stale-index auto-refresh — see @km/bearly/19216-recall-freshness-shrink-threshold
+// ============================================================================
+
+// Pure helpers (parseThreshold/getStaleThresholdMs/RefreshResult/RECALL_STALE_THRESHOLD_DEFAULT)
+// live in staleness.ts so unit tests can import them without dragging the search.ts
+// transitive closure (bun:sqlite, indexer, llm/agent → zod) into vitest's node runtime.
+export {
+  RECALL_STALE_THRESHOLD_DEFAULT,
+  parseThreshold,
+  getStaleThresholdMs,
+  type RefreshResult,
+} from "./staleness"
+import { getStaleThresholdMs, type RefreshResult } from "./staleness"
+
+/**
+ * Check if the FTS5 index is stale and, if so, run `bun recall index --incremental`
+ * as a subprocess to refresh it before the search proceeds.
+ *
+ * Best-effort: on subprocess failure, returns { refreshed: false, reason: "error" }
+ * with the error message — never throws, so a transient refresh problem doesn't
+ * break search. Caller is responsible for printing a one-line note from the result.
+ *
+ * Honors RECALL_STALE_THRESHOLD env var (e.g. "5m", "1h", "30s") and the
+ * `--no-refresh` opt-out flag (mapped to options.refresh === false by commander).
+ */
+export async function refreshIndexIfStale(
+  options: { refresh?: boolean },
+  /** Test seam — pass a fake spawner to avoid the real subprocess. */
+  spawnCmd: (argv: string[]) => Promise<{ exitCode: number; stderr?: string }> = defaultSpawnCmd,
+): Promise<RefreshResult> {
+  if (options.refresh === false) return { refreshed: false, reason: "opt-out" }
+
+  let staleMs = 0
+  try {
+    const db = getDb()
+    try {
+      const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
+      if (!lastRebuild) return { refreshed: false, reason: "no-meta" }
+      staleMs = Date.now() - new Date(lastRebuild).getTime()
+      if (staleMs <= getStaleThresholdMs()) return { refreshed: false, reason: "fresh" }
+    } finally {
+      closeDb()
+    }
+  } catch (e) {
+    return { refreshed: false, reason: "error", error: e instanceof Error ? e.message : String(e), staleMs }
+  }
+
+  const start = Date.now()
+  try {
+    const result = await spawnCmd(["bun", "recall", "index", "--incremental"])
+    if (result.exitCode !== 0) {
+      return {
+        refreshed: false,
+        reason: "error",
+        error: `bun recall index --incremental exited ${result.exitCode}${result.stderr ? `: ${result.stderr.trim().split("\n")[0]}` : ""}`,
+        staleMs,
+      }
+    }
+    return { refreshed: true, staleMs, refreshMs: Date.now() - start }
+  } catch (e) {
+    return { refreshed: false, reason: "error", error: e instanceof Error ? e.message : String(e), staleMs }
+  }
+}
+
+async function defaultSpawnCmd(argv: string[]): Promise<{ exitCode: number; stderr?: string }> {
+  const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "pipe" })
+  const stderr = await new Response(proc.stderr).text()
+  const exitCode = await proc.exited
+  return { exitCode, stderr }
 }
 
 // ============================================================================
@@ -90,6 +168,12 @@ export async function cmdSearch(query: string | undefined, options: SearchOption
     session,
     include,
   } = options
+
+  // Auto-refresh stale FTS5 index BEFORE search runs (so results reflect the last
+  // few minutes of work). See @km/bearly/19216-recall-freshness-shrink-threshold.
+  // Skipped silently for JSON output (programmatic consumers shouldn't see prelude noise).
+  const refresh = await refreshIndexIfStale(options)
+  if (!json) emitRefreshNote(refresh)
 
   // Power-user flags imply raw mode. --snippets is an explicit alias for
   // --raw — surfaces the vocabulary used by the accountly side ("snippet vs
@@ -411,20 +495,44 @@ function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
  *        by default (the filter only narrows; absence means "all projects").
  *        This catches the "silent empty when wrong scope expected" failure mode.
  */
+/**
+ * Print a one-line note about the auto-refresh attempt to stderr.
+ * Silent on the "fresh" path (the happy path — no need to spam users every search).
+ */
+export function emitRefreshNote(r: RefreshResult): void {
+  if (r.refreshed) {
+    const staleMin = Math.max(1, Math.round(r.staleMs / 60_000))
+    console.error(
+      `${DIM}[recall] index was ${staleMin}m stale — refreshed (${r.refreshMs}ms) before search${RESET}`,
+    )
+    return
+  }
+  if (r.reason === "error") {
+    console.error(
+      `${YELLOW}⚠ recall: auto-refresh failed (${r.error}) — proceeding with possibly-stale index.${RESET}\n` +
+        `  Pass \`--no-refresh\` to skip this attempt, or run \`bun recall index --incremental\` manually.`,
+    )
+    return
+  }
+  // "fresh" | "no-meta" | "opt-out" — silent (happy path or intentional).
+}
+
 function emitSearchPrelude(projectFilter: string | undefined): void {
-  // #5 — stale index check
+  // #5 — stale index check (post-refresh: if the auto-refresh succeeded the index
+  // is now fresh and this branch is silent; we still warn for the no-meta /
+  // refresh-failed / opt-out cases where the auto-refresh didn't run or didn't help).
   try {
     const db = getDb()
     const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
     if (lastRebuild) {
       const ageMs = Date.now() - new Date(lastRebuild).getTime()
-      const ONE_HOUR_MS = 60 * 60 * 1000
-      if (ageMs > ONE_HOUR_MS) {
-        const ageH = Math.round(ageMs / ONE_HOUR_MS)
+      const thresholdMs = getStaleThresholdMs()
+      if (ageMs > thresholdMs) {
+        const ageMin = Math.max(1, Math.round(ageMs / 60_000))
+        const thresholdMin = Math.max(1, Math.round(thresholdMs / 60_000))
         console.error(
-          `${YELLOW}⚠ recall: FTS5 index last rebuilt ${ageH}h ago — recent sessions may be missing.${RESET}\n` +
-            `  Run \`bun recall index --incremental\` to refresh, or just start a new session\n` +
-            `  (SessionStart hook auto-refreshes if index is >1h stale).`,
+          `${YELLOW}⚠ recall: FTS5 index last rebuilt ${ageMin}m ago (stale > ${thresholdMin}m) — recent sessions may be missing.${RESET}\n` +
+            `  Run \`bun recall index --incremental\` to refresh manually, or unset \`--no-refresh\`.`,
         )
       }
     }

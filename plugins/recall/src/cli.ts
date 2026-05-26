@@ -84,6 +84,10 @@ program
   .option("--debug-plan", "Print full planner output each round (implies --agent)")
   .option("--plan-timeout <ms>", "Planner per-call timeout (default 2500)", uint)
   .option("--no-speculative-synth", "Disable speculative synthesis on round-1 (runs synth only after round 2 merge)")
+  .option(
+    "--no-refresh",
+    "Skip auto-refresh of stale FTS5 index before search (RECALL_STALE_THRESHOLD env, default 5m)",
+  )
   .actionMerged(async (opts) => {
     const searchOpts = opts as unknown as SearchOptions & { query: string }
     await cmdSearch(searchOpts.query, searchOpts)

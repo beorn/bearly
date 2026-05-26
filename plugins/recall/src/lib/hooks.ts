@@ -82,7 +82,15 @@ export function writeSessionSentinel(sentinel: Omit<SessionSentinel, "ts">): voi
 // Background FTS index refresh (shared by SessionStart + SessionEnd hooks)
 // ============================================================================
 
-const SESSION_STALE_MS = 60 * 60 * 1000 // 1 hour
+import { getStaleThresholdMs } from "./staleness"
+
+/**
+ * SessionStart/End auto-refresh threshold — shares RECALL_STALE_THRESHOLD env
+ * + 5m default with the search-time auto-refresh path (see search.ts).
+ * Per @km/bearly/19216-recall-freshness-shrink-threshold: 1h was too coarse
+ * for active sessions (chief recall'd 6h-stale design discussions and got
+ * "no results"); 5m matches Anthropic's prompt-cache TTL.
+ */
 
 function indexIsStale(maxAgeMs: number): boolean {
   try {
@@ -188,7 +196,7 @@ export async function cmdSessionStart(): Promise<void> {
     // If the FTS5 index is stale (>1h since last rebuild), kick off an
     // incremental refresh in the background. Never blocks session startup.
     let indexStatus = "fresh"
-    if (process.env.RECALL_NO_BG_INDEX !== "1" && indexIsStale(SESSION_STALE_MS)) {
+    if (process.env.RECALL_NO_BG_INDEX !== "1" && indexIsStale(getStaleThresholdMs())) {
       spawnBackgroundIncrementalIndex("SessionStart (stale)")
       indexStatus = "refreshing"
     }
