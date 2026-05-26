@@ -25,8 +25,8 @@ import {
   createReconnectingClient,
   TRIBE_PROTOCOL_VERSION,
   type DaemonClient,
-} from "./lib/tribe/socket.ts"
-import { resolveProjectName, resolveProjectId } from "./lib/tribe/config.ts"
+} from "@bearly/tribe-client/lib/socket"
+import { resolveProjectName, resolveProjectId } from "@bearly/tribe-client/lib/config"
 import { parseArgs } from "node:util"
 
 // ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ const WATCH_NAME = `watch-${process.pid}`
 await using client = Object.assign(
   await createReconnectingClient({
     socketPath: SOCKET_PATH,
-    async onConnect(c) {
+    async onConnect(c: DaemonClient) {
       await c.call("register", {
         name: WATCH_NAME,
         role: "watch",
@@ -345,7 +345,7 @@ await using client = Object.assign(
 // and if no handler is attached, notifications are silently dropped
 type QueuedEvent = { method: string; params?: Record<string, unknown> }
 const eventQueue: QueuedEvent[] = []
-client.onNotification((method, params) => {
+client.onNotification((method: string, params?: Record<string, unknown>) => {
   eventQueue.push({ method, params })
 })
 
