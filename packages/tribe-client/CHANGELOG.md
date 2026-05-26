@@ -1,5 +1,26 @@
 # @bearly/tribe-client
 
+## Unreleased
+
+### Added
+
+- **README documenting the npm-consumer protocol surface** + the surface delineation
+  vs `vendor/bearly/tools/tribe-cli.ts` (the bearly-monorepo dev surface). Phase A.2
+  rounded out at 12 verbs — daemon-lifecycle / install / hooks intentionally stay
+  in the source-tree dev tooling per chief verdict 2026-05-26 (`Q3 approved`).
+  See `@km/bearly/19231-tribe-cli-unify-phase-a2-verbs` for the rationale.
+
+### Fixed
+
+- **`src/cli.ts` top-level `await` needed an explicit `export {}` marker** to make
+  TypeScript treat the file as a module. Cleared the `TS1375: 'await' expressions
+are only allowed at the top level of a file when that file is a module` red.
+- **`tests/cli.test.ts` updated for Commander dispatcher semantics** — earlier
+  assertions were written for Phase A.MVP's hand-rolled help/usage surface; round 1
+  swapped the dispatcher to `@silvery/commander`. Test now strips ANSI before
+  matching word-boundary regex, accepts Commander's exit-1-on-missing-command, and
+  reads the no-args help text from stderr (not stdout).
+
 ## 0.4.1 — 2026-05-25
 
 ### Fixed
