@@ -103,50 +103,29 @@ import { getStaleThresholdMs, type RefreshResult } from "./staleness"
  * Honors RECALL_STALE_THRESHOLD env var (e.g. "5m", "1h", "30s") and the
  * `--no-refresh` opt-out flag (mapped to options.refresh === false by commander).
  */
-export async function refreshIndexIfStale(
-  options: { refresh?: boolean },
-  /** Test seam — pass a fake spawner to avoid the real subprocess. */
-  spawnCmd: (argv: string[]) => Promise<{ exitCode: number; stderr?: string }> = defaultSpawnCmd,
-): Promise<RefreshResult> {
-  if (options.refresh === false) return { refreshed: false, reason: "opt-out" }
-
-  let staleMs = 0
+/** Read `last_rebuild` index meta — returns null if missing, throws on DB access errors.
+ *  This is the only DB-bound piece of the refresh path; everything else lives in
+ *  `./refresh.ts` (pure / deps-injected) for vitest reachability. See @km/bearly/19244. */
+function readLastRebuild(): string | null {
+  const db = getDb()
   try {
-    const db = getDb()
-    try {
-      const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
-      if (!lastRebuild) return { refreshed: false, reason: "no-meta" }
-      staleMs = Date.now() - new Date(lastRebuild).getTime()
-      if (staleMs <= getStaleThresholdMs()) return { refreshed: false, reason: "fresh" }
-    } finally {
-      closeDb()
-    }
-  } catch (e) {
-    return { refreshed: false, reason: "error", error: e instanceof Error ? e.message : String(e), staleMs }
-  }
-
-  const start = Date.now()
-  try {
-    const result = await spawnCmd(["bun", "recall", "index", "--incremental"])
-    if (result.exitCode !== 0) {
-      return {
-        refreshed: false,
-        reason: "error",
-        error: `bun recall index --incremental exited ${result.exitCode}${result.stderr ? `: ${result.stderr.trim().split("\n")[0]}` : ""}`,
-        staleMs,
-      }
-    }
-    return { refreshed: true, staleMs, refreshMs: Date.now() - start }
-  } catch (e) {
-    return { refreshed: false, reason: "error", error: e instanceof Error ? e.message : String(e), staleMs }
+    return getIndexMeta(db, "last_rebuild") ?? null
+  } finally {
+    closeDb()
   }
 }
 
-async function defaultSpawnCmd(argv: string[]): Promise<{ exitCode: number; stderr?: string }> {
-  const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "pipe" })
-  const stderr = await new Response(proc.stderr).text()
-  const exitCode = await proc.exited
-  return { exitCode, stderr }
+import { refreshIndexIfStaleWithDeps, makeRefreshDeps, type RefreshDeps } from "./refresh"
+export { refreshIndexIfStaleWithDeps, type RefreshDeps } from "./refresh"
+
+/** Public surface — wires the DB-bound dep and delegates to the pure core. */
+export async function refreshIndexIfStale(
+  options: { refresh?: boolean },
+  /** Test seam — override deps for unit testing. Production callers omit. */
+  deps?: Partial<RefreshDeps>,
+): Promise<RefreshResult> {
+  const merged = { ...makeRefreshDeps(readLastRebuild), ...(deps ?? {}) }
+  return refreshIndexIfStaleWithDeps(options, merged)
 }
 
 // ============================================================================
@@ -518,29 +497,14 @@ export function emitRefreshNote(r: RefreshResult): void {
 }
 
 function emitSearchPrelude(projectFilter: string | undefined): void {
-  // #5 — stale index check (post-refresh: if the auto-refresh succeeded the index
-  // is now fresh and this branch is silent; we still warn for the no-meta /
-  // refresh-failed / opt-out cases where the auto-refresh didn't run or didn't help).
-  try {
-    const db = getDb()
-    const lastRebuild = getIndexMeta(db, "last_rebuild") ?? null
-    if (lastRebuild) {
-      const ageMs = Date.now() - new Date(lastRebuild).getTime()
-      const thresholdMs = getStaleThresholdMs()
-      if (ageMs > thresholdMs) {
-        const ageMin = Math.max(1, Math.round(ageMs / 60_000))
-        const thresholdMin = Math.max(1, Math.round(thresholdMs / 60_000))
-        console.error(
-          `${YELLOW}⚠ recall: FTS5 index last rebuilt ${ageMin}m ago (stale > ${thresholdMin}m) — recent sessions may be missing.${RESET}\n` +
-            `  Run \`bun recall index --incremental\` to refresh manually, or unset \`--no-refresh\`.`,
-        )
-      }
-    }
-  } catch {
-    // Best-effort — never break search on prelude errors.
-  }
+  // Stale-index check moved to cmdSearch's refreshIndexIfStale (auto-refresh
+  // path + emitRefreshNote). The prior in-prelude check duplicated the work
+  // for the fresh case and only fired meaningfully when the auto-refresh
+  // failed or was opted-out — that path is now owned by emitRefreshNote, so
+  // the prelude focuses on the orthogonal worktree-scope warning below.
+  // See @km/bearly/19243 + @km/bearly/19216-recall-freshness-shrink-threshold.
 
-  // #3 — sibling -wtN project dirs check
+  // sibling -wtN project dirs check
   try {
     const home = process.env.HOME ?? ""
     const projectsDir = path.join(home, ".claude", "projects")
