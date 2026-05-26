@@ -872,6 +872,69 @@ export function createStatements(db: Database) {
     getInboxCursor: db.prepare("SELECT last_inbox_pull_seq FROM sessions WHERE id = $id"),
 
     /**
+     * Name-claim replay: find the rowid of the oldest direct message addressed
+     * to a name that no current or prior holder of that name has had delivered.
+     *
+     * "Prior holders" = session rows whose name is either the claimed name OR
+     * its tombstoned form (`<name>-dead-<id-prefix>`) — see handleJoin /
+     * handleRename for the tombstoning convention. The watermark is the MAX
+     * `last_delivered_seq` across all such rows EXCLUDING the claiming session
+     * (whose cursor was just reset to the log tail at register time and would
+     * otherwise hide all gap messages).
+     *
+     * Returns the oldest unread rowid, or null if none. The caller rewinds the
+     * claiming session's `last_inbox_pull_seq` to `rowid - 1` so the next
+     * `tribe.fetch` surfaces the gap directs.
+     *
+     * Why this matters: push delivery is session-id-bound. If A registers as
+     * "adhoc1", receives msg M1, disconnects; chief sends M2 to "adhoc1"; B
+     * connects (fresh cursor at tail) and renames to "adhoc1" — M2 is journaled
+     * but neither push-delivered nor reachable through B's default fetch (the
+     * tail-reset cursor is already past M2). See
+     * `@km/bearly/tribe-daemon-production-hardening` — name-claim replay.
+     */
+    oldestUnreadDirectForName: db.prepare(`
+      SELECT MIN(m.rowid) AS rowid
+      FROM messages m
+      WHERE m.recipient = $name
+        AND m.kind = 'direct'
+        AND m.sender != $name
+        AND m.rowid > COALESCE(
+          (
+            -- Watermark: highest seq either pushed (last_delivered_seq) OR
+            -- pulled (last_inbox_pull_seq) by any prior holder of the name.
+            -- We UNNEST both columns into a single value column and aggregate
+            -- with MAX. SQL's MAX aggregate ignores NULLs, so absent values
+            -- contribute nothing. The MAX-of-MAX scalar form doesn't compose
+            -- inside aggregate queries, so the UNION ALL is the portable shape.
+            SELECT MAX(seq) FROM (
+              SELECT s.last_delivered_seq AS seq
+                FROM sessions s
+                WHERE s.id != $self_id
+                  AND (s.name = $name OR s.name LIKE $name || '-dead-%')
+              UNION ALL
+              SELECT s.last_inbox_pull_seq AS seq
+                FROM sessions s
+                WHERE s.id != $self_id
+                  AND (s.name = $name OR s.name LIKE $name || '-dead-%')
+            )
+          ),
+          0
+        )
+    `),
+
+    /**
+     * Rewind a session's inbox-pull cursor IFF the proposed value is LESS than
+     * the current value. This is the only place in the codebase that lowers
+     * `last_inbox_pull_seq` (vs `advanceInboxCursor` which only ever raises it
+     * via MAX). Used by name-claim replay to expose gap directs that the
+     * register-time tail-reset would otherwise have stepped over.
+     */
+    rewindInboxCursor: db.prepare(
+      "UPDATE sessions SET last_inbox_pull_seq = MIN(last_inbox_pull_seq, $seq), updated_at = $now WHERE id = $id",
+    ),
+
+    /**
      * Apply a session's filter — single update covering persistent mode +
      * time-bounded mute + per-topic glob list. Replaces the old
      * setSessionMode / setSessionSnooze pair.

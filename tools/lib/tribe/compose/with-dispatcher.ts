@@ -143,6 +143,31 @@ export function withDispatcher<
      *  accessor. See `@km/infra/15630-stuck-agent-observability` § S4. */
     const lifecycleStore = createLifecycleStore()
 
+    /**
+     * Name-claim replay nudge — when handleJoin / handleRename rewinds a
+     * session's pull cursor to surface gap directs, fire an MCP `wakeup`
+     * notification at the claiming session's live socket so push-mode clients
+     * drain immediately instead of waiting for the next turn-start
+     * `tribe.fetch`. Pull-mode clients pick the directs up on their next poll
+     * regardless — the wakeup is opportunistic, not load-bearing.
+     */
+    function notifyWakeupForReplay(sessionId: string, claimedName: string): void {
+      let connId: string | undefined
+      for (const [cid, c] of clients) {
+        if (c.ctx.sessionId === sessionId) {
+          connId = cid
+          break
+        }
+      }
+      if (!connId) return
+      const tail = stmts.getMessageTailSeq.get() as { seq: number } | null
+      broadcast.pushToClient(connId, "wakeup", {
+        latest_seq: tail?.seq ?? null,
+        reason: "name-claim-replay",
+        claimed_name: claimedName,
+      })
+    }
+
     /** No-op handler opts for daemon-side tool calls. */
     const DAEMON_HANDLER_OPTS = {
       cleanup: () => {},
@@ -151,6 +176,7 @@ export function withDispatcher<
       getActiveSessionIds: () => registry.getActiveSessionIds(),
       getActiveSessionInfo: () => registry.getActiveSessionInfo(),
       getLifecycleStore: () => lifecycleStore,
+      notifyWakeupForReplay,
       getDebugState: () => ({
         clients: Array.from(clients.values()).map((c) => ({
           id: c.ctx.sessionId,

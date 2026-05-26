@@ -216,6 +216,54 @@ export function sendMessage(
 }
 
 /**
+ * Name-claim replay — surface gap directs the new holder would otherwise miss.
+ *
+ * Push delivery is session-id-bound: a message addressed to name X is fanned
+ * out to whichever live socket currently holds X. If X is unheld (the prior
+ * holder disconnected) when the message lands, it journals but never fans out.
+ * A subsequent session that claims X via `tribe.join` / `tribe.rename` gets
+ * its `last_inbox_pull_seq` reset to the log tail at register time, so even a
+ * default `tribe.fetch` will step over those gap directs.
+ *
+ * This function finds the oldest direct addressed to `claimedName` that has
+ * NOT been delivered to any session row currently or formerly holding that
+ * name (including its tombstoned `<name>-dead-<id>` form), and — if it falls
+ * before the claiming session's current pull cursor — rewinds the cursor to
+ * `rowid - 1`. The next `tribe.fetch({limit:...})` surfaces the gap directs
+ * in chronological order.
+ *
+ * Returns the rowid the cursor was rewound to (null if no replay was needed).
+ * Callers may optionally fire a `wakeup` notification on the live socket so
+ * push-mode clients drain immediately rather than waiting for the next
+ * turn-start fetch.
+ *
+ * See `@km/bearly/tribe-daemon-production-hardening` — gap-direct replay.
+ */
+export function replayUnreadForClaimedName(
+  ctx: TribeContext,
+  claimedName: string,
+  now: number = Date.now(),
+): number | null {
+  const oldest = ctx.stmts.oldestUnreadDirectForName.get({
+    $name: claimedName,
+    $self_id: ctx.sessionId,
+  }) as { rowid: number | null } | undefined
+  const oldestRowid = oldest?.rowid ?? null
+  if (oldestRowid == null) return null
+
+  const current = ctx.stmts.getInboxCursor.get({ $id: ctx.sessionId }) as { last_inbox_pull_seq: number } | undefined
+  const currentCursor = current?.last_inbox_pull_seq ?? 0
+
+  // Only rewind when the current cursor would hide the gap directs.
+  // `oldestRowid - 1` because `getInboxRows` uses `rowid > $since`.
+  const target = oldestRowid - 1
+  if (target >= currentCursor) return null
+
+  ctx.stmts.rewindInboxCursor.run({ $id: ctx.sessionId, $seq: target, $now: now })
+  return target
+}
+
+/**
  * Log an event — a journal-only row that lands in `messages` but is never
  * delivered to any client. Rows are tagged with `kind='event'` and prefixed
  * type `event.<type>`, queryable via

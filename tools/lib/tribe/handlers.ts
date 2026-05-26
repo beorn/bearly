@@ -9,7 +9,7 @@ import type { TribeRole } from "@bearly/tribe-client/lib/config"
 const log = createLogger("tribe:handlers")
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { validateName, sanitizeMessage } from "./validation.ts"
-import { sendMessage, logEvent } from "./messaging.ts"
+import { sendMessage, logEvent, replayUnreadForClaimedName } from "./messaging.ts"
 import { isPidAlive as pidStillAlive } from "./session.ts"
 import { senderMayUseRegisteredTrustTopic, type SessionRoster } from "./trust.ts"
 import type { LifecycleStore, LifecycleSnapshotRecord } from "./lifecycle-store.ts"
@@ -258,6 +258,15 @@ export type HandlerOpts = {
    *  store isn't available, instead of throwing. See `lifecycle-store.ts`
    *  + `@km/infra/15630-stuck-agent-observability` § S4. */
   getLifecycleStore?: () => LifecycleStore
+  /**
+   * Optional: fire a JSON-RPC `wakeup` notification at the claiming session's
+   * live socket so push-mode clients drain gap directs immediately, without
+   * waiting for the next turn-start `tribe.fetch`. Daemon wires this through
+   * the broadcast capability; tests / smoke harness omit it (the cursor
+   * rewind is durable in the DB regardless — the wakeup is an opportunistic
+   * nudge). See `replayUnreadForClaimedName` in messaging.ts.
+   */
+  notifyWakeupForReplay?: (sessionId: string, claimedName: string) => void
 }
 
 export function handleToolCall(
@@ -490,6 +499,8 @@ function handleRename(
     setUserRenamed: (v: boolean) => void
     /** Optional: when provided, allow reclaiming names held by non-active sessions. */
     getActiveSessionIds?: () => Set<string>
+    /** Optional: opportunistic socket wakeup after a name-claim replay rewind. */
+    notifyWakeupForReplay?: (sessionId: string, claimedName: string) => void
   },
 ): ToolResult {
   const newName = a.new_name as string
@@ -536,10 +547,26 @@ function handleRename(
   ctx.stmts.renameSession.run({ $new_name: newName, $session_id: ctx.sessionId, $now: Date.now() })
   ctx.setName(newName)
   opts.setUserRenamed(true) // Explicit rename — name is now sticky, won't be overridden
+  // Name-claim replay: rewind the pull cursor so any direct messages addressed
+  // to `newName` that arrived while the name was unheld (or held by a session
+  // that disconnected before delivery) surface on the next `tribe.fetch`.
+  // Push delivery is session-id-bound; the rename re-binds the name to this
+  // session but the register-time tail-reset would otherwise hide gap directs.
+  // See `replayUnreadForClaimedName` for the semantics.
+  const replayedTo = replayUnreadForClaimedName(ctx, newName)
+  if (replayedTo !== null) {
+    log.info?.(`name-claim replay: cursor rewound to ${replayedTo} for "${newName}" (rename)`)
+    opts.notifyWakeupForReplay?.(ctx.sessionId, newName)
+  }
   // Broadcast the rename
   sendMessage(ctx, "*", `Member "${oldName}" is now "${newName}"`, "notify")
   logEvent(ctx, "session.renamed", undefined, { old_name: oldName, new_name: newName })
-  return jsonResult({ renamed: true, old_name: oldName, new_name: newName })
+  return jsonResult({
+    renamed: true,
+    old_name: oldName,
+    new_name: newName,
+    ...(replayedTo !== null ? { replayed_cursor: replayedTo } : {}),
+  })
 }
 
 function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResult {
@@ -639,6 +666,16 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
             | undefined
         )?.delivery ?? "push")
 
+  // Name-claim replay: a session may call `tribe.join({name:"adhoc1"})` to
+  // claim a name whose prior holder disconnected without draining their
+  // inbox. Mirrors handleRename — see `replayUnreadForClaimedName` for the
+  // why-this-matters.
+  const replayedTo = replayUnreadForClaimedName(ctx, joinName)
+  if (replayedTo !== null) {
+    log.info?.(`name-claim replay: cursor rewound to ${replayedTo} for "${joinName}" (join)`)
+    opts.notifyWakeupForReplay?.(ctx.sessionId, joinName)
+  }
+
   logEvent(ctx, "session.joined", undefined, {
     name: joinName,
     role: joinRole,
@@ -656,6 +693,7 @@ function handleJoin(ctx: TribeContext, a: ToolArgs, opts: HandlerOpts): ToolResu
     previous_name: joinName !== prevName ? prevName : undefined,
     // 15654 Part 1 — notification-semantics primer. See TRIBE_JOIN_PRIMER docstring.
     primer: TRIBE_JOIN_PRIMER,
+    ...(replayedTo !== null ? { replayed_cursor: replayedTo } : {}),
   })
 }
 
