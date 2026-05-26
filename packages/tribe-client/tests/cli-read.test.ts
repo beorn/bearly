@@ -20,7 +20,7 @@ function buildProgram(): Command {
 }
 
 function findCmd(program: Command, name: string): Command | undefined {
-  return program.commands.find((c) => c.name() === name)
+  return program.commands.find((c) => c.name() === name) as Command | undefined
 }
 
 function optionFlags(cmd: Command): string[] {

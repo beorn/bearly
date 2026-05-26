@@ -15,7 +15,11 @@ export function parseThreshold(s: string): number {
   if (!m) {
     throw new Error(`parseThreshold: invalid duration "${s}" — accepts <n>[ms|s|m|h] (e.g. "5m", "30s", "1h", "500ms")`)
   }
-  const n = parseInt(m[1], 10)
+  const value = m[1]
+  if (value === undefined) {
+    throw new Error(`parseThreshold: missing duration value for "${s}"`)
+  }
+  const n = parseInt(value, 10)
   switch (m[2]) {
     case "ms":
       return n
