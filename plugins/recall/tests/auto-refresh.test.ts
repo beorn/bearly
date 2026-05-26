@@ -5,11 +5,7 @@
  * RECALL_STALE_THRESHOLD env override, --no-refresh opt-out.
  */
 import { describe, test, expect, afterEach } from "vitest"
-import {
-  parseThreshold,
-  getStaleThresholdMs,
-  RECALL_STALE_THRESHOLD_DEFAULT,
-} from "../src/lib/staleness"
+import { parseThreshold, getStaleThresholdMs, RECALL_STALE_THRESHOLD_DEFAULT } from "../src/lib/staleness"
 import { refreshIndexIfStaleWithDeps, type RefreshDeps } from "../src/lib/refresh"
 
 /** Build a deps bundle defaulting to "fresh / no spawn" for fast tests. */
@@ -91,7 +87,12 @@ describe("refreshIndexIfStaleWithDeps — opt-out", () => {
     const spawned: string[][] = []
     const r = await refreshIndexIfStaleWithDeps(
       { refresh: false },
-      makeFakeDeps({ spawnCmd: async (argv) => { spawned.push(argv); return { exitCode: 0 } } }),
+      makeFakeDeps({
+        spawnCmd: async (argv) => {
+          spawned.push(argv)
+          return { exitCode: 0 }
+        },
+      }),
     )
     expect(r.refreshed).toBe(false)
     if (!r.refreshed) expect(r.reason).toBe("opt-out")
@@ -126,7 +127,10 @@ describe("refreshIndexIfStaleWithDeps — staleness branches", () => {
         getLastRebuild: () => lastRebuild,
         now: () => now,
         getThresholdMs: () => 5 * 60 * 1000,
-        spawnCmd: async (argv) => { spawned.push(argv); return { exitCode: 0 } },
+        spawnCmd: async (argv) => {
+          spawned.push(argv)
+          return { exitCode: 0 }
+        },
       }),
     )
     expect(r.refreshed).toBe(false)
@@ -145,7 +149,10 @@ describe("refreshIndexIfStaleWithDeps — staleness branches", () => {
         getLastRebuild: () => lastRebuild,
         now: () => now + (nowCalls++ === 0 ? 0 : 250), // 250ms refresh duration
         getThresholdMs: () => 5 * 60 * 1000,
-        spawnCmd: async (argv) => { spawned.push(argv); return { exitCode: 0 } },
+        spawnCmd: async (argv) => {
+          spawned.push(argv)
+          return { exitCode: 0 }
+        },
       }),
     )
     expect(r.refreshed).toBe(true)
@@ -161,7 +168,11 @@ describe("refreshIndexIfStaleWithDeps — error handling (Fail Loud, never break
   test('getLastRebuild throws → { reason: "error" } with the message (never throws to caller)', async () => {
     const r = await refreshIndexIfStaleWithDeps(
       {},
-      makeFakeDeps({ getLastRebuild: () => { throw new Error("DB locked") } }),
+      makeFakeDeps({
+        getLastRebuild: () => {
+          throw new Error("DB locked")
+        },
+      }),
     )
     expect(r.refreshed).toBe(false)
     if (!r.refreshed && r.reason === "error") {
@@ -194,7 +205,7 @@ describe("refreshIndexIfStaleWithDeps — error handling (Fail Loud, never break
     }
   })
 
-  test("spawn throws → { reason: \"error\" } (never throws to caller)", async () => {
+  test('spawn throws → { reason: "error" } (never throws to caller)', async () => {
     const now = 10_000_000
     const lastRebuild = new Date(now - 30 * 60 * 1000).toISOString()
     const r = await refreshIndexIfStaleWithDeps(
@@ -202,7 +213,9 @@ describe("refreshIndexIfStaleWithDeps — error handling (Fail Loud, never break
       makeFakeDeps({
         getLastRebuild: () => lastRebuild,
         now: () => now,
-        spawnCmd: async () => { throw new Error("ENOENT bun") },
+        spawnCmd: async () => {
+          throw new Error("ENOENT bun")
+        },
       }),
     )
     expect(r.refreshed).toBe(false)

@@ -2,77 +2,76 @@
 /**
  * `tribe` — unified CLI binary for the @bearly/tribe-client package.
  *
- * Phase A.MVP (@km/bearly/tribe-cli-unify-phase-a-substrate): ships the
- * subcommand dispatcher with `mcp` only. The full verb migration (status,
- * sessions, send, log, retro, install, etc.) lands in Phase A.2 — see
- * follow-up bead. Until then, the legacy `bun tools/tribe-cli.ts <verb>`
- * surface stays canonical for non-mcp verbs.
+ * Phase A.MVP (@km/bearly/tribe-cli-unify-phase-a-substrate): shipped
+ *   `tribe mcp` (stdio adapter forwarder).
+ *
+ * Phase A.2 (@km/bearly/19231-tribe-cli-unify-phase-a2-verbs) round 1:
+ *   ships read/inspect + send/messaging verb families. Each family
+ *   registers via its own dispatcher (cli/read.ts, cli/send.ts) over
+ *   `@silvery/commander`. Lifecycle / install / hooks families land in
+ *   future rounds.
  *
  * Subcommands today:
  *
- *   tribe mcp [--name <name>] [--role <role>] [--socket <path>]
- *             [--account <id>] [--provider <id>] [--domains <list>]
+ *   tribe mcp [--name <name>] [--role <role>] [--socket <path>] ...
+ *     Runs the stdio MCP adapter that bridges Claude Code stdio to the
+ *     tribe daemon's Unix socket. argv-forwarded (NOT Commander-parsed),
+ *     so the stdio-adapter's own parseTribeArgs sees the full flag set.
  *
- *   Runs the stdio MCP adapter that bridges Claude Code stdio to the tribe
- *   daemon's Unix socket. Same flag surface + env-var fallbacks as the
- *   underlying stdio-adapter (parseTribeArgs in lib/config.ts).
+ *   tribe status | sessions | pending | log | health | inbox-status | activity
+ *     Read/inspect verbs — register via cli/read.ts (Family 1).
  *
- * Why this is a tiny dispatcher rather than a full port: stdio-adapter is
- * already published in this package (since 0.3.0); cli.ts just makes it
- * invocable as `tribe mcp` from the bin entry. Verb migration adds ~6
- * transitive deps from the bearly tools/ directory (retro, install,
- * activity-watch, hook-dispatch, autostart-config, hooks/index) that some
- * straddle daemon/client boundary — that work is its own bead.
+ *   tribe send | retro | alarm | alarm-status | alarm-ack
+ *     Send/messaging verbs — register via cli/send.ts (Family 2).
+ *
+ *   Legacy non-ported verbs (start/stop/reload/watch/lifecycle/install/
+ *   uninstall/doctor/hook/session-start/prompt/session-end/pre-compact)
+ *   still ship via `bun tools/tribe-cli.ts <verb>` until Phase A.2
+ *   families 3-5 land.
  */
 
-const SUBCOMMANDS = ["mcp"] as const
-type Subcommand = (typeof SUBCOMMANDS)[number]
-
-function printUsage(): void {
-  process.stdout.write(`tribe — @bearly/tribe-client unified CLI
-
-Usage:
-  tribe <subcommand> [options...]
-
-Subcommands:
-  mcp     Run the stdio MCP adapter (bridges Claude Code stdio to tribe daemon)
-
-For mcp options, see: bun packages/tribe-client/src/stdio-adapter.ts --help
-Or set TRIBE_NAME / TRIBE_ROLE / TRIBE_SOCKET / TRIBE_ACCOUNT / TRIBE_PROVIDER
-in the environment.
-
-Phase A.MVP — non-mcp verbs (status, sessions, send, log, retro, install, …)
-are still served by the legacy: bun tools/tribe-cli.ts <verb>
-Verb-migration is tracked at the A.2 follow-up bead.
-`)
-}
+const ARGV_FORWARDED_SUBCOMMANDS = new Set(["mcp"])
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const sub = argv[0]
 
-  if (!sub || sub === "-h" || sub === "--help" || sub === "help") {
-    printUsage()
-    process.exit(sub ? 0 : 2)
+  // argv-forwarded subcommands run BEFORE Commander parses, so the child can
+  // see its own raw flags via process.argv. (Commander's strict mode would
+  // reject unknown flags like --account that stdio-adapter parses itself.)
+  if (sub && ARGV_FORWARDED_SUBCOMMANDS.has(sub)) {
+    switch (sub) {
+      case "mcp":
+        // stdio-adapter parses its own argv via parseTribeArgs (strict: false).
+        // The subcommand token 'mcp' sits at argv[2] and is silently ignored
+        // as an extra positional; named flags (--name etc.) are picked up
+        // normally. Hot-reload self-restart at stdio-adapter.ts:599 uses
+        // `process.argv.slice(1)` which preserves the cli.ts entry — re-exec
+        // re-enters this dispatcher cleanly.
+        await import("./stdio-adapter.ts")
+        return
+    }
   }
 
-  if (!(SUBCOMMANDS as readonly string[]).includes(sub)) {
-    process.stderr.write(`tribe: unknown subcommand '${sub}'\n\n`)
-    printUsage()
-    process.exit(2)
-  }
+  // Commander-routed subcommands (Phase A.2 verb families).
+  const { Command } = await import("@silvery/commander")
+  const program = new Command("tribe")
+  program.description("@bearly/tribe-client unified CLI — coordinate the tribe daemon")
+  program.addHelpText(
+    "after",
+    `\nMCP adapter (argv-forwarded, not Commander-parsed):\n` +
+      `  tribe mcp [--name X --role Y --socket /path ...]\n` +
+      `    Bridges Claude Code stdio to the tribe daemon's Unix socket.\n` +
+      `    See: bun packages/tribe-client/src/stdio-adapter.ts --help\n`,
+  )
 
-  switch (sub as Subcommand) {
-    case "mcp":
-      // stdio-adapter parses its own argv via parseTribeArgs (strict: false).
-      // The subcommand token 'mcp' sits at argv[2] and is silently ignored as
-      // an extra positional; named flags (--name etc.) are picked up normally.
-      // The hot-reload self-restart at stdio-adapter.ts:599 uses
-      // `process.argv.slice(1)` which preserves the cli.ts entry — re-exec
-      // re-enters this dispatcher cleanly.
-      await import("./stdio-adapter.ts")
-      return
-  }
+  const { registerReadCommands } = await import("./cli/read.ts")
+  const { registerSendCommands } = await import("./cli/send.ts")
+  registerReadCommands(program)
+  registerSendCommands(program)
+
+  // Defer to Commander — it handles --help, unknown-subcommand errors, and exits.
+  await program.parseAsync(process.argv)
 }
 
 await main()

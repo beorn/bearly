@@ -13,9 +13,7 @@ export const RECALL_STALE_THRESHOLD_DEFAULT = "5m"
 export function parseThreshold(s: string): number {
   const m = /^(\d+)\s*(ms|s|m|h)?$/.exec(s.trim())
   if (!m) {
-    throw new Error(
-      `parseThreshold: invalid duration "${s}" — accepts <n>[ms|s|m|h] (e.g. "5m", "30s", "1h", "500ms")`,
-    )
+    throw new Error(`parseThreshold: invalid duration "${s}" — accepts <n>[ms|s|m|h] (e.g. "5m", "30s", "1h", "500ms")`)
   }
   const n = parseInt(m[1], 10)
   switch (m[2]) {

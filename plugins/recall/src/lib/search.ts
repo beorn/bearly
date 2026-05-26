@@ -84,12 +84,7 @@ export interface SearchOptions {
 // Pure helpers (parseThreshold/getStaleThresholdMs/RefreshResult/RECALL_STALE_THRESHOLD_DEFAULT)
 // live in staleness.ts so unit tests can import them without dragging the search.ts
 // transitive closure (bun:sqlite, indexer, llm/agent → zod) into vitest's node runtime.
-export {
-  RECALL_STALE_THRESHOLD_DEFAULT,
-  parseThreshold,
-  getStaleThresholdMs,
-  type RefreshResult,
-} from "./staleness"
+export { RECALL_STALE_THRESHOLD_DEFAULT, parseThreshold, getStaleThresholdMs, type RefreshResult } from "./staleness"
 import { getStaleThresholdMs, type RefreshResult } from "./staleness"
 
 /**
@@ -481,9 +476,7 @@ function printAgentTrace(result: AgentRecallResult, debugPlan: boolean): void {
 export function emitRefreshNote(r: RefreshResult): void {
   if (r.refreshed) {
     const staleMin = Math.max(1, Math.round(r.staleMs / 60_000))
-    console.error(
-      `${DIM}[recall] index was ${staleMin}m stale — refreshed (${r.refreshMs}ms) before search${RESET}`,
-    )
+    console.error(`${DIM}[recall] index was ${staleMin}m stale — refreshed (${r.refreshMs}ms) before search${RESET}`)
     return
   }
   if (r.reason === "error") {

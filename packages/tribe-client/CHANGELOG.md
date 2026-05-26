@@ -22,9 +22,8 @@
   on every install, producing a mode-only diff that dirtied the bearly
   submodule in km's working tree. Affects all installs against the 0.4.0
   tag. Workaround for anyone pinning 0.4.0: `chmod +x
-  node_modules/@bearly/tribe-client/dist/cli.mjs` post-install. Upgrade
+node_modules/@bearly/tribe-client/dist/cli.mjs` post-install. Upgrade
   to 0.4.1 to fix.
-
 
 ### Added
 
