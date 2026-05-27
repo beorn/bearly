@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Checkpoint session context to a tracking issue. Ensures ONE issue captures all active work, recent commits, uncommitted changes, and next steps. Use before /compact, at natural breakpoints, or when context is getting long. Also runs automatically via pre-compact hook."
+description: "Save active session context, git state, recent commits, and next steps to one tracking issue before compaction or handoff."
 argument-hint: "[message]"
 ---
 

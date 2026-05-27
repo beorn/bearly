@@ -1,6 +1,6 @@
 ---
 name: discuss
-description: Pause implementation to discuss architecture, alternatives, or understanding. Use when you want to step back and discuss before coding. Checkpoints context to active bead for safe resumption.
+description: Pause implementation for architecture or understanding discussion, checkpoint context, then resume with captured decisions.
 argument-hint: [<topic>|continue|end|history]
 allowed-tools: Bash, Read, Glob, Grep, Task, AskUserQuestion
 ---
