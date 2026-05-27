@@ -1,6 +1,6 @@
 ---
 name: why
-description: "5 Whys root cause analysis + /big reframing. Use when the same area keeps breaking, when a fix feels like it's treating symptoms, or when you want to understand WHY a problem exists — not just how to fix it."
+description: "Run 5 Whys plus /big reframing to trace a symptom to structural root cause before fixing."
 argument-hint: [problem or symptom]
 benefits-from: [recall, pm]
 escalate-to:
