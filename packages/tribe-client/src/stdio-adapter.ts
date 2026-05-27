@@ -52,6 +52,12 @@ const SOCKET_PATH = resolveSocketPath(args.socket)
 const SESSION_DOMAINS = parseSessionDomains(args)
 const CLAUDE_SESSION_ID = resolveClaudeSessionId()
 const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
+// km-bearly.tribe-dm-delivery-gap: declare delivery mode. MCP-only clients
+// without a Claude channel reader (codex, gemini, hermes, etc.) should run
+// with TRIBE_DELIVERY=pull so the daemon queues events for tribe.fetch instead
+// of fanning them out down a Claude-specific notification channel.
+const DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push"
+const CLAUDE_CHANNEL_ENABLED = DELIVERY === "push"
 
 // Worktree-isolation guardrail (km-bearly.tribe-codex-cwd-worktree-guardrail):
 // standalone codex / non-launcher MCP clients inherit the user's invocation
@@ -108,6 +114,7 @@ let daemonReady: Promise<DaemonClient>
  * message_id) — not user-visible content — so it's left as-is.
  */
 function sendChannel(content: string, meta: Record<string, string | undefined>): void {
+  if (!CLAUDE_CHANNEL_ENABLED) return
   if (!mcp) return // Not yet initialized
   const safeContent = defangModelInput(content)
   mcp.notification({ method: "notifications/claude/channel", params: { content: safeContent, meta } }).catch(() => {})
@@ -160,13 +167,6 @@ const identityToken = createHash("sha256")
   .update(`${CLAUDE_SESSION_ID ?? ""}|${process.cwd()}|${args.role ?? "member"}`)
   .digest("hex")
   .slice(0, 16)
-
-// km-bearly.tribe-dm-delivery-gap: declare delivery mode. MCP-only clients
-// without a notification reader (codex, gemini, etc.) should run with
-// TRIBE_DELIVERY=pull so the daemon queues events for tribe.fetch instead of
-// fanning them out down a channel that has no consumer. Default 'push' keeps
-// Claude Code behavior unchanged.
-const DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push"
 
 const registerParams = {
   ...(args.name ? { name: args.name } : {}),
@@ -321,6 +321,19 @@ Tribe messages:
 - Plain text only — no markdown (**bold**, headers, bullets). Renders as escaped text.
 - Don't over-broadcast — only send when it changes what someone else should know.`
 
+const pullInstructions = `Tribe coordination is available through MCP tools.
+
+Turn-start inbox check:
+- At the start of each user turn, call tribe.fetch({ limit: 50 }) before responding.
+- If direct-message context is needed, also call tribe.fetch({ with: <your session name>, limit: 20 }).
+- Surface only actionable items: direct messages, requests, blockers, assignments, chief verdicts, CI alerts, or user-relevant coordination.
+- Ignore routine ambient joins/leaves, git commits, low-severity status, and notification-only events unless explicitly asked.
+
+Coordination protocol:
+- Use tribe.members() to see who's online and their domains.
+- Use tribe.send(to, message, type) to assign work, answer queries, broadcast status, or request help.
+- Keep tribe messages short: 1-3 lines, plain text only.`
+
 // `experimental["claude/channel"]` registers this MCP server as a Claude Code
 // *channel source*. Claude Code reads this capability from the `initialize`
 // response, then captures every `notifications/claude/channel` notification
@@ -344,7 +357,7 @@ mcp = new Server(
   { name: "tribe", version: "0.14.1" },
   {
     capabilities: {
-      experimental: { "claude/channel": {} },
+      ...(CLAUDE_CHANNEL_ENABLED ? { experimental: { "claude/channel": {} } } : {}),
       tools: {},
     },
     // Role for the `initialize` instructions must be known synchronously
@@ -352,7 +365,7 @@ mcp = new Server(
     // `args.role` is the launch-time hint; daemon-assigned role isn't
     // available this early. Members are the common case; a chief is launched
     // with the role hint.
-    instructions: args.role === "chief" ? chiefInstructions : memberInstructions,
+    instructions: CLAUDE_CHANNEL_ENABLED ? (args.role === "chief" ? chiefInstructions : memberInstructions) : pullInstructions,
   },
 )
 
