@@ -365,7 +365,11 @@ mcp = new Server(
     // `args.role` is the launch-time hint; daemon-assigned role isn't
     // available this early. Members are the common case; a chief is launched
     // with the role hint.
-    instructions: CLAUDE_CHANNEL_ENABLED ? (args.role === "chief" ? chiefInstructions : memberInstructions) : pullInstructions,
+    instructions: CLAUDE_CHANNEL_ENABLED
+      ? args.role === "chief"
+        ? chiefInstructions
+        : memberInstructions
+      : pullInstructions,
   },
 )
 
