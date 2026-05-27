@@ -1,6 +1,6 @@
 ---
 name: fresh
-description: "META-PROTOCOL for being stuck 20+ min on a specific problem — stops coding, gathers context, calls /deep (or /pro) internally with a structured request. Not itself an LLM tool. For unstructured stuck-feelings use /big; for direct questions use /ask, /pro, /deep."
+description: "Stuck-problem protocol: gather context and call /deep or /pro before more coding."
 argument-hint: [<topic>]
 benefits-from: [recall, pm, gbrain]
 ---

@@ -1,6 +1,6 @@
 ---
 name: csw
-description: "Complete Staff Work — structured analysis of a decision, design choice, or problem. Gathers all context, enumerates options with concrete examples, scores them, and presents a clear recommendation. The decision-maker should only need to say 'approved' or pick an option."
+description: "Complete Staff Work: options analysis with examples, scores, recommendation, and decision-ready tradeoffs."
 argument-hint: <topic or question to analyze>
 ---
 
