@@ -34,6 +34,7 @@
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts",
     "./stdio": "./src/stdio-adapter.ts",
+    "./http": "./src/http-adapter.ts",
     "./lib/socket": "./src/lib/socket.ts",
     "./lib/config": "./src/lib/config.ts",
     "./lib/tools-list": "./src/lib/tools-list.ts",
@@ -58,6 +59,10 @@
       "./stdio": {
         "types": "./dist/stdio-adapter.d.mts",
         "import": "./dist/stdio-adapter.mjs"
+      },
+      "./http": {
+        "types": "./dist/http-adapter.d.mts",
+        "import": "./dist/http-adapter.mjs"
       },
       "./lib/socket": {
         "types": "./dist/lib/socket.d.mts",
@@ -108,6 +113,7 @@
       "src/index.ts",
       "src/cli.ts",
       "src/stdio-adapter.ts",
+      "src/http-adapter.ts",
       "src/lib/socket.ts",
       "src/lib/config.ts",
       "src/lib/tools-list.ts",

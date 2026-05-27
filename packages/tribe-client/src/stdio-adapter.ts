@@ -58,6 +58,7 @@ const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
 // of fanning them out down a Claude-specific notification channel.
 const DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push"
 const CLAUDE_CHANNEL_ENABLED = DELIVERY === "push"
+const REQUIRE_EXPLICIT_JOIN = process.env.TRIBE_REQUIRE_JOIN !== "0"
 
 // Worktree-isolation guardrail (km-bearly.tribe-codex-cwd-worktree-guardrail):
 // standalone codex / non-launcher MCP clients inherit the user's invocation
@@ -76,6 +77,7 @@ log.info?.(`Connecting to daemon at ${SOCKET_PATH}`)
 
 let myName = "pending"
 let myRole = "member"
+let joined = !REQUIRE_EXPLICIT_JOIN
 const mySessionId = randomUUID()
 const PROJECT_NAME = resolveProjectName()
 
@@ -115,6 +117,7 @@ let daemonReady: Promise<DaemonClient>
  */
 function sendChannel(content: string, meta: Record<string, string | undefined>): void {
   if (!CLAUDE_CHANNEL_ENABLED) return
+  if (!joined) return
   if (!mcp) return // Not yet initialized
   const safeContent = defangModelInput(content)
   mcp.notification({ method: "notifications/claude/channel", params: { content: safeContent, meta } }).catch(() => {})
@@ -169,7 +172,7 @@ const identityToken = createHash("sha256")
   .slice(0, 16)
 
 const registerParams = {
-  ...(args.name ? { name: args.name } : {}),
+  ...(args.name && !REQUIRE_EXPLICIT_JOIN ? { name: args.name } : {}),
   ...(args.role ? { role: args.role } : {}),
   domains: SESSION_DOMAINS,
   project: process.cwd(),
@@ -185,7 +188,7 @@ const registerParams = {
   claudeSessionId: CLAUDE_SESSION_ID,
   claudeSessionName: CLAUDE_SESSION_NAME,
   identityToken,
-  delivery: DELIVERY,
+  delivery: REQUIRE_EXPLICIT_JOIN ? "pull" : DELIVERY,
   // @km/infra/15641 Phase 1 — per-session account/provider label sourced
   // from `ag` via TRIBE_ACCOUNT / TRIBE_PROVIDER env vars (which ag sets
   // at backend-launch time). Tribe stores them; quota visibility lives in
@@ -403,7 +406,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     // Attach identity_token to join so the daemon can adopt prior
     // session state when Claude Code restarts and the agent calls join again.
-    const payload = name === "join" ? { ...a, identity_token: identityToken } : a
+    const payload = name === "join" ? { delivery: DELIVERY, ...a, identity_token: identityToken } : a
     // Tool names are bare verbs ("send", "fetch"); daemon wire methods use "tribe." prefix
     const daemonMethod = `tribe.${name}`
     // A tool call may arrive before the background daemon connect resolves
@@ -420,6 +423,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch {
         /* parse error, ignore */
       }
+      if (name === "join") joined = true
       // Explicit rename by the agent — don't auto-rename later
       autoRenamed = true
     }

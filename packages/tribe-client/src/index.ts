@@ -25,6 +25,10 @@ export { connectOrStart, connectToDaemon, createReconnectingClient, isSocketAliv
 export type { DaemonCallOutcome, WithDaemonCallOpts } from "./util.ts"
 export { withDaemonCall } from "./util.ts"
 
+// MCP HTTP bridge
+export type { StartTribeHttpMcpServerOptions, TribeHttpMcpServer } from "./http-adapter.ts"
+export { startTribeHttpMcpServer } from "./http-adapter.ts"
+
 // Socket path discovery
 export { resolvePeerSocketPath, resolveSocketPath } from "./paths.ts"
 
