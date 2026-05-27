@@ -11,13 +11,13 @@ boundary. The reusable coordination system is moving to its own repository:
 
 Target split:
 
-| Surface | Future home | What it owns |
-| --- | --- | --- |
-| Tribe product/docs | `beorn/tribe` | Top-level architecture, install docs, protocol docs |
-| Wire client | npm `tribe-wire`, bin `tribe` | Unix-socket client, MCP stdio adapter, protocol CLI (`tribe mcp`, `tribe send`, `tribe status`) |
-| Daemon | npm `tribe-daemon`, bin `tribe-daemon` | Broker process, SQLite state, daemon plugin runtime |
-| Claude Code integration | Tribe repo plugin package | Thin host integration and autostart wiring |
-| km tent/SOP | km repo | `@chief`, `@agent/N`, beads, worktrees, integration workflow |
+| Surface                 | Future home                            | What it owns                                                                                    |
+| ----------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Tribe product/docs      | `beorn/tribe`                          | Top-level architecture, install docs, protocol docs                                             |
+| Wire client             | npm `tribe-wire`, bin `tribe`          | Unix-socket client, MCP stdio adapter, protocol CLI (`tribe mcp`, `tribe send`, `tribe status`) |
+| Daemon                  | npm `tribe-daemon`, bin `tribe-daemon` | Broker process, SQLite state, daemon plugin runtime                                             |
+| Claude Code integration | Tribe repo plugin package              | Thin host integration and autostart wiring                                                      |
+| km tent/SOP             | km repo                                | `@chief`, `@agent/N`, beads, worktrees, integration workflow                                    |
 
 During the transition, the source still lives under `plugins/tribe/` and
 `packages/tribe-client/` in this repository. New integration work should use
@@ -39,17 +39,17 @@ claude plugin install batch-refactor@bearly   # Batch rename/refactor
 claude plugin install github@bearly           # GitHub notifications
 ```
 
-| Plugin                                    | Type        | What                                                                                         |
-| ----------------------------------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| [github](plugins/github/)                 | MCP channel | GitHub notifications — build failures, PR activity, push events as channel messages          |
-| [llm](plugins/llm/)                       | CLI skill   | Multi-LLM research — deep research, second opinions, multi-model debate                      |
-| [recall](plugins/recall/)                 | CLI skill   | Session history search — FTS5-indexed search with LLM synthesis and file recovery            |
-| [batch-refactor](plugins/batch-refactor/) | CLI skill   | Batch rename, refactor, and migrate across files with confidence-based auto-apply            |
+| Plugin                                    | Type        | What                                                                                |
+| ----------------------------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| [github](plugins/github/)                 | MCP channel | GitHub notifications — build failures, PR activity, push events as channel messages |
+| [llm](plugins/llm/)                       | CLI skill   | Multi-LLM research — deep research, second opinions, multi-model debate             |
+| [recall](plugins/recall/)                 | CLI skill   | Session history search — FTS5-indexed search with LLM synthesis and file recovery   |
+| [batch-refactor](plugins/batch-refactor/) | CLI skill   | Batch rename, refactor, and migrate across files with confidence-based auto-apply   |
 
 ### Transitional Plugin
 
-| Plugin                  | Status | What |
-| ----------------------- | ------ | ---- |
+| Plugin                  | Status                  | What                                          |
+| ----------------------- | ----------------------- | --------------------------------------------- |
 | [tribe](plugins/tribe/) | moving to `beorn/tribe` | Cross-session coordination for agent sessions |
 
 The marketplace is defined by [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json); each

@@ -58,12 +58,12 @@ Agents are not tribe members; they serve the chief and terminate when done.
 
 The clean post-split model is:
 
-| Component | Target home | What it owns |
-| --- | --- | --- |
-| `tribe-wire` | `beorn/tribe/packages/wire` | Protocol client, reconnecting Unix-socket transport, MCP stdio adapter, and protocol CLI (`tribe mcp`, `tribe send`, `tribe status`) |
-| `tribe-daemon` | `beorn/tribe/packages/daemon` | Long-running broker, SQLite state, session registry, message journal, daemon plugins |
-| Claude Code plugin | `beorn/tribe` plugin package | Host integration, MCP registration, autostart wiring |
-| km tent/SOP | km repo | Project-specific roles and workflow (`@chief`, `@agent/N`, beads, worktrees) |
+| Component          | Target home                   | What it owns                                                                                                                         |
+| ------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `tribe-wire`       | `beorn/tribe/packages/wire`   | Protocol client, reconnecting Unix-socket transport, MCP stdio adapter, and protocol CLI (`tribe mcp`, `tribe send`, `tribe status`) |
+| `tribe-daemon`     | `beorn/tribe/packages/daemon` | Long-running broker, SQLite state, session registry, message journal, daemon plugins                                                 |
+| Claude Code plugin | `beorn/tribe` plugin package  | Host integration, MCP registration, autostart wiring                                                                                 |
+| km tent/SOP        | km repo                       | Project-specific roles and workflow (`@chief`, `@agent/N`, beads, worktrees)                                                         |
 
 The current `@bearly/tribe` package combines several of these surfaces during
 the migration. Avoid adding new km/tent workflow assumptions here; reusable
