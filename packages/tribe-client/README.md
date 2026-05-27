@@ -63,6 +63,28 @@ import { TRIBE_PROTOCOL_VERSION } from "@bearly/tribe-client/lib/socket"
 
 JSON-RPC client, reconnecting client, line parser, composition primitives (pipe / Scope / Tool registry). See `src/lib/socket.ts`.
 
+### HTTP MCP bridge
+
+SSH-hosted agents should not need a tribe daemon, daemon socket, or package
+runner on the remote host just to use tribe tools. Start a local loopback HTTP
+MCP bridge, then forward that loopback port with SSH:
+
+```ts
+import { startTribeHttpMcpServer } from "@bearly/tribe-client/http"
+
+const bridge = await startTribeHttpMcpServer({
+  delivery: "pull",
+  requireJoin: true,
+})
+
+console.log(bridge.url) // http://127.0.0.1:<port>/mcp
+```
+
+With `requireJoin: true`, the bridge registers with the daemon in pull mode
+until the agent explicitly calls `tribe.join`. The join call supplies the
+agent's selected delivery policy, so push notifications do not wake or steer
+an agent before it has opted into tribe identity and delivery.
+
 ## Surface delineation — protocol vs dev tooling
 
 If a verb belongs on the daemon protocol, it lives **here** (future `tribe-wire`). If a verb owns daemon lifecycle, it belongs in `tribe-daemon` after the split. If a verb is bearly-monorepo internal dev tooling, it lives in `vendor/bearly/tools/tribe-cli.ts` during migration — a separate Bun script that bundles daemon-spawn lifecycle (`start`/`stop`/`reload`/`watch`), Claude Code install/uninstall/doctor (which wires up sibling plugin paths like `plugins/tribe/recall/server.ts`), and the bearly-tools-wide pluggable hook router (`tools/lib/hooks/`).
