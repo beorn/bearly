@@ -169,7 +169,7 @@ Present the analysis **directly in the conversation** — do not write it to a f
 | Present without a recommendation | The whole point is the decision-maker says "approved", not "let me think" |
 | Bury the recommendation | Lead with context, but make the recommendation unmissable |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /beads JIT context)
 
 The context-gathering phase of CSW is JIT BCC applied to a decision instead of a bead. Fan out via `Explore` sub-agents in ONE message:
 
@@ -179,5 +179,5 @@ The context-gathering phase of CSW is JIT BCC applied to a decision instead of a
 - One agent for blast-radius: who/what depends on the area this decision touches
 - One agent for "what did past sessions decide on adjacent questions?" (`bun recall`)
 
-Returns: comparative evidence per option, surfacing trade-offs the user can call. No hard wave cap; stop on fixed-point or clear winner. Canonical: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+Returns: comparative evidence per option, surfacing trade-offs the user can call. No hard wave cap; stop on fixed-point or clear winner. Canonical context-loading discipline lives in `.claude/skills/beads/SKILL.md` under "Pickup".
 ```

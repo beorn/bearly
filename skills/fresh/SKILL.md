@@ -218,7 +218,7 @@ If a bead is active, update its notes with the findings.
 | Rush to implement                        | Present advice first, get user buy-in             |
 | Forget `--no-recover`                    | Stale recovered responses waste $2-5              |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /beads JIT context)
 
 The "gather context" phase of /fresh is JIT BCC. When stuck, fan out via `Explore` sub-agents in ONE message:
 
@@ -228,4 +228,4 @@ The "gather context" phase of /fresh is JIT BCC. When stuck, fan out via `Explor
 - One agent for "what does the canonical design doc say about this subsystem?"
 - One agent for adjacent test failures or warnings being masked
 
-Returns: a complete context bundle to hand to /deep or /pro. Canonical wave-loop: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+Returns: a complete context bundle to hand to /deep or /pro. Canonical context-loading discipline lives in `.claude/skills/beads/SKILL.md` under "Pickup".

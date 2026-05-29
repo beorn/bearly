@@ -219,7 +219,7 @@ Both involve stepping back from implementation. The difference:
 | Think big without checking code                | Hypotheses must be grounded — grep and read                              |
 | Stop at Round 1                                | The best ideas come from Round 2, after you've learned what doesn't work |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /beads JIT context)
 
 The 10-20 hypotheses /big generates are independent → fan out validation via `Explore` sub-agents in ONE message. Each hypothesis = one sub-agent:
 
@@ -228,7 +228,7 @@ The 10-20 hypotheses /big generates are independent → fan out validation via `
 
 After wave 1: integrate into hypothesis ranking; harvest follow-ups for any surviving high-leverage branches; wave 2 drills into "where does invariant X actually live?" for the top 2-3.
 
-This turns /big's serial hypothesis-eval into parallel. Canonical: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+This turns /big's serial hypothesis-eval into parallel. Canonical context-loading discipline lives in `.claude/skills/beads/SKILL.md` under "Pickup".
 
 ## Pairs with
 
