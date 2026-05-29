@@ -48,6 +48,50 @@ afterEach(() => {
 })
 
 describe("worktree reset round-trip", () => {
+  test("create on stale local pool branch refreshes to origin/main when branch has zero ahead commits", async () => {
+    const mainRepo = join(sandbox, "main")
+
+    await initRepo(mainRepo)
+    writeFileSync(join(mainRepo, "README.md"), "old\n")
+    await commitAll(mainRepo, "main-init")
+    const upstreamRepo = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+    await $`cd ${mainRepo} && git remote add origin ${upstreamRepo} && git push -q origin main`.quiet()
+
+    const worktreeName = "wt6"
+    const worktreePath = join(sandbox, "main-wt6")
+    await $`cd ${mainRepo} && git branch ${worktreeName} HEAD`.quiet()
+
+    writeFileSync(join(mainRepo, "new.txt"), "new-on-main\n")
+    await commitAll(mainRepo, "main-advance")
+    await $`cd ${mainRepo} && git push -q origin main`.quiet()
+
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+
+      const aheadBefore = parseInt(
+        (await $`cd ${mainRepo} && git rev-list --count origin/main..${worktreeName}`.text()).trim(),
+        10,
+      )
+      const behindBefore = parseInt(
+        (await $`cd ${mainRepo} && git rev-list --count ${worktreeName}..origin/main`.text()).trim(),
+        10,
+      )
+      expect(aheadBefore).toBe(0)
+      expect(behindBefore).toBe(1)
+
+      await createWorktree(worktreeName, undefined, { install: false, direnv: false, hooks: false })
+
+      const head = (await $`cd ${worktreePath} && git rev-parse HEAD`.text()).trim()
+      const originMain = (await $`cd ${mainRepo} && git rev-parse origin/main`.text()).trim()
+      expect(head).toBe(originMain)
+      expect(existsSync(join(worktreePath, "new.txt"))).toBe(true)
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 30_000)
+
   test("reset --force discards uncommitted + ahead commits, leaves a clean slot at origin/main", async () => {
     const mainRepo = join(sandbox, "main")
 

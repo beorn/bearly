@@ -1091,6 +1091,9 @@ export async function createWorktree(name: string, branch?: string, options: Cre
 
   let branchArg: string[]
   if (branchExists.exitCode === 0) {
+    if (isPoolSlot) {
+      await refreshStalePoolBranchIfSafe(gitRoot, branchName)
+    }
     info(`Using existing branch: ${branchName}`)
     branchArg = [branchName]
   } else if (remoteBranchExists.exitCode === 0 && !isPoolSlot) {
@@ -1435,6 +1438,21 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true })
 
   success(`Worktree ${name} reset`)
+}
+
+async function refreshStalePoolBranchIfSafe(gitRoot: string, branchName: string): Promise<void> {
+  const aheadResult = await safeExec($`cd ${gitRoot} && git rev-list --count origin/main..${branchName} 2>/dev/null`)
+  const behindResult = await safeExec($`cd ${gitRoot} && git rev-list --count ${branchName}..origin/main 2>/dev/null`)
+  const ahead = parseInt(aheadResult.stdout.trim(), 10) || 0
+  const behind = parseInt(behindResult.stdout.trim(), 10) || 0
+
+  if (ahead !== 0 || behind === 0) return
+
+  info(`Refreshing stale pool branch ${branchName} to origin/main (${behind} behind, 0 ahead)`)
+  const refresh = await safeExec($`cd ${gitRoot} && git branch -f ${branchName} origin/main`)
+  if (refresh.exitCode !== 0) {
+    throw new Error(`Failed to refresh stale pool branch ${branchName}: ${refresh.stdout || "unknown error"}`)
+  }
 }
 
 export interface MergeOptions {
