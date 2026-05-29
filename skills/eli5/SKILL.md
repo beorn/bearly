@@ -1,5 +1,6 @@
 ---
 name: eli5
+effort: max
 description: Explain current work plainly for a teammate without recent context, defining mechanisms and removing task-specific shorthand.
 argument-hint: [topic, or empty = "what we're doing right now"]
 ---

@@ -1,5 +1,6 @@
 ---
 name: checkpoint
+effort: max
 description: "Save active session context, git state, recent commits, and next steps to one tracking issue before compaction or handoff."
 argument-hint: "[message]"
 ---

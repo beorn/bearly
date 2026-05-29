@@ -1,5 +1,6 @@
 ---
 name: big
+effort: max
 description: "Reframe recurring or patchy problems with 10-20 hypotheses and external review to find a design where the bug cannot happen."
 argument-hint: [problem or area]
 benefits-from: [recall, pm, gbrain]

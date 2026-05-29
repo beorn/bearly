@@ -1,5 +1,6 @@
 ---
 name: csw
+effort: max
 description: "Analyze a decision end-to-end: gather context, compare options, score tradeoffs, and present one clear recommendation."
 argument-hint: <topic or question to analyze>
 ---

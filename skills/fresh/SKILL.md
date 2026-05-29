@@ -1,5 +1,6 @@
 ---
 name: fresh
+effort: max
 description: "When stuck on a specific problem, stop coding, gather context, and ask /deep or /pro for a fresh perspective."
 argument-hint: [<topic>]
 benefits-from: [recall, pm, gbrain]

@@ -1,5 +1,6 @@
 ---
 name: why
+effort: max
 description: "Run 5 Whys plus /big reframing to trace a symptom to structural root cause before fixing."
 argument-hint: [problem or symptom]
 benefits-from: [recall, pm]
