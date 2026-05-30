@@ -30,6 +30,9 @@ export {
 } from "./manifest.ts"
 export type { TurnManifest, InjectedSpan } from "./manifest.ts"
 
+export { evaluateGate } from "./gate.ts"
+export type { GateInput, GateDecision, Permission } from "./gate.ts"
+
 export {
   retrieveMemory,
   registerRetrieveSource,

@@ -3,7 +3,7 @@ name: big
 effort: max
 description: "Reframe recurring or patchy problems with 10-20 hypotheses and external review to find a design where the bug cannot happen."
 argument-hint: [problem or area]
-benefits-from: [recall, pm, gbrain]
+benefits-from: [recall, tent, gbrain]
 escalate-to:
   { arch: "reframing reveals missing abstraction or layer", render: "root cause is in the rendering pipeline design" }
 ---
@@ -17,6 +17,23 @@ escalate-to:
 **STOP fixing. START reframing.**
 
 You're here because either: (a) the user asked you to think bigger, (b) you're about to write a patch that feels wrong, or (c) the same class of bug keeps appearing. The goal is not to solve the problem in front of you — it's to find the design where this problem **can't happen**.
+
+## Resolver
+
+Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+
+### Always Read
+
+- [[#Phase 1 See the Problem Five Ways]] — start by separating symptom, system, architecture, history, and counterfactual.
+- [[#Phase 7 Final Synthesis]] — use the L0-L5 quality rubric for the recommendation.
+
+### By Intent
+
+- [[#Phase 2 Generate Hypotheses Round 1]] — read if creating the first 10-20 framings.
+- [[#Phase 3 Explore Round 1]] — read if grounding hypotheses in code and external review.
+- [[#Phases 5-6 Iterate Rounds 2-5]] — read if the first synthesis is not converged.
+- [[#Phase 8 Action Plan]] — read when converting the reframe into DO/ASK actions.
+- [[#big-vs-fresh]] — read if deciding between `/big` and `/fresh`.
 
 ## The Problem
 
@@ -219,7 +236,7 @@ Both involve stepping back from implementation. The difference:
 | Think big without checking code                | Hypotheses must be grounded — grep and read                              |
 | Stop at Round 1                                | The best ideas come from Round 2, after you've learned what doesn't work |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /tent JIT bead context completion)
 
 The 10-20 hypotheses /big generates are independent → fan out validation via `Explore` sub-agents in ONE message. Each hypothesis = one sub-agent:
 
@@ -228,7 +245,7 @@ The 10-20 hypotheses /big generates are independent → fan out validation via `
 
 After wave 1: integrate into hypothesis ranking; harvest follow-ups for any surviving high-leverage branches; wave 2 drills into "where does invariant X actually live?" for the top 2-3.
 
-This turns /big's serial hypothesis-eval into parallel. Canonical: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+This turns /big's serial hypothesis-eval into parallel. Canonical: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.
 
 ## Pairs with
 

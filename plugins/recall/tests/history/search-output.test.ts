@@ -110,7 +110,12 @@ describe("recall search output", () => {
     seedMessage("The prior session mentioned barenode in the architecture notes.")
     mockAgent.result = async (query) => zeroAgentResult(query) as never
 
-    await cmdSearch("how should we debug barenode", { agent: true, limit: "5", round2: "off" })
+    await cmdSearch("how should we debug barenode", {
+      agent: true,
+      limit: "5",
+      round2: "off",
+      refresh: false,
+    })
 
     const output = callsText(logSpy)
     expect(output).toContain("agent variants missed literal raw matches")
@@ -121,9 +126,14 @@ describe("recall search output", () => {
 
   test("stale index auto-refreshes before empty results", async () => {
     setIndexMeta(getDb(), "last_rebuild", new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString())
+
     mockAgent.result = async (query) => zeroAgentResult(query) as never
 
-    await cmdSearch("nohits", { agent: true, limit: "5", round2: "off" })
+    await cmdSearch("nohits", {
+      agent: true,
+      limit: "5",
+      round2: "off",
+    })
 
     const errors = callsText(errSpy)
     const output = callsText(logSpy)
@@ -131,6 +141,31 @@ describe("recall search output", () => {
     // "FTS5 index last rebuilt" behavior was superseded by auto-refresh —
     // search.ts emitRefreshNote). It prints BEFORE the empty-results answer.
     expect(errors).toContain("stale — refreshed")
+    expect(output).toContain('No results found for "nohits"')
+  })
+
+  test("empty results print without invoking auto-refresh when refresh is disabled", async () => {
+    mockAgent.result = async (query) => zeroAgentResult(query) as never
+    const prevHome = process.env.HOME
+    const home = mkdtempSync(join(tmpdir(), "recall-home-"))
+
+    try {
+      process.env.HOME = home
+      await cmdSearch("nohits", {
+        agent: true,
+        limit: "5",
+        round2: "off",
+        refresh: false,
+      })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      rmSync(home, { recursive: true, force: true })
+    }
+
+    const errors = callsText(errSpy)
+    const output = callsText(logSpy)
+    expect(errors).toBe("")
     expect(output).toContain('No results found for "nohits"')
   })
 
@@ -147,7 +182,12 @@ describe("recall search output", () => {
     mockAgent.result = async (query) => zeroAgentResult(query) as never
 
     try {
-      await cmdSearch("nohits", { agent: true, limit: "5", round2: "off" })
+      await cmdSearch("nohits", {
+        agent: true,
+        limit: "5",
+        round2: "off",
+        refresh: false,
+      })
     } finally {
       process.chdir(prevCwd)
       if (prevHome === undefined) delete process.env.HOME

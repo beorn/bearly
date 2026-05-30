@@ -133,10 +133,10 @@ describe("tribe session identity (identity token adoption)", () => {
   }
 
   // =========================================================================
-  // Test A — adoption across restart: same token → same sessionId/name/role
+  // Test A — adoption across restart: same token → same sessionId/role
   // =========================================================================
 
-  it("A: reconnecting proxy with same identity token adopts prior sessionId, name, and role", async () => {
+  it("A: reconnecting proxy with same identity token adopts prior sessionId and role", async () => {
     daemon = await spawnDaemon(socketPath, dbPath)
 
     const token = "abc123def4567890"
@@ -159,12 +159,13 @@ describe("tribe session identity (identity token adoption)", () => {
     if (idx !== -1) clients.splice(idx, 1)
     await new Promise((r) => setTimeout(r, 250))
 
-    // Client 2 registers with only the token (no name, no role).
-    // The daemon should adopt the prior row: same sessionId, name=alice, role=member.
+    // Client 2 registers with only the token (no name, no role). The daemon
+    // adopts the prior row's sessionId/role, but names are explicit runtime
+    // identity and must come from register/join/rename.
     const c2 = await connect()
     const reg2 = (await c2.call("register", { identityToken: token })) as Record<string, unknown>
     expect(reg2.sessionId).toBe(s1)
-    expect(reg2.name).toBe("alice")
+    expect(reg2.name).toMatch(/^unknown-/)
     expect(reg2.role).toBe("member")
   }, 20_000)
 
@@ -218,7 +219,7 @@ describe("tribe session identity (identity token adoption)", () => {
 
     // Alice broadcasts 5 messages.
     for (let i = 0; i < 5; i++) {
-      await alice.call("tribe.broadcast", { message: `msg-${i}` })
+      await alice.call("tribe.send", { to: "*", message: `msg-${i}` })
     }
 
     // Bob disconnects.
@@ -227,15 +228,15 @@ describe("tribe session identity (identity token adoption)", () => {
     if (bIdx !== -1) clients.splice(bIdx, 1)
     await new Promise((r) => setTimeout(r, 250))
 
-    // Bob reconnects with the same token — sessionId adopted, cursor recovered.
+    // Bob reconnects with the same token — sessionId adopted. The old
+    // `tribe.history` API is gone; use snapshot fetches for journal reads.
     const bob2 = await connect()
     const regBob2 = (await bob2.call("register", { identityToken: tokenBob })) as Record<string, unknown>
     expect(regBob2.sessionId).toBe(sBob)
-    expect(regBob2.name).toBe("bob")
+    expect(regBob2.name).toMatch(/^unknown-/)
 
-    // tribe.history for "bob" should include all 5 broadcasts (recipient='*').
-    const history = parseToolText(await bob2.call("tribe.history", { limit: 50 }))
-    const messages = (Array.isArray(history) ? history : (history.messages ?? history)) as Array<{
+    const result = parseToolText(await bob2.call("tribe.fetch", { from: "alice", limit: 50, advance: false }))
+    const messages = (result.events ?? []) as Array<{
       content?: string
     }>
     expect(Array.isArray(messages)).toBe(true)
@@ -313,11 +314,10 @@ describe("tribe session identity (identity token adoption)", () => {
   }, 20_000)
 
   // =========================================================================
-  // Test F — F1-D: auto-adopt non-auto-named dead session at same cwd+role
-  // on fresh register (km-bearly.tribe-session-resume)
+  // Test F — no implicit name adoption at same cwd+role
   // =========================================================================
 
-  it("F: registering without name at same cwd+role adopts prior user-chosen name", async () => {
+  it("F: registering without name at same cwd+role starts unidentified", async () => {
     daemon = await spawnDaemon(socketPath, dbPath)
 
     // Session 1 picks a user name "plateau" at cwd /tmp/projX.
@@ -329,11 +329,12 @@ describe("tribe session identity (identity token adoption)", () => {
     if (idx !== -1) clients.splice(idx, 1)
     await new Promise((r) => setTimeout(r, 250))
 
-    // Session 2 registers at the same cwd+role with NO name (simulating
-    // cross-Claude resume — different identity token, no explicit name).
+    // Session 2 registers at the same cwd+role with NO name. Name adoption by
+    // prior state caused stale hat/name bugs; clients must join/rename
+    // explicitly after startup.
     const c2 = await connect()
     const reg2 = (await c2.call("register", { role: "member", project: cwd })) as Record<string, unknown>
-    expect(reg2.name).toBe("plateau")
+    expect(reg2.name).toMatch(/^unknown-/)
   }, 20_000)
 
   it("F2: auto-adoption skips auto-generated names (member-*, km-*)", async () => {

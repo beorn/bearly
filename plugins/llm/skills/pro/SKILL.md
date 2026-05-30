@@ -1,33 +1,33 @@
 ---
-description: "Multi-leg dual-pro dispatch (DeepSeek R1 + Kimi K2.6 + rotating challenger) — second opinions, code reviews, architectural advice. Parallel models judged on a rubric. Heavier than /ask, lighter than /deep."
+description: "Multi-leg dual-pro dispatch (GPT-5.4 Pro + Kimi K2.6 + rotating challenger) — second opinions, code reviews, architectural advice. Parallel models judged on a rubric. Heavier than /ask."
 argument-hint: ["<question>" | review [<package>] [--deep]]
 ---
 
 # /pro — multi-leg second opinion + code review
 
-Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for "punch through intellectual issues" (~$0.20).**
+Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for frontier disagreement and judged review (~$5-15).**
 
-Default fleet (no OpenAI): champion `deepseek/deepseek-r1`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-3-pro-preview, deepseek/deepseek-chat, grok-4, claude-opus-4-6]`. GPT-5.4 Pro is **opt-in** via `--challenger gpt-5.4-pro`.
+Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-3-pro-preview, grok-4, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
 
 **Keywords**: pro, /pro, ask pro, second opinion, code review, dual-pro, multi-leg
 
 ## Decision table
 
-| User says                           | Mode                   | Command                                                                         |
-| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
-| `/pro "question"`                   | 3-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`                   |
-| `pro, <question>`                   | 3-leg dispatch + judge | same — casual form                                                              |
-| `/pro review <pkg>`                 | code review (fast)     | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
-| `/pro review --deep <pkg>`          | code review (deep)     | add `--deep` to the above — promotes to `/deep` semantics                       |
-| `/pro review` (no arg)              | discover + cost        | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
-| `/pro "q" --challenger gpt-5.4-pro` | opt-in OpenAI          | pins GPT-5.4 Pro into the rotating slot for this call                           |
+| User says                  | Mode                   | Command                                                                         |
+| -------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
+| `/pro "question"`          | 3-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`                   |
+| `pro, <question>`          | 3-leg dispatch + judge | same — casual form                                                              |
+| `/pro review <pkg>`        | code review (fast)     | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
+| `/pro review --deep <pkg>` | code review (deep)     | add `--deep` to the above — promotes to `/deep` semantics                       |
+| `/pro review` (no arg)     | discover + cost        | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
+| `/pro "q" --no-challenger` | cheaper 2-leg mode     | skips the rotating challenger                                                   |
 
 ## Cost guidance
 
-- Direct query (3-leg: DeepSeek R1 + Kimi K2.6 + rotating cheap challenger): **~$0.20** typical
-- With `--challenger gpt-5.4-pro` opt-in: ~$3-15 (GPT-5.4 Pro dominates the cost)
+- Direct query (3-leg: GPT-5.4 Pro + Kimi K2.6 + rotating challenger): **~$5-15** typical
+- Use `--no-challenger` or a single `--model <id>` when a cheaper review is enough.
 - Single-model override (`--model <id>`): pricing of that one model
-- Fast code review: ~$0.20-1
+- Fast code review: usually same 3-leg cost unless you override model/challenger
 - Deep code review (`--deep`): ~$2-5 (uses `/deep` infrastructure)
 
 ## Context-file rules
@@ -45,11 +45,9 @@ Default fleet (no OpenAI): champion `deepseek/deepseek-r1`, runner-up `moonshota
 
 ## Dual-pro mode (3-leg dispatch)
 
-`bun llm pro "..."` fires **DeepSeek R1 + Kimi K2.6 + a rotating challenger** in parallel by default (no OpenAI). A cheap judge (`gemini-2.5-flash`, ~$0.001/call) rates all three on a rubric (specificity / actionability / correctness / depth). Total typical cost: ~$0.20. A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl` (v2 schema with judge breakdown).
+`bun llm pro "..."` fires **GPT-5.4 Pro + Kimi K2.6 + a rotating challenger** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
 
-The default-fleet cost shift (was $5-15 with GPT-5.4 Pro champion → now ~$0.20 with DeepSeek champion) shipped 2026-04-27 — see `vendor/bearly/plugins/llm/CHANGELOG.md` 0.5.0.
-
-**Cost dials**: `--no-challenger` (skip leg C, back to 2-leg mainstays only), `--no-judge` (skip rubric scoring), `--challenger <id>` (override rotation; pass `gpt-5.4-pro` to opt OpenAI back in for one call). Force single-model: `--model <id>`. `--json` envelope for pipe-friendly consumption.
+**Cost dials**: `--no-challenger` (skip leg C, back to 2-leg mainstays only), `--no-judge` (skip rubric scoring), `--challenger <id>` (override rotation), `--exclude <id>` (remove one challenger), or `--model <id>` for a single-model call. `--json` gives a pipe-friendly envelope.
 
 Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) with pairwise judge — see `/tmp/llm-refactor-execution.md` Phase 3.
 
@@ -67,7 +65,7 @@ Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) wit
 - Using `--context` instead of `--context-file` → shell quoting breaks on backticks / `$(...)` in source.
 - Forgetting `--no-recover` → stale results waste money.
 - Restarting an interrupted `--deep` call → wastes $2-5, response is still completing remotely.
-- Pinning `--challenger gpt-5.4-pro` casually → bumps cost from ~$0.20 to ~$3-15. Use only for specifically hard problems where you want OpenAI's frontier in the mix.
+- Forgetting the current default includes GPT-5.4 Pro → unexpected spend. Check `bun llm pro --help` or use `--no-challenger` / `--model` when cost matters.
 
 ## Companion docs (multi-package review rounds)
 

@@ -432,7 +432,7 @@ describe("tribe daemon integration", () => {
       expect((result.daemon as Record<string, unknown>).pid).toBe(daemon!.pid)
     }, 10_000)
 
-    it("register as chief returns chief role", async () => {
+    it("register with legacy chief role normalizes to member", async () => {
       daemon = await spawnDaemon(socketPath)
 
       const client = await connect()
@@ -442,7 +442,7 @@ describe("tribe daemon integration", () => {
         domains: ["all"],
       })) as Record<string, unknown>
 
-      expect(result.role).toBe("chief")
+      expect(result.role).toBe("member")
       expect(result.name).toBe("my-chief")
     }, 10_000)
 
@@ -457,10 +457,10 @@ describe("tribe daemon integration", () => {
       expect((result.name as string).length).toBeGreaterThan(0)
     }, 10_000)
 
-    it("second client sees chief reference", async () => {
+    it("second client does not receive an L3 chief reference", async () => {
       daemon = await spawnDaemon(socketPath)
 
-      // Register chief first
+      // "chief" is an L3 tent role, not an L2 tribe daemon role.
       const chief = await connect()
       await chief.call("register", { name: "the-chief", role: "chief" })
 
@@ -471,7 +471,7 @@ describe("tribe daemon integration", () => {
         role: "member",
       })) as Record<string, unknown>
 
-      expect(result.chief).toBe("the-chief")
+      expect(result.chief).toBeUndefined()
     }, 10_000)
 
     it("session.joined lands in fetch (ambient — no channel push)", async () => {

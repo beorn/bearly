@@ -3,7 +3,7 @@ name: fresh
 effort: max
 description: "When stuck on a specific problem, stop coding, gather context, and ask /deep or /pro for a fresh perspective."
 argument-hint: [<topic>]
-benefits-from: [recall, pm, gbrain]
+benefits-from: [recall, tent, gbrain]
 ---
 
 # /fresh — Fresh Perspective on a Stuck Problem
@@ -17,10 +17,26 @@ benefits-from: [recall, pm, gbrain]
 - `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
 - `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
 - `/ask` — Direct: single-model quick question (~$0.02).
-- `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~$0.20). Default fleet is non-OpenAI (DeepSeek R1 + Kimi K2.6 + rotating challenger); GPT-5.4 Pro is opt-in via `--challenger gpt-5.4-pro`.
+- `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~-15 by default: GPT-5.4 Pro + Kimi K2.6 + rotating challenger). Use `--no-challenger` or `--model <id>` when cost matters.
 - `/deep` — Direct: web-search research with citations (~$2-5, 2-15 min).
 
 Use when you've been iterating on a problem and each fix breaks something else. Forces you to **stop coding**, reflect, gather context, and get an outside architectural opinion via `/llm --deep`.
+
+## Resolver
+
+Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+
+### Always Read
+
+- [[#Phase 1 Stop and Reflect]] — write the self-assessment before more code.
+- [[#Phase 3 Structure the Request  Lead with Symptoms Not Diagnosis]] — avoid anchoring the outside reviewer.
+
+### By Intent
+
+- [[#Phase 2 Gather Context  Be Generous]] — read when building the context file.
+- [[#Phase 4 Execute]] — read before launching `/deep` or `/pro`.
+- [[#Phase 5 Present and Decide]] — read when reporting the outside advice.
+- [[#Anti-Patterns]] — read if the request risks becoming a confirmation prompt.
 
 ## Protocol
 
@@ -218,7 +234,7 @@ If a bead is active, update its notes with the findings.
 | Rush to implement                        | Present advice first, get user buy-in             |
 | Forget `--no-recover`                    | Stale recovered responses waste $2-5              |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /tent JIT bead context completion)
 
 The "gather context" phase of /fresh is JIT BCC. When stuck, fan out via `Explore` sub-agents in ONE message:
 
@@ -228,4 +244,4 @@ The "gather context" phase of /fresh is JIT BCC. When stuck, fan out via `Explor
 - One agent for "what does the canonical design doc say about this subsystem?"
 - One agent for adjacent test failures or warnings being masked
 
-Returns: a complete context bundle to hand to /deep or /pro. Canonical wave-loop: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+Returns: a complete context bundle to hand to /deep or /pro. Canonical wave-loop: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.

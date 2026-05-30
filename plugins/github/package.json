@@ -1,6 +1,6 @@
 {
   "name": "@bearly/github",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitHub channel for Claude Code — notifications for builds, PRs, and issues",
   "license": "MIT",
   "repository": {

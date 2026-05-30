@@ -1,6 +1,6 @@
 {
   "name": "alien-resources",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Async signal bridge for alien-signals — reactive resources with loading/error states and automatic cancellation",
   "keywords": [
     "alien-signals",

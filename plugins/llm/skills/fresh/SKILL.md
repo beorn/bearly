@@ -15,7 +15,7 @@ benefits-from: [recall, pm, gbrain]
 - `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
 - `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
 - `/ask` — Direct: single-model quick question (~$0.02).
-- `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~$0.20). Default fleet is non-OpenAI (DeepSeek R1 + Kimi K2.6 + rotating challenger); GPT-5.4 Pro is opt-in via `--challenger gpt-5.4-pro`.
+- `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~-15 by default: GPT-5.4 Pro + Kimi K2.6 + rotating challenger). Use `--no-challenger` or `--model <id>` when cost matters.
 - `/deep` — Direct: web-search research with citations (~$2-5, 2-15 min).
 
 Use when you've been iterating on a problem and each fix breaks something else. Forces you to **stop coding**, reflect, gather context, and get an outside architectural opinion via `/llm --deep`.

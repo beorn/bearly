@@ -4,7 +4,7 @@
  * This is the post-consolidation boundary test: every host should talk to the
  * same bearly daemon through the same MCP adapter, not through host-specific
  * backends. The test boots a real daemon, spawns real bundled stdio MCP
- * adapters (`plugins/tribe/server.mjs`), and also calls the daemon-native MCP
+ * adapters (`plugins/tribe/server.ts`), and also calls the daemon-native MCP
  * methods over the Unix socket. Both surfaces must see the same members and
  * message journal.
  */
@@ -22,7 +22,7 @@ import { connectToDaemon, type DaemonClient } from "@bearly/tribe-client/lib/soc
 
 const BEARLY_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const DAEMON_SCRIPT = resolve(BEARLY_ROOT, "tools/tribe-daemon.ts")
-const MCP_SERVER = resolve(BEARLY_ROOT, "plugins/tribe/server.mjs")
+const MCP_SERVER = resolve(BEARLY_ROOT, "plugins/tribe/server.ts")
 
 type ToolResult = { content?: Array<{ type: string; text: string }>; isError?: boolean }
 
@@ -265,6 +265,10 @@ describe("tribe MCP round-trip against one daemon protocol", () => {
         clientInfo: { name: "test", version: "1" },
       }),
     ])
+    await Promise.all([
+      alice.callTool("join", { name: "adapter-alice", domains: ["roundtrip", "test"] }),
+      bob.callTool("join", { name: "adapter-bob", domains: ["roundtrip", "test"] }),
+    ])
 
     const adapterTools = (await alice.listTools()).map((tool) => tool.name)
     expect(adapterTools).toContain("send")
@@ -368,6 +372,7 @@ describe("tribe MCP round-trip against one daemon protocol", () => {
         clientInfo: { name: "test", version: "1" },
       }),
     ])
+    await Promise.all([alice.callTool("join", { name: "dm-alice" }), bob.callTool("join", { name: "dm-bob" })])
 
     // Wait until both adapters are registered and mutually visible — this is
     // the exact condition under which the old peer-direct path would have

@@ -3,7 +3,7 @@ name: why
 effort: max
 description: "Run 5 Whys plus /big reframing to trace a symptom to structural root cause before fixing."
 argument-hint: [problem or symptom]
-benefits-from: [recall, pm]
+benefits-from: [recall, tent]
 escalate-to:
   {
     arch: "root cause is structural — missing invariant or wrong ownership",
@@ -18,6 +18,22 @@ escalate-to:
 **Don't fix the symptom. Find the cause. Then find the cause of the cause.**
 
 This combines Toyota's 5 Whys with `/big`'s hypothesis-driven reframing. The goal: trace from the visible symptom to the structural root cause, then design it away.
+
+## Resolver
+
+Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+
+### Always Read
+
+- [[#Phase 1 State the Symptom Precisely]] — start with the observable symptom in user terms.
+- [[#Phase 2 The 5 Whys]] — every why needs evidence, not guesses.
+
+### By Intent
+
+- [[#Phase 3 The Chain]] — read when checking causal coherence.
+- [[#Phase 4 Fix Levels]] — read when mapping patch/guard/redesign/spec/architecture.
+- [[#Phase 5 Recommend  Act]] — read when converting root cause into immediate and deeper work.
+- [[#Phase 3b Ishikawa  Fishbone Diagram Optional]] — read when causes branch instead of forming one chain.
 
 ## The Symptom
 

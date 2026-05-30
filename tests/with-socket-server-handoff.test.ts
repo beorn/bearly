@@ -22,6 +22,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs"
+import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
@@ -97,6 +98,20 @@ function freshSocketPath(): string {
   return p
 }
 
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve())
+  })
+}
+
+async function bindReplacementSocket(socketPath: string): Promise<Server> {
+  const replacement = createServer()
+  await new Promise<void>((resolve) => {
+    replacement.listen(socketPath, () => resolve())
+  })
+  return replacement
+}
+
 describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () => {
   test("default cleanup (handedOff=false, inheritedFd=false) UNLINKS the socket path", async () => {
     const scope = makeScope()
@@ -141,14 +156,17 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     })
     expect(existsSync(socketPath)).toBe(true)
 
-    // Simulate the hot-reload protocol: the successor has spawned + bound a
-    // FRESH socket at the same path. Before the donor's scope disposes, the
-    // reload() function flipped handedOff to true so cleanup skips its own
-    // unlink. We mimic that flip here. (We don't try to overwrite the socket
-    // file — Unix-domain socket files are special; an `unlinkSync` from
-    // cleanup would just remove the entry. The test asserts on existence
-    // after dispose.)
+    // Simulate the hot-reload protocol: reload() marks handoff, closes +
+    // unlinks the donor socket, then the successor binds a fresh socket at
+    // the same path before donor scope cleanup runs.
     result.socket.handedOff = true
+    await closeServer(result.socket.server)
+    try {
+      unlinkSync(socketPath)
+    } catch {
+      /* Node may already have removed the path on close */
+    }
+    const replacement = await bindReplacementSocket(socketPath)
 
     scope.dispose()
 
@@ -156,6 +174,7 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
     // production: this is the path the successor (and every PATH-based
     // client) needs to reach the listening fd.
     expect(existsSync(socketPath)).toBe(true)
+    await closeServer(replacement)
   })
 
   test("inheritedFd=true also SKIPS the unlink (hot-reload successor case)", async () => {
@@ -190,8 +209,16 @@ describe("@km/bearly/14214 withSocketServer — handoff suppresses unlink", () =
 
     // Both flags suppress: setting BOTH is the same as setting either.
     ;(result.socket as { handedOff: boolean }).handedOff = true
+    await closeServer(result.socket.server)
+    try {
+      unlinkSync(socketPath)
+    } catch {
+      /* Node may already have removed the path on close */
+    }
+    const replacement = await bindReplacementSocket(socketPath)
     scope.dispose()
     expect(existsSync(socketPath)).toBe(true)
+    await closeServer(replacement)
   })
 
   test("handedOff defaults to false — guards against silent default drift", () => {

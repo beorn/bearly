@@ -1,14 +1,11 @@
 /**
  * km-tribe.event-classification — daemon-spawn delivery-filter integration.
  *
- * Spawns a real daemon and verifies:
- *   - `topic` appears on channel notifications (replyHint is no longer
- *     surfaced on the wire — derived at delivery time, see v5 protocol bump)
- *   - tribe.filter mode='focus' suppresses broadcasts (which derive to
- *     replyHint='optional') but still delivers direct DMs (which derive to
- *     replyHint='yes')
- *   - tribe.filter with mute + until silences broadcasts and bypasses
- *     mute/until for direct DMs
+ * Spawns a real daemon and verifies wakeup delivery:
+ *   - push recipients get a wakeup and drain content through `tribe.fetch`
+ *   - tribe.filter mode='focus' suppresses broadcasts but still wakes for DMs
+ *   - tribe.filter with mute + until silences broadcasts and bypasses mute
+ *     for direct DMs
  *
  * tribe.filter unit-level coverage (validation, schema writes) lives in
  * tribe-filter.test.ts.
@@ -51,6 +48,16 @@ async function spawnDaemon(socketPath: string): Promise<ChildProcess> {
   return child
 }
 
+function parseToolText<T>(result: unknown): T {
+  const text = (result as { content?: Array<{ text?: string }> }).content?.[0]?.text
+  if (typeof text !== "string") throw new Error("expected tool text response")
+  return JSON.parse(text) as T
+}
+
+type FetchResult = {
+  events: Array<{ from: string; content: string; topic: string | null; responseExpected?: unknown }>
+}
+
 describe("tribe.filter — daemon-spawn delivery integration", () => {
   let socketPath: string
   let daemon: ChildProcess | null = null
@@ -90,7 +97,7 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
     return c
   }
 
-  it("channel envelope carries topic on push notifications (no replyHint on wire)", async () => {
+  it("wakeup recipients drain topic through fetch (no replyHint on fetched event)", async () => {
     daemon = await spawnDaemon(socketPath)
     const receiver = await connect()
     const notifs: Array<{ method: string; params?: Record<string, unknown> }> = []
@@ -102,12 +109,12 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
 
     await sender.call("tribe.send", { to: "alice", message: "review please", type: "request" })
 
-    await waitFor(() => notifs.some((n) => n.method === "channel" && String(n.params?.from) === "bob"), 5000)
-    const env = notifs.find((n) => n.method === "channel" && String(n.params?.from) === "bob")!
-    // v5 wire: the replyHint is no longer surfaced on the channel envelope.
-    expect(env.params?.responseExpected).toBeUndefined()
-    // topic is null for human DMs (no plugin originated it)
-    expect(env.params?.topic).toBeNull()
+    await waitFor(() => notifs.some((n) => n.method === "wakeup" && n.params?.message_id), 5000)
+    const fetched = parseToolText<FetchResult>(await receiver.call("tribe.fetch", { limit: 10 }))
+    const event = fetched.events.find((e) => e.from === "bob" && e.content === "review please")
+    expect(event).toBeDefined()
+    expect(event!.responseExpected).toBeUndefined()
+    expect(event!.topic).toBeNull()
   }, 15_000)
 
   it("tribe.filter mode=focus suppresses broadcasts but still delivers DMs", async () => {
@@ -115,7 +122,7 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
     const focused = await connect()
     const focusedNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
     focused.onNotification((method, params) => {
-      if (method === "channel") focusedNotifs.push({ method, params })
+      if (method === "wakeup") focusedNotifs.push({ method, params })
     })
     await focused.call("register", { name: "alice", role: "chief" })
     await focused.call("tribe.filter", { mode: "focus" })
@@ -126,12 +133,13 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
     // Broadcast — derived replyHint='optional' → suppressed under focus mode.
     await sender.call("tribe.send", { to: "*", message: "FYI", type: "status" })
     await new Promise((r) => setTimeout(r, 700)) // give time for fanout
-    const optionalReceived = focusedNotifs.find((n) => String(n.params?.content ?? "").includes("FYI"))
-    expect(optionalReceived).toBeUndefined()
+    expect(focusedNotifs).toHaveLength(0)
 
     // Direct DM from a peer member — derived replyHint='yes' → delivered.
     await sender.call("tribe.send", { to: "alice", message: "blocker", type: "query" })
-    await waitFor(() => focusedNotifs.some((n) => String(n.params?.content ?? "").includes("blocker")), 3000)
+    await waitFor(() => focusedNotifs.length === 1, 3000)
+    const fetched = parseToolText<FetchResult>(await focused.call("tribe.fetch", { limit: 10 }))
+    expect(fetched.events.some((e) => e.content === "blocker")).toBe(true)
   }, 15_000)
 
   it("tribe.filter with mute + until suppresses matching broadcasts; DMs bypass", async () => {
@@ -139,7 +147,7 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
     const reader = await connect()
     const readerNotifs: Array<{ method: string; params?: Record<string, unknown> }> = []
     reader.onNotification((method, params) => {
-      if (method === "channel") readerNotifs.push({ method, params })
+      if (method === "wakeup") readerNotifs.push({ method, params })
     })
     await reader.call("register", { name: "alice", role: "chief" })
     // Mute all broadcasts for 200ms.
@@ -151,16 +159,19 @@ describe("tribe.filter — daemon-spawn delivery integration", () => {
     // Broadcast during the mute window should be suppressed.
     await sender.call("tribe.send", { to: "*", message: "muted fyi", type: "notify" })
     await new Promise((r) => setTimeout(r, 700))
-    expect(readerNotifs.some((n) => String(n.params?.content ?? "").includes("muted fyi"))).toBe(false)
+    expect(readerNotifs).toHaveLength(0)
 
     // Direct DM bypasses the mute/until dimensions — should arrive.
     await sender.call("tribe.send", { to: "alice", message: "direct", type: "notify" })
-    await waitFor(() => readerNotifs.some((n) => String(n.params?.content ?? "").includes("direct")), 3000)
+    await waitFor(() => readerNotifs.length === 1, 3000)
 
     // Wait past the mute window, then verify a fresh broadcast goes through.
     await new Promise((r) => setTimeout(r, 250))
     await sender.call("tribe.send", { to: "*", message: "post-filter fyi", type: "notify" })
-    await waitFor(() => readerNotifs.some((n) => String(n.params?.content ?? "").includes("post-filter")), 3000)
+    await waitFor(() => readerNotifs.length === 2, 3000)
+    const fetched = parseToolText<FetchResult>(await reader.call("tribe.fetch", { limit: 10 }))
+    expect(fetched.events.some((e) => e.content === "direct")).toBe(true)
+    expect(fetched.events.some((e) => e.content === "post-filter fyi")).toBe(true)
   }, 15_000)
 
   it("tribe.filter empty args clears any active filter", async () => {

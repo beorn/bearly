@@ -10,8 +10,9 @@
  *      `initialize` response, and
  *   2. emitting `notifications/claude/channel` notifications.
  *
- * Both must hold in BOTH the source (`tools/stdio-adapter.ts`) and the bundled
- * artifact Claude Code actually loads (`plugins/tribe/server.mjs`). Testing the
+ * Both must hold in BOTH the source
+ * (`packages/tribe-client/src/stdio-adapter.ts`) and the bundled artifact
+ * Claude Code actually loads (`plugins/tribe/server.mjs`). Testing the
  * bundle catches stale-build drift — the bundle is rebuilt via
  * `plugins/tribe/package.json` `build` and can fall behind source.
  *
@@ -28,7 +29,7 @@ import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const here = dirname(fileURLToPath(import.meta.url))
-const ADAPTER_SRC = resolve(here, "stdio-adapter.ts")
+const ADAPTER_SRC = resolve(here, "../packages/tribe-client/src/stdio-adapter.ts")
 const SERVER_BUNDLE = resolve(here, "../plugins/tribe/server.mjs")
 
 const CHANNEL_CAPABILITY = `"claude/channel"`

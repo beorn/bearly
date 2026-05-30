@@ -1,17 +1,16 @@
 /**
  * km-tribe.task-assignment-stale-snapshot — when a chief sends `tribe.send`
- * with `type: 'assign'` and `bead: <id>`, the daemon must enrich the channel
- * envelope at delivery time with fresh bead state read from
- * `.beads/backup/issues.jsonl`. This stops the chief's stale in-context
- * snapshot from forcing the receiver into the A/B/C escalation protocol when
- * the bead is already closed or its premises are documented as false.
+ * with `type: 'assign'` and `bead: <id>`, the daemon records durable message
+ * state and wakes push clients. Clients then drain the row through
+ * `tribe.fetch`; the fresh bead snapshot helper remains the source of current
+ * `.beads/backup/issues.jsonl` state for fetch/channel consumers.
  *
  * Two layers of coverage:
  *
  *   1. `readBeadSnapshot()` — pure unit tests for the journal-reader helper.
- *   2. `withBroadcast()` end-to-end — feed an assign-typed message through the
- *      composed pipeline with a synthetic client socket and assert the wire
- *      envelope carries `bead_state` + `reissue_count`.
+ *   2. `withBroadcast()` end-to-end — feed assign-typed messages through the
+ *      composed pipeline with a synthetic client socket and assert wakeup-only
+ *      wire notifications plus durable row/counting state.
  */
 
 import { describe, expect, it, afterEach, beforeEach } from "vitest"
@@ -242,8 +241,8 @@ function attachFakeReceiver(
   return { frames, connId }
 }
 
-describe("withBroadcast — assign envelope enrichment", () => {
-  it("attaches fresh bead_state from .beads/backup/issues.jsonl when delivering an assign", async () => {
+describe("withBroadcast — assign wakeup and durable state", () => {
+  it("wakes the receiver for an assign and the fresh bead snapshot is readable", async () => {
     const projectRoot = makeProjectRoot()
     writeIssuesJsonl(projectRoot, [
       // Stale historical row — this is what the chief's snapshot might still
@@ -277,7 +276,7 @@ describe("withBroadcast — assign envelope enrichment", () => {
       $now: Date.now(),
     })
     const senderCtx = { ...t.daemonCtx, sessionId: senderId, getName: () => "chief", getRole: () => "member" as const }
-    sendMessage(
+    const sent = sendMessage(
       senderCtx as unknown as Parameters<typeof sendMessage>[0],
       "agent",
       "Stale assignment text — chief still thinks the bead is open",
@@ -289,16 +288,21 @@ describe("withBroadcast — assign envelope enrichment", () => {
     // Direct messages bypass the coalescer; the write happens synchronously
     // inside the messageTap. Wait one microtask just in case.
     await Promise.resolve()
-    expect(frames.length).toBeGreaterThan(0)
-    const channelFrame = frames.find((f) => (f.params as { type?: string }).type === "assign")
-    expect(
-      channelFrame,
-      `expected an assign-typed channel frame, got: ${JSON.stringify(frames.map((f) => f.params))}`,
-    ).toBeDefined()
-    const beadState = channelFrame!.params.bead_state as
-      | { title: string; status: string; priority: string; notes_excerpt: string; updated_at: string | null }
-      | undefined
-    expect(beadState, "expected bead_state on the assign envelope").toBeDefined()
+    expect(frames).toHaveLength(1)
+    expect(frames[0]!.params).toMatchObject({
+      latest_seq: sent.rowid,
+      message_id: sent.id,
+      count: 1,
+      topic: null,
+    })
+    const row = t.db.prepare("SELECT type, recipient, bead_id FROM messages WHERE id = ?").get(sent.id) as {
+      type: string
+      recipient: string
+      bead_id: string | null
+    }
+    expect(row).toEqual({ type: "assign", recipient: "agent", bead_id: "km-tribe.foo" })
+    const beadState = readBeadSnapshot("km-tribe.foo", projectRoot)
+    expect(beadState, "expected bead_state to be readable for fetch/channel consumers").toBeDefined()
     expect(beadState!.title).toBe("Closed: shipped in 0.3.0")
     expect(beadState!.status).toBe("closed")
     expect(beadState!.priority).toBe("1")
@@ -334,7 +338,7 @@ describe("withBroadcast — assign envelope enrichment", () => {
       getRole: () => "member" as const,
     }
     // First assign — reissue_count should be 0 (or absent; treat both as "not a reissue").
-    sendMessage(
+    const firstSent = sendMessage(
       senderCtx as unknown as Parameters<typeof sendMessage>[0],
       "agent",
       "Initial assignment",
@@ -345,7 +349,7 @@ describe("withBroadcast — assign envelope enrichment", () => {
     )
     await Promise.resolve()
     // Second assign for the same bead from the same sender — clear re-issue.
-    sendMessage(
+    const secondSent = sendMessage(
       senderCtx as unknown as Parameters<typeof sendMessage>[0],
       "agent",
       "Re-issued assignment (chief ignored evidence)",
@@ -355,15 +359,24 @@ describe("withBroadcast — assign envelope enrichment", () => {
       "direct",
     )
     await Promise.resolve()
-    const assigns = frames.filter((f) => (f.params as { type?: string }).type === "assign")
-    expect(assigns.length).toBe(2)
-    const first = assigns[0]!.params.reissue_count as number | undefined
-    const second = assigns[1]!.params.reissue_count as number | undefined
-    expect(first ?? 0).toBe(0)
-    expect(second).toBe(1)
+    expect(frames.map((f) => f.params.message_id)).toEqual([firstSent.id, secondSent.id])
+    const first = t.stmts.countPriorAssigns.get({
+      $sender: "chief",
+      $recipient: "agent",
+      $bead_id: "km-tribe.foo",
+      $rowid: firstSent.rowid,
+    }) as { count: number }
+    const second = t.stmts.countPriorAssigns.get({
+      $sender: "chief",
+      $recipient: "agent",
+      $bead_id: "km-tribe.foo",
+      $rowid: secondSent.rowid,
+    }) as { count: number }
+    expect(first.count).toBe(0)
+    expect(second.count).toBe(1)
   })
 
-  it("does not attach bead_state for non-assign types even when bead_id is set", async () => {
+  it("wakeup for non-assign types stays a wakeup summary even when bead_id is set", async () => {
     const projectRoot = makeProjectRoot()
     writeIssuesJsonl(projectRoot, [
       { id: "km-tribe.foo", title: "Some bead", status: "open", priority: "2", notes: "" },
@@ -390,7 +403,7 @@ describe("withBroadcast — assign envelope enrichment", () => {
       getName: () => "peer",
       getRole: () => "member" as const,
     }
-    sendMessage(
+    const sent = sendMessage(
       senderCtx as unknown as Parameters<typeof sendMessage>[0],
       "agent",
       "Hey, look at this bead",
@@ -400,10 +413,13 @@ describe("withBroadcast — assign envelope enrichment", () => {
       "direct",
     )
     await Promise.resolve()
-    const channelFrame = frames.find((f) => (f.params as { type?: string }).type === "notify")
-    expect(channelFrame).toBeDefined()
-    expect(channelFrame!.params.bead_state).toBeUndefined()
-    expect(channelFrame!.params.reissue_count).toBeUndefined()
+    expect(frames).toHaveLength(1)
+    expect(frames[0]!.params).toMatchObject({
+      latest_seq: sent.rowid,
+      message_id: sent.id,
+      count: 1,
+      topic: null,
+    })
   })
 
   it("omits bead_state when issues.jsonl is missing (no project beads dir)", async () => {
@@ -432,7 +448,7 @@ describe("withBroadcast — assign envelope enrichment", () => {
       getName: () => "chief",
       getRole: () => "member" as const,
     }
-    sendMessage(
+    const sent = sendMessage(
       senderCtx as unknown as Parameters<typeof sendMessage>[0],
       "agent",
       "Assignment with no bead state to enrich",
@@ -442,10 +458,15 @@ describe("withBroadcast — assign envelope enrichment", () => {
       "direct",
     )
     await Promise.resolve()
-    const assignFrame = frames.find((f) => (f.params as { type?: string }).type === "assign")
-    expect(assignFrame).toBeDefined()
-    expect(assignFrame!.params.bead_state).toBeUndefined()
-    // reissue_count should still be 0 (count works regardless of jsonl presence).
-    expect((assignFrame!.params.reissue_count as number | undefined) ?? 0).toBe(0)
+    expect(frames).toHaveLength(1)
+    expect(frames[0]!.params.message_id).toBe(sent.id)
+    expect(readBeadSnapshot("km-tribe.foo", projectRoot)).toBeNull()
+    const prior = t.stmts.countPriorAssigns.get({
+      $sender: "chief",
+      $recipient: "agent",
+      $bead_id: "km-tribe.foo",
+      $rowid: sent.rowid,
+    }) as { count: number }
+    expect(prior.count).toBe(0)
   })
 })

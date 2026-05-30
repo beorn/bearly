@@ -21,7 +21,7 @@
     "start": "bun install --no-summary && bun server.ts"
   },
   "dependencies": {
-    "@bearly/tribe-client": "^0.3.0",
+    "@bearly/tribe-client": "^0.4.1",
     "@modelcontextprotocol/sdk": "^1.27.1"
   }
 }

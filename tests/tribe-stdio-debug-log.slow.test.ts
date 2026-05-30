@@ -25,7 +25,7 @@ function tmpDir(): string {
 }
 
 async function runServerBriefly(env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, ["plugins/tribe/server.mjs"], {
+  const child = spawn(process.execPath, ["plugins/tribe/server.ts"], {
     cwd: BEARLY_ROOT,
     env,
     stdio: ["ignore", "pipe", "pipe"],

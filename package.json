@@ -45,6 +45,7 @@
     "recall": "bun tools/recall.ts",
     "tribe": "bun tools/tribe-cli.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bunx --bun vitest run",
     "fmt": "oxfmt --write .",
     "fmt:check": "oxfmt --check .",
     "fix": "oxfmt --write ."

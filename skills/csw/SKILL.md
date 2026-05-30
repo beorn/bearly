@@ -11,6 +11,23 @@ argument-hint: <topic or question to analyze>
 
 A military/executive decision protocol: don't just describe the problem — present it with ALL context, ALL options analyzed, and a clear recommendation. The decision-maker says "approved" or picks an option. Nothing left to research.
 
+## Resolver
+
+Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+
+### Always Read
+
+- [[#When to Use]] — confirm the request is a decision, not debugging or a quick answer.
+- [[#Process]] — follow all phases before recommending.
+
+### By Intent
+
+- [[#Phase 1 Gather Context be thorough]] — read before forming an opinion.
+- [[#Phase 2 Enumerate ALL Options minimum 4]] — read before narrowing choices.
+- [[#Phase 3 Analyze Each Option]] — read when comparing concrete examples, pros, cons, effort, and risk.
+- [[#Phase 4 Decision Matrix]] — read when scoring options.
+- [[#Phase 6 Self-Review mandatory  do this internally before presenting]] — read before surfacing the recommendation.
+
 ## When to Use
 
 - Choosing between architectural approaches
@@ -35,7 +52,7 @@ bun recall "<topic keywords>"
 bun recall "<related terms>" --raw
 
 # Check related beads
-bd search "<topic>"
+km bd query "<topic>"
 
 # Read related docs, CLAUDE.md sections, design docs
 ```
@@ -169,7 +186,7 @@ Present the analysis **directly in the conversation** — do not write it to a f
 | Present without a recommendation | The whole point is the decision-maker says "approved", not "let me think" |
 | Bury the recommendation | Lead with context, but make the recommendation unmissable |
 
-## Wave-loop fan-out (canonical: /bead-pickup JIT BCC)
+## Wave-loop fan-out (canonical: /tent JIT bead context completion)
 
 The context-gathering phase of CSW is JIT BCC applied to a decision instead of a bead. Fan out via `Explore` sub-agents in ONE message:
 
@@ -179,5 +196,5 @@ The context-gathering phase of CSW is JIT BCC applied to a decision instead of a
 - One agent for blast-radius: who/what depends on the area this decision touches
 - One agent for "what did past sessions decide on adjacent questions?" (`bun recall`)
 
-Returns: comparative evidence per option, surfacing trade-offs the user can call. No hard wave cap; stop on fixed-point or clear winner. Canonical: `.claude/skills/bead-pickup/SKILL.md` § "JIT bead-context-completion".
+Returns: comparative evidence per option, surfacing trade-offs the user can call. No hard wave cap; stop on fixed-point or clear winner. Canonical: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.
 ```

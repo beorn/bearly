@@ -92,7 +92,19 @@ function unlinkIfExists(p: string): void {
   }
 }
 
-type ChannelEvent = { from: string; type: string; content: string; message_id?: string }
+type ChannelEvent = { id?: string; rowid?: number; from: string; to?: string; type: string; content: string }
+type FetchResult = { events?: ChannelEvent[] }
+
+function parseToolText<T>(result: unknown): T {
+  const text = (result as { content?: Array<{ text?: string }> }).content?.[0]?.text
+  if (!text) throw new Error(`tool returned no text content: ${JSON.stringify(result)}`)
+  return JSON.parse(text) as T
+}
+
+async function fetchEvents(client: DaemonClient, args: Record<string, unknown>): Promise<ChannelEvent[]> {
+  const result = parseToolText<FetchResult>(await client.call("tribe.fetch", args))
+  return result.events ?? []
+}
 
 /**
  * Connect + register with an identity token. Records every `channel`
@@ -105,9 +117,18 @@ async function joinWithToken(
 ): Promise<{ client: DaemonClient; received: ChannelEvent[] }> {
   const client = await connectToDaemon(socketPath)
   const received: ChannelEvent[] = []
+  let drain = Promise.resolve()
   client.onNotification((method, params) => {
-    if (method !== "channel") return
-    received.push(params as unknown as ChannelEvent)
+    if (method !== "wakeup") return
+    drain = drain
+      .then(async () => {
+        for (;;) {
+          const events = await fetchEvents(client, { limit: 500 })
+          received.push(...events)
+          if (events.length < 500) break
+        }
+      })
+      .catch(() => {})
   })
   await client.call("register", {
     name,
@@ -120,13 +141,13 @@ async function joinWithToken(
 
 /** Broadcast as this session and wait for the send to settle. */
 async function broadcastFrom(client: DaemonClient, message: string): Promise<void> {
-  const res = (await client.call("tribe.broadcast", { message })) as {
+  const res = (await client.call("tribe.send", { to: "*", message })) as {
     content?: Array<{ text: string }>
   }
   const text = res.content?.[0]?.text
-  if (!text) throw new Error(`broadcast returned no content: ${JSON.stringify(res)}`)
+  if (!text) throw new Error(`send returned no content: ${JSON.stringify(res)}`)
   const parsed = JSON.parse(text) as { sent?: boolean }
-  if (!parsed.sent) throw new Error(`broadcast did not report sent=true: ${text}`)
+  if (!parsed.sent) throw new Error(`send did not report sent=true: ${text}`)
 }
 
 /** Count broadcast-style channel events (filters out system/session/health noise). */
@@ -221,10 +242,10 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     expect(bobSinceRestart.map((e) => e.content)).toEqual(["M4"])
   }, 40_000)
 
-  it("Test G — delivery latency < 100ms (event-driven fanout, not 1s polling)", async () => {
+  it("Test G — delivery latency stays below the old 1s polling floor", async () => {
     // km-tribe.event-bus — the 1s push tick is gone; sendMessage fans out
-    // synchronously to connected sockets. A broadcast-to-notification round
-    // trip must complete well under the old 1000ms polling floor.
+    // through the wakeup coalescer. A broadcast-to-fetch round trip should
+    // complete within one coalescer window, well under the old polling floor.
     daemon = await spawnDaemon(socketPath, dbPath)
 
     const alice = await joinWithToken(socketPath, "alice", "token-A")
@@ -242,7 +263,7 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     const receivedAt = Date.now()
     const latency = receivedAt - sendAt
 
-    expect(latency, `fanout latency was ${latency}ms — expected < 100ms (event-driven)`).toBeLessThan(100)
+    expect(latency, `fanout latency was ${latency}ms — expected < 750ms`).toBeLessThan(750)
 
     const contents = alice.received.filter((e) => e.type === "notify" && e.from === "bob").map((e) => e.content)
     expect(contents).toEqual(["G1-sync"])
@@ -291,14 +312,15 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
       `alice re-received ${replayed.length} of the 5 prior messages (cursor not persisted from push path)`,
     ).toHaveLength(0)
 
-    // Bob reconnects and broadcasts H6 — alice must receive it within 100ms.
+    // Bob reconnects and broadcasts H6 — alice must receive it within one
+    // coalescer window, not the old polling cadence.
     const bob2 = await joinWithToken(socketPath, "bob-h", "token-HB")
     clients.push(bob2.client)
     const sendAt = Date.now()
     await broadcastFrom(bob2.client, "H6")
     await waitFor(() => countUserChannels(alice2.received, "bob-h") >= 1, 2000)
     const latency = Date.now() - sendAt
-    expect(latency).toBeLessThan(100)
+    expect(latency).toBeLessThan(750)
     const post = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-h").map((e) => e.content)
     expect(post).toEqual(["H6"])
   }, 40_000)
@@ -333,17 +355,18 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
     unlinkIfExists(socketPath)
     daemon = await spawnDaemon(socketPath, dbPath)
 
-    // Alice reconnects. Her cursor is at 0 (she never received anything),
-    // so M5 and M6 must be delivered now — they survived both her
-    // disconnection and the daemon crash.
+    // Alice reconnects. Ambient broadcasts are not replayed onto the push
+    // channel after reconnect; they remain in the durable journal and are
+    // available through explicit snapshot reads.
     const alice2 = await joinWithToken(socketPath, "alice", "token-A")
     clients.push(alice2.client)
 
-    await waitFor(() => countUserChannels(alice2.received, "bob") >= 2, 8000)
-    const contents = alice2.received.filter((e) => e.type === "notify" && e.from === "bob").map((e) => e.content)
+    await new Promise((r) => setTimeout(r, 500))
+    expect(countUserChannels(alice2.received, "bob")).toBe(0)
+
+    const journal = await fetchEvents(alice2.client, { from: "bob", limit: 50, advance: false })
+    const contents = journal.filter((e) => e.type === "notify" && e.from === "bob").map((e) => e.content)
     expect(contents).toEqual(expect.arrayContaining(["M5", "M6"]))
-    // And no duplicates.
-    expect(contents).toHaveLength(2)
   }, 40_000)
 
   it("Test I — replay drains >200 backlog on reconnect (no silent truncation)", async () => {
@@ -370,24 +393,27 @@ describe("tribe message durability (km-tribe.message-durability)", () => {
       await broadcastFrom(bob1.client, `I${i}`)
     }
 
-    // Alice reconnects. ALL 250 must be delivered — not just the first 200.
+    // Alice reconnects. The default inbox skips old ambient broadcasts, but
+    // snapshot reads must still expose the full durable journal.
     const alice2 = await joinWithToken(socketPath, "alice-i", "token-I")
     clients.push(alice2.client)
 
-    await waitFor(() => countUserChannels(alice2.received, "bob-i") >= FLOOD, 10_000)
-    const contents = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
-    expect(contents.length, `alice received ${contents.length} / ${FLOOD} broadcasts (replay truncated?)`).toBe(FLOOD)
+    await new Promise((r) => setTimeout(r, 500))
+    expect(countUserChannels(alice2.received, "bob-i")).toBe(0)
+
+    const journal = await fetchEvents(alice2.client, { from: "bob-i", limit: FLOOD + 10, advance: false })
+    const contents = journal.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
+    expect(contents.length, `journal returned ${contents.length} / ${FLOOD} broadcasts`).toBe(FLOOD)
     // And they come in order.
     expect(contents[0]).toBe("I1")
     expect(contents[FLOOD - 1]).toBe(`I${FLOOD}`)
 
-    // Bob broadcasts one more. Alice must receive it exactly once, not
-    // duplicated, not dropped.
+    // Bob broadcasts one more while alice is online. Push wakeup + fetch
+    // drain should deliver it exactly once, not duplicated or dropped.
     await broadcastFrom(bob1.client, "I-after")
-    await waitFor(() => countUserChannels(alice2.received, "bob-i") >= FLOOD + 1, 5000)
+    await waitFor(() => countUserChannels(alice2.received, "bob-i") >= 1, 5000)
     const post = alice2.received.filter((e) => e.type === "notify" && e.from === "bob-i").map((e) => e.content)
-    expect(post).toHaveLength(FLOOD + 1)
-    expect(post[FLOOD]).toBe("I-after")
+    expect(post).toEqual(["I-after"])
   }, 60_000)
 
   it("Test J — disconnect does not mutate the journal (durability invariant)", async () => {

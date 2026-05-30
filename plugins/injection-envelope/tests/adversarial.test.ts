@@ -33,11 +33,11 @@ import {
   extractShingles,
   looksLikeExplicitWriteAuth,
   CONTEXT_PROTOCOL_FOOTER,
+  evaluateGate,
   type InjectedItem,
   type TurnManifest,
+  type GateInput,
 } from "../src/index.ts"
-
-import { evaluateGate, type GateInput } from "../../../../../tools/injection-gate.ts"
 
 // ---------------------------------------------------------------------------
 // Harness

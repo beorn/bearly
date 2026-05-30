@@ -317,7 +317,7 @@ describe("tribe self-heal (kill-and-recover)", () => {
       // Alice joins + broadcasts.
       const alice = await connect()
       await alice.call("register", { name: "alice", role: "member" })
-      const sent = parseToolText(await alice.call("tribe.broadcast", { message: "hello-before-crash" }))
+      const sent = parseToolText(await alice.call("tribe.send", { to: "*", message: "hello-before-crash" }))
       expect(sent.sent).toBe(true)
 
       // Confirm message is in the DB *before* killing the daemon. This is
@@ -344,20 +344,18 @@ describe("tribe self-heal (kill-and-recover)", () => {
       unlinkIfExists(socketPath)
       daemon = await spawnDaemon(socketPath, dbPath)
 
-      // Alice rejoins under the same name; tribe.history must include the pre-crash broadcast.
+      // Alice rejoins under the same name; snapshot fetch must include the pre-crash broadcast.
       const alice2 = await connect()
       await alice2.call("register", { name: "alice", role: "member" })
-      const history = parseToolText(await alice2.call("tribe.history", { limit: 50 }))
-      // tribe.history returns the array of messages directly as JSON text.
-      // Some handler shapes wrap it, some don't — tolerate both.
-      const messages = (Array.isArray(history) ? history : (history.messages ?? history)) as Array<{
+      const fetched = parseToolText(await alice2.call("tribe.fetch", { from: "alice", limit: 50, advance: false }))
+      const messages = (fetched.events ?? []) as Array<{
         content?: string
       }>
       expect(Array.isArray(messages)).toBe(true)
       const found = messages.some((m) => m.content === "hello-before-crash")
       expect(
         found,
-        `pre-crash broadcast missing from tribe.history after restart: ${JSON.stringify(messages).slice(0, 500)}`,
+        `pre-crash broadcast missing from tribe.fetch snapshot after restart: ${JSON.stringify(messages).slice(0, 500)}`,
       ).toBe(true)
     }, 25_000)
   })

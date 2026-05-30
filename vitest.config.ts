@@ -9,11 +9,6 @@
  */
 
 import { defineConfig } from "vitest/config"
-import { fileURLToPath } from "node:url"
-import { dirname, resolve } from "node:path"
-
-const here = dirname(fileURLToPath(import.meta.url))
-
 export default defineConfig({
   test: {
     include: [
@@ -29,12 +24,6 @@ export default defineConfig({
     // polyfills Bun APIs for the @bearly/llm regression suite. Other subtrees
     // don't currently need one; add as each package needs it.
     setupFiles: ["plugins/llm/tests/setup.ts"],
-    // vitest runs on node; @bearly/llm transitively imports `bun:sqlite` via
-    // @bearly/recall. Alias it to a no-op shim so unit tests that never touch
-    // history search still import cleanly. Tests that need real recall behavior
-    // would have to run under bun (currently none do).
-    alias: {
-      "bun:sqlite": resolve(here, "plugins/llm/tests/stubs/bun-sqlite.ts"),
-    },
+    server: { deps: { inline: ["zod"] } },
   },
 })
