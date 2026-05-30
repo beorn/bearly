@@ -102,12 +102,16 @@ import { getStaleThresholdMs, type RefreshResult } from "./staleness"
  *  This is the only DB-bound piece of the refresh path; everything else lives in
  *  `./refresh.ts` (pure / deps-injected) for vitest reachability. See @km/bearly/19244. */
 function readLastRebuild(): string | null {
+  // Read the meta off the SHARED getDb() singleton and leave it open — the
+  // search that immediately follows reuses the same connection. The previous
+  // `closeDb()` here was actively harmful: it tore down the app-wide singleton
+  // on every search (a needless reconnect for a file DB) and DESTROYED the data
+  // for an in-memory DB (`:memory:` lives in the connection, so closing it
+  // wiped seeded rows before the search ran — the recall raw-probe + stale
+  // tests regressed exactly this way). WAL readers already see a concurrent
+  // index subprocess's committed writes, so no reconnect is needed for freshness.
   const db = getDb()
-  try {
-    return getIndexMeta(db, "last_rebuild") ?? null
-  } finally {
-    closeDb()
-  }
+  return getIndexMeta(db, "last_rebuild") ?? null
 }
 
 import { refreshIndexIfStaleWithDeps, makeRefreshDeps, type RefreshDeps } from "./refresh"

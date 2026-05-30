@@ -20,6 +20,26 @@ vi.mock("../../src/lib/agent.ts", () => ({
   },
 }))
 
+// Stale-index auto-refresh shells out to `bun recall index --incremental` as a
+// real subprocess. In-process tests must NOT spawn it — it indexes the user's
+// actual recall DB and hangs the test (10s timeout). Replace only the spawn
+// dep with an instant no-op; the real staleness-decision logic in
+// `refreshIndexIfStaleWithDeps` still runs (so the stale → refreshed note path
+// is exercised). The subprocess itself is covered by refresh.ts's own
+// dep-injected unit tests.
+vi.mock("../../src/lib/refresh.ts", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../../src/lib/refresh.ts")>()
+  return {
+    ...orig,
+    makeRefreshDeps: (getLastRebuild: () => string | null) => ({
+      getLastRebuild,
+      now: () => Date.now(),
+      getThresholdMs: () => 5 * 60 * 1000,
+      spawnCmd: async () => ({ exitCode: 0 }),
+    }),
+  }
+})
+
 import { cmdSearch } from "../../src/lib/search"
 import { closeDb, getDb, setIndexMeta } from "../../src/history/db"
 
@@ -99,7 +119,7 @@ describe("recall search output", () => {
     expect(output).not.toContain('No results found for "how should we debug barenode"')
   })
 
-  test("stale index warning prints before empty results", async () => {
+  test("stale index auto-refreshes before empty results", async () => {
     setIndexMeta(getDb(), "last_rebuild", new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString())
     mockAgent.result = async (query) => zeroAgentResult(query) as never
 
@@ -107,7 +127,10 @@ describe("recall search output", () => {
 
     const errors = callsText(errSpy)
     const output = callsText(logSpy)
-    expect(errors).toContain("FTS5 index last rebuilt")
+    // A ~2h-stale index triggers the auto-refresh note (the prior warn-only
+    // "FTS5 index last rebuilt" behavior was superseded by auto-refresh —
+    // search.ts emitRefreshNote). It prints BEFORE the empty-results answer.
+    expect(errors).toContain("stale — refreshed")
     expect(output).toContain('No results found for "nohits"')
   })
 
