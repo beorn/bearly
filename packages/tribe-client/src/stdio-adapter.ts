@@ -257,17 +257,26 @@ daemonReady = createReconnectingClient({
 
 const joinInstruction = `If you receive a stdio-adapter auto-identify message, just call tribe.join with a short name for your focus area. Omit the role parameter — the daemon auto-assigns chief to the first session and member to the rest. No need to call tribe.members or tribe.fetch afterward — just join silently and continue.`
 
+// Shared turn-start inbox guidance for every role variant. Kept deliberately
+// SMALL: new messages already arrive inline as <channel> envelopes (push delivery
+// via drainDaemonInbox below), so the turn-start call is a small catch-up drain —
+// NOT a full replay. The old `limit: 50` window re-pulled already-seen ambient
+// traffic on every turn and flooded long-running agent context.
+// See km @km/tribe/19442-turn-start-fetch-context-flood.
+const turnStartInboxCheck = `Turn-start inbox check:
+- New messages also arrive inline as <channel> envelopes — read those first; you do not need to fetch to receive them.
+- For turn-start catch-up keep the drain SMALL: tribe.fetch({ limit: 10 }). Do NOT pull a large window every turn — replaying ~50 events re-surfaces already-seen ambient traffic and floods context.
+- For a specific peer's latest, use the snapshot filter: tribe.fetch({ with: <your session name>, limit: 10 }) or tribe.fetch({ from: <peer>, limit: 10 }) — these return the newest matching messages; use them to find a thread, not to replay the whole channel.
+- Surface only actionable items: direct messages, requests, blockers, assignments, chief verdicts, CI alerts, or user-relevant coordination.
+- Ignore routine ambient joins/leaves, git commits, low-severity status, and notification-only events unless explicitly asked.`
+
 const chiefInstructions = `Messages from other Claude Code sessions arrive as <channel source="tribe" from="..." type="..." bead="...">.
 
 You are the chief of a tribe — a coordinator for multiple Claude Code sessions working on the same project.
 
 ${joinInstruction}
 
-Turn-start inbox check:
-- At the start of each user turn, call tribe.fetch({ limit: 50 }) before responding.
-- If direct-message context is needed, also call tribe.fetch({ with: <your session name>, limit: 20 }).
-- Surface only actionable items: direct messages, requests, blockers, assignments, chief verdicts, CI alerts, or user-relevant coordination.
-- Ignore routine ambient joins/leaves, git commits, low-severity status, and notification-only events unless explicitly asked.
+${turnStartInboxCheck}
 
 Coordination protocol:
 - Use tribe.members() to see who's online and their domains
@@ -290,11 +299,7 @@ You are a tribe member — a worker session coordinated by the chief.
 
 ${joinInstruction}
 
-Turn-start inbox check:
-- At the start of each user turn, call tribe.fetch({ limit: 50 }) before responding.
-- If direct-message context is needed, also call tribe.fetch({ with: <your session name>, limit: 20 }).
-- Surface only actionable items: direct messages, requests, blockers, assignments, chief verdicts, CI alerts, or user-relevant coordination.
-- Ignore routine ambient joins/leaves, git commits, low-severity status, and notification-only events unless explicitly asked.
+${turnStartInboxCheck}
 
 Coordination protocol:
 - When you START work on a task, broadcast what you're doing: tribe.send(to="*", message="starting: <task>")
@@ -326,11 +331,7 @@ Tribe messages:
 
 const pullInstructions = `Tribe coordination is available through MCP tools.
 
-Turn-start inbox check:
-- At the start of each user turn, call tribe.fetch({ limit: 50 }) before responding.
-- If direct-message context is needed, also call tribe.fetch({ with: <your session name>, limit: 20 }).
-- Surface only actionable items: direct messages, requests, blockers, assignments, chief verdicts, CI alerts, or user-relevant coordination.
-- Ignore routine ambient joins/leaves, git commits, low-severity status, and notification-only events unless explicitly asked.
+${turnStartInboxCheck}
 
 Coordination protocol:
 - Use tribe.members() to see who's online and their domains.
