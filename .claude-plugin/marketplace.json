@@ -9,7 +9,7 @@
     {
       "name": "tribe",
       "description": "Cross-session coordination — discover, message, and coordinate work across multiple Claude Code sessions",
-      "version": "0.14.1",
+      "version": "0.15.1",
       "source": "./plugins/tribe"
     },
     {
