@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { createLineParser } from "../src/parser.ts"
 import type { JsonRpcMessage } from "../src/rpc.ts"
 
@@ -24,25 +24,25 @@ describe("createLineParser", () => {
     expect((out[1] as { id: number }).id).toBe(2)
   })
 
-  it("skips invalid JSON without throwing", () => {
-    // Parser logs a warning for invalid JSON via loggily — silence it so
-    // the test-harness console-quiet check doesn't flag it. The behavior
-    // we're verifying is that the parser doesn't throw and still emits
-    // the valid line that follows the bad one.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-    try {
-      const out: JsonRpcMessage[] = []
-      const parse = createLineParser((m) => out.push(m))
-      parse(Buffer.from('not-json\n{"jsonrpc":"2.0","id":1,"method":"a"}\n'))
-      expect(out).toHaveLength(1)
-      expect((out[0] as { method: string }).method).toBe("a")
-      // Sanity-check the warning fired with the bad input — we want the
-      // log behavior covered, not just suppressed.
-      expect(warnSpy).toHaveBeenCalled()
-      const firstCall = warnSpy.mock.calls[0]?.join(" ") ?? ""
-      expect(firstCall).toContain("not-json")
-    } finally {
-      warnSpy.mockRestore()
-    }
+  it("skips invalid JSON without throwing and reports it via onInvalid", () => {
+    // Root cause of the prior failure (km 19471): the test spied `console.warn`, but the
+    // parser reports invalid JSON through loggily (`log.warn`), which does NOT route to
+    // `console.warn` (loggily writes to the console only with an explicit `console` sink)
+    // and whose module-level logger is created at import — before any test writer could
+    // attach — so the warning isn't observable from a unit test. Invalid-line handling is
+    // now an explicit `onInvalid` seam (the loggily warning is still emitted by default),
+    // which keeps the behavior testable without depending on loggily's sink wiring.
+    const invalid: string[] = []
+    const out: JsonRpcMessage[] = []
+    const parse = createLineParser(
+      (m) => out.push(m),
+      (line) => invalid.push(line),
+    )
+    // Core contract: don't throw on a bad line, still emit the valid line after it.
+    expect(() => parse(Buffer.from('not-json\n{"jsonrpc":"2.0","id":1,"method":"a"}\n'))).not.toThrow()
+    expect(out).toHaveLength(1)
+    expect((out[0] as { method: string }).method).toBe("a")
+    // And surface the bad input explicitly.
+    expect(invalid).toEqual(["not-json"])
   })
 })
