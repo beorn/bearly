@@ -31,6 +31,7 @@ import { TOOLS_LIST } from "./lib/tools-list.ts"
 import { createLogger, setSuppressConsole } from "loggily"
 import { createTimers } from "./timers.ts"
 import { defangModelInput } from "./lib/defang.ts"
+import { MAX_REPLAY_EVENTS, selectReplayEvents } from "./lib/replay-cap.ts"
 import { evaluateCwdPolicy, probeCwd, readCwdPolicyFromEnv, type CwdEvaluation } from "./lib/cwd-guardrail.ts"
 
 if (process.env.DEBUG_LOG) {
@@ -144,6 +145,7 @@ type TribeFetchResult = {
     content?: string
     bead?: string | null
     topic?: string | null
+    ts?: string
   }>
 }
 
@@ -575,11 +577,20 @@ function drainDaemonInbox(): void {
     try {
       do {
         drainAgain = false
-        for (;;) {
-          const result = parseToolText<TribeFetchResult>(await daemon?.call("tribe.fetch", { limit: 500 }))
-          const events = result?.events ?? []
-          for (const event of events) forwardFetchedEvent(event)
-          if (events.length < 500) break
+        // Connection-time replay cap (km @km/tribe/19442): one bounded drain
+        // advances the session cursor for every fetched row, but only a recent,
+        // capped subset is surfaced as <channel> envelopes. A large stale backlog
+        // used to be forwarded wholesale (limit:500 looped until empty), flooding
+        // agent context on connect. Older/excess events are still drained (the
+        // cursor moves past them, so they never re-arrive) — just not replayed.
+        const result = parseToolText<TribeFetchResult>(await daemon?.call("tribe.fetch", { limit: 500 }))
+        const events = result?.events ?? []
+        const { forward, skippedOld, capped } = selectReplayEvents(events, { now: Date.now() })
+        for (const event of forward) forwardFetchedEvent(event)
+        if (skippedOld > 0 || capped > 0) {
+          log.warn?.(
+            `tribe drain: surfaced ${forward.length}/${events.length} event(s) (skipped ${skippedOld} older than 1d, ${capped} over cap ${MAX_REPLAY_EVENTS}); rest drained but not replayed`,
+          )
         }
       } while (drainAgain)
     } catch (err) {
