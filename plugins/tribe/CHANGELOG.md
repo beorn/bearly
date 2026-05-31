@@ -5,6 +5,23 @@ All notable changes to `@bearly/tribe` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.15.1 — 2026-05-31 — Manifest version sync + connect-replay flood backstop
+
+### Fixed
+
+- **`.claude-plugin/plugin.json` version was stuck at `0.14.1`** while
+  `package.json` had advanced to `0.15.0`. Claude Code reads the plugin version
+  from the manifest, so `claude plugin update` saw "no change" and never pulled
+  the `0.15.0` server.ts / capped stdio adapter — fresh sessions kept loading the
+  stale `0.14.1` `server.mjs` bundle (no replay cap), which is the deploy half of
+  the turn-start context flood. Manifest is now synced to the package version.
+- **Connect-time channel-push flood backstop** ships via
+  `@bearly/tribe-client` `0.4.2` (`createConnectReplayGate`): a stale daemon that
+  still pushes message bodies as `channel` notifications is now bounded per
+  (re)connect instead of replayed wholesale.
+
+See `@km/tribe/19442-turn-start-fetch-context-flood`.
+
 ## 0.15.0 — 2026-05-25 — Bundle removed; stdio adapter ships via npm
 
 ### Changed

@@ -31,7 +31,7 @@ import { TOOLS_LIST } from "./lib/tools-list.ts"
 import { createLogger, setSuppressConsole } from "loggily"
 import { createTimers } from "./timers.ts"
 import { defangModelInput } from "./lib/defang.ts"
-import { MAX_REPLAY_EVENTS, selectReplayEvents } from "./lib/replay-cap.ts"
+import { createConnectReplayGate, MAX_REPLAY_EVENTS, selectReplayEvents } from "./lib/replay-cap.ts"
 import { evaluateCwdPolicy, probeCwd, readCwdPolicyFromEnv, type CwdEvaluation } from "./lib/cwd-guardrail.ts"
 
 if (process.env.DEBUG_LOG) {
@@ -60,6 +60,15 @@ const CLAUDE_SESSION_NAME = resolveClaudeSessionName()
 const DELIVERY = process.env.TRIBE_DELIVERY === "pull" ? "pull" : "push"
 const CLAUDE_CHANNEL_ENABLED = DELIVERY === "push"
 const REQUIRE_EXPLICIT_JOIN = process.env.TRIBE_REQUIRE_JOIN !== "0"
+
+// km 19442 — connect-time replay flood backstop. The wakeup→drain path is capped
+// by selectReplayEvents, but a stale/old daemon that still pushes message BODIES
+// as `channel` notifications bypasses that cap. This gate bounds the post-(re)connect
+// `channel` burst to MAX_REPLAY_EVENTS; dropped rows stay durable + fetchable. Knobs
+// exist for tests (small cap/window → deterministic burst assertions).
+const CHANNEL_REPLAY_MAX = Number(process.env.TRIBE_CHANNEL_REPLAY_MAX) || undefined
+const CHANNEL_REPLAY_WINDOW_MS = Number(process.env.TRIBE_CHANNEL_REPLAY_WINDOW_MS) || undefined
+const connectReplayGate = createConnectReplayGate({ maxEvents: CHANNEL_REPLAY_MAX, windowMs: CHANNEL_REPLAY_WINDOW_MS })
 
 // Worktree-isolation guardrail (km-bearly.tribe-codex-cwd-worktree-guardrail):
 // standalone codex / non-launcher MCP clients inherit the user's invocation
@@ -209,6 +218,9 @@ const registerParams = {
 daemonReady = createReconnectingClient({
   socketPath: SOCKET_PATH,
   async onConnect(client) {
+    // km 19442 — open a fresh connect-replay window so a stale daemon's body-push
+    // burst on (re)connect is bounded (see connectReplayGate + the `channel` handler).
+    connectReplayGate.reset(Date.now())
     const reg = (await client.call("register", registerParams)) as {
       sessionId: string
       name: string
@@ -247,6 +259,8 @@ daemonReady = createReconnectingClient({
   },
   onReconnect() {
     log.info?.(`Reconnected to daemon`)
+    // km 19442 — a reconnect can replay the daemon's pending body-push burst; rebound it.
+    connectReplayGate.reset(Date.now())
   },
 }).then((client) => {
   daemon = client
@@ -614,8 +628,20 @@ void daemonReady
       if (method === "channel") {
         const content = String(params?.content ?? "")
         const type = markedType(String(params?.type ?? "notify"))
-        // Auto-rename on bead claim by this session
+        // Auto-rename on bead claim by this session — runs even when the forward is
+        // capped below; the rename is opportunistic and idempotent (durable in the DB).
         if (type === "bead:claimed") tryAutoRenameOnClaim(content)
+        // km 19442 — bound a stale daemon's connect-time body-push burst. Steady-state
+        // live messages pass freely; only an over-cap (re)connect storm is dropped here
+        // (the rows stay durable in the daemon journal and remain fetchable via tribe.fetch).
+        if (!connectReplayGate.admit(Date.now())) {
+          if (connectReplayGate.dropped === 1) {
+            log.warn?.(
+              `tribe channel-push: connect-replay burst over cap ${MAX_REPLAY_EVENTS} — dropping excess body-pushes (durable + fetchable). Likely a stale tribe plugin/daemon; see km 19442.`,
+            )
+          }
+          return
+        }
         sendChannel(content, {
           from: String(params?.from ?? "unknown"),
           type,

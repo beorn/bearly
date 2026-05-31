@@ -1,6 +1,6 @@
 {
   "name": "tribe",
-  "version": "0.14.1",
+  "version": "0.15.1",
   "description": "Cross-session coordination for Claude Code — discover, message, and coordinate work across multiple sessions via SQLite bus",
   "author": {
     "name": "beorn",

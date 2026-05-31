@@ -256,4 +256,51 @@ describe("stdio adapter delivery modes", () => {
     const channel = await waitForLine(child, (line) => line.method === "notifications/claude/channel")
     expect(JSON.stringify(channel)).toContain("after")
   })
+
+  it("bounds a connect-time channel-push burst to the cap (km 19442 push-path backstop)", async () => {
+    const socketPath = join(tmpDir, "tribe.sock")
+    daemon = await spawnFakeDaemon(socketPath)
+    child = spawn(BUN_BIN, [ADAPTER, "--socket", socketPath, "--name", "@agent/test"], {
+      cwd: tmpDir,
+      env: {
+        ...process.env,
+        TRIBE_DELIVERY: "push",
+        TRIBE_NO_AUTOSTART: "1",
+        // Tiny cap + a wide window so the whole burst lands inside one connect window.
+        TRIBE_CHANNEL_REPLAY_MAX: "3",
+        TRIBE_CHANNEL_REPLAY_WINDOW_MS: "60000",
+        DEBUG_LOG: join(tmpDir, "adapter.log"),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    const stdout = collectStdoutJson(child)
+
+    writeJson(child, initializePayload(1))
+    await waitForLine(child, (line) => line.id === 1)
+    writeJson(child, { jsonrpc: "2.0", method: "notifications/initialized", params: {} })
+    writeJson(child, toolsListPayload(2))
+    await waitForLine(child, (line) => line.id === 2)
+
+    // Join so push-mode channel forwarding is enabled.
+    writeJson(child, callToolPayload(3, "join", { name: "@agent/test" }))
+    await waitForLine(child, (line) => line.id === 3)
+
+    // Simulate a stale daemon dumping a 12-event message-BODY backlog on connect.
+    for (let i = 0; i < 12; i++) {
+      daemon.clients[0]?.write(makeNotification("channel", { from: "chief", type: "notify", content: `burst-${i}` }))
+    }
+    // Wait for the first forwarded burst event, then let the rest settle.
+    await waitForLine(
+      child,
+      (line) => line.method === "notifications/claude/channel" && JSON.stringify(line).includes("burst-"),
+    )
+    await new Promise((resolveTick) => setTimeout(resolveTick, 400))
+
+    const forwarded = stdout.filter(
+      (line) => line.method === "notifications/claude/channel" && JSON.stringify(line).includes("burst-"),
+    )
+    // Cap=3 → exactly 3 of the 12 surface; the other 9 are dropped (still durable in
+    // the daemon journal, fetchable via tribe.fetch). Without the gate, all 12 flood in.
+    expect(forwarded.length).toBe(3)
+  })
 })

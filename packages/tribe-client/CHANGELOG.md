@@ -1,8 +1,18 @@
 # @bearly/tribe-client
 
-## Unreleased
+## 0.4.2 — 2026-05-31
 
 ### Added
+
+- **Connect-replay gate for the stdio adapter's legacy `channel` push path**
+  (`createConnectReplayGate`). The wakeup→drain path is bounded by
+  `selectReplayEvents`, but a stale/old daemon that still pushes message _bodies_
+  as `channel` notifications bypassed that cap and flooded agent context on
+  (re)connect. The gate bounds the post-(re)connect `channel` burst to
+  `MAX_REPLAY_EVENTS` (excess dropped — rows stay durable in the daemon journal
+  and fetchable via `tribe.fetch`); steady-state live messages always pass freely.
+  Tunable via `TRIBE_CHANNEL_REPLAY_MAX` / `TRIBE_CHANNEL_REPLAY_WINDOW_MS`.
+  See `@km/tribe/19442-turn-start-fetch-context-flood`.
 
 - **README documenting the npm-consumer protocol surface** + the surface delineation
   vs `vendor/bearly/tools/tribe-cli.ts` (the bearly-monorepo dev surface). Phase A.2
