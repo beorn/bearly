@@ -7,6 +7,7 @@ import { createServer, type Server, type Socket } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createLineParser } from "../src/parser.ts"
 import { isRequest, makeNotification, makeResponse } from "../src/rpc.ts"
+import { MAX_REPLAY_EVENTS } from "../src/lib/replay-cap.ts"
 
 const ADAPTER = resolve(dirname(fileURLToPath(import.meta.url)), "../src/stdio-adapter.ts")
 const BUN_BIN = process.versions.bun ? process.execPath : "bun"
@@ -17,7 +18,10 @@ type FakeDaemon = {
   readonly requests: Record<string, unknown>[]
 }
 
-function spawnFakeDaemon(socketPath: string): Promise<FakeDaemon> {
+function spawnFakeDaemon(
+  socketPath: string,
+  opts: { fetchEvents?: Array<Record<string, unknown>> } = {},
+): Promise<FakeDaemon> {
   const clients: Socket[] = []
   const requests: Record<string, unknown>[] = []
   return new Promise((resolveServer) => {
@@ -49,6 +53,14 @@ function spawnFakeDaemon(socketPath: string): Promise<FakeDaemon> {
                   }),
                 },
               ],
+            }),
+          )
+          return
+        }
+        if (msg.method === "tribe.fetch") {
+          socket.write(
+            makeResponse(msg.id, {
+              content: [{ type: "text", text: JSON.stringify({ events: opts.fetchEvents ?? [] }) }],
             }),
           )
           return
@@ -138,6 +150,39 @@ function collectStdoutJson(child: ChildProcessWithoutNullStreams): Record<string
     }
   })
   return lines
+}
+
+function waitForStdout(
+  child: ChildProcessWithoutNullStreams,
+  lines: Record<string, unknown>[],
+  predicate: () => boolean,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 2_000
+  return new Promise((resolveWait, reject) => {
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error(`timed out waiting for stdout condition; saw ${lines.length} json line(s)`))
+    }, timeoutMs)
+    const cleanup = () => {
+      clearTimeout(timer)
+      child.stdout.off("data", onData)
+      child.off("exit", onExit)
+    }
+    const check = () => {
+      if (!predicate()) return
+      cleanup()
+      resolveWait()
+    }
+    const onData = () => check()
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup()
+      reject(new Error(`adapter exited while waiting for stdout condition: code=${code} signal=${signal}`))
+    }
+    child.stdout.on("data", onData)
+    child.on("exit", onExit)
+    check()
+  })
 }
 
 function writeJson(child: ChildProcessWithoutNullStreams, payload: Record<string, unknown>): void {
@@ -255,5 +300,60 @@ describe("stdio adapter delivery modes", () => {
     daemon.clients[0]?.write(makeNotification("channel", { from: "chief", type: "request", content: "after" }))
     const channel = await waitForLine(child, (line) => line.method === "notifications/claude/channel")
     expect(JSON.stringify(channel)).toContain("after")
+  })
+
+  it("bounds wakeup drain replay to recent capped events", async () => {
+    const socketPath = join(tmpDir, "tribe.sock")
+    const now = Date.now()
+    const oldTs = new Date(now - 25 * 60 * 60 * 1000).toISOString()
+    const recentTs = new Date(now - 1_000).toISOString()
+    const fetchEvents = [
+      { id: "old", type: "request", from: "chief", content: "old-stale", ts: oldTs },
+      ...Array.from({ length: MAX_REPLAY_EVENTS + 5 }, (_, i) => ({
+        id: `fresh-${i}`,
+        type: "request",
+        from: "chief",
+        content: `fresh-${i}`,
+        ts: recentTs,
+      })),
+    ]
+    daemon = await spawnFakeDaemon(socketPath, { fetchEvents })
+    child = spawn(BUN_BIN, [ADAPTER, "--socket", socketPath, "--name", "@agent/test"], {
+      cwd: tmpDir,
+      env: {
+        ...process.env,
+        TRIBE_DELIVERY: "push",
+        TRIBE_NO_AUTOSTART: "1",
+        DEBUG_LOG: join(tmpDir, "adapter.log"),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    const stdout = collectStdoutJson(child)
+
+    writeJson(child, initializePayload(1))
+    await waitForLine(child, (line) => line.id === 1)
+    writeJson(child, { jsonrpc: "2.0", method: "notifications/initialized", params: {} })
+    writeJson(child, callToolPayload(2, "join", { name: "@agent/test" }))
+    await waitForLine(child, (line) => line.id === 2)
+
+    daemon.clients[0]?.write(makeNotification("wakeup", {}))
+
+    await waitForStdout(
+      child,
+      stdout,
+      () => stdout.filter((line) => line.method === "notifications/claude/channel").length === MAX_REPLAY_EVENTS,
+    )
+
+    const channels = stdout.filter((line) => line.method === "notifications/claude/channel")
+    const payloads = channels.map((line) => JSON.stringify(line))
+    expect(payloads.some((payload) => payload.includes("old-stale"))).toBe(false)
+    expect(payloads.some((payload) => payload.includes("fresh-0"))).toBe(true)
+    expect(payloads.some((payload) => payload.includes(`fresh-${MAX_REPLAY_EVENTS - 1}`))).toBe(true)
+    expect(payloads.some((payload) => payload.includes(`fresh-${MAX_REPLAY_EVENTS}`))).toBe(false)
+
+    const fetchRequest = daemon.requests.find((msg) => msg.method === "tribe.fetch") as
+      | { params?: { limit?: number } }
+      | undefined
+    expect(fetchRequest?.params?.limit).toBe(500)
   })
 })
