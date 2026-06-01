@@ -126,10 +126,40 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     return { exec, calls }
   }
 
-  test("spawnPane → new-pane --workspace --command (+cwd/title when given)", async () => {
+  test("spawnPane → terminal new-pane with the real cmux argv shape", async () => {
     const { exec, calls } = recordingExec()
     await createCmuxBackend({ exec }).spawnPane({ workspace: "w", command: "bash", cwd: "/tmp", title: "t" })
-    expect(calls[0]).toEqual(["new-pane", "--workspace", "w", "--command", "bash", "--cwd", "/tmp", "--title", "t"])
+    expect(calls[0]).toEqual(["new-pane", "--workspace", "w", "--type", "terminal"])
+    expect(calls[0]).not.toContain("--command")
+    expect(calls[0]).not.toContain("--cwd")
+    expect(calls[0]).not.toContain("--title")
+  })
+
+  test("spawnPane parses pane and primary surface tokens from cmux output", async () => {
+    const calls: string[][] = []
+    const exec: CmuxExec = async (args) => {
+      calls.push(args)
+      return ok("created pane:42 surface:99")
+    }
+    const pane = await createCmuxBackend({ exec }).spawnPane({ workspace: "w", command: "bash" })
+    expect(pane).toEqual({ id: "pane:42", workspace: "w", primarySurfaceId: "surface:99" })
+    expect(calls).toEqual([["new-pane", "--workspace", "w", "--type", "terminal"]])
+  })
+
+  test("spawnPane keeps surface-only cmux output and infers pane from list-panes", async () => {
+    const calls: string[][] = []
+    const exec: CmuxExec = async (args) => {
+      calls.push(args)
+      if (args[0] === "new-pane") return ok("surface:99")
+      if (args[0] === "list-panes") return ok("pane:41\npane:42")
+      return ok()
+    }
+    const pane = await createCmuxBackend({ exec }).spawnPane({ workspace: "w", command: "bash" })
+    expect(pane).toEqual({ id: "pane:42", workspace: "w", primarySurfaceId: "surface:99" })
+    expect(calls).toEqual([
+      ["new-pane", "--workspace", "w", "--type", "terminal"],
+      ["list-panes", "--workspace", "w"],
+    ])
   })
 
   test("listPanes → list-panes --workspace; parses one id per line", async () => {

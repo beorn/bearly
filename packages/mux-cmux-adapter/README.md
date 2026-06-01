@@ -12,7 +12,9 @@ import { createCmuxBackend } from "@bearly/mux-cmux-adapter"
 
 const mux = createCmuxBackend() // spawns the real `cmux` binary
 const pane = await mux.spawnPane({ workspace: "tent", command: "claude" })
-const [surface] = await mux.listSurfaces("tent", pane.id)
+const surface = pane.primarySurfaceId
+  ? { id: pane.primarySurfaceId, paneId: pane.id }
+  : (await mux.listSurfaces("tent", pane.id))[0]
 await mux.sendText(surface, "/compact")
 const screen = await mux.readScreen(surface, { lines: 60 })
 await mux.closePane(pane)
@@ -29,7 +31,7 @@ createCmuxBackend({ binary: "cmux-next" }) // override the binary
 
 | MuxBackend     | cmux argv                                                  |
 | -------------- | ---------------------------------------------------------- |
-| `spawnPane`    | `new-pane --workspace W --command C [--cwd D] [--title T]` |
+| `spawnPane`    | `new-pane --workspace W --type terminal`                   |
 | `closePane`    | `close-pane --workspace W --pane P`                        |
 | `listPanes`    | `list-panes --workspace W`                                 |
 | `listSurfaces` | `list-pane-surfaces --workspace W --pane P`                |
@@ -40,10 +42,10 @@ createCmuxBackend({ binary: "cmux-next" }) // override the binary
 
 The **read/enumerate** argv (`read-screen --surface --lines`, `list-panes
 --workspace`, `list-pane-surfaces --workspace --pane`) are confirmed from tent's
-real call sites (`chief.ts`). The **lifecycle/io/metadata** argv are the adapter's
-contract with cmux, pinned by the contract test's stateful fake cmux; **Phase 2
-verifies them against the real `cmux` binary before any tent call site is
-refactored.**
+real call sites (`chief.ts`). The terminal lifecycle argv is confirmed against
+`cmux new-pane --help` and tent's spawn path (`agent.ts`). `spawnPane` returns
+`primarySurfaceId` when cmux reports the new terminal surface so callers can keep
+their existing send path while routing creation through the adapter.
 
 `capabilities()` reports all four flags `true` — cmux is the full-featured
 backend. cmux "not found" failures map to the typed `MuxRefNotFoundError`; any

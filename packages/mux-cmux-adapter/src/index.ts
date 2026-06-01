@@ -9,10 +9,9 @@
  * `new-pane`, `close-pane`, `rename-tab`. Argv shapes for the read/enumerate
  * verbs are confirmed from `.claude/skills/tent/scripts/chief.ts`
  * (`read-screen --surface <id> --lines <n>`, `list-panes --workspace <ws>`,
- * `list-pane-surfaces --workspace <ws> --pane <p>`); the lifecycle/io/meta argv
- * shapes are the adapter's contract with cmux and are pinned by the contract
- * test's fake cmux — Phase 2 verifies them against the real `cmux` binary
- * before any tent call site is refactored.
+ * `list-pane-surfaces --workspace <ws> --pane <p>`). The terminal lifecycle
+ * argv (`new-pane --workspace <ws> --type terminal`) is confirmed from the real
+ * `cmux new-pane --help` surface and tent's current spawn path.
  *
  * Execution is dependency-injected ({@link CmuxBackendOptions.exec}) so the
  * contract suite runs against a stateful fake cmux with no real binary present.
@@ -67,6 +66,11 @@ const idLines = (stdout: string): string[] =>
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
+
+const tokenFromOutput = (stdout: string, kind: "pane" | "surface"): string | null => {
+  const clean = stdout.replace(/\x1b\[[0-9;]*m/g, "")
+  return new RegExp(`(${kind}:\\S+)`).exec(clean)?.[1] ?? null
+}
 
 /**
  * Parse `cmux list-panes` output into pane ids. Real cmux embeds the id as a
@@ -134,13 +138,18 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
     capabilities: () => CMUX_CAPABILITIES,
 
     async spawnPane(o: SpawnPaneOptions): Promise<PaneRef> {
-      const args = ["new-pane", "--workspace", o.workspace, "--command", o.command]
-      if (o.cwd) args.push("--cwd", o.cwd)
-      if (o.title) args.push("--title", o.title)
+      const args = ["new-pane", "--workspace", o.workspace, "--type", "terminal"]
       const out = await run(args)
-      const id = idLines(out)[0]
+      const primarySurfaceId = tokenFromOutput(out, "surface") ?? undefined
+      let id: string | undefined = tokenFromOutput(out, "pane") ?? idLines(out)[0]
+      if (id?.startsWith("surface:")) {
+        // Some cmux builds report only the newly-created surface. Preserve the
+        // surface for callers that need it immediately, then infer the pane from
+        // the post-create listing so MuxBackend still returns a PaneRef.
+        id = paneIdLines(await run(["list-panes", "--workspace", o.workspace])).at(-1)
+      }
       if (!id) throw new Error(`cmux new-pane returned no pane id (stdout: ${JSON.stringify(out)})`)
-      return { id, workspace: o.workspace }
+      return primarySurfaceId ? { id, workspace: o.workspace, primarySurfaceId } : { id, workspace: o.workspace }
     },
 
     async closePane(ref: PaneRef): Promise<void> {

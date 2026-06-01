@@ -15,7 +15,9 @@ the verbs tent calls, nothing speculative.
 import type { MuxBackend } from "@bearly/mux-protocol"
 ```
 
-- **lifecycle** — `spawnPane(opts) → PaneRef`, `closePane(pane)`
+- **lifecycle** — `spawnPane(opts) → PaneRef`, `closePane(pane)`;
+  `PaneRef.primarySurfaceId` is populated when the backend reports the new
+  pane's first surface directly
 - **enumerate** — `listPanes(workspace)`, `listSurfaces(workspace, paneId)`
 - **io** — `sendText(surface, text)`, `sendKey(surface, key)`, `readScreen(surface, {lines})`
 - **metadata** — `renameTab(pane, title)`

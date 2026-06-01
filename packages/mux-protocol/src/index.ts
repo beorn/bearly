@@ -31,6 +31,14 @@
 export interface PaneRef {
   readonly id: string
   readonly workspace: string
+  /**
+   * Primary surface created with this pane, when the backend reports it from
+   * the lifecycle call. cmux's terminal `new-pane` reports a surface token,
+   * which tent can use immediately without broadening this slice into send/list
+   * behavior. Backends that only report pane ids omit it; callers can still use
+   * `listSurfaces(workspace, pane.id)`.
+   */
+  readonly primarySurfaceId?: string
 }
 
 /** An addressable I/O surface inside a pane (what `read-screen --surface` targets). */
@@ -184,7 +192,7 @@ export function createInMemoryMux(capabilities: MuxCapabilities = ALL_CAPABILITI
         title: opts.title ?? opts.command,
         surfaces: [{ id: surfaceId, paneId, lines: [] }],
       })
-      return { id: paneId, workspace: opts.workspace }
+      return { id: paneId, workspace: opts.workspace, primarySurfaceId: surfaceId }
     },
 
     async closePane(ref) {
