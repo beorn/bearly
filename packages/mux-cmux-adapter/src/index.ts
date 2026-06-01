@@ -170,11 +170,14 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
     },
 
     async sendText(surface: SurfaceRef, text: string): Promise<void> {
-      await run(["send-text", "--surface", surface.id, "--text", text], { kind: "surface", id: surface.id })
+      // Real cmux verb is `send` (there is no `send-text`), and the text is
+      // positional after `--` so a flag-shaped payload isn't parsed as a flag.
+      await run(["send", "--surface", surface.id, "--", text], { kind: "surface", id: surface.id })
     },
 
     async sendKey(surface: SurfaceRef, key: string): Promise<void> {
-      await run(["send-key", "--surface", surface.id, "--key", key], { kind: "surface", id: surface.id })
+      // `cmux send-key` takes the key positionally (`[--] <key>`), not `--key`.
+      await run(["send-key", "--surface", surface.id, key], { kind: "surface", id: surface.id })
     },
 
     async readScreen(surface: SurfaceRef, ro?: ReadScreenOptions): Promise<string> {
