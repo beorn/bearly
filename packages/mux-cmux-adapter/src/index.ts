@@ -69,6 +69,25 @@ const idLines = (stdout: string): string[] =>
     .filter((l) => l.length > 0)
 
 /**
+ * Parse `cmux list-panes` output into pane ids. Real cmux embeds the id as a
+ * `pane:<id>` token inside a titled line — `  pane:106  [1 surface]`,
+ * `* pane:107  [1 surface]  [focused]` (ANSI possible, a `*` selected marker,
+ * bracketed suffixes) — NOT a bare id. Strip ANSI and extract the token; a line
+ * with no token falls back to the bare trimmed line so simple / fake backends
+ * that emit one bare id per line still work. (km 17273)
+ */
+const paneIdLines = (stdout: string): string[] => {
+  const ids: string[] = []
+  for (const raw of stdout.split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim()
+    if (line.length === 0) continue
+    const m = /(pane:\S+)/.exec(line)
+    ids.push(m?.[1] ?? line)
+  }
+  return ids
+}
+
+/**
  * Build a {@link MuxBackend} backed by cmux. Translates each verb to cmux argv,
  * parses cmux output, and maps cmux "not found" failures to
  * {@link MuxRefNotFoundError} (other non-zero exits surface as a loud Error —
@@ -110,7 +129,7 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
 
     async listPanes(workspace: string): Promise<PaneRef[]> {
       const out = await run(["list-panes", "--workspace", workspace])
-      return idLines(out).map((id) => ({ id, workspace }))
+      return paneIdLines(out).map((id) => ({ id, workspace }))
     },
 
     async listSurfaces(workspace: string, paneId: string): Promise<SurfaceRef[]> {

@@ -139,6 +139,21 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     expect(panes).toEqual([{ id: "cpane-1", workspace: "w" }])
   })
 
+  test("listPanes parses REAL cmux titled output: pane:<id> tokens, * marker, [focused]", async () => {
+    // Verbatim from `cmux list-panes --workspace workspace:2` (km 17273): the id
+    // is a `pane:N` token embedded in a titled line — NOT a bare id. Earlier the
+    // adapter (idLines) returned the whole line as the id, which broke chief's
+    // findAgentSurfaces on the real binary.
+    const exec: CmuxExec = async () =>
+      ok("  pane:106  [1 surface]\n* pane:107  [1 surface]  [focused]\n  pane:90  [2 surfaces]\n")
+    const panes = await createCmuxBackend({ exec }).listPanes("workspace:2")
+    expect(panes).toEqual([
+      { id: "pane:106", workspace: "workspace:2" },
+      { id: "pane:107", workspace: "workspace:2" },
+      { id: "pane:90", workspace: "workspace:2" },
+    ])
+  })
+
   test("listSurfaces → list-pane-surfaces --workspace --pane", async () => {
     const { exec, calls } = recordingExec()
     const surfaces = await createCmuxBackend({ exec }).listSurfaces("w", "cpane-1")
