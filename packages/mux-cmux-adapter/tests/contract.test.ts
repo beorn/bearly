@@ -161,6 +161,18 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     expect(surfaces).toEqual([{ id: "csurf-1", paneId: "cpane-1" }])
   })
 
+  test("listSurfaces parses REAL cmux titled output: surface:<id> + @owner", async () => {
+    // Verbatim from `cmux list-pane-surfaces` (km 19506): each surface line
+    // carries the `surface:N` token AND the @owner (@chief / @agent/N) tent maps
+    // a hat to. Earlier idLines returned the whole title line as the id.
+    const exec: CmuxExec = async () => ok("* surface:145  @chief  [selected]\n  surface:30  @agent/4\n")
+    const surfaces = await createCmuxBackend({ exec }).listSurfaces("workspace:2", "pane:107")
+    expect(surfaces).toEqual([
+      { id: "surface:145", paneId: "pane:107", owner: "@chief" },
+      { id: "surface:30", paneId: "pane:107", owner: "@agent/4" },
+    ])
+  })
+
   test("readScreen → read-screen --surface --lines; returns raw stdout", async () => {
     const { exec, calls } = recordingExec()
     const text = await createCmuxBackend({ exec }).readScreen({ id: "csurf-1", paneId: "cpane-1" }, { lines: 20 })

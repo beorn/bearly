@@ -37,6 +37,15 @@ export interface PaneRef {
 export interface SurfaceRef {
   readonly id: string
   readonly paneId: string
+  /**
+   * Optional owner/title the backend reports for the surface, when its listing
+   * carries one. cmux's `list-pane-surfaces` titles a surface with its tenant —
+   * e.g. `@chief` / `@agent/5` in `* surface:145  @chief  [selected]` — which
+   * tent uses to map an agent hat to its surface. Additive + optional: backends
+   * (and surfaces) without a title omit it; callers that only need `{ id,
+   * paneId }` are unaffected. @km/silvery/17273 (19506).
+   */
+  readonly owner?: string
 }
 
 /**

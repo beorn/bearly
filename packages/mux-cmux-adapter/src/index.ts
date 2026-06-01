@@ -88,6 +88,26 @@ const paneIdLines = (stdout: string): string[] => {
 }
 
 /**
+ * Parse `cmux list-pane-surfaces` output into surface refs. Real cmux titles
+ * each surface with its tenant — `* surface:145  @chief  [selected]`,
+ * `  surface:30  @agent/4` (ANSI possible, `*` selected marker, `[selected]`
+ * suffix) — so a line carries both the `surface:<id>` token AND an `@owner`.
+ * Strip ANSI, extract the token (bare-line fallback for simple/fake backends),
+ * and the leading `@owner` when present. (km 17273 / 19506)
+ */
+const surfaceRefLines = (stdout: string, paneId: string): SurfaceRef[] => {
+  const refs: SurfaceRef[] = []
+  for (const raw of stdout.split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim()
+    if (line.length === 0) continue
+    const id = /(surface:\S+)/.exec(line)?.[1] ?? line
+    const owner = /(@\S+)/.exec(line)?.[1]
+    refs.push(owner ? { id, paneId, owner } : { id, paneId })
+  }
+  return refs
+}
+
+/**
  * Build a {@link MuxBackend} backed by cmux. Translates each verb to cmux argv,
  * parses cmux output, and maps cmux "not found" failures to
  * {@link MuxRefNotFoundError} (other non-zero exits surface as a loud Error —
@@ -137,7 +157,7 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
         kind: "pane",
         id: paneId,
       })
-      return idLines(out).map((id) => ({ id, paneId }))
+      return surfaceRefLines(out, paneId)
     },
 
     async sendText(surface: SurfaceRef, text: string): Promise<void> {
