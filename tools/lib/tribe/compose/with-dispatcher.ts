@@ -215,6 +215,20 @@ export function withDispatcher<
       throw new NameConflictError(name, connectedNames, holder.pid || null)
     }
 
+    function findSamePidNameHolder(name: string, clientPid: number, connId: string): ClientSession | null {
+      if (!clientPid || clientPid <= 0) return null
+      return Array.from(clients.values()).find((c) => c.id !== connId && c.name === name && c.pid === clientPid) ?? null
+    }
+
+    function retireReplacedClient(client: ClientSession): void {
+      broadcast.flushConnection(client.id)
+      broadcast.discardConnection(client.id)
+      clients.delete(client.id)
+      socketToClient.delete(client.socket)
+      if (recallHandlers) recallHandlers.dropConn(client.recall.sessionId)
+      client.socket.destroy()
+    }
+
     function applyClient(
       connId: string,
       fields: {
@@ -311,7 +325,7 @@ export function withDispatcher<
             const clientPid = Number(p.pid ?? 0)
             const clientCwd = String(p.project ?? "")
             const pidCwdAdopted = adoptByPidCwd(db, clientPid, clientCwd, isActive)
-            const adopted = pidCwdAdopted ?? adoptIdentity(db, identityToken, isActive)
+            let adopted: PriorSession | null = pidCwdAdopted ?? adoptIdentity(db, identityToken, isActive)
 
             if (!p.role && adopted?.role) {
               const adoptedRole = adopted.role
@@ -336,20 +350,28 @@ export function withDispatcher<
             // identityToken still stands — only the strictly-stable (pid,
             // cwd) form gets to override the name).
             const pForResolve = pidCwdAdopted ? { ...p, name: pidCwdAdopted.name } : p
-            const name = deduplicateName(
-              resolveName({
-                db,
-                p: pForResolve,
-                adopted,
-                claudeSessionName,
-                claudeSessionId,
-                role,
-                isActive,
-                projectId,
-                takenNames,
-                clientPid,
-              }),
-            )
+            const resolvedName = resolveName({
+              db,
+              p: pForResolve,
+              adopted,
+              claudeSessionName,
+              claudeSessionId,
+              role,
+              isActive,
+              projectId,
+              takenNames,
+              clientPid,
+            })
+            const samePidHolder = findSamePidNameHolder(resolvedName, clientPid, connId)
+            if (samePidHolder) {
+              adopted = { id: samePidHolder.ctx.sessionId, name: samePidHolder.name, role: samePidHolder.role }
+              if (!p.role && (samePidHolder.role === "member" || samePidHolder.role === "watch")) {
+                role = samePidHolder.role
+              }
+              log.info?.(`Replacing live self-registration for ${resolvedName} pid=${clientPid}`)
+              retireReplacedClient(samePidHolder)
+            }
+            const name = deduplicateName(resolvedName)
             const domains = (p.domains as string[]) ?? []
             const peerSocket = (p.peerSocket as string) ?? null
             const pid = Number(p.pid ?? 0)

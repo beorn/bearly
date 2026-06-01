@@ -457,6 +457,67 @@ describe("tribe daemon integration", () => {
       expect((result.name as string).length).toBeGreaterThan(0)
     }, 10_000)
 
+    it("same live PID can re-register an explicit agent name without self-collision", async () => {
+      daemon = await spawnDaemon(socketPath)
+
+      const name = "@agent/9"
+      const pid = process.pid
+      const project = process.cwd()
+
+      const first = await connect()
+      const firstReg = (await first.call("register", {
+        name,
+        role: "member",
+        pid,
+        project,
+        delivery: "pull",
+      })) as Record<string, unknown>
+
+      const second = await connect()
+      const secondReg = (await second.call("register", {
+        name,
+        role: "member",
+        pid,
+        project,
+        delivery: "pull",
+      })) as Record<string, unknown>
+
+      expect(secondReg.name).toBe(name)
+      expect(secondReg.sessionId).toBe(firstReg.sessionId)
+
+      const status = (await second.call("cli_status")) as Record<string, unknown>
+      const sessions = status.sessions as Array<Record<string, unknown>>
+      const namedSessions = sessions.filter((s) => s.name === name)
+      expect(namedSessions).toHaveLength(1)
+      expect(namedSessions[0]!.pid).toBe(pid)
+    }, 10_000)
+
+    it("rejects explicit duplicate agent names from a different live PID", async () => {
+      daemon = await spawnDaemon(socketPath)
+
+      const name = "@agent/9"
+      const holderPid = process.pid
+      const contenderPid = process.pid + 1
+
+      const first = await connect()
+      await first.call("register", {
+        name,
+        role: "member",
+        pid: holderPid,
+        project: process.cwd(),
+      })
+
+      const second = await connect()
+      await expect(
+        second.call("register", {
+          name,
+          role: "member",
+          pid: contenderPid,
+          project: process.cwd(),
+        }),
+      ).rejects.toThrow(`Name "${name}" is already taken by live pid ${holderPid}`)
+    }, 10_000)
+
     it("second client does not receive an L3 chief reference", async () => {
       daemon = await spawnDaemon(socketPath)
 
