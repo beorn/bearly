@@ -18,17 +18,25 @@ interface FakePane {
   title: string
   surfaces: Map<string, string[]>
 }
-function parse(args: string[]): { verb: string; flags: Record<string, string> } {
+function parse(args: string[]): { verb: string; flags: Record<string, string>; positionals: string[] } {
   const [verb, ...rest] = args
   const flags: Record<string, string> = {}
+  const positionals: string[] = []
+  let sawDashDash = false
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!
-    if (a.startsWith("--")) {
+    if (!sawDashDash && a === "--") {
+      sawDashDash = true
+      continue
+    }
+    if (!sawDashDash && a.startsWith("--")) {
       flags[a.slice(2)] = rest[i + 1] ?? ""
       i++
+      continue
     }
+    positionals.push(a)
   }
-  return { verb: verb ?? "", flags }
+  return { verb: verb ?? "", flags, positionals }
 }
 const ok = (stdout = ""): CmuxExecResult => ({ stdout, stderr: "", code: 0 })
 const notFound = (what: string): CmuxExecResult => ({ stdout: "", stderr: `cmux: ${what} not found`, code: 1 })
@@ -43,7 +51,7 @@ function createFakeCmux(): CmuxExec {
     return panes.get(owner.paneId)?.surfaces.get(id) ?? null
   }
   return async (args) => {
-    const { verb, flags } = parse(args)
+    const { verb, flags, positionals } = parse(args)
     switch (verb) {
       case "new-pane": {
         serial += 1
@@ -82,16 +90,16 @@ function createFakeCmux(): CmuxExec {
         const n = flags.lines === undefined ? undefined : Number(flags.lines)
         return ok((n === undefined ? lines : lines.slice(-n)).join("\n"))
       }
-      case "send-text": {
+      case "send": {
         const lines = findSurface(flags.surface!)
         if (lines === null) return notFound(`surface ${flags.surface}`)
-        lines.push(flags.text ?? "")
+        lines.push(positionals[0] ?? "")
         return ok()
       }
       case "send-key": {
         const lines = findSurface(flags.surface!)
         if (lines === null) return notFound(`surface ${flags.surface}`)
-        lines.push(`<key:${flags.key}>`)
+        lines.push(`<key:${positionals[0] ?? ""}>`)
         return ok()
       }
       case "rename-tab": {
@@ -217,8 +225,8 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     await b.sendKey({ id: "csurf-1", paneId: "cpane-1" }, "Enter")
     await b.renameTab({ id: "cpane-1", workspace: "w" }, "title")
     expect(calls).toEqual([
-      ["send-text", "--surface", "csurf-1", "--text", "hi"],
-      ["send-key", "--surface", "csurf-1", "--key", "Enter"],
+      ["send", "--surface", "csurf-1", "--", "hi"],
+      ["send-key", "--surface", "csurf-1", "Enter"],
       ["rename-tab", "--pane", "cpane-1", "--title", "title"],
     ])
   })

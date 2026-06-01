@@ -35,15 +35,18 @@ createCmuxBackend({ binary: "cmux-next" }) // override the binary
 | `closePane`    | `close-pane --workspace W --pane P`         |
 | `listPanes`    | `list-panes --workspace W`                  |
 | `listSurfaces` | `list-pane-surfaces --workspace W --pane P` |
-| `sendText`     | `send-text --surface S --text T`            |
-| `sendKey`      | `send-key --surface S --key K`              |
+| `sendText`     | `send --surface S -- T`                     |
+| `sendKey`      | `send-key --surface S K`                     |
 | `readScreen`   | `read-screen --surface S [--lines N]`       |
 | `renameTab`    | `rename-tab --pane P --title T`             |
 
 The **read/enumerate** argv (`read-screen --surface --lines`, `list-panes
 --workspace`, `list-pane-surfaces --workspace --pane`) are confirmed from tent's
 real call sites (`chief.ts`). The terminal lifecycle argv is confirmed against
-`cmux new-pane --help` and tent's spawn path (`agent.ts`). `spawnPane` returns
+`cmux new-pane --help` and tent's spawn path (`agent.ts`). The **io** argv is
+verified against `cmux send --help` / `cmux send-key --help`: cmux has no
+`send-text` verb (the text goes to `send`, positional after `--`) and `send-key`
+takes the key positionally (no `--key` flag). `spawnPane` returns
 `primarySurfaceId` when cmux reports the new terminal surface so callers can keep
 their existing send path while routing creation through the adapter.
 
