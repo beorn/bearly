@@ -178,6 +178,45 @@ describe("tribe.fetch", () => {
     expect(history.events.map((e) => e.content)).toEqual(["dm-1", "dm-2"])
   })
 
+  it("explicit snapshot filters inspect the journal rather than the caller inbox", async () => {
+    const chief = ctxFor(f.db, f.stmts, "@chief")
+    const agent = ctxFor(f.db, f.stmts, "unknown-eh2hj")
+    const sidecar = ctxFor(f.db, f.stmts, "sidecar")
+
+    const toChief = sendMessage(agent, "@chief", "distribution question", "query", undefined, undefined, "direct")
+    const chiefReply = sendMessage(chief, agent.getName(), "distribution verdict", "verdict")
+
+    const byId = parseTool<{ events: Array<{ id: string; content: string }> }>(
+      await handleToolCall(sidecar, "tribe.fetch", { ids: [toChief.id, chiefReply.id] }, makeOpts()),
+    )
+    expect(byId.events.map((e) => e.content)).toEqual(["distribution question", "distribution verdict"])
+
+    const fromAgent = parseTool<{ events: Array<{ content: string }> }>(
+      await handleToolCall(sidecar, "tribe.fetch", { from: agent.getName(), limit: 10 }, makeOpts()),
+    )
+    expect(fromAgent.events.map((e) => e.content)).toEqual(["distribution question"])
+
+    const chiefInboxSnapshot = parseTool<{ events: Array<{ content: string }> }>(
+      await handleToolCall(sidecar, "tribe.fetch", { to: chief.getName(), limit: 10 }, makeOpts()),
+    )
+    expect(chiefInboxSnapshot.events.map((e) => e.content)).toEqual(["distribution question"])
+
+    const sinceSnapshot = parseTool<{ events: Array<{ content: string }>; cursor: number }>(
+      await handleToolCall(sidecar, "tribe.fetch", { since: toChief.rowid - 1, limit: 10 }, makeOpts()),
+    )
+    expect(sinceSnapshot.events.map((e) => e.content)).toEqual(["distribution question", "distribution verdict"])
+    expect(sinceSnapshot.cursor).toBe(chiefReply.rowid)
+    const cursorAfterSince = f.stmts.getInboxCursor.get({ $id: sidecar.sessionId }) as {
+      last_inbox_pull_seq: number
+    }
+    expect(cursorAfterSince.last_inbox_pull_seq).toBe(0)
+
+    const sidecarDrain = parseTool<{ events: unknown[] }>(
+      await handleToolCall(sidecar, "tribe.fetch", { limit: 10 }, makeOpts()),
+    )
+    expect(sidecarDrain.events).toEqual([])
+  })
+
   it("snapshot filters select the newest window and display it oldest-to-newest", async () => {
     const alice = ctxFor(f.db, f.stmts, "alice")
     const bob = ctxFor(f.db, f.stmts, "bob")

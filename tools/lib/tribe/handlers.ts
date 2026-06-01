@@ -908,11 +908,10 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
         FROM messages
         WHERE id IN (${placeholders})
           AND kind != 'event'
-          AND (sender = ? OR recipient = ? OR recipient = '*')
         ORDER BY rowid ASC
         LIMIT ?
       `)
-      .all(...ids, currentName, currentName, limit) as FetchRow[]
+      .all(...ids, limit) as FetchRow[]
     const byId = new Map(rows.map((r) => [r.id, r]))
     rows = ids.map((id) => byId.get(id)).filter((r): r is FetchRow => !!r)
   } else if (typeof a.with === "string" && a.with.length > 0) {
@@ -947,11 +946,10 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
         FROM messages
         WHERE kind != 'event'
           AND sender = $from
-          AND (sender = $self OR recipient = $self OR recipient = '*')
         ORDER BY rowid DESC
         LIMIT $limit
       `)
-        .all({ $from: a.from, $self: currentName, $limit: limit }) as FetchRow[]
+        .all({ $from: a.from, $limit: limit }) as FetchRow[]
     ).reverse()
   } else if (typeof a.to === "string" && a.to.length > 0) {
     // Snapshot mode (to-filter): return NEWEST N matches, not OLDEST.
@@ -962,22 +960,31 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
         FROM messages
         WHERE kind != 'event'
           AND recipient = $to
-          AND (sender = $self OR recipient = $self OR recipient = '*')
         ORDER BY rowid DESC
         LIMIT $limit
       `)
-        .all({ $to: a.to, $self: currentName, $limit: limit }) as FetchRow[]
+        .all({ $to: a.to, $limit: limit }) as FetchRow[]
     ).reverse()
+  } else if (typeof a.since === "number") {
+    cursorBase = a.since
+    rows = ctx.db
+      .prepare(`
+        SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
+        FROM messages
+        WHERE rowid > $since
+          AND kind != 'event'
+        ORDER BY rowid ASC
+        LIMIT $limit
+      `)
+      .all({ $since: a.since, $limit: limit }) as FetchRow[]
+    shouldAdvance = a.advance === true
   } else {
-    const hasSince = typeof a.since === "number"
-    const since = hasSince ? (a.since as number) : cursorBase
-    cursorBase = since
     rows = ctx.stmts.getInboxRows.all({
-      $since: since,
+      $since: cursorBase,
       $name: currentName,
       $limit: limit,
     }) as FetchRow[]
-    shouldAdvance = hasSince ? a.advance === true : a.advance !== false
+    shouldAdvance = a.advance !== false
   }
 
   const visibleRows = rows
