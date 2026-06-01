@@ -4,13 +4,13 @@
   "private": true,
   "description": "Backend-agnostic multiplexer interface (MuxBackend) + capability-adaptive contract suite. Lets a coordinator drive agent panes over cmux / tmux / silvermux without knowing the backend. Sibling to @bearly/mux-cmux-adapter.",
   "keywords": [
+    "agent-pane",
+    "cmux",
+    "contract-test",
     "multiplexer",
     "mux",
-    "tmux",
-    "cmux",
     "silvermux",
-    "agent-pane",
-    "contract-test"
+    "tmux"
   ],
   "homepage": "https://github.com/beorn/bearly/tree/main/packages/mux-protocol",
   "bugs": {

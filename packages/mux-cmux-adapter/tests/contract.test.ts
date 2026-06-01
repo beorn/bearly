@@ -49,7 +49,11 @@ function createFakeCmux(): CmuxExec {
         serial += 1
         const paneId = `cpane-${serial}`
         const surfaceId = `csurf-${serial}`
-        const pane: FakePane = { workspace: flags.workspace!, title: flags.title ?? flags.command ?? "", surfaces: new Map() }
+        const pane: FakePane = {
+          workspace: flags.workspace!,
+          title: flags.title ?? flags.command ?? "",
+          surfaces: new Map(),
+        }
         pane.surfaces.set(surfaceId, [])
         surfaceOwner.set(surfaceId, { paneId })
         panes.set(paneId, pane)
@@ -173,7 +177,10 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
 })
 
 describe("cmux adapter — error mapping (NO SILENT ERRORS)", () => {
-  const failing = (res: CmuxExecResult): CmuxExec => async () => res
+  const failing =
+    (res: CmuxExecResult): CmuxExec =>
+    async () =>
+      res
 
   test("cmux 'not found' → typed MuxRefNotFoundError", async () => {
     const b = createCmuxBackend({ exec: failing({ stdout: "", stderr: "cmux: pane x not found", code: 1 }) })

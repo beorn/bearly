@@ -21,22 +21,22 @@ await mux.closePane(pane)
 Execution is dependency-injected for testing:
 
 ```ts
-createCmuxBackend({ exec: myFakeCmux })   // (args: string[]) => Promise<{stdout, stderr, code}>
+createCmuxBackend({ exec: myFakeCmux }) // (args: string[]) => Promise<{stdout, stderr, code}>
 createCmuxBackend({ binary: "cmux-next" }) // override the binary
 ```
 
 ## cmux verb mapping
 
-| MuxBackend            | cmux argv                                                  |
-| --------------------- | ---------------------------------------------------------- |
-| `spawnPane`           | `new-pane --workspace W --command C [--cwd D] [--title T]` |
-| `closePane`           | `close-pane --workspace W --pane P`                        |
-| `listPanes`           | `list-panes --workspace W`                                 |
-| `listSurfaces`        | `list-pane-surfaces --workspace W --pane P`                |
-| `sendText`            | `send-text --surface S --text T`                           |
-| `sendKey`             | `send-key --surface S --key K`                             |
-| `readScreen`          | `read-screen --surface S [--lines N]`                      |
-| `renameTab`           | `rename-tab --pane P --title T`                            |
+| MuxBackend     | cmux argv                                                  |
+| -------------- | ---------------------------------------------------------- |
+| `spawnPane`    | `new-pane --workspace W --command C [--cwd D] [--title T]` |
+| `closePane`    | `close-pane --workspace W --pane P`                        |
+| `listPanes`    | `list-panes --workspace W`                                 |
+| `listSurfaces` | `list-pane-surfaces --workspace W --pane P`                |
+| `sendText`     | `send-text --surface S --text T`                           |
+| `sendKey`      | `send-key --surface S --key K`                             |
+| `readScreen`   | `read-screen --surface S [--lines N]`                      |
+| `renameTab`    | `rename-tab --pane P --title T`                            |
 
 The **read/enumerate** argv (`read-screen --surface --lines`, `list-panes
 --workspace`, `list-pane-surfaces --workspace --pane`) are confirmed from tent's

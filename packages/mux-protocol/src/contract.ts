@@ -20,11 +20,7 @@
  * Zero test-framework dependency — assertions use `node:assert/strict`.
  */
 import assert from "node:assert/strict"
-import {
-  type MuxBackend,
-  MuxRefNotFoundError,
-  UnsupportedCapabilityError,
-} from "./index.ts"
+import { type MuxBackend, MuxRefNotFoundError, UnsupportedCapabilityError } from "./index.ts"
 
 export interface ContractCase {
   readonly name: string

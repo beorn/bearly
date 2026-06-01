@@ -4,11 +4,11 @@
   "private": true,
   "description": "cmux backend for @bearly/mux-protocol — wraps the cmux CLI behind the MuxBackend interface, no behavior change. The seam that lets tent/chief talk to a mux instead of shelling out to cmux.",
   "keywords": [
-    "multiplexer",
-    "mux",
-    "cmux",
     "adapter",
-    "agent-pane"
+    "agent-pane",
+    "cmux",
+    "multiplexer",
+    "mux"
   ],
   "homepage": "https://github.com/beorn/bearly/tree/main/packages/mux-cmux-adapter",
   "bugs": {
