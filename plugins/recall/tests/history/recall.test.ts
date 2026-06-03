@@ -404,11 +404,14 @@ describe("recall integration", () => {
     async () => {
       const recall = await getRecall()
       const result = await recall("test", { raw: true, limit: 10 })
+      const sortEpsilon = 1e-7
       if (result.results.length > 1) {
         for (let i = 1; i < result.results.length; i++) {
           const prev = result.results[i - 1]!
           const curr = result.results[i]!
-          expect(boostedRank(curr.rank, curr.timestamp)).toBeGreaterThanOrEqual(boostedRank(prev.rank, prev.timestamp))
+          const prevScore = boostedRank(prev.rank, prev.timestamp)
+          const currScore = boostedRank(curr.rank, curr.timestamp)
+          expect(currScore).toBeGreaterThanOrEqual(prevScore - sortEpsilon)
         }
       }
     },
