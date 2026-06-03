@@ -28,7 +28,9 @@ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
-const DAEMON_SCRIPT = resolve(dirname(new URL(import.meta.url).pathname), "../tools/tribe-daemon.ts")
+const TEST_DIR = dirname(new URL(import.meta.url).pathname)
+const DAEMON_SCRIPT = resolve(TEST_DIR, "../tools/tribe-daemon.ts")
+const CLI_SCRIPT = resolve(TEST_DIR, "../tools/tribe-cli.ts")
 
 async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 5000, interval = 25): Promise<void> {
   const start = Date.now()
@@ -76,6 +78,30 @@ function unlinkIfExists(p: string): void {
   } catch {
     /* ignore */
   }
+}
+
+async function waitForTribeStatus(socketPath: string, timeout = 8000, interval = 100): Promise<void> {
+  const start = Date.now()
+  let last = "not probed"
+  while (Date.now() - start < timeout) {
+    const out = spawnSync(process.execPath, [CLI_SCRIPT, "status"], {
+      encoding: "utf8",
+      timeout: 8000,
+      env: { ...process.env, TRIBE_SOCKET: socketPath },
+    })
+    if (out.status === 0) return
+    last = [
+      `status=${String(out.status)}`,
+      out.signal ? `signal=${out.signal}` : null,
+      out.error ? `error=${out.error.message}` : null,
+      out.stdout ? `stdout=${out.stdout.trim()}` : null,
+      out.stderr ? `stderr=${out.stderr.trim()}` : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" ")
+    await new Promise((r) => setTimeout(r, interval))
+  }
+  throw new Error(`tribe-cli status did not become ready after ${timeout}ms: ${last}`)
 }
 
 describe("tribe-daemon hot-reload exit", () => {
@@ -202,12 +228,7 @@ describe("tribe-daemon hot-reload exit", () => {
 
     // Probe it: a PATH-based connection must reach a live daemon. tribe-cli
     // resolves the socket from TRIBE_SOCKET, so point it at the test socket.
-    const out = spawnSync(
-      process.execPath,
-      [resolve(dirname(new URL(import.meta.url).pathname), "../tools/tribe-cli.ts"), "status"],
-      { encoding: "utf8", timeout: 8000, env: { ...process.env, TRIBE_SOCKET: socketPath } },
-    )
-    expect(out.status).toBe(0)
+    await waitForTribeStatus(socketPath)
     // The successor PID is leaked relative to the test's ChildProcess handle;
     // afterEach's pgrep-by-tmpDir sweep reaps it.
   })
