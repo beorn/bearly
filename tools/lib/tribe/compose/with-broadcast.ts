@@ -277,7 +277,7 @@ export function withBroadcast<T extends BaseTribe & WithDatabase & WithDaemonCon
         // (TUI dashboards) always get push regardless of recipient mode so the
         // live view stays current.
         if (!isWatch) {
-          const recipientDelivery = stmts.getSessionDeliveryByName.get({ $name: client.name }) as
+          const recipientDelivery = stmts.getSessionDeliveryById.get({ $id: client.ctx.sessionId }) as
             | { delivery: string }
             | undefined
           if (recipientDelivery?.delivery === "pull") continue
