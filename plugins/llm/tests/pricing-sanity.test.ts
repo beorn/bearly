@@ -16,12 +16,14 @@ import { makeTestEnv } from "./helpers"
 // Mocked at the pricing module's export surface so both dispatch.performPricingUpdate
 // AND direct callers get the spied version.
 const cacheCurrentPricingMock = vi.fn()
+const isPricingStaleMock = vi.fn()
 
 vi.mock("../src/lib/pricing", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/pricing")>("../src/lib/pricing")
   return {
     ...actual,
     cacheCurrentPricing: cacheCurrentPricingMock,
+    isPricingStale: isPricingStaleMock,
   }
 })
 
@@ -40,6 +42,7 @@ vi.mock("../src/lib/research", async () => {
 describe("pricing sanity", () => {
   beforeEach(() => {
     cacheCurrentPricingMock.mockReset()
+    isPricingStaleMock.mockReset()
     queryModelMock.mockReset()
   })
 
@@ -115,5 +118,31 @@ describe("pricing sanity", () => {
     // Core assertion: the cache write function was NEVER invoked. Previous
     // (buggy) code would have reset the 5-day timer even on total failure.
     expect(cacheCurrentPricingMock).not.toHaveBeenCalled()
+  }, 10_000)
+
+  it("skips auto-update entirely for --dry-run invocations", async () => {
+    makeTestEnv()
+    const prevNoAutoPricing = process.env.LLM_NO_AUTO_PRICING
+    const prevArgv = process.argv
+    const fetchMock = vi.fn(async () => {
+      throw new Error("dry-run should not fetch pricing")
+    })
+    try {
+      delete process.env.LLM_NO_AUTO_PRICING
+      process.argv = ["node", "llm.ts", "pro", "--dry-run", "ping"]
+      isPricingStaleMock.mockReturnValue(true)
+      vi.stubGlobal("fetch", fetchMock)
+
+      vi.resetModules()
+      const dispatch = await import("../src/lib/dispatch")
+      await dispatch.maybeAutoUpdatePricing("pro")
+
+      expect(isPricingStaleMock).not.toHaveBeenCalled()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      process.argv = prevArgv
+      if (prevNoAutoPricing === undefined) delete process.env.LLM_NO_AUTO_PRICING
+      else process.env.LLM_NO_AUTO_PRICING = prevNoAutoPricing
+    }
   }, 10_000)
 })
