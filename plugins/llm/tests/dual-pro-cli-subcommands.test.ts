@@ -195,7 +195,7 @@ describe("bun llm pro --promote-review", () => {
           durationMs: 7000,
         },
         c: {
-          model: "gemini-3-pro-preview",
+          model: "gemini-2.5-pro",
           ok: true,
           score: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 18 },
           cost: 0.4,
