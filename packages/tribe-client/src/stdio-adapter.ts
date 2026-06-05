@@ -423,7 +423,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     // Attach identity_token to join so the daemon can adopt prior
     // session state when Claude Code restarts and the agent calls join again.
-    const payload = name === "join" ? { delivery: DELIVERY, ...a, identity_token: identityToken } : a
+    const payload =
+      name === "join"
+        ? {
+            ...a,
+            // Pull-only adapters have no channel reader. Do not let a model
+            // self-report push and make later tribe.fetch calls skip directs.
+            delivery:
+              CLAUDE_CHANNEL_ENABLED && (a.delivery === "push" || a.delivery === "pull") ? a.delivery : DELIVERY,
+            identity_token: identityToken,
+          }
+        : a
     // Tool names are bare verbs ("send", "fetch"); daemon wire methods use "tribe." prefix
     const daemonMethod = `tribe.${name}`
     // A tool call may arrive before the background daemon connect resolves
