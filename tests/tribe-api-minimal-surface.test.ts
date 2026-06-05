@@ -217,6 +217,60 @@ describe("tribe.fetch", () => {
     expect(sidecarDrain.events).toEqual([])
   })
 
+  it("combines snapshot filters with since and never returns an older cursor", async () => {
+    const chief = ctxFor(f.db, f.stmts, "@chief")
+    const agent = ctxFor(f.db, f.stmts, "@agent/4")
+    const other = ctxFor(f.db, f.stmts, "@agent/5")
+    const sidecar = ctxFor(f.db, f.stmts, "sidecar")
+
+    sendMessage(agent, "@chief", "stale agent-to-chief", "query", undefined, undefined, "direct")
+    const staleOther = sendMessage(other, "@chief", "stale other-to-chief", "query", undefined, undefined, "direct")
+    const since = staleOther.rowid
+
+    const freshToChief = sendMessage(agent, "@chief", "fresh agent-to-chief", "query", undefined, undefined, "direct")
+    sendMessage(agent, "@agent/7", "fresh agent-to-other", "query", undefined, undefined, "direct")
+    const freshReply = sendMessage(chief, agent.getName(), "fresh chief-to-agent", "verdict")
+
+    const fromToSince = parseTool<{ events: Array<{ content: string }>; cursor: number }>(
+      await handleToolCall(
+        sidecar,
+        "tribe.fetch",
+        { from: agent.getName(), to: chief.getName(), since, limit: 10, advance: false },
+        makeOpts(),
+      ),
+    )
+    expect(fromToSince.events.map((e) => e.content)).toEqual(["fresh agent-to-chief"])
+    expect(fromToSince.cursor).toBe(freshToChief.rowid)
+
+    const cursorAfterSnapshot = f.stmts.getInboxCursor.get({ $id: sidecar.sessionId }) as {
+      last_inbox_pull_seq: number
+    }
+    expect(cursorAfterSnapshot.last_inbox_pull_seq).toBe(0)
+
+    const toSince = parseTool<{ events: Array<{ content: string }>; cursor: number }>(
+      await handleToolCall(sidecar, "tribe.fetch", { to: chief.getName(), since, limit: 10 }, makeOpts()),
+    )
+    expect(toSince.events.map((e) => e.content)).toEqual(["fresh agent-to-chief"])
+    expect(toSince.cursor).toBe(freshToChief.rowid)
+
+    const withSince = parseTool<{ events: Array<{ content: string }>; cursor: number }>(
+      await handleToolCall(chief, "tribe.fetch", { with: agent.getName(), since, limit: 10 }, makeOpts()),
+    )
+    expect(withSince.events.map((e) => e.content)).toEqual(["fresh agent-to-chief", "fresh chief-to-agent"])
+    expect(withSince.cursor).toBe(freshReply.rowid)
+
+    const emptyAfterSince = parseTool<{ events: unknown[]; cursor: number }>(
+      await handleToolCall(
+        sidecar,
+        "tribe.fetch",
+        { to: chief.getName(), since: freshReply.rowid, limit: 10, advance: true },
+        makeOpts(),
+      ),
+    )
+    expect(emptyAfterSince.events).toEqual([])
+    expect(emptyAfterSince.cursor).toBe(freshReply.rowid)
+  })
+
   it("snapshot filters select the newest window and display it oldest-to-newest", async () => {
     const alice = ctxFor(f.db, f.stmts, "alice")
     const bob = ctxFor(f.db, f.stmts, "bob")
@@ -251,6 +305,29 @@ describe("tribe.fetch", () => {
       await handleToolCall(alice, "tribe.fetch", { with: "bob", limit: 3 }, makeOpts()),
     )
     expect(withBob.events.map((e) => e.content)).toEqual(["with-bob-2", "with-bob-3", "with-bob-4"])
+  })
+})
+
+describe("tribe.health", () => {
+  let f: ReturnType<typeof fixture>
+  beforeEach(() => {
+    f = fixture()
+  })
+
+  it("reports actionable unread DMs, not ambient direct-message backlog", async () => {
+    const chief = ctxFor(f.db, f.stmts, "@chief")
+    const agent = ctxFor(f.db, f.stmts, "@agent/4")
+
+    sendMessage(agent, "@chief", "ambient status to chief", "status", undefined, undefined, "direct")
+    sendMessage(chief, agent.getName(), "actionable query to agent", "query", undefined, undefined, "direct")
+
+    const chiefUnread = f.stmts.getUnreadDms.get({ $name: "@chief" }) as { count: number; oldest_ts: number }
+    expect(chiefUnread.count).toBe(0)
+
+    const health = parseTool<{ unread: Array<{ recipient: string; count: number }> }>(
+      await handleToolCall(chief, "tribe.health", {}, makeOpts()),
+    )
+    expect(health.unread).toEqual([{ recipient: agent.getName(), count: 1 }])
   })
 })
 
