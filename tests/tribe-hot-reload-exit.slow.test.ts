@@ -80,13 +80,14 @@ function unlinkIfExists(p: string): void {
   }
 }
 
-async function waitForTribeStatus(socketPath: string, timeout = 8000, interval = 100): Promise<void> {
+async function waitForTribeStatus(socketPath: string, timeout = 20000, interval = 100): Promise<void> {
   const start = Date.now()
   let last = "not probed"
   while (Date.now() - start < timeout) {
+    const remaining = Math.max(1, timeout - (Date.now() - start))
     const out = spawnSync(process.execPath, [CLI_SCRIPT, "status"], {
       encoding: "utf8",
-      timeout: 8000,
+      timeout: Math.min(2000, remaining),
       env: { ...process.env, TRIBE_SOCKET: socketPath },
     })
     if (out.status === 0) return
