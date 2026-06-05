@@ -806,6 +806,7 @@ export async function main(): Promise<string | undefined> {
         legs: legs != null && Number.isFinite(legs) ? legs : undefined,
         extraExclude: excludeArgs,
         challengerOverride: getArg("--challenger"),
+        dryRun: hasFlag("--dry-run"),
         buildContext: (topic: string) => buildContextFromFlags(topic, { includeBead: true }),
       })
       break

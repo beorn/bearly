@@ -305,6 +305,7 @@ export async function maybeAutoUpdatePricing(command: string | undefined): Promi
   // Respect an explicit opt-out — useful in CI, cost-sensitive batch jobs, or
   // any environment where surprise API spend is unwelcome.
   if (process.env.LLM_NO_AUTO_PRICING === "1") return
+  if (process.argv.slice(2).includes("--dry-run")) return
   if (!isPricingStale()) return
   const skip = ["update-pricing", "recover", "partials", "await"]
   if (!command || command === "--help" || command === "-h") return

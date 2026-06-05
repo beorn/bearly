@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest"
-import { makeTestEnv } from "./helpers"
+import { listLlmTmpFiles, makeTestEnv, runCli } from "./helpers"
 
 // Mock the `ai` package so generateText/streamText don't hit the network. One
 // call returns "ok" with token usage; count invocations via the mock.
@@ -118,5 +118,29 @@ describe("cli-single-fire", () => {
     // calls? Simpler: verify finalizeOutput wrote exactly one combined report.
     const jsonLines = env.stdout.filter((l) => l.trim().startsWith("{") && l.includes('"file"'))
     expect(jsonLines).toHaveLength(1)
+  }, 10_000)
+
+  it("pro --dry-run resolves the fleet without provider calls or output writes", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const beforeTmpFiles = listLlmTmpFiles()
+
+    const result = await runCli(["pro", "--dry-run", "-y", "ping"])
+
+    expect(result.error).toBeUndefined()
+    expect(result.exited).toBeUndefined()
+    expect(result.returned).toBe("pro")
+    expect(queryBackgroundMock).not.toHaveBeenCalled()
+    expect(generateTextMock).not.toHaveBeenCalled()
+    expect(streamTextMock).not.toHaveBeenCalled()
+    expect(env.stdout).toHaveLength(0)
+    expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
+    const stderr = env.stderr.join("\n")
+    expect(stderr).toMatch(/Dry run/)
+    expect(stderr).toMatch(/would query/i)
+    expect(stderr).toMatch(/GPT-5\.4 Pro|gpt-5\.4-pro/)
+    expect(stderr).toMatch(/Kimi K2\.6|moonshotai\/kimi-k2\.6/)
+    expect(stderr).toMatch(/Config/)
+    expect(stderr).toMatch(/Estimated cost/)
   }, 10_000)
 })

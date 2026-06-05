@@ -59,13 +59,33 @@ export async function runProDual(options: {
   /** Extra model IDs to exclude from split-test rotation for THIS call only.
    * Joins (union) with the persistent `exclude` list in dual-pro-config.json. */
   extraExclude?: readonly string[]
+  /** Resolve and print the dual-pro fleet without provider calls or writes. */
+  dryRun?: boolean
 }): Promise<void> {
-  const { question, modelOverride, imagePath, buildContext, outputFile, sessionTag, skipConfirm } = options
+  const {
+    question,
+    modelOverride,
+    imagePath,
+    buildContext,
+    outputFile,
+    sessionTag,
+    skipConfirm,
+    dryRun = false,
+  } = options
   const { finalizeOutput } = await import("../lib/format")
   const dualPro = await import("../lib/dual-pro")
 
   // Explicit --model override bypasses dual mode entirely.
   if (modelOverride) {
+    if (dryRun) {
+      const estimate = modelOverride.costTier === "very-high" ? "~$5-15" : "registry-priced single-model call"
+      console.error("[pro] Dry run - would query one model:")
+      console.error(`  • Model: ${modelOverride.displayName} (${modelOverride.modelId})`)
+      console.error("  • Config: explicit --model override")
+      console.error(`  • Estimated cost: ${estimate}`)
+      console.error("  • Side effects: none (no provider calls, output files, A/B logs, or rotation counters)")
+      return
+    }
     await askAndFinish({
       question,
       modelMode: "pro" as ModelMode,
@@ -83,7 +103,7 @@ export async function runProDual(options: {
 
   // Load fleet config (file + env overrides). Legacy env LLM_DUAL_PRO_B and
   // LLM_CHALLENGER_POOL still work — applyEnvOverrides preserves them.
-  const cfg = await dualPro.loadConfig()
+  const cfg = await dualPro.loadConfig({ writeOnMissing: !dryRun })
   const [mainstay0Id, mainstay1Id] = cfg.mainstays
   const mainstay0 = getModel(mainstay0Id)
   const mainstay1 = getModel(mainstay1Id)
@@ -115,11 +135,14 @@ export async function runProDual(options: {
   // always picked via correlated re-test (most-recent winner reproducer).
   let slotC: Model | undefined
   let slotD: Model | undefined
+  let slotCId: string | undefined
+  let slotDId: string | undefined
   let nextCounter = 0
   if (legCap >= 3) {
     const counter = await dualPro.readChallengerCounter()
     if (options.challengerOverride) {
-      slotC = getModel(options.challengerOverride)
+      slotCId = options.challengerOverride
+      slotC = getModel(slotCId)
       // --challenger always means "slot C only" — slot D is skipped to honor
       // the user's explicit pick. Pump the counter so the next non-override
       // call doesn't replay the same rotation slot.
@@ -148,15 +171,76 @@ export async function runProDual(options: {
           cfg.mainstays,
           effectiveExclude,
         )
-        slotC = getModel(picked.slotC ?? "")
-        slotD = getModel(picked.slotD ?? "")
+        slotCId = picked.slotC
+        slotDId = picked.slotD
+        slotC = getModel(slotCId ?? "")
+        slotD = getModel(slotDId ?? "")
         nextCounter = picked.nextCounter
       } else {
         const picked = dualPro.pickNextChallenger(filteredPool, cfg.splitTestStrategy, counter, effectiveExclude)
-        slotC = getModel(picked.modelId ?? "")
+        slotCId = picked.modelId
+        slotC = getModel(slotCId ?? "")
         nextCounter = picked.nextCounter
       }
     }
+  }
+
+  if (dryRun) {
+    type DryLeg = {
+      id: "a" | "b" | "c" | "d"
+      role: "mainstay" | "split-test"
+      modelId: string
+      model: Model | undefined
+    }
+    const dryLegs: DryLeg[] = [
+      { id: "a", role: "mainstay", modelId: mainstay0Id, model: mainstay0 },
+      { id: "b", role: "mainstay", modelId: mainstay1Id, model: mainstay1 },
+    ]
+    if (legCap >= 3 && slotCId) dryLegs.push({ id: "c", role: "split-test", modelId: slotCId, model: slotC })
+    if (legCap >= 4 && slotDId) dryLegs.push({ id: "d", role: "split-test", modelId: slotDId, model: slotD })
+    const knownLegs = dryLegs.filter((l): l is DryLeg & { model: Model } => Boolean(l.model))
+    const dryProLegCount = knownLegs.filter((l) => l.model.costTier === "very-high").length
+    const dryCost =
+      dryProLegCount >= 2
+        ? `~$${5 * dryProLegCount}-${15 * dryProLegCount}`
+        : dryProLegCount === 1
+          ? "~$5-15"
+          : "registry-priced (no Pro-tier legs)"
+    console.error("[dual-pro] Dry run - would query these models:")
+    for (const leg of dryLegs) {
+      const tag = leg.role === "split-test" ? " [split-test]" : ""
+      if (!leg.model) {
+        console.error(`  • ${leg.id.toUpperCase()} unknown model "${leg.modelId}"${tag}`)
+        continue
+      }
+      const availability = isProviderAvailable(leg.model.provider)
+        ? "provider key ready"
+        : `${getProviderEnvVar(leg.model.provider)} not set`
+      console.error(
+        `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability})`,
+      )
+    }
+    const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
+    console.error(`  • Config: ${cfgPath} (or built-in defaults if missing) + env overrides`)
+    console.error(`  • Estimated cost: ${dryCost} (${dryProLegCount} Pro-tier legs of ${dryLegs.length})`)
+    if (options.noJudge) {
+      console.error("  • Judge: disabled (--no-judge)")
+    } else {
+      const judgeModel = getModel(cfg.judge)
+      if (judgeModel) {
+        const availability = isProviderAvailable(judgeModel.provider)
+          ? "provider key ready"
+          : `${getProviderEnvVar(judgeModel.provider)} not set`
+        console.error(`  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability})`)
+      } else {
+        console.error(`  • Judge: unknown model "${cfg.judge}"`)
+      }
+    }
+    if (!m0Available || !m1Available) {
+      console.error("  • Real run note: unavailable mainstay would fall back to single-model pro mode.")
+    }
+    console.error("  • Side effects: none (no provider calls, output files, A/B logs, or rotation counters)")
+    return
   }
 
   // Fall back to single-model mode if we can't run both mainstays.
