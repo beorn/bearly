@@ -5,7 +5,7 @@
  * Covers km-bearly.tribe-dm-delivery-gap-for-mcp-only-clients Option G:
  *
  *   - registerSession persists delivery mode on the session row
- *   - getSessionDeliveryByName returns the right mode (broadcast pipeline
+ *   - getSessionDeliveryById returns the right mode (broadcast pipeline
  *     reads this to skip socket fanout for pull-mode recipients)
  *   - handleJoin updates delivery in place
  *   - default delivery is 'push' (back-compat invariant)
@@ -86,20 +86,20 @@ const eq = (name: string, got: unknown, want: unknown) => {
   eq("registerSession persists pull", row.delivery, "pull")
 }
 
-// 3. getSessionDeliveryByName routing lookup
+// 3. getSessionDeliveryById routing lookup
 {
   const push = makeCtx("push", "claude-r")
   const pull = makeCtx("pull", "codex-r")
-  const pushRow = push.stmts.getSessionDeliveryByName.get({ $name: "claude-r" }) as { delivery: string }
-  const pullRow = pull.stmts.getSessionDeliveryByName.get({ $name: "codex-r" }) as { delivery: string }
+  const pushRow = push.stmts.getSessionDeliveryById.get({ $id: push.sessionId }) as { delivery: string }
+  const pullRow = pull.stmts.getSessionDeliveryById.get({ $id: pull.sessionId }) as { delivery: string }
   eq("routing lookup push", pushRow.delivery, "push")
   eq("routing lookup pull", pullRow.delivery, "pull")
 }
 
-// 4. getSessionDeliveryByName returns null/undefined for unknown session
+// 4. getSessionDeliveryById returns null/undefined for unknown session
 {
   const { stmts } = makeCtx()
-  const row = stmts.getSessionDeliveryByName.get({ $name: "nonexistent" })
+  const row = stmts.getSessionDeliveryById.get({ $id: "nonexistent" })
   eq("routing lookup unknown is falsy", row == null, true)
 }
 
