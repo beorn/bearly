@@ -14,6 +14,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { createHash, randomUUID } from "node:crypto"
 import { TOOLS_LIST } from "./lib/tools-list.ts"
 import { resolveSocketPath, createReconnectingClient, TRIBE_PROTOCOL_VERSION, type DaemonClient } from "./lib/socket.ts"
+import { resolveJoinDelivery } from "./lib/delivery.ts"
 
 export type TribeHttpMcpServer = {
   readonly port: number
@@ -133,7 +134,20 @@ function createMcpServer(opts: {
   mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: toolArgs } = req.params
     const a = (toolArgs ?? {}) as Record<string, unknown>
-    const payload = name === "join" ? { delivery: opts.defaultDelivery, ...a, identity_token: opts.identityToken } : a
+    const payload =
+      name === "join"
+        ? {
+            ...a,
+            // The HTTP bridge has no Claude channel reader. The bridge host may
+            // choose its adapter delivery, but a model call cannot upgrade it.
+            delivery: resolveJoinDelivery({
+              adapterDelivery: opts.defaultDelivery,
+              requestedDelivery: a.delivery,
+              allowRequestedDelivery: false,
+            }),
+            identity_token: opts.identityToken,
+          }
+        : a
     try {
       const result = await opts.daemon.call(`tribe.${name}`, payload)
       if (name === "join" || name === "rename") {
