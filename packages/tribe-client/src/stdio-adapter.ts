@@ -33,6 +33,7 @@ import { createTimers } from "./timers.ts"
 import { defangModelInput } from "./lib/defang.ts"
 import { createConnectReplayGate, MAX_REPLAY_EVENTS, selectReplayEvents } from "./lib/replay-cap.ts"
 import { evaluateCwdPolicy, probeCwd, readCwdPolicyFromEnv, type CwdEvaluation } from "./lib/cwd-guardrail.ts"
+import { resolveJoinDelivery } from "./lib/delivery.ts"
 
 if (process.env.DEBUG_LOG) {
   process.env.LOG_FILE ??= process.env.DEBUG_LOG
@@ -429,8 +430,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             ...a,
             // Pull-only adapters have no channel reader. Do not let a model
             // self-report push and make later tribe.fetch calls skip directs.
-            delivery:
-              CLAUDE_CHANNEL_ENABLED && (a.delivery === "push" || a.delivery === "pull") ? a.delivery : DELIVERY,
+            delivery: resolveJoinDelivery({
+              adapterDelivery: DELIVERY,
+              requestedDelivery: a.delivery,
+              allowRequestedDelivery: CLAUDE_CHANNEL_ENABLED,
+            }),
             identity_token: identityToken,
           }
         : a
