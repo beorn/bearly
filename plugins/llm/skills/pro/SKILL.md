@@ -7,7 +7,7 @@ argument-hint: ["<question>" | review [<package>] [--deep]]
 
 Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for frontier disagreement and judged review (~$5-15).**
 
-Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-3-pro-preview, grok-4, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
+Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-2.5-pro, grok-4, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
 
 **Keywords**: pro, /pro, ask pro, second opinion, code review, dual-pro, multi-leg
 

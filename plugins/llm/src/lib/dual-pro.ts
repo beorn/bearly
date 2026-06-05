@@ -186,7 +186,7 @@ export function normalizeConfig(raw: DualProConfigInput): DualProConfig {
     // a fresh install boots cleanly.
     mainstays = ["gpt-5.4-pro", "moonshotai/kimi-k2.6"]
   }
-  const splitTestPool = raw.splitTestPool ?? raw.challengerPool ?? ["gemini-3-pro-preview", "grok-4", "claude-opus-4-6"]
+  const splitTestPool = raw.splitTestPool ?? raw.challengerPool ?? ["gemini-2.5-pro", "grok-4", "claude-opus-4-6"]
   const splitTestSlots = raw.splitTestSlots ?? 2
   const splitTestStrategy = raw.splitTestStrategy ?? raw.challengerStrategy ?? "round-robin-after-10-calls"
   return {
@@ -1282,7 +1282,7 @@ export function inferDefaultsFromRegistry(): DualProConfig {
     }
   }
   // Pad with diverse picks so a fresh install has a real split-test set.
-  for (const id of ["gemini-3-pro-preview", "grok-4", "claude-opus-4-6"]) {
+  for (const id of ["gemini-2.5-pro", "grok-4", "claude-opus-4-6"]) {
     if (!seen.has(id) && getModel(id)) {
       pool.push(id)
       seen.add(id)

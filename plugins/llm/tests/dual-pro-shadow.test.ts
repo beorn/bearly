@@ -49,8 +49,34 @@ import {
   type ScoreWeights,
   type BacktestPerQueryResult,
 } from "../src/lib/dual-pro"
+import { BEST_MODELS } from "../src/lib/types"
 
 const FLAT_WEIGHTS: ScoreWeights = { score: 1, cost: 0, time: 0, costThreshold: 0.1, qualityWarningThreshold: 5.0 }
+
+// ----------------------------------------------------------
+// Deprecated-model guard (19710): a model the providers have retired
+// (`gemini-3-pro-preview`) must never sit in a default pool, or every run
+// silently loses that leg. Keep this list in sync as providers deprecate.
+// ----------------------------------------------------------
+const DEPRECATED_MODEL_IDS = ["gemini-3-pro-preview"] as const
+
+describe("default pools contain no deprecated model (19710)", () => {
+  it("the dual-pro split-test (challenger) pool has no deprecated model", () => {
+    for (const dead of DEPRECATED_MODEL_IDS) {
+      expect(DEFAULT_CONFIG.splitTestPool, `splitTestPool: ${DEFAULT_CONFIG.splitTestPool.join(", ")}`).not.toContain(
+        dead,
+      )
+    }
+  })
+
+  it("no BEST_MODELS mode pool references a deprecated model", () => {
+    for (const [mode, pool] of Object.entries(BEST_MODELS)) {
+      for (const dead of DEPRECATED_MODEL_IDS) {
+        expect(pool, `BEST_MODELS.${mode}: ${pool.join(", ")}`).not.toContain(dead)
+      }
+    }
+  })
+})
 
 // ----------------------------------------------------------
 // (a) Leaderboard math
