@@ -257,6 +257,35 @@ describe("stdio adapter delivery modes", () => {
     expect(stdout.some((line) => line.method === "notifications/claude/channel")).toBe(false)
   })
 
+  it("pull delivery forces tribe.join to pull even when the model requests push", async () => {
+    const socketPath = join(tmpDir, "tribe.sock")
+    daemon = await spawnFakeDaemon(socketPath)
+    child = spawn(BUN_BIN, [ADAPTER, "--socket", socketPath, "--name", "@agent/test"], {
+      cwd: tmpDir,
+      env: {
+        ...process.env,
+        TRIBE_DELIVERY: "pull",
+        TRIBE_NO_AUTOSTART: "1",
+        DEBUG_LOG: join(tmpDir, "adapter.log"),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+
+    writeJson(child, initializePayload(1))
+    await waitForLine(child, (line) => line.id === 1)
+    writeJson(child, { jsonrpc: "2.0", method: "notifications/initialized", params: {} })
+    writeJson(child, toolsListPayload(2))
+    await waitForLine(child, (line) => line.id === 2)
+
+    writeJson(child, callToolPayload(3, "join", { name: "@agent/test", delivery: "push" }))
+    await waitForLine(child, (line) => line.id === 3)
+
+    const joinRequest = daemon.requests.find((msg) => msg.method === "tribe.join") as
+      | { params?: { delivery?: string } }
+      | undefined
+    expect(joinRequest?.params?.delivery).toBe("pull")
+  })
+
   it("push delivery registers pull and suppresses channel notifications until tribe.join", async () => {
     const socketPath = join(tmpDir, "tribe.sock")
     daemon = await spawnFakeDaemon(socketPath)
