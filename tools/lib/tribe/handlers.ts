@@ -751,22 +751,21 @@ function handleHealth(ctx: TribeContext, opts: HandlerOpts): ToolResult {
     }
   })
 
-  // Unread direct-message count per recipient — undelivered means the
-  // recipient's cursor (sessions.last_delivered_seq) hasn't reached the
-  // message's rowid yet. Broadcasts ('*') and event journal rows are
-  // excluded. If no session row exists for a recipient name (pre-register
-  // or retention has pruned it), all their directs count as unread.
+  // Actionable unread direct-message count per recipient. This intentionally
+  // mirrors getUnreadDms/chief-silent semantics: ambient notify/status/response
+  // DMs should not surface as stop-line backlog when pending(owner) is empty.
   const unread = ctx.db
     .prepare(`
-			SELECT m.recipient, COUNT(*) as count FROM messages m
-			WHERE m.recipient != '*'
-			AND m.kind = 'direct'
-			AND m.rowid > COALESCE(
-				(SELECT s.last_delivered_seq FROM sessions s WHERE s.name = m.recipient),
-				0
-			)
-			GROUP BY m.recipient
-		`)
+				SELECT m.recipient, COUNT(*) as count FROM messages m
+				WHERE m.recipient != '*'
+				AND m.kind = 'direct'
+				AND m.type IN ('request', 'query', 'verdict', 'assign')
+				AND m.rowid > COALESCE(
+					(SELECT s.last_inbox_pull_seq FROM sessions s WHERE s.name = m.recipient),
+					0
+				)
+				GROUP BY m.recipient
+			`)
     .all() as Array<{ recipient: string; count: number }>
 
   const stats = {
@@ -872,6 +871,15 @@ type FetchRow = {
   room_id: string | null
 }
 
+type SnapshotFilters = {
+  currentName: string
+  limit: number
+  since: number | null
+  withPeer: string | null
+  from: string | null
+  to: string | null
+}
+
 function sessionRoster(ctx: TribeContext): SessionRoster {
   return ctx.db.prepare("SELECT name, role FROM sessions").all() as Array<{ name: string; role: string | null }>
 }
@@ -880,6 +888,57 @@ function filterRowsByTrust(ctx: TribeContext, rows: FetchRow[]): FetchRow[] {
   if (rows.length === 0) return rows
   const roster = sessionRoster(ctx)
   return rows.filter((r) => senderMayUseRegisteredTrustTopic(r.topic, r.sender, roster))
+}
+
+function querySnapshotRows(ctx: TribeContext, filters: SnapshotFilters): FetchRow[] {
+  const conditions = ["kind != 'event'"]
+  const params: Record<string, number | string> = { $limit: filters.limit }
+
+  if (filters.since !== null) {
+    conditions.push("rowid > $since")
+    params.$since = filters.since
+  }
+  if (filters.withPeer !== null) {
+    conditions.push("((sender = $self AND recipient = $peer) OR (sender = $peer AND recipient = $self))")
+    params.$self = filters.currentName
+    params.$peer = filters.withPeer
+  }
+  if (filters.from !== null) {
+    conditions.push("sender = $from")
+    params.$from = filters.from
+  }
+  if (filters.to !== null) {
+    conditions.push("recipient = $to")
+    params.$to = filters.to
+  }
+
+  const order = filters.since !== null ? "ASC" : "DESC"
+  const rows = ctx.db
+    .prepare(`
+      SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
+      FROM messages
+      WHERE ${conditions.join("\n        AND ")}
+      ORDER BY rowid ${order}
+      LIMIT $limit
+    `)
+    .all(params) as FetchRow[]
+  return filters.since !== null ? rows : rows.reverse()
+}
+
+function rowMatchesSnapshotFilters(row: FetchRow, filters: Omit<SnapshotFilters, "limit">): boolean {
+  if (filters.since !== null && row.rowid <= filters.since) return false
+  if (
+    filters.withPeer !== null &&
+    !(
+      (row.sender === filters.currentName && row.recipient === filters.withPeer) ||
+      (row.sender === filters.withPeer && row.recipient === filters.currentName)
+    )
+  ) {
+    return false
+  }
+  if (filters.from !== null && row.sender !== filters.from) return false
+  if (filters.to !== null && row.recipient !== filters.to) return false
+  return true
 }
 
 function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
@@ -894,6 +953,12 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
   let rows: FetchRow[]
   let shouldAdvance = false
   let cursorBase = cursor?.last_inbox_pull_seq ?? 0
+  const since = typeof a.since === "number" ? a.since : null
+  if (since !== null) cursorBase = since
+  const withPeer = typeof a.with === "string" && a.with.length > 0 ? a.with : null
+  const from = typeof a.from === "string" && a.from.length > 0 ? a.from : null
+  const to = typeof a.to === "string" && a.to.length > 0 ? a.to : null
+  const snapshotFilters = { currentName, since, withPeer, from, to }
 
   const ids = normalizeStringArray(a.ids)
   if (a.ids !== undefined && ids === null) {
@@ -913,71 +978,13 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
       `)
       .all(...ids, limit) as FetchRow[]
     const byId = new Map(rows.map((r) => [r.id, r]))
-    rows = ids.map((id) => byId.get(id)).filter((r): r is FetchRow => !!r)
-  } else if (typeof a.with === "string" && a.with.length > 0) {
-    // Snapshot mode (with-filter): return NEWEST N matches, not OLDEST.
-    // `ORDER BY rowid DESC LIMIT N` picks the newest; reverse for display so
-    // callers still iterate oldest-to-newest (newest at the end). Without the
-    // reverse, the rows were the wrong N entirely — week-old events when fresh
-    // ones existed. See @km/all/silent-errors-enforcement violation #1.
-    rows = (
-      ctx.db
-        .prepare(`
-        SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
-        FROM messages
-        WHERE kind != 'event'
-          AND (
-            (sender = $self AND recipient = $peer)
-            OR (sender = $peer AND recipient = $self)
-          )
-        ORDER BY rowid DESC
-        LIMIT $limit
-      `)
-        .all({ $self: currentName, $peer: a.with, $limit: limit }) as FetchRow[]
-    ).reverse()
-  } else if (typeof a.from === "string" && a.from.length > 0) {
-    // Snapshot mode (from-filter): return NEWEST N matches, not OLDEST.
-    // See @km/all/silent-errors-enforcement violation #1 + repro
-    // 2026-05-25 00:10 (tribe.fetch({from:"@agent/0"}) returned week-old events).
-    rows = (
-      ctx.db
-        .prepare(`
-        SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
-        FROM messages
-        WHERE kind != 'event'
-          AND sender = $from
-        ORDER BY rowid DESC
-        LIMIT $limit
-      `)
-        .all({ $from: a.from, $limit: limit }) as FetchRow[]
-    ).reverse()
-  } else if (typeof a.to === "string" && a.to.length > 0) {
-    // Snapshot mode (to-filter): return NEWEST N matches, not OLDEST.
-    rows = (
-      ctx.db
-        .prepare(`
-        SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
-        FROM messages
-        WHERE kind != 'event'
-          AND recipient = $to
-        ORDER BY rowid DESC
-        LIMIT $limit
-      `)
-        .all({ $to: a.to, $limit: limit }) as FetchRow[]
-    ).reverse()
-  } else if (typeof a.since === "number") {
-    cursorBase = a.since
-    rows = ctx.db
-      .prepare(`
-        SELECT id, rowid, type, sender, recipient, content, bead_id, ref, ts, delivery, topic, room_id
-        FROM messages
-        WHERE rowid > $since
-          AND kind != 'event'
-        ORDER BY rowid ASC
-        LIMIT $limit
-      `)
-      .all({ $since: a.since, $limit: limit }) as FetchRow[]
-    shouldAdvance = a.advance === true
+    rows = ids
+      .map((id) => byId.get(id))
+      .filter((r): r is FetchRow => !!r)
+      .filter((r) => rowMatchesSnapshotFilters(r, snapshotFilters))
+  } else if (withPeer !== null || from !== null || to !== null || since !== null) {
+    rows = querySnapshotRows(ctx, { ...snapshotFilters, limit })
+    shouldAdvance = since !== null && a.advance === true
   } else {
     rows = ctx.stmts.getInboxRows.all({
       $since: cursorBase,
@@ -991,13 +998,14 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
   rows = filterRowsByTrust(ctx, visibleRows)
   const filtered = topics && topics.length > 0 ? rows.filter((r) => matchesGlob(topics, r.topic)) : rows
   const cursorRows = topics && topics.length > 0 ? visibleRows.filter((r) => matchesGlob(topics, r.topic)) : visibleRows
-  let outputCursor = filtered.at(-1)?.rowid ?? cursorBase
+  let outputCursor = Math.max(cursorBase, filtered.at(-1)?.rowid ?? cursorBase)
 
   if (cursorRows.length > 0 && shouldAdvance) {
     const last = cursorRows.at(-1)
     if (last) {
-      ctx.stmts.advanceInboxCursor.run({ $id: ctx.sessionId, $seq: last.rowid, $now: Date.now() })
-      outputCursor = last.rowid
+      const seq = Math.max(cursorBase, last.rowid)
+      ctx.stmts.advanceInboxCursor.run({ $id: ctx.sessionId, $seq: seq, $now: Date.now() })
+      outputCursor = seq
     }
   }
 

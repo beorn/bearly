@@ -222,7 +222,11 @@ export const TOOLS_LIST = [
           items: { type: "object", additionalProperties: true },
         },
         stale_beads: { type: "number", description: "Count of beads claimed but idle past threshold." },
-        unread: { type: "number", description: "Messages addressed to this session not yet drained." },
+        unread: {
+          type: "array",
+          description: "Actionable direct-message counts per recipient not yet drained.",
+          items: { type: "object", additionalProperties: true },
+        },
         reconciler: {
           type: "object",
           description:
