@@ -570,6 +570,20 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
       })
     }
 
+    // Dist-only workspace packages with no dist/ — slot not vitest-ready
+    for (const pkgDir of listWorkspacePackages(wt.path)) {
+      if (!needsDistBuild(pkgDir)) continue
+      const rel = relative(wt.path, pkgDir)
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "warn",
+        check: "dist-missing",
+        message: `${rel} has dist-only exports but no dist/ — targeted vitest cannot load it. Fix: cd ${pkgDir} && bun run build`,
+        details: { package: rel },
+      })
+    }
+
     if (isMain) continue
 
     // Branch divergence vs main
@@ -884,6 +898,11 @@ async function installDependencies(worktreePath: string): Promise<void> {
   // package.json, and for each workspace package whose root-level symlink
   // is missing, create it. Idempotent — existing symlinks are left alone.
   ensureWorkspaceSymlinks(worktreePath)
+
+  // Workspace packages with dist-only exports are unloadable until built —
+  // a fresh clone has no dist/, so the first targeted test run dies in
+  // module resolution. Build them now so the slot is usable immediately.
+  await buildMissingDistPackages(worktreePath)
 }
 
 /**
@@ -923,6 +942,58 @@ function listWorkspacePackages(rootPath: string): string[] {
     }
   }
   return out
+}
+
+/** Collect every string leaf of a package.json `exports` value. */
+function exportLeaves(exports: unknown): string[] {
+  if (typeof exports === "string") return [exports]
+  if (exports && typeof exports === "object") {
+    return Object.values(exports as Record<string, unknown>).flatMap(exportLeaves)
+  }
+  return []
+}
+
+/**
+ * A workspace package whose `exports` resolve ONLY into `./dist/` cannot be
+ * imported (by Vitest, Bun, or Node) until its build runs — unlike src-first
+ * packages whose exports point at `./src/*.ts`. A fresh worktree has no
+ * dist/, so targeted test runs fail in module resolution until someone
+ * repairs the slot by hand. True when exports are dist-only, a `build`
+ * script exists to produce dist/, and dist/ is currently absent.
+ */
+export function needsDistBuild(pkgDir: string): boolean {
+  const pkgPath = join(pkgDir, "package.json")
+  if (!existsSync(pkgPath)) return false
+  let pkg: { exports?: unknown; scripts?: Record<string, string> }
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as typeof pkg
+  } catch {
+    // silent-fallback-allow: malformed package.json disables optional dist-build repair only.
+    return false
+  }
+  const leaves = exportLeaves(pkg.exports)
+  if (leaves.length === 0 || !leaves.every((l) => l.startsWith("./dist/"))) return false
+  if (!pkg.scripts?.build) return false
+  return !existsSync(join(pkgDir, "dist"))
+}
+
+/**
+ * Build every workspace package `needsDistBuild` flags, so a fresh slot is
+ * immediately loadable by targeted Vitest runs. Loud on failure (never
+ * silent) but non-fatal — same contract as the bun-install step above.
+ */
+export async function buildMissingDistPackages(worktreePath: string): Promise<void> {
+  for (const pkgDir of listWorkspacePackages(worktreePath)) {
+    if (!needsDistBuild(pkgDir)) continue
+    const rel = relative(worktreePath, pkgDir)
+    info(`Building ${rel}/dist (dist-only exports, dist/ missing)...`)
+    const result = await safeExec($`cd ${pkgDir} && bun run build`)
+    if (result.exitCode !== 0) {
+      warn(`dist build FAILED for ${rel} — targeted vitest cannot load it. Repair: cd ${pkgDir} && bun run build`)
+    } else {
+      success(`Built ${rel}/dist`)
+    }
+  }
 }
 
 /**
