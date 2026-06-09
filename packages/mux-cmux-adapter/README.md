@@ -36,7 +36,7 @@ createCmuxBackend({ binary: "cmux-next" }) // override the binary
 | `listPanes`    | `list-panes --workspace W`                  |
 | `listSurfaces` | `list-pane-surfaces --workspace W --pane P` |
 | `sendText`     | `send --surface S -- T`                     |
-| `sendKey`      | `send-key --surface S K`                     |
+| `sendKey`      | `send-key --surface S K`                    |
 | `readScreen`   | `read-screen --surface S [--lines N]`       |
 | `renameTab`    | `rename-tab --pane P --title T`             |
 
