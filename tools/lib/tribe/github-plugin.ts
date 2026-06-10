@@ -196,6 +196,44 @@ async function fetchRepoEvents(repo: string, headers: Record<string, string>): P
   return ghFetch<GitHubEvent[]>(`/repos/${repo}/events?per_page=30`, headers)
 }
 
+export interface PollError {
+  repo: string
+  message: string
+}
+
+/**
+ * Summarize a batch of per-repo poll failures for the warn line.
+ *
+ * The old summary hardcoded "(network issue)" — asserting a cause the code
+ * never determined, while the real per-repo errors went to log.debug (which
+ * the daemon discards). A rate-limit burst and a DNS blip were
+ * indistinguishable from the tribe side (km 19779).
+ *
+ * Buckets: "rate-limited" (GitHub rate-limit body), "HTTP <status>" (any
+ * other API error response), "network/fetch" (no response at all). Reports
+ * bucket counts plus one sample message and the last-seen rate-limit budget
+ * so the cause is auditable from the broadcast alone.
+ */
+export function summarizePollErrors(errors: PollError[], remaining: number, total: number): string {
+  const classOf = (msg: string): string => {
+    if (/rate limit/i.test(msg)) return "rate-limited"
+    const status = msg.match(/GitHub API (\d{3})/)
+    if (status) return `HTTP ${status[1]}`
+    return "network/fetch"
+  }
+  const counts = new Map<string, number>()
+  for (const e of errors) {
+    const cls = classOf(e.message)
+    counts.set(cls, (counts.get(cls) ?? 0) + 1)
+  }
+  const buckets = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([cls, n]) => `${cls}×${n}`)
+    .join(", ")
+  const sample = errors[0]!
+  return `${buckets}; sample ${sample.repo}: ${sample.message.slice(0, 120)}; rate limit ${remaining}/${total}`
+}
+
 async function fetchWorkflowRuns(
   repo: string,
   headers: Record<string, string>,
@@ -382,7 +420,7 @@ export const githubPlugin: TribePluginApi = {
     // --- Event polling ---
 
     async function pollEvents(): Promise<void> {
-      const errors: string[] = []
+      const errors: PollError[] = []
       for (const r of repos) {
         try {
           const events = await fetchRepoEvents(r, githubHeaders)
@@ -445,20 +483,23 @@ export const githubPlugin: TribePluginApi = {
             saveCursor(cursorPath, cursorState)
           }
         } catch (err) {
-          errors.push(r)
-          log.debug?.(`error polling ${r}: ${err instanceof Error ? err.message : err}`)
+          const message = err instanceof Error ? err.message : String(err)
+          errors.push({ repo: r, message })
+          log.debug?.(`error polling ${r}: ${message}`)
         }
       }
       // Batch report: one summary instead of N individual errors
       if (errors.length > 0) {
-        log.warn?.(`github events: ${errors.length}/${repos.size} repos failed (network issue)`)
+        log.warn?.(
+          `github events: ${errors.length}/${repos.size} repos failed — ${summarizePollErrors(errors, rateLimitRemaining, rateLimitTotal)}`,
+        )
       }
     }
 
     // --- Workflow run polling ---
 
     async function pollWorkflows(): Promise<void> {
-      const errors: string[] = []
+      const errors: PollError[] = []
       for (const r of repos) {
         if (!eventTypes.includes("workflow_run")) continue
         try {
@@ -546,12 +587,15 @@ export const githubPlugin: TribePluginApi = {
             }
           }
         } catch (err) {
-          errors.push(r)
-          log.debug?.(`error polling workflows for ${r}: ${err instanceof Error ? err.message : err}`)
+          const message = err instanceof Error ? err.message : String(err)
+          errors.push({ repo: r, message })
+          log.debug?.(`error polling workflows for ${r}: ${message}`)
         }
       }
       if (errors.length > 0) {
-        log.warn?.(`github workflows: ${errors.length}/${repos.size} repos failed (network issue)`)
+        log.warn?.(
+          `github workflows: ${errors.length}/${repos.size} repos failed — ${summarizePollErrors(errors, rateLimitRemaining, rateLimitTotal)}`,
+        )
       }
     }
 

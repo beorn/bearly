@@ -17,6 +17,7 @@ import {
   saveCursor,
   getGitHubToken,
   detectRepoFromGit,
+  summarizePollErrors,
 } from "../tools/lib/tribe/github-plugin.ts"
 
 // ---------------------------------------------------------------------------
@@ -295,5 +296,64 @@ describe("detectRepoFromGit", () => {
     if (repo) {
       expect(repo).toMatch(/^[\w.-]+\/[\w.-]+$/)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// summarizePollErrors — batch poll-failure classification (km 19779)
+// ---------------------------------------------------------------------------
+
+describe("summarizePollErrors", () => {
+  test("classifies GitHub rate-limit errors as rate-limited", () => {
+    const out = summarizePollErrors(
+      [{ repo: "beorn/km", message: "GitHub API 403: API rate limit exceeded for user" }],
+      0,
+      5000,
+    )
+    expect(out).toContain("rate-limited×1")
+    expect(out).toContain("sample beorn/km:")
+    expect(out).toContain("rate limit 0/5000")
+  })
+
+  test("classifies non-rate-limit API errors by HTTP status", () => {
+    const out = summarizePollErrors(
+      [
+        { repo: "beorn/km", message: "GitHub API 502: bad gateway" },
+        { repo: "beorn/silvery", message: "GitHub API 502: bad gateway" },
+      ],
+      4990,
+      5000,
+    )
+    expect(out).toContain("HTTP 502×2")
+    expect(out).not.toContain("rate-limited")
+  })
+
+  test("classifies no-response failures as network/fetch", () => {
+    const out = summarizePollErrors(
+      [{ repo: "beorn/km", message: "Unable to connect. Is the computer able to access the url?" }],
+      4990,
+      5000,
+    )
+    expect(out).toContain("network/fetch×1")
+  })
+
+  test("mixed causes report buckets sorted by count, dominant first", () => {
+    const out = summarizePollErrors(
+      [
+        { repo: "a/a", message: "fetch failed" },
+        { repo: "b/b", message: "fetch failed" },
+        { repo: "c/c", message: "GitHub API 403: API rate limit exceeded" },
+      ],
+      120,
+      5000,
+    )
+    expect(out.indexOf("network/fetch×2")).toBeLessThan(out.indexOf("rate-limited×1"))
+  })
+
+  test("sample message is truncated to 120 chars", () => {
+    const long = "x".repeat(500)
+    const out = summarizePollErrors([{ repo: "a/a", message: long }], 5000, 5000)
+    expect(out).toContain("x".repeat(120))
+    expect(out).not.toContain("x".repeat(121))
   })
 })
