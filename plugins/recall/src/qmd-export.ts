@@ -25,7 +25,8 @@
  *   - Hook mode emits `hookSpecificOutput.additionalContext` JSON so Claude
  *     Code renders it as "Session Memory" inline on every prompt.
  */
-import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "node:fs"
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, openSync, readSync, closeSync } from "node:fs"
+import { StringDecoder } from "node:string_decoder"
 import { join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { spawnSync } from "node:child_process"
@@ -92,49 +93,86 @@ interface SessionMeta {
   jsonlPath: string
   startTime: Date
   project: string
-  messageCount: number
   firstUserText: string
 }
 
-function readSessionMeta(jsonlPath: string): SessionMeta | undefined {
-  let content: string
+/**
+ * Stream a jsonl file line-by-line through a bounded 256KB read buffer.
+ * Blank lines are skipped. The callback may return `false` to stop the
+ * scan early.
+ *
+ * This exists because `--catchup` runs on every Claude SessionStart over
+ * EVERY transcript under ~/.claude/projects (multi-GB corpora are normal).
+ * The previous whole-file `readFileSync` + `split("\n")` materialized ≥4x
+ * each file's bytes in JS heap inside a tight sync loop — RSS climbed to
+ * ~7GB and tripped Silver Code's ACP backend RSS watchdog, killing the
+ * session right after `--resume` (km bead 19775).
+ */
+export function forEachJsonlLine(path: string, onLine: (line: string) => boolean | undefined | void): void {
+  const fd = openSync(path, "r")
   try {
-    content = readFileSync(jsonlPath, "utf-8")
+    // StringDecoder carries partial multi-byte UTF-8 sequences across
+    // chunk boundaries — a bare toString() would emit U+FFFD there.
+    const decoder = new StringDecoder("utf8")
+    const chunk = Buffer.alloc(256 * 1024)
+    let carry = ""
+    for (;;) {
+      const n = readSync(fd, chunk, 0, chunk.length, null)
+      if (n <= 0) break
+      carry += decoder.write(chunk.subarray(0, n))
+      let nl: number
+      while ((nl = carry.indexOf("\n")) >= 0) {
+        const line = carry.slice(0, nl)
+        carry = carry.slice(nl + 1)
+        if (line.trim().length === 0) continue
+        if (onLine(line) === false) return
+      }
+    }
+    carry += decoder.end()
+    if (carry.trim().length > 0) onLine(carry)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+export function readSessionMeta(jsonlPath: string): SessionMeta | undefined {
+  let sessionId = ""
+  let startTime: Date | undefined
+  let project = ""
+  let firstUserText = ""
+
+  try {
+    forEachJsonlLine(jsonlPath, (line) => {
+      let entry: JsonlEntry
+      try {
+        entry = JSON.parse(line) as JsonlEntry
+      } catch {
+        return
+      }
+      if (!sessionId && entry.sessionId) sessionId = entry.sessionId
+      if (!startTime && entry.timestamp) startTime = new Date(entry.timestamp)
+      if (!project && entry.cwd) project = entry.cwd
+      if (!firstUserText && entry.type === "user") {
+        const txt = extractText(entry).trim()
+        // Skip synthetic system-generated user turns (tool results, reminders)
+        if (txt && !txt.startsWith("<") && !txt.startsWith("[")) {
+          firstUserText = txt.slice(0, 200)
+        }
+      }
+      // Every field is first-write-wins, so once all are known no later line
+      // can change the result — stop reading. (messageCount, the one field
+      // that needed a full scan, moved into renderSessionMarkdown, which only
+      // runs for sessions that actually get exported.)
+      if (sessionId && startTime && project && firstUserText) return false
+      return
+    })
   } catch {
     // silent-fallback-allow: unreadable transcript cannot contribute qmd session metadata.
     return undefined
   }
-  const lines = content.split("\n").filter((l) => l.trim().length > 0)
-  if (lines.length === 0) return undefined
-
-  let sessionId = ""
-  let startTime: Date | undefined
-  let project = ""
-  let messageCount = 0
-  let firstUserText = ""
-
-  for (const line of lines) {
-    let entry: JsonlEntry
-    try {
-      entry = JSON.parse(line) as JsonlEntry
-    } catch {
-      continue
-    }
-    if (!sessionId && entry.sessionId) sessionId = entry.sessionId
-    if (!startTime && entry.timestamp) startTime = new Date(entry.timestamp)
-    if (!project && entry.cwd) project = entry.cwd
-    if (entry.type === "user" || entry.type === "assistant") messageCount++
-    if (!firstUserText && entry.type === "user") {
-      const txt = extractText(entry).trim()
-      // Skip synthetic system-generated user turns (tool results, reminders)
-      if (txt && !txt.startsWith("<") && !txt.startsWith("[")) {
-        firstUserText = txt.slice(0, 200)
-      }
-    }
-  }
 
   if (!sessionId || !startTime) return undefined
-  return { sessionId, jsonlPath, startTime, project, messageCount, firstUserText }
+  return { sessionId, jsonlPath, startTime, project, firstUserText }
 }
 
 export function slugFromText(text: string): string {
@@ -158,13 +196,46 @@ function sessionFilename(meta: SessionMeta): string {
 
 // ── markdown rendering ───────────────────────────────────────────────────
 
-function renderSessionMarkdown(meta: SessionMeta): string {
+export function renderSessionMarkdown(meta: SessionMeta): string {
+  // One streamed pass: count user/assistant entries (frontmatter `messages:`)
+  // and collect the visible body. Counting happens BEFORE the contamination /
+  // empty-text / synthetic-turn filters — identical semantics to the legacy
+  // whole-file readSessionMeta counter.
+  let messageCount = 0
+  const body: string[] = []
+  forEachJsonlLine(meta.jsonlPath, (line) => {
+    let entry: JsonlEntry
+    try {
+      entry = JSON.parse(line) as JsonlEntry
+    } catch {
+      return
+    }
+    if (entry.type === "user" || entry.type === "assistant") messageCount++
+    if (entry.type !== "user" && entry.type !== "assistant" && entry.type !== "system") return
+    // Cross-session contamination guard. Claude Code occasionally writes
+    // entries from a different sessionId into a JSONL — when this happens,
+    // the rendered markdown ends up with fragments from unrelated sessions
+    // joined mid-conversation, which then gets indexed and surfaces as
+    // jumbled "memory" hits. Filter to entries that match the file's primary
+    // sessionId (set by the first-seen entry in readSessionMeta).
+    if (entry.sessionId && entry.sessionId !== meta.sessionId) return
+    const text = extractText(entry).trim()
+    if (!text) return
+    // Skip synthetic user turns that are just tool results wrapped as user
+    if (entry.type === "user" && (text.startsWith("<") || text.startsWith("["))) return
+    const heading = entry.type === "user" ? "## User" : entry.type === "assistant" ? "## Assistant" : "## System"
+    body.push(heading)
+    body.push("")
+    body.push(text)
+    body.push("")
+  })
+
   const out: string[] = []
   out.push("---")
   out.push(`session_id: ${meta.sessionId}`)
   out.push(`started: ${meta.startTime.toISOString()}`)
   out.push(`project: ${meta.project}`)
-  out.push(`messages: ${meta.messageCount}`)
+  out.push(`messages: ${messageCount}`)
   out.push(`source: ${meta.jsonlPath}`)
   out.push("---")
   out.push("")
@@ -174,34 +245,7 @@ function renderSessionMarkdown(meta: SessionMeta): string {
     out.push(`> ${meta.firstUserText.replace(/\n/g, " ").slice(0, 160)}`)
     out.push("")
   }
-
-  const content = readFileSync(meta.jsonlPath, "utf-8")
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue
-    let entry: JsonlEntry
-    try {
-      entry = JSON.parse(line) as JsonlEntry
-    } catch {
-      continue
-    }
-    if (entry.type !== "user" && entry.type !== "assistant" && entry.type !== "system") continue
-    // Cross-session contamination guard. Claude Code occasionally writes
-    // entries from a different sessionId into a JSONL — when this happens,
-    // the rendered markdown ends up with fragments from unrelated sessions
-    // joined mid-conversation, which then gets indexed and surfaces as
-    // jumbled "memory" hits. Filter to entries that match the file's primary
-    // sessionId (set by the first-seen entry in readSessionMeta).
-    if (entry.sessionId && entry.sessionId !== meta.sessionId) continue
-    const text = extractText(entry).trim()
-    if (!text) continue
-    // Skip synthetic user turns that are just tool results wrapped as user
-    if (entry.type === "user" && (text.startsWith("<") || text.startsWith("["))) continue
-    const heading = entry.type === "user" ? "## User" : entry.type === "assistant" ? "## Assistant" : "## System"
-    out.push(heading)
-    out.push("")
-    out.push(text)
-    out.push("")
-  }
+  out.push(...body)
   return out.join("\n")
 }
 
@@ -237,6 +281,17 @@ function findJsonlBySessionId(sessionId: string): string | undefined {
     if (existsSync(candidate)) return candidate
   }
   return undefined
+}
+
+/**
+ * Ask Bun's GC to run between large per-session renders. A backfill over many
+ * multi-hundred-MB transcripts in one tight sync loop never yields to the
+ * event loop, so freed render strings pile up and RSS ratchets toward the
+ * silvercode ACP backend RSS watchdog limit (19775). No-op outside bun.
+ */
+function gcNudge(): void {
+  const bun = (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun
+  if (typeof bun?.gc === "function") bun.gc(false)
 }
 
 function cmdExport(args: string[]): void {
@@ -326,15 +381,24 @@ function cmdExport(args: string[]): void {
       empty++
       continue
     }
-    const outPath = join(SESSIONS_DIR, sessionFilename(meta))
+    const filename = sessionFilename(meta)
+    const outPath = join(SESSIONS_DIR, filename)
+    const rejectedPath = join(REJECTED_DIR, filename)
     // Skip existing files unless one of:
     //   --force         explicit rewrite
     //   SessionEnd hook (--hook alone, without --catchup) — we want the
     //                   freshest snapshot of the session that just ended
     // --catchup mode always skips existing files; its whole job is to backfill
     // missing exports, not rewrite ones already on disk.
+    //
+    // A copy in chats-rejected/ counts as existing (19775): without this,
+    // every catchup re-rendered + re-quality-gated + re-rejected every
+    // quarantined session forever. Rejected sessions are dominated by
+    // stuck-loop monsters (hundreds of MB of jsonl each), so this was
+    // ~1.3GB of re-rendering on EVERY Claude SessionStart. `--force`
+    // still re-attempts a quarantined session deliberately.
     const sessionEndOverwrite = isHook && !isCatchup
-    if (existsSync(outPath) && !force && !sessionEndOverwrite) {
+    if ((existsSync(outPath) || existsSync(rejectedPath)) && !force && !sessionEndOverwrite) {
       skipped++
       continue
     }
@@ -347,7 +411,6 @@ function cmdExport(args: string[]): void {
       const verdict = analyzeQuality(md)
       if (verdict.rejectReason) {
         if (!existsSync(REJECTED_DIR)) mkdirSync(REJECTED_DIR, { recursive: true })
-        const rejectedPath = join(REJECTED_DIR, sessionFilename(meta))
         writeFileSync(rejectedPath, md, "utf-8")
         writeFileSync(
           `${rejectedPath}.reason`,
@@ -368,11 +431,13 @@ function cmdExport(args: string[]): void {
         if (!all && !isHook && !isCatchup) {
           process.stderr.write(`rejected (${verdict.rejectReason}): ${rejectedPath}\n`)
         }
+        gcNudge()
         continue
       }
       writeFileSync(outPath, md, "utf-8")
       written++
       if (!all && !isHook && !isCatchup) process.stderr.write(`exported: ${outPath}\n`)
+      gcNudge()
     } catch (err) {
       // Don't crash the catchup / hook over one bad session — log and move on.
       process.stderr.write(`recall export: failed to write ${outPath}: ${(err as Error).message}\n`)
