@@ -227,13 +227,13 @@ describe("snapshot reads (from / with / ids / since)", () => {
 // 3. Topic-filtered drain — the skip-forever edge
 // ---------------------------------------------------------------------------
 
-describe("topic-filtered drain", () => {
-  it("advances to the last MATCHING row — earlier non-matching rows are skipped forever [ACCIDENTAL]", async () => {
-    // Real shape: drain with topics:['git:*'] while a plain DM sits between
-    // two topic rows. The cursor lands on the last matching row, silently
-    // consuming the DM in the gap. Consumers today avoid this by never
-    // mixing topic drains with their primary inbox. Changing it (e.g.
-    // per-topic cursors) is a follow-up bead, not a drive-by.
+describe("topic-filtered reads (snapshots since 19785)", () => {
+  it("topic reads are VIEWS — nothing is consumed; the gap DM arrives on the next default drain [DELIBERATE since 19785]", async () => {
+    // Flipped from ACCIDENTAL (b35ae2e pin): the old behavior advanced the
+    // cursor to the last MATCHING row, silently consuming non-matching rows
+    // in the gap — message LOSS for any session mixing topic and default
+    // drains. New contract: filters = views; the default drain is the ONE
+    // cursor-advancing consumer (consistent with from:/with:/ids:).
     const alice = ctxFor("alice")
     const bob = ctxFor("bob")
     // topic isn't a tribe.send arg — set it directly to control the rows
@@ -246,19 +246,16 @@ describe("topic-filtered drain", () => {
     const topicRows = await fetchEvents(bob, { topics: ["git:*"] })
     expect(topicRows.map((e) => e.content)).toEqual(["t1", "t2"])
 
-    // The DM between t1 and t2 is gone from the default drain — pinned.
-    expect(await fetchEvents(bob)).toEqual([])
+    // Snapshot semantics: repeated topic reads see the same rows...
+    expect((await fetchEvents(bob, { topics: ["git:*"] })).map((e) => e.content)).toEqual(["t1", "t2"])
+    // ...and the default drain still delivers EVERYTHING, gap DM included.
+    expect((await fetchEvents(bob)).map((e) => e.content)).toEqual(["t1", "plain DM in the gap", "t2"])
   })
 
-  it("non-matching rows AFTER the last match survive for the next drain [DELIBERATE]", async () => {
-    const alice = ctxFor("alice")
+  it("topics + advance:true is rejected loudly — a lossy advance is never silent [DELIBERATE since 19785]", async () => {
     const bob = ctxFor("bob")
-    await call(alice, "tribe.send", { to: "bob", message: "t1" })
-    db.prepare("UPDATE messages SET topic = 'git:commit' WHERE content = 't1'").run()
-    await call(alice, "tribe.send", { to: "bob", message: "DM after last match" })
-
-    expect((await fetchEvents(bob, { topics: ["git:*"] })).map((e) => e.content)).toEqual(["t1"])
-    expect((await fetchEvents(bob)).map((e) => e.content)).toEqual(["DM after last match"])
+    const out = await call(bob, "tribe.fetch", { topics: ["git:*"], advance: true })
+    expect(out.error).toMatch(/snapshot/i)
   })
 })
 

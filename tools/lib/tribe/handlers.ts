@@ -954,6 +954,18 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
     return jsonResult({ error: "topics must be an array of strings." })
   }
 
+  // Topic-filtered reads are SNAPSHOTS (@km/tribe/19785): filters = views,
+  // the default drain is the ONE cursor-advancing consumer. The old behavior
+  // advanced past the last MATCHING row, silently consuming non-matching rows
+  // in the gap — message loss (NO SILENT ERRORS class). An explicit
+  // advance:true with topics would be that loss on request — reject it loudly.
+  const topicsAreSnapshot = topics !== null && topics.length > 0
+  if (topicsAreSnapshot && a.advance === true) {
+    return jsonResult({
+      error: "topics reads are snapshots and never advance the cursor — drain without topics to advance (19785).",
+    })
+  }
+
   const cursor = ctx.stmts.getInboxCursor.get({ $id: ctx.sessionId }) as { last_inbox_pull_seq: number } | null
   const currentName = ctx.getName()
   let rows: FetchRow[]
@@ -990,14 +1002,14 @@ function handleFetch(ctx: TribeContext, a: ToolArgs): ToolResult {
       .filter((r) => rowMatchesSnapshotFilters(r, snapshotFilters))
   } else if (withPeer !== null || from !== null || to !== null || since !== null) {
     rows = querySnapshotRows(ctx, { ...snapshotFilters, limit })
-    shouldAdvance = since !== null && a.advance === true
+    shouldAdvance = !topicsAreSnapshot && since !== null && a.advance === true
   } else {
     rows = ctx.stmts.getInboxRows.all({
       $since: cursorBase,
       $name: currentName,
       $limit: limit,
     }) as FetchRow[]
-    shouldAdvance = a.advance !== false
+    shouldAdvance = !topicsAreSnapshot && a.advance !== false
   }
 
   const visibleRows = rows
