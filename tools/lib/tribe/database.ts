@@ -875,6 +875,14 @@ export function createStatements(db: Database) {
     getInboxCursor: db.prepare("SELECT last_inbox_pull_seq FROM sessions WHERE id = $id"),
 
     /**
+     * Presence heartbeat (@km/tribe/19784): every authenticated tool call
+     * touches the caller's row, so `last_seen` on tribe.members means
+     * "process spoke to the daemon recently" — send-only and empty-drain
+     * sessions no longer read as idle (the 2026-06-10 false-idle class).
+     */
+    touchSessionPresence: db.prepare("UPDATE sessions SET updated_at = $now WHERE id = $id"),
+
+    /**
      * Name-claim replay: find the rowid of the oldest direct message addressed
      * to a name that no current or prior holder of that name has had delivered.
      *

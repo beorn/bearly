@@ -274,33 +274,27 @@ describe("presence (sessions.updated_at drives members' last_seen)", () => {
     expect(updatedAt(agent)).toBeGreaterThan(1000)
   })
 
-  it("tribe.send does NOT refresh the sender's updated_at [ACCIDENTAL]", async () => {
-    // The 2026-06-10 false-idle: a session actively SENDING reads as idle in
-    // members because send never touches its own row. The documented coping
-    // rule is the /up heartbeat (re-join). If send ever starts refreshing
-    // presence, this pin flips — make that an explicit decision (it would
-    // change what 'idle' means for every chief dashboard).
+  it("EVERY authenticated tool call refreshes the caller's updated_at [DELIBERATE since 19784]", async () => {
+    // Flipped from ACCIDENTAL (b35ae2e pins) by @km/tribe/19784: the
+    // 2026-06-10 false-idle class came from send + empty-drain NOT refreshing
+    // presence — an actively-working session read as idle on tribe.members.
+    // New contract: presence means "process spoke to the daemon recently";
+    // handleToolCall touches the caller's row before dispatch, so every
+    // call type refreshes, including empty drains and pure reads.
     ctxFor("bob")
     const alice = ctxFor("alice")
-    db.prepare("UPDATE sessions SET updated_at = 1000 WHERE id = ?").run(alice.sessionId)
-    await call(alice, "tribe.send", { to: "bob", message: "working!" })
-    expect(updatedAt(alice)).toBe(1000)
-  })
-
-  it("an EMPTY drain does not refresh updated_at; a non-empty drain does [ACCIDENTAL]", async () => {
-    // Second leg of the false-idle: polling an empty inbox looks identical
-    // to being gone. The asymmetry exists because only advanceInboxCursor
-    // (which fires on rows) touches updated_at.
-    const alice = ctxFor("alice")
-    const bob = ctxFor("bob")
-    db.prepare("UPDATE sessions SET updated_at = 1000 WHERE id = ?").run(bob.sessionId)
-
-    await fetchEvents(bob)
-    expect(updatedAt(bob)).toBe(1000) // empty drain: still "idle"
-
-    await call(alice, "tribe.send", { to: "bob", message: "wake" })
-    await fetchEvents(bob)
-    expect(updatedAt(bob)).toBeGreaterThan(1000) // non-empty drain refreshed
+    const callsToPin: Array<[string, Record<string, unknown>]> = [
+      ["tribe.send", { to: "bob", message: "working!" }],
+      ["tribe.fetch", {}], // EMPTY drain — the worst false-idle leg
+      ["tribe.pending", {}],
+      ["tribe.members", {}],
+      ["tribe.filter", {}],
+    ]
+    for (const [tool, args] of callsToPin) {
+      db.prepare("UPDATE sessions SET updated_at = 1000 WHERE id = ?").run(alice.sessionId)
+      await call(alice, tool, args)
+      expect(updatedAt(alice), `${tool} must refresh presence`).toBeGreaterThan(1000)
+    }
   })
 })
 

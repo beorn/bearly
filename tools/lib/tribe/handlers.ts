@@ -275,6 +275,12 @@ export function handleToolCall(
   a: ToolArgs,
   opts: HandlerOpts,
 ): ToolResult | Promise<ToolResult> {
+  // Presence heartbeat (@km/tribe/19784): ANY authenticated tool call
+  // refreshes the caller's last_seen — presence = "spoke to the daemon
+  // recently", not "joined or drained rows recently". Before this, send-only
+  // / empty-drain sessions read as idle (the 2026-06-10 false-idle class,
+  // pinned in tests/tribe-delivery-semantics.test.ts).
+  ctx.stmts.touchSessionPresence.run({ $id: ctx.sessionId, $now: Date.now() })
   switch (name) {
     case TRIBE_COORD_METHODS.send:
       return handleSend(ctx, a, opts)
