@@ -71,6 +71,18 @@ jobs:
         run: bun install
         working-directory: ${{ steps.parse.outputs.dir }}
 
+      # Pre-publish gate: the package's test suite must be green before build
+      # and publish. Packages without a test script skip with a visible notice
+      # (some primitives are tested only via their consumers).
+      - name: Test package
+        run: |
+          if jq -e '.scripts.test' package.json >/dev/null; then
+            bun run test
+          else
+            echo "::notice::no test script in ${{ steps.parse.outputs.dir }} — skipping pre-publish tests"
+          fi
+        working-directory: ${{ steps.parse.outputs.dir }}
+
       - name: Build package
         run: bun run build
         working-directory: ${{ steps.parse.outputs.dir }}
