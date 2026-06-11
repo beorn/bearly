@@ -298,9 +298,18 @@ describe("4-leg dispatch + pairwise judge — integration", () => {
     process.env.HOME = homeDir
     process.env.CLAUDE_PROJECT_DIR = "/tmp/four-leg-test"
     process.env.CLAUDE_SESSION_ID = "fourlegsess"
+    // Every provider the default splitTestPool can resolve MUST be pinned
+    // here — isProviderAvailable() reads these keys, and pool membership
+    // feeds slot C/D selection. Leaving one to the host environment makes
+    // the slot-D expectation host-dependent (claude-opus-4-6 silently drops
+    // from the pool on machines without ANTHROPIC_API_KEY, and a host
+    // XAI_API_KEY keeps grok-4 in). Found as an isolation failure on the
+    // clean pin 2026-06-10.
     process.env.OPENAI_API_KEY = "sk-test-openai"
     process.env.OPENROUTER_API_KEY = "sk-test-openrouter"
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-google"
+    process.env.ANTHROPIC_API_KEY = "sk-test-anthropic"
+    process.env.XAI_API_KEY = "test-xai"
     process.env.LLM_NO_HISTORY = "1"
     process.env.LLM_NO_AUTO_PRICING = "1"
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
