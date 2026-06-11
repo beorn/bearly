@@ -23,7 +23,9 @@ export default defineConfig({
     // Per-package setup files are loaded by file-pattern: plugins/llm/tests/setup.ts
     // polyfills Bun APIs for the @bearly/llm regression suite. Other subtrees
     // don't currently need one; add as each package needs it.
-    setupFiles: ["plugins/llm/tests/setup.ts"],
+    // tmpdir-redirect keeps fixtures/sockets out of the shared macOS tmpdir,
+    // whose degraded readdir wedges spawned bun subprocesses (see file header).
+    setupFiles: ["tests/setup/tmpdir-redirect.ts", "plugins/llm/tests/setup.ts"],
     server: { deps: { inline: ["zod"] } },
   },
 })
