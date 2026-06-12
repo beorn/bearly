@@ -5,8 +5,8 @@
  *   const listeners = await loadListeners({ projectPath: process.cwd() })
  *   const result = await runIngest(listeners, "session_start", "claude", { ... })
  *
- * The router is additive to the existing named-subcommand dispatcher
- * (`tools/lib/tribe/hook-dispatch.ts`). New listeners drop into
+ * The router is additive to the tribe hook dispatcher (now in
+ * github.com/beorn/tribe, packages/daemon). New listeners drop into
  * `~/.claude/hooks.d/*.ts` without touching core bearly code.
  */
 

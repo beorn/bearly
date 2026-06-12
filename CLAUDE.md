@@ -6,27 +6,21 @@ The root `bearly` package is `private: true` at version `0.0.0` — it is never 
 
 ## Packages
 
-### The tribe family (one cohesive product)
+### The tribe family — MOVED to github.com/beorn/tribe (June 2026)
 
-See the [domain model in `plugins/tribe/README.md`](plugins/tribe/README.md#domain-model) for the authoritative vocabulary (tribe, member, chief, agent, daemon, wire, lore, recall).
-
-| Package         | npm                                                | Role                                                                                                        | Entry Point      |
-| --------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------- |
-| `@bearly/tribe` | [npm](https://www.npmjs.com/package/@bearly/tribe) | Coordination + memory daemon + MCP tools + `tribe` CLI — wire, lore, plugins, watch TUI, all in one package | `plugins/tribe/` |
-
-`@bearly/lore` was folded into `@bearly/tribe` on 2026-04-17 — what was the standalone memory daemon (focus cache, LLM summarizer, per-session hook dedup) now ships inside tribe. The split existed briefly while the concepts stabilized; the unified package is the steady state.
-
-**0.10.0 — purge complete (2026-04-17)** — MCP tools live exclusively under the `tribe.*` namespace, env vars exclusively under `TRIBE_*`. All legacy `lore.*` / `tribe_*` / `LORE_*` names introduced for the 0.9.0 deprecation window have been removed — both tools/list emission and dispatch reject them. Daemon wire-protocol version 4. See `plugins/tribe/CHANGELOG.md` for the full purge scope.
-
-**Matrix-shape rooms (km-tribe.matrix-shape)** — schema migration v10 added `rooms` and `room_members` tables modelled on the Matrix protocol's room shape. **Single-default-room semantics today**: every project has one room (`room:<project_id>` or `room:default` for unscoped sessions), every connected session is a member, every message is implicitly in it. `tribe.members` JOINs `room_members` to source its session list, and a startup invariant (`backfillDefaultRoomMembers` in `with-runtime.ts`) guarantees every session row has its membership row. Sub-rooms (multi-room within a daemon) and federated rooms (cross-machine bridging) are tracked separately under the same bead — not in scope today.
+The tribe coordination + memory system (wire, daemon, recall engine,
+injection envelope, bg-recall, Claude Code plugin) lives in its own
+repository: `github.com/beorn/tribe` (km bead
+`@km/bearly/19273-tribe-repo-split`). Install:
+`/plugin marketplace add beorn/tribe` then `/plugin install tribe@tribe`.
+bearly keeps `plugins/llm`, which tribe consumes via its `TRIBE_LLM_DIR`
+seam — do not add tribe-specific surface area back into bearly.
 
 ### Supporting primitives
 
-| Package                | npm                                                       | Role                                                                                                                                                                                                                                                                      | Entry Point              |
-| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `@bearly/tribe-client` | [npm](https://www.npmjs.com/package/@bearly/tribe-client) | Tribe client library — Unix-socket IPC, JSON-RPC 2.0 wire protocol, line parser, daemon client, auto-start, reconnection, composition primitives, **and the `stdio` MCP adapter** (`@bearly/tribe-client/stdio`) the `@bearly/tribe` plugin invokes from its `server.ts`. | `packages/tribe-client/` |
-| `@bearly/recall`       | _private (0.1.0)_                                         | Session-history search primitive — FTS5 + LLM planner/agent. Used by tribe internally; also standalone.                                                                                                                                                                   | `plugins/recall/`        |
-| `@bearly/llm`          | _private (0.1.0)_                                         | Multi-provider LLM dispatch — cheap-model race, consensus, deep research                                                                                                                                                                                                  | `plugins/llm/`           |
+| Package       | npm               | Role                                                                     | Entry Point    |
+| ------------- | ----------------- | ------------------------------------------------------------------------ | -------------- |
+| `@bearly/llm` | _private (0.1.0)_ | Multi-provider LLM dispatch — cheap-model race, consensus, deep research | `plugins/llm/` |
 
 **0.3.0 — bundle removed (2026-05-25)** — `@bearly/tribe-client` now ships the stdio MCP adapter (formerly `tools/stdio-adapter.ts`); the `@bearly/tribe` plugin's `server.mjs` committed bundle is gone, replaced by a one-line `server.ts` that imports `@bearly/tribe-client/stdio`. Eliminates the recurring drift class (CI built-artifacts gate failures, monorepo-vs-standalone build mismatch, stale MCP schema). See `packages/tribe-client/CHANGELOG.md` 0.3.0 + `plugins/tribe/CHANGELOG.md` 0.15.0 + `@km/bearly/tribe-stdio-adapter-as-npm-dep`.
 

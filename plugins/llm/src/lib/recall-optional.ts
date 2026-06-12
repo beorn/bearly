@@ -8,9 +8,12 @@
  * layout — fine for sibling-plugin development, broken for npm consumers.
  *
  * Resolution order (best-effort):
- *   1. The published npm package: `@bearly/recall/history/db`
- *   2. The sibling-source path: `../../recall/src/history/db` — only resolves
- *      when running inside the bearly monorepo, kept for monorepo dev ergonomics.
+ *   1. The published npm package: `@bearly/recall/history/db` (never
+ *      published — kept for a potential future npm release of the engine)
+ *   2. The sibling-source path: `../../recall/src/history/db` — resolved
+ *      inside the pre-June-2026 bearly monorepo; the engine now lives in
+ *      github.com/beorn/tribe (packages/recall), so this path no longer
+ *      resolves here and the hint degrades away (by design).
  *
  * Returns `null` if neither resolves; callers MUST handle null and fall back
  * to skipping the hint entirely (no crash, no warning — recall is purely

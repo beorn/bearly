@@ -7,22 +7,10 @@
   },
   "plugins": [
     {
-      "name": "tribe",
-      "description": "Cross-session coordination — discover, message, and coordinate work across multiple Claude Code sessions",
-      "version": "0.15.1",
-      "source": "./plugins/tribe"
-    },
-    {
       "name": "llm",
       "description": "Multi-LLM research — deep research, second opinions, and multi-model debate via GPT, Gemini, Grok, and Perplexity",
       "version": "0.1.0",
       "source": "./plugins/llm"
-    },
-    {
-      "name": "recall",
-      "description": "Session history search — FTS5-indexed search across past Claude Code sessions with LLM synthesis and file recovery",
-      "version": "0.1.0",
-      "source": "./plugins/recall"
     },
     {
       "name": "batch-refactor",
