@@ -1,6 +1,12 @@
 {
   "modules": ["release", "format-check", "oxfmt"],
   "vars": { "bunVersion": "1.3.13" },
+  "tiers": {
+    "retired": {
+      "packages/bounded-queue": "retired at bearly 1bff30d after consumer audit found zero imports, internal use, hooks, scripts, or plugin registry consumers",
+      "plugins/shared-mcp": "retired at bearly 1bff30d after consumer audit found zero imports, internal use, hooks, scripts, or plugin registry consumers"
+    }
+  },
   "overrides": {
     "release": "per-package tag publishing (<pkg>-v<version>) from private workspace root — generic single-publish template doesn't apply"
   }
