@@ -196,7 +196,7 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     const { exec, calls } = recordingExec()
     const surfaces = await createCmuxBackend({ exec }).listSurfaces("w", "cpane-1")
     expect(calls[0]).toEqual(["list-pane-surfaces", "--workspace", "w", "--pane", "cpane-1"])
-    expect(surfaces).toEqual([{ id: "csurf-1", paneId: "cpane-1" }])
+    expect(surfaces).toEqual([{ id: "csurf-1", paneId: "cpane-1", workspace: "w" }])
   })
 
   test("listSurfaces parses REAL cmux titled output: surface:<id> + @owner", async () => {
@@ -206,8 +206,8 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     const exec: CmuxExec = async () => ok("* surface:145  @chief  [selected]\n  surface:30  @agent/4\n")
     const surfaces = await createCmuxBackend({ exec }).listSurfaces("workspace:2", "pane:107")
     expect(surfaces).toEqual([
-      { id: "surface:145", paneId: "pane:107", owner: "@chief" },
-      { id: "surface:30", paneId: "pane:107", owner: "@agent/4" },
+      { id: "surface:145", paneId: "pane:107", workspace: "workspace:2", owner: "@chief" },
+      { id: "surface:30", paneId: "pane:107", workspace: "workspace:2", owner: "@agent/4" },
     ])
   })
 
@@ -215,6 +215,16 @@ describe("cmux adapter — argv translation (how the adapter speaks cmux)", () =
     const { exec, calls } = recordingExec()
     const text = await createCmuxBackend({ exec }).readScreen({ id: "csurf-1", paneId: "cpane-1" }, { lines: 20 })
     expect(calls[0]).toEqual(["read-screen", "--surface", "csurf-1", "--lines", "20"])
+    expect(text).toBe("screen text")
+  })
+
+  test("readScreen includes --workspace when the surface ref carries workspace placement", async () => {
+    const { exec, calls } = recordingExec()
+    const text = await createCmuxBackend({ exec }).readScreen(
+      { id: "csurf-1", paneId: "cpane-1", workspace: "workspace:2" },
+      { lines: 20 },
+    )
+    expect(calls[0]).toEqual(["read-screen", "--workspace", "workspace:2", "--surface", "csurf-1", "--lines", "20"])
     expect(text).toBe("screen text")
   })
 

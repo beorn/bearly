@@ -99,14 +99,14 @@ const paneIdLines = (stdout: string): string[] => {
  * Strip ANSI, extract the token (bare-line fallback for simple/fake backends),
  * and the leading `@owner` when present. (km 17273 / 19506)
  */
-const surfaceRefLines = (stdout: string, paneId: string): SurfaceRef[] => {
+const surfaceRefLines = (stdout: string, workspace: string, paneId: string): SurfaceRef[] => {
   const refs: SurfaceRef[] = []
   for (const raw of stdout.split("\n")) {
     const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim()
     if (line.length === 0) continue
     const id = /(surface:\S+)/.exec(line)?.[1] ?? line
     const owner = /(@\S+)/.exec(line)?.[1]
-    refs.push(owner ? { id, paneId, owner } : { id, paneId })
+    refs.push(owner ? { id, paneId, workspace, owner } : { id, paneId, workspace })
   }
   return refs
 }
@@ -166,7 +166,7 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
         kind: "pane",
         id: paneId,
       })
-      return surfaceRefLines(out, paneId)
+      return surfaceRefLines(out, workspace, paneId)
     },
 
     async sendText(surface: SurfaceRef, text: string): Promise<void> {
@@ -181,7 +181,9 @@ export function createCmuxBackend(opts: CmuxBackendOptions = {}): MuxBackend {
     },
 
     async readScreen(surface: SurfaceRef, ro?: ReadScreenOptions): Promise<string> {
-      const args = ["read-screen", "--surface", surface.id]
+      const args = ["read-screen"]
+      if (surface.workspace !== undefined) args.push("--workspace", surface.workspace)
+      args.push("--surface", surface.id)
       if (ro?.lines !== undefined) args.push("--lines", String(ro.lines))
       return run(args, { kind: "surface", id: surface.id })
     },

@@ -46,6 +46,12 @@ export interface SurfaceRef {
   readonly id: string
   readonly paneId: string
   /**
+   * Workspace containing this surface when the backend can report it.
+   * cmux requires this for reliable cross-workspace `read-screen` /
+   * send-key addressing; omitting it preserves the global-surface fallback.
+   */
+  readonly workspace?: string
+  /**
    * Optional owner/title the backend reports for the surface, when its listing
    * carries one. cmux's `list-pane-surfaces` titles a surface with its tenant —
    * e.g. `@chief` / `@agent/5` in `* surface:145  @chief  [selected]` — which
