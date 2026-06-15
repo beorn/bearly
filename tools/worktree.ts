@@ -35,7 +35,7 @@
  * orphans (which can happen on interrupted removes or older git versions).
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync } from "fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "fs"
 import { join, dirname, basename, relative } from "path"
 import { $ } from "bun"
 
@@ -584,6 +584,48 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
       })
     }
 
+    // Vendor-resolution readiness (@km/infra/19945) — only for worktrees that
+    // are SUPPOSED to run the workspace: main + canonical pool slots
+    // (<gitRoot>-wtN, where agents run focused vitest; wt5 was the plateau).
+    // Non-canonical worktrees (chief's `--fs-only` integration worktrees,
+    // ad-hoc clones) deliberately skip submodule init / install, so their
+    // submodule + node_modules state is not a readiness defect — flagging it
+    // is noise (they are already surfaced via slot-location-drift).
+    if (isMain || isCanonicalSlotPath(wt.path, gitRoot)) {
+      // Uninitialized submodules — the ROOT CAUSE of the wt5 plateau. An empty
+      // vendor/<pkg> cannot resolve through node_modules and bare imports fail
+      // before code runs. Read-only.
+      for (const sub of await uninitializedSubmodules(wt.path)) {
+        findings.push({
+          worktree: wtName,
+          branch: wt.branch,
+          severity: "error",
+          check: "submodule-uninitialized",
+          message:
+            `submodule ${sub} is not initialized — its workspace package cannot resolve through node_modules ` +
+            `and bare imports fail before code runs. Fix: cd ${wt.path} && git submodule update --init --recursive ${sub}`,
+          details: { submodule: sub },
+        })
+      }
+
+      // Vendor/workspace packages whose node_modules/<name> symlink is PRESENT
+      // but does not resolve (dangling / empty target) — a bare `import
+      // "<name>"` dies before code runs. Read-only check.
+      for (const u of unresolvedWorkspaceSymlinks(wt.path)) {
+        findings.push({
+          worktree: wtName,
+          branch: wt.branch,
+          severity: "warn",
+          check: "workspace-symlink-unresolved",
+          message:
+            `${u.name} → node_modules/${u.name} does not resolve (${u.reason}) — a bare import of ${u.name} ` +
+            `fails before code runs (targeted vitest cannot load it). ` +
+            `Fix: cd ${wt.path} && git submodule update --init --recursive && bun install`,
+          details: { package: u.packageDir, nodeModulesPath: u.nodeModulesPath, reason: u.reason },
+        })
+      }
+    }
+
     if (isMain) continue
 
     // Branch divergence vs main
@@ -1049,6 +1091,127 @@ function ensureWorkspaceSymlinks(rootPath: string): void {
     }
   }
   if (linked > 0) info(`Ensured ${linked} workspace symlink(s) in node_modules`)
+}
+
+/** Why a workspace package's `node_modules/<name>` entry fails to resolve. */
+export type UnresolvedSymlinkReason = "missing" | "dangling" | "no-manifest"
+
+export interface UnresolvedWorkspaceSymlink {
+  /** package.json `name` of the workspace package. */
+  name: string
+  /** Workspace package directory, relative to the worktree root. */
+  packageDir: string
+  /** Expected `node_modules` entry, relative to the worktree root. */
+  nodeModulesPath: string
+  reason: UnresolvedSymlinkReason
+}
+
+/**
+ * Classify a single expected `node_modules/<name>` entry. Null = resolves
+ * (the entry exists, follows to a directory, and that directory has a
+ * package.json). Otherwise the reason it does not resolve.
+ *
+ *   "missing"     no entry at all (symlink absent)
+ *   "dangling"    a symlink whose target does not exist
+ *   "no-manifest" an entry resolves but has no package.json — the uninitialized
+ *                 submodule case (the symlink points at an EMPTY vendor/<pkg>
+ *                 dir because `git submodule update --init` has not run)
+ */
+export function classifyWorkspaceSymlink(linkPath: string): UnresolvedSymlinkReason | null {
+  // lstat does NOT follow symlinks: it answers "is there an entry here at all?"
+  try {
+    lstatSync(linkPath)
+  } catch {
+    return "missing"
+  }
+  // stat DOES follow symlinks: a throw means the symlink target is absent.
+  let resolved: ReturnType<typeof statSync>
+  try {
+    resolved = statSync(linkPath)
+  } catch {
+    return "dangling"
+  }
+  if (!resolved.isDirectory()) return "no-manifest"
+  // A bare `import "<name>"` resolves through the target's package.json; an
+  // empty (uninitialized submodule) target dir has none → import fails.
+  return existsSync(join(linkPath, "package.json")) ? null : "no-manifest"
+}
+
+/**
+ * Workspace packages whose `node_modules/<name>` symlink is PRESENT but does
+ * NOT resolve to a directory with a package.json — so a bare `import "<name>"`
+ * throws before any code runs. This is the wt5 plateau (2026-06-15):
+ * `vendor/mdspec` was uninitialized after a frozen install ran before `git
+ * submodule update --init`, so `node_modules/mdspec` pointed at an empty
+ * submodule dir and focused Vitest died in module resolution.
+ * `ensureWorkspaceSymlinks` deliberately leaves a broken-but-present symlink
+ * alone, and the audit never verified resolution — this read-only verifier
+ * closes that gap. Never repairs.
+ *
+ * Scope is deliberately PRESENT-BUT-BROKEN, not "missing". A wholly-absent root
+ * entry is NOT a reliable bug signal: bun only hoists a workspace package to
+ * the root `node_modules` when something resolves it there, so a healthy
+ * worktree legitimately lacks root entries for nested-resolved or unimported
+ * packages (verified 2026-06-15: 9 such packages in a healthy km slot, several
+ * of them declared dependencies, while the actually-broken `mdspec` is not a
+ * declared dependency at all). A symlink that EXISTS but dangles was wired up
+ * and then broke — that is unambiguous and false-positive-free.
+ */
+export function unresolvedWorkspaceSymlinks(rootPath: string): UnresolvedWorkspaceSymlink[] {
+  const out: UnresolvedWorkspaceSymlink[] = []
+  const nodeModules = join(rootPath, "node_modules")
+  for (const pkgDir of listWorkspacePackages(rootPath)) {
+    let name: string | undefined
+    try {
+      name = (JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as { name?: string }).name
+    } catch {
+      // silent-fallback-allow: malformed package.json is the dist-build check's
+      // concern; an unreadable manifest cannot be name-resolved here, so skip it.
+      continue
+    }
+    if (!name) continue
+    const linkPath = join(nodeModules, name)
+    const reason = classifyWorkspaceSymlink(linkPath)
+    // "missing" is excluded — see the doc comment (not a reliable bug signal).
+    if (reason === "dangling" || reason === "no-manifest") {
+      out.push({
+        name,
+        packageDir: relative(rootPath, pkgDir),
+        nodeModulesPath: relative(rootPath, linkPath),
+        reason,
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * Submodule paths reported as UNINITIALIZED by `git submodule status` (a `-`
+ * prefix). An uninitialized vendor submodule is the ROOT CAUSE of the wt5
+ * plateau: until `git submodule update --init` runs, `vendor/<pkg>` is empty,
+ * so neither node_modules resolution nor a bare `import "<pkg>"` can work and
+ * focused Vitest dies before any code runs. Pure parser — fixture-testable.
+ *
+ * `git submodule status` line shape (one of):
+ *   ` <sha> vendor/foo (v1.2.3)`   initialized, at the recorded commit
+ *   `+<sha> vendor/foo (v1.2.3-2)` initialized, at a DIFFERENT commit
+ *   `-<sha> vendor/foo`            NOT initialized  ← the one we flag
+ *   `U<sha> vendor/foo`            merge conflicts in the submodule
+ */
+export function parseUninitializedSubmodules(statusOutput: string): string[] {
+  const out: string[] = []
+  for (const raw of statusOutput.split("\n")) {
+    if (raw[0] !== "-") continue
+    // "-<sha> <path>" — drop the leading marker, then path is the 2nd field.
+    const path = raw.slice(1).trim().split(/\s+/)[1]
+    if (path) out.push(path)
+  }
+  return out
+}
+
+async function uninitializedSubmodules(wtPath: string): Promise<string[]> {
+  const r = await safeExec($`cd ${wtPath} && git submodule status 2>/dev/null`)
+  return parseUninitializedSubmodules(r.stdout)
 }
 
 async function allowDirenv(worktreePath: string): Promise<void> {
