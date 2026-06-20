@@ -73,6 +73,8 @@ import {
   applyFileRenames,
   saveFileEditset,
   loadFileEditset,
+  findFilesToMovePrefix,
+  createDirectoryMoveProposal,
 } from "./lib/core/file-ops"
 
 const args = process.argv.slice(2)
@@ -259,6 +261,15 @@ COMMANDS
     --glob <glob>                         File filter (default: **/*.{ts,tsx})
     --check-conflicts                     Check for conflicts only
     --output <file>                       Editset file (default: file-editset.json)
+
+  dir.move                                Move a directory/prefix + update all references
+    --old <prefix> --new <prefix>         Required: source and target path prefix
+    --glob <glob>                         File-type filter (default: **/*)
+    --exclude-glob <glob>                 Skip rewriting links inside matching files (repeatable;
+                                          bead-safety, e.g. '@km/**/*.md')
+    --check-conflicts                     Check for conflicts only
+    --output <file>                       Editset file (default: dir-move-editset.json)
+    (apply with file.apply <file>)
 
   pattern.replace                         Text/structural search-replace
     --pattern <pattern> --replace <text>  Required: pattern and replacement
@@ -967,6 +978,64 @@ Example (v0.7 namespace reorg):
       break
     }
 
+    case "dir.move": {
+      const oldPrefix = getArg("--old")
+      const newPrefix = getArg("--new")
+      const glob = getArg("--glob") || "**/*"
+      const excludeGlobs = getArgAll("--exclude-glob")
+      const outputFile = getArg("--output") || "dir-move-editset.json"
+      const checkConflictsFlag = hasFlag("--check-conflicts")
+
+      if (!oldPrefix || !newPrefix) {
+        error(
+          `Usage: dir.move --old <prefix> --new <prefix> [--glob <glob>] [--exclude-glob <glob>]... [--output <file>] [--check-conflicts]
+
+Moves every file under <old> prefix to <new> prefix and rewrites all references
+(imports, wikilinks, package.json, tsconfig), deduped. --exclude-glob skips
+rewriting links INSIDE matching files (bead-safety, e.g. '@km/**/*.md').
+
+Apply the resulting editset with: file.apply <output> [--dry-run]
+
+Example (v0.7 reorg):
+  dir.move --old apps/silvercode --new apps/ag --exclude-glob '@km/**/*.md' \\
+    --output /tmp/move.json
+  file.apply /tmp/move.json --dry-run`,
+        )
+      }
+
+      const fileOps = await findFilesToMovePrefix(oldPrefix, newPrefix, glob)
+      if (fileOps.length === 0) {
+        output({ message: "No files found under prefix", oldPrefix, glob })
+        break
+      }
+
+      if (checkConflictsFlag) {
+        const report = checkFileConflicts(fileOps)
+        output({
+          conflicts: report.conflicts,
+          safe: report.safe.map((op) => ({ oldPath: op.oldPath, newPath: op.newPath })),
+          conflictCount: report.conflicts.length,
+          safeCount: report.safe.length,
+        })
+        break
+      }
+
+      const editset = await createDirectoryMoveProposal(oldPrefix, newPrefix, glob, process.cwd(), {
+        excludeGlobs: excludeGlobs.length > 0 ? excludeGlobs : undefined,
+      })
+      saveFileEditset(editset, outputFile)
+      output({
+        editsetPath: outputFile,
+        oldPrefix,
+        newPrefix,
+        fileCount: editset.fileOps.length,
+        importEditCount: editset.importEdits.length,
+        excludeGlobs,
+        files: editset.fileOps.map((op) => ({ oldPath: op.oldPath, newPath: op.newPath })),
+      })
+      break
+    }
+
     case "file.verify": {
       const inputFile = args[1]
 
@@ -1001,6 +1070,7 @@ Example (v0.7 namespace reorg):
 
       output({
         applied: result.applied,
+        linkEditsApplied: result.linkEditsApplied,
         skipped: result.skipped,
         errors: result.errors,
         dryRun,

@@ -455,8 +455,8 @@ export async function createFileRenameProposal(
     tsconfigEdits.push(...findTsConfigEdits(op.oldPath, op.newPath, cwd))
   }
 
-  // Combine all link updates
-  const allLinkEdits = [...importEdits, ...wikilinkEdits, ...packageJsonEdits, ...tsconfigEdits]
+  // Combine all link updates, removing duplicates / conflicting overlaps.
+  const allLinkEdits = dedupeEdits([...importEdits, ...wikilinkEdits, ...packageJsonEdits, ...tsconfigEdits])
 
   return {
     id: `file-rename-${pattern}-to-${replacement}-${Date.now()}`,
@@ -467,6 +467,144 @@ export async function createFileRenameProposal(
     importEdits: allLinkEdits,
     createdAt: new Date().toISOString(),
   }
+}
+
+/**
+ * Remove duplicate and conflicting edits from a combined edit list.
+ *
+ * Directory moves gather link edits from several backends (imports, wikilinks, package.json,
+ * tsconfig) and per-fileOp loops, so the same edit can be produced more than once. This:
+ *   - drops exact duplicates (same file/offset/length/replacement)
+ *   - drops any edit that overlaps an already-kept edit in the same file (would corrupt on apply),
+ *     keeping the first by ascending offset and warning
+ * Returns edits sorted by file then offset DESCENDING (the safe application order).
+ */
+export function dedupeEdits(edits: Edit[]): Edit[] {
+  const seen = new Set<string>()
+  const kept: Edit[] = []
+  const lastEndByFile = new Map<string, number>()
+
+  // Sort by file, then offset ascending, then length ascending — deterministic, overlap-friendly.
+  const sorted = [...edits].sort((a, b) => {
+    if (a.file !== b.file) return a.file.localeCompare(b.file)
+    if (a.offset !== b.offset) return a.offset - b.offset
+    return a.length - b.length
+  })
+
+  for (const e of sorted) {
+    const key = `${e.file}|${e.offset}|${e.length}|${e.replacement}`
+    if (seen.has(key)) continue // exact duplicate
+
+    const lastEnd = lastEndByFile.get(e.file)
+    if (lastEnd !== undefined && e.offset < lastEnd) {
+      console.error(`[file-ops] dropping overlapping edit in ${e.file} at offset ${e.offset} (conflicts with a prior edit)`)
+      continue
+    }
+
+    seen.add(key)
+    kept.push(e)
+    lastEndByFile.set(e.file, e.offset + e.length)
+  }
+
+  return kept.sort((a, b) => {
+    if (a.file !== b.file) return a.file.localeCompare(b.file)
+    return b.offset - a.offset
+  })
+}
+
+/**
+ * Find every file under `oldPrefix` and map it to `newPrefix`, producing "move" FileOps.
+ *
+ * Unlike findFilesToRename (which pattern-matches basenames), this moves a whole directory/prefix:
+ * `apps/silvercode/x/y.ts` → `apps/ag/x/y.ts` when oldPrefix=apps/silvercode, newPrefix=apps/ag.
+ * `glob` restricts by file type (default: all files).
+ */
+export async function findFilesToMovePrefix(
+  oldPrefix: string,
+  newPrefix: string,
+  glob: string = "**/*",
+  cwd: string = process.cwd(),
+): Promise<FileOp[]> {
+  const fileOps: FileOp[] = []
+  const normOld = oldPrefix.replace(/\/+$/, "")
+  const normNew = newPrefix.replace(/\/+$/, "")
+  const globber = new Glob(glob)
+
+  for await (const file of globber.scan({ cwd, onlyFiles: true })) {
+    // Only files at or under the old prefix.
+    if (file !== normOld && !file.startsWith(normOld + "/")) continue
+
+    const rest = file.slice(normOld.length) // leading "/" preserved, or "" for an exact-file prefix
+    const newPath = normNew + rest
+    if (newPath === file) continue
+
+    const oldAbs = path.join(cwd, file)
+    fileOps.push({
+      opId: generateOpId(oldAbs, path.join(cwd, newPath)),
+      type: "move",
+      oldPath: file,
+      newPath,
+      checksum: fileChecksum(oldAbs),
+    })
+  }
+
+  return fileOps
+}
+
+/**
+ * Create a directory/prefix-move editset: move every file under `oldPrefix` to `newPrefix` and
+ * update all references (imports, wikilinks, package.json, tsconfig), deduped.
+ *
+ * `opts.excludeGlobs` skips REWRITING links inside files matching those globs — the bead-safety
+ * lever (e.g. `@km/**\/*.md` so a bead's wikilinks are preserved verbatim during a reorg).
+ */
+export async function createDirectoryMoveProposal(
+  oldPrefix: string,
+  newPrefix: string,
+  glob: string = "**/*",
+  cwd: string = process.cwd(),
+  opts?: { excludeGlobs?: string[] },
+): Promise<FileEditset> {
+  const fileOps = await findFilesToMovePrefix(oldPrefix, newPrefix, glob, cwd)
+
+  const report = checkFileConflicts(fileOps, cwd)
+  if (report.conflicts.length > 0) {
+    console.error(`[file-ops] Found ${report.conflicts.length} conflicts:`)
+    for (const c of report.conflicts) {
+      console.error(`  ${c.oldPath} -> ${c.newPath}: ${c.reason}`)
+    }
+  }
+
+  const importEdits = findImportEdits(report.safe, cwd)
+  const wikilinkEdits = findWikilinkEdits(report.safe, cwd)
+  const packageJsonEdits: Edit[] = []
+  const tsconfigEdits: Edit[] = []
+  for (const op of report.safe) {
+    packageJsonEdits.push(...findPackageJsonEdits(op.oldPath, op.newPath, cwd))
+    tsconfigEdits.push(...findTsConfigEdits(op.oldPath, op.newPath, cwd))
+  }
+
+  let allLinkEdits = dedupeEdits([...importEdits, ...wikilinkEdits, ...packageJsonEdits, ...tsconfigEdits])
+
+  // Bead-safety: never rewrite links INSIDE excluded files (e.g. @km bead markdown).
+  if (opts?.excludeGlobs?.length) {
+    const matchers = opts.excludeGlobs.map((g) => new Glob(g))
+    allLinkEdits = allLinkEdits.filter((e) => !matchers.some((m) => m.match(e.file)))
+  }
+
+  return {
+    id: `dir-move-${normalizeId(oldPrefix)}-to-${normalizeId(newPrefix)}-${Date.now()}`,
+    operation: "file-rename",
+    pattern: oldPrefix,
+    replacement: newPrefix,
+    fileOps: report.safe,
+    importEdits: allLinkEdits,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+function normalizeId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "")
 }
 
 /**
@@ -496,13 +634,21 @@ export function verifyFileEditset(
 }
 
 /**
- * Apply file renames
+ * Apply file renames AND their link edits.
+ *
+ * Two phases: (1) move/rename the files (checksum-verified), then (2) apply the editset's
+ * `importEdits` — the import/wikilink/package.json/tsconfig rewrites — to their files. An edit
+ * targeting a file that was just moved is remapped to the new path (the move leaves content
+ * unchanged, so the recorded offsets stay valid). Without phase 2 the files move but every
+ * importer breaks — the bug this previously had.
+ *
+ * `applied` counts renamed files (stable for callers); `linkEditsApplied` counts link rewrites.
  */
 export function applyFileRenames(
   editset: FileEditset,
   dryRun: boolean = false,
   cwd: string = process.cwd(),
-): { applied: number; skipped: number; errors: string[] } {
+): { applied: number; skipped: number; errors: string[]; linkEditsApplied: number } {
   const errors: string[] = []
   let applied = 0
   let skipped = 0
@@ -516,6 +662,8 @@ export function applyFileRenames(
     }
   }
 
+  // Phase 1: move files, tracking old→new for link-edit remapping.
+  const movedMap = new Map<string, string>()
   for (const op of editset.fileOps) {
     const absoluteOldPath = path.isAbsolute(op.oldPath) ? op.oldPath : path.join(cwd, op.oldPath)
     const absoluteNewPath = path.isAbsolute(op.newPath) ? op.newPath : path.join(cwd, op.newPath)
@@ -537,6 +685,7 @@ export function applyFileRenames(
     if (dryRun) {
       console.log(`[dry-run] mv ${op.oldPath} -> ${op.newPath}`)
       applied++
+      movedMap.set(op.oldPath, op.newPath)
       continue
     }
 
@@ -550,13 +699,58 @@ export function applyFileRenames(
     try {
       fs.renameSync(absoluteOldPath, absoluteNewPath)
       applied++
+      movedMap.set(op.oldPath, op.newPath)
     } catch (err) {
       errors.push(`${op.oldPath}: rename failed - ${err}`)
       skipped++
     }
   }
 
-  return { applied, skipped, errors }
+  // Phase 2: apply link edits (remapping any edit whose file was moved).
+  const linkEditsApplied = applyLinkEdits(editset.importEdits, movedMap, dryRun, cwd, errors)
+
+  return { applied, skipped, errors, linkEditsApplied }
+}
+
+/**
+ * Apply a list of offset-based edits, grouping by their (post-move) target file.
+ * In dry-run mode it only counts the edits.
+ */
+function applyLinkEdits(
+  edits: Edit[],
+  movedMap: Map<string, string>,
+  dryRun: boolean,
+  cwd: string,
+  errors: string[],
+): number {
+  if (edits.length === 0) return 0
+  if (dryRun) return edits.length
+
+  // Group by resolved file path (a moved file's edits target its new location).
+  const byFile = new Map<string, Edit[]>()
+  for (const edit of edits) {
+    const resolved = movedMap.get(edit.file) ?? edit.file
+    if (!byFile.has(resolved)) byFile.set(resolved, [])
+    byFile.get(resolved)!.push(edit)
+  }
+
+  let count = 0
+  for (const [file, fileEdits] of byFile) {
+    const absPath = path.isAbsolute(file) ? file : path.join(cwd, file)
+    if (!fs.existsSync(absPath)) {
+      errors.push(`${file}: link-edit target missing, skipping ${fileEdits.length} edit(s)`)
+      continue
+    }
+    let content = fs.readFileSync(absPath, "utf-8")
+    // Apply offset-descending so earlier edits don't shift later offsets.
+    const sorted = [...fileEdits].sort((a, b) => b.offset - a.offset)
+    for (const edit of sorted) {
+      content = content.slice(0, edit.offset) + edit.replacement + content.slice(edit.offset + edit.length)
+      count++
+    }
+    fs.writeFileSync(absPath, content)
+  }
+  return count
 }
 
 /**

@@ -23,7 +23,11 @@ import {
   createFileRenameProposal,
   verifyFileEditset,
   applyFileRenames,
+  findFilesToMovePrefix,
+  createDirectoryMoveProposal,
+  dedupeEdits,
 } from "../../tools/lib/core/file-ops"
+import type { Edit } from "../../tools/lib/core/types"
 
 // Test fixture directory
 const FIXTURE_DIR = path.join(import.meta.dirname, "../fixtures/file-ops-test")
@@ -183,6 +187,137 @@ describe("verifyFileEditset mutations", () => {
     const result = verifyFileEditset(editset, FIXTURE_DIR)
     expect(result.valid).toBe(false)
     expect(result.drifted.some((d) => d.includes("widget-loader.ts"))).toBe(true)
+  })
+})
+
+// Directory / prefix move (20187)
+const MOVE_DIR = path.join(import.meta.dirname, "../fixtures/dir-move-test")
+
+function setupMoveFixtures() {
+  if (fs.existsSync(MOVE_DIR)) fs.rmSync(MOVE_DIR, { recursive: true })
+  fs.mkdirSync(path.join(MOVE_DIR, "pkgA"), { recursive: true })
+  fs.mkdirSync(path.join(MOVE_DIR, "pkgB"), { recursive: true })
+  fs.writeFileSync(path.join(MOVE_DIR, "pkgA/index.ts"), "export const a = 1\n")
+  fs.writeFileSync(path.join(MOVE_DIR, "pkgA/util.ts"), "export const u = 2\n")
+  // A consumer OUTSIDE the moved dir importing from it — its import must be rewritten.
+  fs.writeFileSync(path.join(MOVE_DIR, "pkgB/uses.ts"), 'import { a } from "../pkgA/index"\n')
+}
+
+function cleanupMoveFixtures() {
+  if (fs.existsSync(MOVE_DIR)) fs.rmSync(MOVE_DIR, { recursive: true })
+}
+
+describe("findFilesToMovePrefix", () => {
+  beforeAll(setupMoveFixtures)
+  afterAll(cleanupMoveFixtures)
+
+  test("maps every file under the old prefix to the new prefix", async () => {
+    const ops = await findFilesToMovePrefix("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    const byOld = Object.fromEntries(ops.map((o) => [o.oldPath, o.newPath]))
+    expect(ops.length).toBe(2)
+    expect(byOld["pkgA/index.ts"]).toBe("pkgC/index.ts")
+    expect(byOld["pkgA/util.ts"]).toBe("pkgC/util.ts")
+    // Move ops are tagged "move", not "rename".
+    expect(ops.every((o) => o.type === "move")).toBe(true)
+  })
+
+  test("does not match files outside the prefix", async () => {
+    const ops = await findFilesToMovePrefix("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    expect(ops.some((o) => o.oldPath.startsWith("pkgB/"))).toBe(false)
+  })
+
+  test("respects the file-type glob", async () => {
+    const ops = await findFilesToMovePrefix("pkgA", "pkgC", "**/*.md", MOVE_DIR)
+    expect(ops.length).toBe(0)
+  })
+})
+
+describe("createDirectoryMoveProposal", () => {
+  beforeAll(setupMoveFixtures)
+  afterAll(cleanupMoveFixtures)
+
+  test("produces move ops plus rewritten imports for external consumers", async () => {
+    const editset = await createDirectoryMoveProposal("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    expect(editset.operation).toBe("file-rename")
+    expect(editset.fileOps.length).toBe(2)
+    expect(editset.fileOps.every((op) => op.type === "move")).toBe(true)
+
+    // The consumer in pkgB importing "../pkgA/index" must get an import edit.
+    const consumerEdit = editset.importEdits.find((e) => e.file.endsWith("uses.ts"))
+    expect(consumerEdit).toBeDefined()
+    expect(consumerEdit!.replacement).toContain("pkgC")
+  })
+
+  test("link edits are deduped (no two edits at the same file+offset)", async () => {
+    const editset = await createDirectoryMoveProposal("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    const keys = editset.importEdits.map((e) => `${e.file}|${e.offset}`)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+})
+
+describe("applyFileRenames applies link edits (20187)", () => {
+  beforeEach(setupMoveFixtures)
+  afterEach(cleanupMoveFixtures)
+
+  test("moves files AND rewrites the external importer", async () => {
+    const editset = await createDirectoryMoveProposal("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    const result = applyFileRenames(editset, false, MOVE_DIR)
+
+    expect(result.applied).toBe(2) // two files moved
+    expect(result.linkEditsApplied).toBeGreaterThanOrEqual(1)
+
+    // Files moved to the new prefix.
+    expect(fs.existsSync(path.join(MOVE_DIR, "pkgC/index.ts"))).toBe(true)
+    expect(fs.existsSync(path.join(MOVE_DIR, "pkgA/index.ts"))).toBe(false)
+
+    // The external importer's import path was rewritten — the move is not silently broken.
+    const uses = fs.readFileSync(path.join(MOVE_DIR, "pkgB/uses.ts"), "utf-8")
+    expect(uses).toContain("pkgC/index")
+    expect(uses).not.toContain("pkgA/index")
+  })
+
+  test("dry run counts link edits without writing", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    const editset = await createDirectoryMoveProposal("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
+    const result = applyFileRenames(editset, true, MOVE_DIR)
+
+    expect(result.applied).toBe(2)
+    expect(result.linkEditsApplied).toBeGreaterThanOrEqual(1)
+    // Nothing actually changed on disk.
+    expect(fs.existsSync(path.join(MOVE_DIR, "pkgA/index.ts"))).toBe(true)
+    expect(fs.readFileSync(path.join(MOVE_DIR, "pkgB/uses.ts"), "utf-8")).toContain("pkgA/index")
+    logSpy.mockRestore()
+  })
+})
+
+describe("dedupeEdits", () => {
+  test("removes exact-duplicate edits", () => {
+    const edits: Edit[] = [
+      { file: "a.ts", offset: 10, length: 3, replacement: "new" },
+      { file: "a.ts", offset: 10, length: 3, replacement: "new" },
+      { file: "a.ts", offset: 20, length: 2, replacement: "x" },
+    ]
+    const deduped = dedupeEdits(edits)
+    expect(deduped.length).toBe(2)
+  })
+
+  test("drops overlapping/conflicting edits at the same offset (keeps one)", () => {
+    const errorSpy2 = vi.spyOn(console, "error").mockImplementation(() => {})
+    const edits: Edit[] = [
+      { file: "a.ts", offset: 10, length: 5, replacement: "first" },
+      { file: "a.ts", offset: 10, length: 5, replacement: "second" }, // same span, different text
+    ]
+    const deduped = dedupeEdits(edits)
+    expect(deduped.length).toBe(1)
+    errorSpy2.mockRestore()
+  })
+
+  test("keeps non-overlapping adjacent edits", () => {
+    const edits: Edit[] = [
+      { file: "a.ts", offset: 0, length: 5, replacement: "aaaaa" },
+      { file: "a.ts", offset: 5, length: 5, replacement: "bbbbb" },
+    ]
+    expect(dedupeEdits(edits).length).toBe(2)
   })
 })
 

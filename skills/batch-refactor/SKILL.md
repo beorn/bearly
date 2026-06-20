@@ -282,8 +282,22 @@ bun run test:all
 | --------------------------------------------------------------------------------- | ---------------------------------- |
 | `file.find --pattern <p> --replace <r> [--glob]`                                  | Find files to rename               |
 | `file.rename --pattern <p> --replace <r> [--glob] [--output] [--check-conflicts]` | Create file rename proposal        |
+| `dir.move --old <prefix> --new <prefix> [--glob] [--exclude-glob]... [--check-conflicts]` | Move a directory/prefix + update refs |
 | `file.verify <file>`                                                              | Verify file editset can be applied |
-| `file.apply <file> [--dry-run]`                                                   | Apply file renames                 |
+| `file.apply <file> [--dry-run]`                                                   | Apply file renames OR a dir move   |
+
+**`dir.move` (directory/prefix move).** Moves every file under `--old` to `--new` and rewrites all
+references (imports, wikilinks, package.json, tsconfig), with link edits **deduped**. `--exclude-glob`
+skips rewriting links *inside* matching files — the **bead-safety** lever so `@km/**/*.md` bead nodes
+keep their wikilinks verbatim. The output is a file-rename editset; apply it with `file.apply`.
+
+```bash
+# Move a package dir and update every importer, but don't touch bead markdown:
+bun tools/refactor.ts dir.move --old apps/silvercode --new apps/ag \
+  --exclude-glob '@km/**/*.md' --output /tmp/move.json
+bun tools/refactor.ts file.apply /tmp/move.json --dry-run
+bun tools/refactor.ts file.apply /tmp/move.json
+```
 
 ### TypeScript/JavaScript (ts-morph)
 
