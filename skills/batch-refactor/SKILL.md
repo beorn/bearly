@@ -278,17 +278,17 @@ bun run test:all
 
 ### File Operations
 
-| Command                                                                           | Purpose                            |
-| --------------------------------------------------------------------------------- | ---------------------------------- |
-| `file.find --pattern <p> --replace <r> [--glob]`                                  | Find files to rename               |
-| `file.rename --pattern <p> --replace <r> [--glob] [--output] [--check-conflicts]` | Create file rename proposal        |
+| Command                                                                                   | Purpose                               |
+| ----------------------------------------------------------------------------------------- | ------------------------------------- |
+| `file.find --pattern <p> --replace <r> [--glob]`                                          | Find files to rename                  |
+| `file.rename --pattern <p> --replace <r> [--glob] [--output] [--check-conflicts]`         | Create file rename proposal           |
 | `dir.move --old <prefix> --new <prefix> [--glob] [--exclude-glob]... [--check-conflicts]` | Move a directory/prefix + update refs |
-| `file.verify <file>`                                                              | Verify file editset can be applied |
-| `file.apply <file> [--dry-run]`                                                   | Apply file renames OR a dir move   |
+| `file.verify <file>`                                                                      | Verify file editset can be applied    |
+| `file.apply <file> [--dry-run]`                                                           | Apply file renames OR a dir move      |
 
 **`dir.move` (directory/prefix move).** Moves every file under `--old` to `--new` and rewrites all
 references (imports, wikilinks, package.json, tsconfig), with link edits **deduped**. `--exclude-glob`
-skips rewriting links *inside* matching files — the **bead-safety** lever so `@km/**/*.md` bead nodes
+skips rewriting links _inside_ matching files — the **bead-safety** lever so `@km/**/*.md` bead nodes
 keep their wikilinks verbatim. The output is a file-rename editset; apply it with `file.apply`.
 
 ```bash
@@ -311,12 +311,12 @@ bun tools/refactor.ts file.apply /tmp/move.json
 
 ### Multi-Language (ast-grep/ripgrep)
 
-| Command                                                            | Purpose                   |
-| ------------------------------------------------------------------ | ------------------------- |
-| `pattern.find --pattern <p> [--glob]... [--exclude-glob]... [--backend]`     | Find structural patterns  |
+| Command                                                                                   | Purpose                   |
+| ----------------------------------------------------------------------------------------- | ------------------------- |
+| `pattern.find --pattern <p> [--glob]... [--exclude-glob]... [--backend]`                  | Find structural patterns  |
 | `pattern.replace --pattern <p> --replace <r> [--glob]... [--exclude-glob]... [--backend]` | Pattern replace proposal  |
-| `pattern.migrate --patterns <p1,p2> --prompt <text> [--glob]`      | LLM-powered API migration |
-| `backends.list`                                                    | List available backends   |
+| `pattern.migrate --patterns <p1,p2> --prompt <text> [--glob]`                             | LLM-powered API migration |
+| `backends.list`                                                                           | List available backends   |
 
 **Repeatable include/exclude globs (ripgrep backend).** `--glob` (alias `--include-glob`) is
 repeatable, and `--exclude-glob` excludes files via ripgrep's native `!` semantics. This is the

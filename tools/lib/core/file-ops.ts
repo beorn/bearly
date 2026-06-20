@@ -497,7 +497,9 @@ export function dedupeEdits(edits: Edit[]): Edit[] {
 
     const lastEnd = lastEndByFile.get(e.file)
     if (lastEnd !== undefined && e.offset < lastEnd) {
-      console.error(`[file-ops] dropping overlapping edit in ${e.file} at offset ${e.offset} (conflicts with a prior edit)`)
+      console.error(
+        `[file-ops] dropping overlapping edit in ${e.file} at offset ${e.offset} (conflicts with a prior edit)`,
+      )
       continue
     }
 
