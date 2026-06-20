@@ -299,10 +299,23 @@ bun run test:all
 
 | Command                                                            | Purpose                   |
 | ------------------------------------------------------------------ | ------------------------- |
-| `pattern.find --pattern <p> [--glob] [--backend]`                  | Find structural patterns  |
-| `pattern.replace --pattern <p> --replace <r> [--glob] [--backend]` | Pattern replace proposal  |
+| `pattern.find --pattern <p> [--glob]... [--exclude-glob]... [--backend]`     | Find structural patterns  |
+| `pattern.replace --pattern <p> --replace <r> [--glob]... [--exclude-glob]... [--backend]` | Pattern replace proposal  |
 | `pattern.migrate --patterns <p1,p2> --prompt <text> [--glob]`      | LLM-powered API migration |
 | `backends.list`                                                    | List available backends   |
+
+**Repeatable include/exclude globs (ripgrep backend).** `--glob` (alias `--include-glob`) is
+repeatable, and `--exclude-glob` excludes files via ripgrep's native `!` semantics. This is the
+**bead-safety** lever for the reorg: rewrite code while leaving `@km/**/*.md` bead nodes untouched.
+
+```bash
+# Replace across code, but never touch bead markdown:
+bun tools/refactor.ts pattern.replace --pattern '/@km\/code/' --replace '@ag/code' \
+  --backend ripgrep --glob '**/*.ts' --glob '**/*.tsx' --exclude-glob '@km/**/*.md'
+
+# migrate's text phase honors --exclude-glob too:
+bun tools/refactor.ts migrate --from '/@km\/code/' --to '@ag/code' --exclude-glob '@km/**/*.md'
+```
 
 ### Editset Operations
 

@@ -243,6 +243,8 @@ COMMANDS
   migrate                                 Full terminology migration
     --from <pattern> --to <replacement>   Required: pattern and replacement
     --glob <glob>                         File filter (default: **/*.{ts,tsx})
+    --exclude-glob <glob>                 Exclude files from the text phase (repeatable; bead-safety,
+                                          e.g. --exclude-glob '@km/**/*.md')
     --dry-run                             Preview without applying
     --output <dir>                        Editset directory (default: .editsets/)
 
@@ -260,7 +262,9 @@ COMMANDS
 
   pattern.replace                         Text/structural search-replace
     --pattern <pattern> --replace <text>  Required: pattern and replacement
-    --glob <glob>                         File filter
+    --glob <glob>                         File filter (repeatable for ripgrep; --include-glob alias)
+    --exclude-glob <glob>                 Exclude files (ripgrep only, repeatable; bead-safety,
+                                          e.g. --exclude-glob '@km/**/*.md')
     --backend <name>                      ast-grep (structural) or ripgrep (text)
     --output <file>                       Editset file (default: editset.json)
 
@@ -300,6 +304,30 @@ function getArg(name: string): string | undefined {
   const idx = args.indexOf(name)
   if (idx === -1) return undefined
   return args[idx + 1]
+}
+
+/** Collect ALL values for a repeatable flag (e.g. multiple `--glob`). */
+function getArgAll(name: string): string[] {
+  const values: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === name && i + 1 < args.length) {
+      values.push(args[i + 1]!)
+    }
+  }
+  return values
+}
+
+/**
+ * Build the ordered include/exclude glob list for ripgrep-backed commands from repeatable flags:
+ *   --glob / --include-glob   → include globs (verbatim)
+ *   --exclude-glob            → exclusion globs (prefixed with ripgrep's `!`, e.g. bead-safety)
+ * Returns undefined when no glob flags are present (search everything).
+ */
+function collectGlobs(): string[] | undefined {
+  const includes = [...getArgAll("--glob"), ...getArgAll("--include-glob")]
+  const excludes = getArgAll("--exclude-glob").map((g) => (g.startsWith("!") ? g : `!${g}`))
+  const all = [...includes, ...excludes]
+  return all.length > 0 ? all : undefined
 }
 
 function hasFlag(name: string): boolean {
@@ -556,26 +584,29 @@ The /i flag controls both match-case AND replacement-case:
 
     case "pattern.find": {
       const pattern = getArg("--pattern")
-      const glob = getArg("--glob")
+      const glob = getArg("--glob") // single glob — ast-grep compat
+      const globs = collectGlobs() // ordered include/exclude list — ripgrep
       const backendName = getArg("--backend")
 
       if (!pattern) {
-        error("Usage: pattern.find --pattern <pattern> [--glob <glob>] [--backend ast-grep|ripgrep]")
+        error(
+          "Usage: pattern.find --pattern <pattern> [--glob <glob>]... [--exclude-glob <glob>]... [--backend ast-grep|ripgrep]",
+        )
       }
 
-      // Choose backend
+      // Choose backend (ripgrep supports repeatable include/exclude globs; ast-grep takes one).
       let refs
       if (backendName === "ast-grep") {
         refs = astGrepFindPatterns(pattern, glob)
       } else if (backendName === "ripgrep") {
-        refs = rgFindPatterns(pattern, glob)
+        refs = rgFindPatterns(pattern, globs)
       } else {
         // Auto-detect: prefer ast-grep for structural patterns, ripgrep for text
         // Heuristic: if pattern contains $METAVAR, use ast-grep
         if (pattern.includes("$")) {
           refs = astGrepFindPatterns(pattern, glob)
         } else {
-          refs = rgFindPatterns(pattern, glob)
+          refs = rgFindPatterns(pattern, globs)
         }
       }
 
@@ -586,7 +617,8 @@ The /i flag controls both match-case AND replacement-case:
     case "pattern.replace": {
       const pattern = getArg("--pattern")
       const replacement = getArg("--replace")
-      const glob = getArg("--glob")
+      const glob = getArg("--glob") // single glob — ast-grep compat
+      const globs = collectGlobs() // ordered include/exclude list — ripgrep
       const backendName = getArg("--backend")
       const outputFile = getArg("--output") || "editset.json"
 
@@ -618,19 +650,19 @@ Note: the 'g' flag is always set internally (multi-match per file).`,
       // search and the replacement — no hidden tool logic.
       const parsed = parseRegexLiteral(pattern, "--pattern")
 
-      // Choose backend
+      // Choose backend (ripgrep supports repeatable include/exclude globs; ast-grep takes one).
       let editset
       if (backendName === "ast-grep") {
         // ast-grep uses its own pattern language; pass the raw source through.
         editset = astGrepReplace(parsed.source, replacement, glob)
       } else if (backendName === "ripgrep") {
-        editset = rgReplace(parsed.source, replacement, glob, parsed.caseInsensitive)
+        editset = rgReplace(parsed.source, replacement, globs, parsed.caseInsensitive)
       } else {
         // Auto-detect: prefer ast-grep for structural patterns (contain `$`)
         if (parsed.source.includes("$")) {
           editset = astGrepReplace(parsed.source, replacement, glob)
         } else {
-          editset = rgReplace(parsed.source, replacement, glob, parsed.caseInsensitive)
+          editset = rgReplace(parsed.source, replacement, globs, parsed.caseInsensitive)
         }
       }
 
@@ -981,6 +1013,8 @@ Example (v0.7 namespace reorg):
       const from = getArg("--from")
       const to = getArg("--to")
       const glob = getArg("--glob") || "**/*.{ts,tsx}"
+      // Exclusion globs apply to the text (ripgrep) phase — e.g. exclude bead markdown.
+      const excludeGlobs = getArgAll("--exclude-glob").map((g) => (g.startsWith("!") ? g : `!${g}`))
       const dryRun = hasFlag("--dry-run")
       const outputDir = getArg("--output") || ".editsets"
 
@@ -1077,7 +1111,8 @@ With /i, all phases apply case-preservation.`,
 
       // Phase 3: Text/comment replacements (strings, comments, docs)
       console.error("\nPhase 3: Finding text patterns (strings/comments)...")
-      const textEditset = rgReplace(parsedFrom.source, to, glob, parsedFrom.caseInsensitive)
+      const textGlobs = [glob, ...excludeGlobs]
+      const textEditset = rgReplace(parsedFrom.source, to, textGlobs, parsedFrom.caseInsensitive)
       if (textEditset.refs.length > 0) {
         const textEditsetPath = path.join(outputDir, "03-text-patterns.json")
         saveEditset(textEditset, textEditsetPath)

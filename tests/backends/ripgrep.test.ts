@@ -227,6 +227,93 @@ describe("ripgrep backend", () => {
     })
   })
 
+  describe("repeatable include/exclude globs (20187)", () => {
+    let tempDir: string
+
+    beforeAll(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "ripgrep-globs-test-"))
+      writeFileSync(join(tempDir, "code.ts"), 'const widget = "x"\n')
+      writeFileSync(join(tempDir, "doc.md"), "The widget doc.\n")
+      // A bead-style markdown file under @km/ — the bead-safety exclusion target.
+      mkdirSync(join(tempDir, "@km"), { recursive: true })
+      writeFileSync(join(tempDir, "@km/note.md"), "The widget bead.\n")
+    })
+
+    afterAll(() => {
+      rmSync(tempDir, { recursive: true, force: true })
+    })
+
+    function skipIfNoRg(): boolean {
+      try {
+        execSync("which rg", { stdio: "pipe" })
+        return false
+      } catch {
+        console.log("Skipping test: ripgrep (rg) not installed")
+        return true
+      }
+    }
+
+    test("a single include glob (array of one) still works", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const refs = findPatterns("widget", ["*.ts"])
+        expect(refs.length).toBe(1)
+        expect(refs.every((r) => r.file.endsWith(".ts"))).toBe(true)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("multiple include globs union their matches", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const refs = findPatterns("widget", ["*.ts", "doc.md"])
+        const files = refs.map((r) => r.file)
+        expect(files.some((f) => f.endsWith("code.ts"))).toBe(true)
+        expect(files.some((f) => f.endsWith("doc.md"))).toBe(true)
+        // @km/note.md is NOT in the include set.
+        expect(files.some((f) => f.includes("@km/"))).toBe(false)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("exclude glob (! prefix) drops matching files — bead-safety", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        // Include everything, then exclude bead markdown under @km/.
+        const refs = findPatterns("widget", ["**/*", "!@km/**/*.md"])
+        const files = refs.map((r) => r.file)
+        expect(files.some((f) => f.endsWith("code.ts"))).toBe(true)
+        // doc.md at root is still searched (it is not under @km/).
+        expect(files.some((f) => f.endsWith("doc.md"))).toBe(true)
+        // The bead file is excluded.
+        expect(files.some((f) => f.includes("@km/"))).toBe(false)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("createPatternReplaceProposal honors the exclude glob", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const editset = createPatternReplaceProposal("widget", "gadget", ["**/*", "!@km/**/*.md"])
+        expect(editset.refs.some((r) => r.file.includes("@km/"))).toBe(false)
+        expect(editset.refs.some((r) => r.file.endsWith("code.ts"))).toBe(true)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+  })
+
   describe("case-insensitive search and case-preserving replace", () => {
     let tempDir: string
 

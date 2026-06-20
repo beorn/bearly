@@ -4,18 +4,30 @@ import type { Reference, Editset, Edit } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
 
 /**
+ * Normalize a glob argument to an array. Each entry maps to one ripgrep `--glob`.
+ * Inclusion globs are passed verbatim; exclusion globs use ripgrep's native `!` prefix
+ * (an exclude such as a bead-markdown glob), so callers express both in one ordered list.
+ */
+function normalizeGlobs(glob?: string | string[]): string[] {
+  if (!glob) return []
+  return Array.isArray(glob) ? glob.filter(Boolean) : [glob]
+}
+
+/**
  * Find text patterns using ripgrep
  *
  * @param pattern - Regex pattern to search for
- * @param glob - Optional file glob filter (e.g., "*.md")
+ * @param glob - Optional file glob filter. Accepts a single glob ("*.md") or an ordered
+ *               list of include/exclude globs (["**\/*.ts", "!@km/**\/*.md"]) — each maps to
+ *               a repeated ripgrep `--glob`. `!`-prefixed entries are exclusions.
  * @param caseInsensitive - If true, pass `-i` to ripgrep for case-insensitive matching
  */
-export function findPatterns(pattern: string, glob?: string, caseInsensitive = false): Reference[] {
+export function findPatterns(pattern: string, glob?: string | string[], caseInsensitive = false): Reference[] {
   const args = ["--json", "--line-number", "--column"]
   if (caseInsensitive) args.push("-i")
   args.push(pattern)
-  if (glob) {
-    args.push("--glob", glob)
+  for (const g of normalizeGlobs(glob)) {
+    args.push("--glob", g)
   }
   args.push(".") // Search current directory
 
@@ -30,7 +42,8 @@ export function findPatterns(pattern: string, glob?: string, caseInsensitive = f
  *
  * @param pattern - Regex pattern to match
  * @param replacement - Replacement string (supports $1, $2, etc. for capture groups)
- * @param glob - Optional file glob filter
+ * @param glob - Optional file glob filter — a single glob or an ordered include/exclude list
+ *               (see findPatterns); `!`-prefixed entries are exclusions.
  * @param caseInsensitive - If true, match any case and apply case-preservation to the replacement
  *                          (widget→gadget, Widget→Gadget, WIDGET→GADGET). If false (default),
  *                          match exactly and replace literally.
@@ -38,7 +51,7 @@ export function findPatterns(pattern: string, glob?: string, caseInsensitive = f
 export function createPatternReplaceProposal(
   pattern: string,
   replacement: string,
-  glob?: string,
+  glob?: string | string[],
   caseInsensitive = false,
 ): Editset {
   const refs = findPatterns(pattern, glob, caseInsensitive)
