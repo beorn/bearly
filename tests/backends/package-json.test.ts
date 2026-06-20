@@ -19,6 +19,17 @@ import {
   findPackageJsonEdits,
 } from "../../tools/lib/backends/package-json"
 
+/** Minimal shape for asserting on parsed package.json (km's ts-reset types JSON.parse as unknown). */
+type PkgJson = {
+  name?: string
+  main?: string
+  description?: string
+  exports?: Record<string, string>
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
+}
+
 /**
  * Apply edits to a file's content (offset-descending) and return the new content.
  * Mirrors core/apply.ts applyEditset's splice logic so we validate offsets against the real file.
@@ -117,10 +128,10 @@ describe("package-json backend — dependency-NAME rename (20187)", () => {
       join(dir, "package.json"),
       edits.filter((e) => e.file === "package.json"),
     )
-    const pkg = JSON.parse(applied)
+    const pkg = JSON.parse(applied) as PkgJson
     expect(pkg.name).toBe("@ag/code")
     expect(pkg.main).toBe("./src/index.ts")
-    expect(pkg.exports["."]).toBe("./src/index.ts")
+    expect(pkg.exports?.["."]).toBe("./src/index.ts")
     expect(pkg.description).toBe("the @km/code package")
   })
 
@@ -130,12 +141,12 @@ describe("package-json backend — dependency-NAME rename (20187)", () => {
       join(dir, "consumer/package.json"),
       edits.filter((e) => e.file === "consumer/package.json"),
     )
-    const pkg = JSON.parse(applied)
-    expect(pkg.dependencies["@ag/code"]).toBe("workspace:*")
-    expect(pkg.dependencies["@km/code"]).toBeUndefined()
-    expect(pkg.dependencies.zod).toBe("^3.0.0")
-    expect(pkg.devDependencies["@ag/code"]).toBe("1.0.0")
-    expect(pkg.peerDependencies["@ag/code"]).toBe("*")
+    const pkg = JSON.parse(applied) as PkgJson
+    expect(pkg.dependencies?.["@ag/code"]).toBe("workspace:*")
+    expect(pkg.dependencies?.["@km/code"]).toBeUndefined()
+    expect(pkg.dependencies?.zod).toBe("^3.0.0")
+    expect(pkg.devDependencies?.["@ag/code"]).toBe("1.0.0")
+    expect(pkg.peerDependencies?.["@ag/code"]).toBe("*")
   })
 
   test("returns no edits when the name is absent", () => {

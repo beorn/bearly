@@ -19,6 +19,9 @@ import { createPatternReplaceProposal } from "../../tools/lib/backends/ripgrep"
 import { createDirectoryMoveProposal, applyFileRenames } from "../../tools/lib/core/file-ops"
 import { applyEditset } from "../../tools/lib/core/apply"
 
+/** Minimal shape for asserting on parsed package.json (km's ts-reset types JSON.parse as unknown). */
+type PkgJson = { name?: string; dependencies?: Record<string, string> }
+
 let dir: string
 let logSpy: ReturnType<typeof vi.spyOn>
 let errorSpy: ReturnType<typeof vi.spyOn>
@@ -96,10 +99,10 @@ describe("v0.7 reorg tool patch — e2e (20187)", () => {
 
       // ---- FINAL STATE ----
       // dep-name rename landed.
-      expect(JSON.parse(readFileSync("package.json", "utf-8")).name).toBe("@ag/code")
-      const consumerPkg = JSON.parse(readFileSync("apps/consumer/package.json", "utf-8"))
-      expect(consumerPkg.dependencies["@ag/code"]).toBe("workspace:*")
-      expect(consumerPkg.dependencies["@km/code"]).toBeUndefined()
+      expect((JSON.parse(readFileSync("package.json", "utf-8")) as PkgJson).name).toBe("@ag/code")
+      const consumerPkg = JSON.parse(readFileSync("apps/consumer/package.json", "utf-8")) as PkgJson
+      expect(consumerPkg.dependencies?.["@ag/code"]).toBe("workspace:*")
+      expect(consumerPkg.dependencies?.["@km/code"]).toBeUndefined()
 
       // text replacement rewrote the code comment (it moved with the file).
       expect(existsSync("apps/ag/index.ts")).toBe(true)
