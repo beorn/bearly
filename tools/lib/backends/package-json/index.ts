@@ -5,9 +5,11 @@ import {
   createPackageJsonEditset,
   findBrokenPackageJsonPaths,
 } from "./search"
+import { findDependencyNameEdits, createDependencyRenameEditset } from "./dependency"
 
 // Re-export
 export { findPackageJsonRefs, findPackageJsonEdits, createPackageJsonEditset, findBrokenPackageJsonPaths }
+export { findDependencyNameEdits, createDependencyRenameEditset }
 export * from "./parser"
 
 /**

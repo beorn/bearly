@@ -40,7 +40,12 @@ import {
 } from "./lib/backends/ast-grep"
 import { findPatterns as rgFindPatterns, createPatternReplaceProposal as rgReplace } from "./lib/backends/ripgrep"
 import { findLinksToFile, createFileRenameEditset, findBrokenLinks } from "./lib/backends/wikilink"
-import { findPackageJsonRefs, createPackageJsonEditset, findBrokenPackageJsonPaths } from "./lib/backends/package-json"
+import {
+  findPackageJsonRefs,
+  createPackageJsonEditset,
+  createDependencyRenameEditset,
+  findBrokenPackageJsonPaths,
+} from "./lib/backends/package-json"
 import { findTsConfigRefs, createTsConfigEditset } from "./lib/backends/tsconfig-json"
 import { getBackendByName, getBackends } from "./lib/backend"
 import {
@@ -272,6 +277,7 @@ EXPLORATION
   pattern.find --pattern <p> --glob <g>   Find text/structural patterns
   wikilink.find --target <file>           Find wiki-links to file
   wikilink.broken                         Find broken wiki-links
+  package.dep-rename --from <name> --to <name>  Rename a package identifier (deps + name field)
   backends.list                           List available backends
 
 DOCUMENTATION
@@ -757,6 +763,39 @@ Note: the 'g' flag is always set internally (multi-match per file).`,
         editsetPath: outputFile,
         oldPath,
         newPath,
+        editCount: editset.edits.length,
+        fileCount: new Set(editset.edits.map((e) => e.file)).size,
+      })
+      break
+    }
+
+    case "package.dep-rename": {
+      const fromName = getArg("--from")
+      const toName = getArg("--to")
+      const glob = getArg("--glob") || "**/package.json"
+      const outputFile = getArg("--output") || "package-dep-editset.json"
+
+      if (!fromName || !toName) {
+        error(
+          `Usage: package.dep-rename --from <pkg-name> --to <pkg-name> [--glob <glob>] [--output <file>]
+
+Renames a package IDENTIFIER (not a path) across all package.json files:
+  - the declaring package's own "name" field
+  - dependency keys in dependencies/devDependencies/peerDependencies/
+    optionalDependencies/peerDependenciesMeta/overrides
+
+Example (v0.7 namespace reorg):
+  package.dep-rename --from '@km/code' --to '@ag/code' --output /tmp/dep.json
+  editset.apply /tmp/dep.json --dry-run`,
+        )
+      }
+
+      const editset = createDependencyRenameEditset(fromName, toName, ".", glob)
+      saveEditset(editset, outputFile)
+      output({
+        editsetPath: outputFile,
+        from: fromName,
+        to: toName,
         editCount: editset.edits.length,
         fileCount: new Set(editset.edits.map((e) => e.file)).size,
       })

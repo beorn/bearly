@@ -314,11 +314,19 @@ bun run test:all
 
 ### Package.json Operations
 
-| Command                                    | Purpose                           |
-| ------------------------------------------ | --------------------------------- |
-| `package.find --target <file>`             | Find package.json refs to a file  |
-| `package.rename --old <path> --new <path>` | Update paths when file renamed    |
-| `package.broken`                           | Find broken paths in package.json |
+| Command                                        | Purpose                                       |
+| ---------------------------------------------- | --------------------------------------------- |
+| `package.find --target <file>`                 | Find package.json refs to a file              |
+| `package.rename --old <path> --new <path>`     | Update **paths** when a file is renamed       |
+| `package.dep-rename --from <name> --to <name>` | Rename a package **identifier** (deps + name) |
+| `package.broken`                               | Find broken paths in package.json             |
+
+**`package.rename` vs `package.dep-rename`:** `package.rename` rewrites path fields
+(`main`/`module`/`types`/`exports`/…) when a file moves. `package.dep-rename` renames a package
+**name** (e.g. `@km/code` → `@ag/code`) across the declaring package's `name` field and every
+dependency-map key (`dependencies`/`devDependencies`/`peerDependencies`/`optionalDependencies`/
+`peerDependenciesMeta`/`overrides`) — it never touches paths, prose, or version ranges. Use it for
+namespace/scope renames.
 
 ### TSConfig.json Operations
 
