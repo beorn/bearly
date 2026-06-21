@@ -1238,6 +1238,29 @@ async function installHooks(worktreePath: string): Promise<void> {
   }
 }
 
+/**
+ * Pick the `git worktree add` branch argument. A pool-slot branch (wtN) is an
+ * anonymous, disposable pool resource: on (re)create it must ALWAYS land at
+ * origin/main — even when a stale LOCAL wtN branch survives a prior cycle. When
+ * the slot last ran a `task/<id>` branch, `bun worktree reset wtN` removes that
+ * task branch but leaves the old `wtN` ref pinned at an ancient SHA; reusing it
+ * via `branchExists` would silently land the slot N-behind origin/main
+ * (@km/inbox/19363). `-B` resets-or-creates `wtN` AT origin/main, so the
+ * pool-slot rule MUST precede the branch-exists check. Non-slot names keep
+ * tracking their stable upstream.
+ */
+export function resolveBranchArg(input: {
+  isPoolSlot: boolean
+  branchExists: boolean
+  remoteBranchExists: boolean
+  branchName: string
+}): string[] {
+  if (input.isPoolSlot) return ["-B", input.branchName, "origin/main"]
+  if (input.branchExists) return [input.branchName]
+  if (input.remoteBranchExists) return [input.branchName]
+  return ["-b", input.branchName]
+}
+
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
   const { install = true, direnv = true, hooks = true, allowDirty = false } = options
 
@@ -1323,19 +1346,22 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // tracking a stable upstream.
   const isPoolSlot = /^wt\d+$/.test(name) && branchName === name
 
-  let branchArg: string[]
-  if (branchExists.exitCode === 0) {
+  const branchArg = resolveBranchArg({
+    isPoolSlot,
+    branchExists: branchExists.exitCode === 0,
+    remoteBranchExists: remoteBranchExists.exitCode === 0,
+    branchName,
+  })
+  if (isPoolSlot) {
+    // -B resets-or-creates the slot branch at origin/main, even over a stale
+    // local wtN ref left by a prior task/<id> cycle (@km/inbox/19363).
+    info(`Creating slot branch ${branchName} at origin/main (reset-or-create)`)
+  } else if (branchExists.exitCode === 0) {
     info(`Using existing branch: ${branchName}`)
-    branchArg = [branchName]
-  } else if (remoteBranchExists.exitCode === 0 && !isPoolSlot) {
+  } else if (remoteBranchExists.exitCode === 0) {
     info(`Tracking remote branch: origin/${branchName}`)
-    branchArg = [branchName]
-  } else if (isPoolSlot) {
-    info(`Creating slot branch ${branchName} at origin/main`)
-    branchArg = ["-b", branchName, "origin/main"]
   } else {
     info(`Creating new branch: ${branchName}`)
-    branchArg = ["-b", branchName]
   }
 
   // Create worktree

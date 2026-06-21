@@ -111,6 +111,48 @@ describe("worktree reset round-trip", () => {
     }
   }, 60_000)
 
+  test("a pool slot left on a task/<id> branch resets to current origin/main, not a stale wtN ref (@km/inbox/19363)", async () => {
+    const mainRepo = join(sandbox, "main")
+    await initRepo(mainRepo)
+    writeFileSync(join(mainRepo, "README.md"), "main\n")
+    await commitAll(mainRepo, "main-init")
+    const upstreamRepo = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+    await $`cd ${mainRepo} && git remote add origin ${upstreamRepo} && git push -q origin main`.quiet()
+
+    const slot = "wt0" // a REAL pool-slot name (matches /^wt\d+$/), unlike "wt-test"
+    const worktreePath = join(sandbox, "main-wt0")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      expect(existsSync(worktreePath)).toBe(true)
+
+      // The slot moves onto a task/<id> branch (the post-15493 model). The `wt0`
+      // pet branch is now stale — it stays pinned at the original origin/main SHA.
+      await $`cd ${worktreePath} && git checkout -q -b task/foo`.quiet()
+
+      // origin/main advances (other beads land) → the stale wt0 ref falls behind.
+      writeFileSync(join(mainRepo, "moved.txt"), "moved\n")
+      await commitAll(mainRepo, "main-moves")
+      await $`cd ${mainRepo} && git push -q origin main`.quiet()
+
+      // Reset. removeWorktree deletes the worktree's branch (task/foo); the stale
+      // `wt0` ref survives. Pre-19363 the recreate reused it → slot landed 1 behind.
+      await resetWorktree(slot, { force: true, install: false, direnv: false, hooks: false })
+
+      expect(existsSync(worktreePath)).toBe(true)
+      const ahead = parseInt((await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(), 10)
+      const behind = parseInt((await $`cd ${worktreePath} && git rev-list --count HEAD..origin/main`.text()).trim(), 10)
+      expect(ahead).toBe(0)
+      expect(behind).toBe(0) // the 19363 bug landed the slot 1 behind on the stale wt0 ref
+      const slotBranch = (await $`cd ${worktreePath} && git rev-parse --abbrev-ref HEAD`.text()).trim()
+      expect(slotBranch).toBe("wt0")
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
   test("reset without --force refuses when worktree has uncommitted changes", async () => {
     const mainRepo = join(sandbox, "main")
 
