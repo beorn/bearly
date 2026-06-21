@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "crypto"
+import { execFileSync } from "child_process"
 import fs from "fs"
 import path from "path"
 import { Glob } from "bun"
@@ -36,6 +37,41 @@ function fileChecksum(filePath: string): string {
 function generateOpId(oldPath: string, newPath: string): string {
   const hash = createHash("sha256").update(`${oldPath}:${newPath}`).digest("hex").slice(0, 8)
   return `file-${hash}`
+}
+
+function listGitCandidateFiles(cwd: string): string[] | null {
+  try {
+    const inside = execFileSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+    if (inside !== "true") return null
+
+    const output = execFileSync("git", ["-C", cwd, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+
+    return output
+      .split("\0")
+      .filter((file) => file.length > 0)
+      .filter((file) => {
+        const absolute = path.join(cwd, file)
+        return fs.existsSync(absolute) && fs.statSync(absolute).isFile()
+      })
+  } catch {
+    return null
+  }
+}
+
+async function listCandidateFiles(glob: string, cwd: string): Promise<string[]> {
+  const globber = new Glob(glob)
+  const gitFiles = listGitCandidateFiles(cwd)
+  if (gitFiles) return gitFiles.filter((file) => globber.match(file))
+
+  const files: string[] = []
+  for await (const file of globber.scan({ cwd, onlyFiles: true, dot: true })) files.push(file)
+  return files
 }
 
 /**
@@ -70,9 +106,8 @@ export async function findFilesToRename(
   cwd: string = process.cwd(),
 ): Promise<FileOp[]> {
   const fileOps: FileOp[] = []
-  const globber = new Glob(glob)
 
-  for await (const file of globber.scan({ cwd, onlyFiles: true })) {
+  for (const file of await listCandidateFiles(glob, cwd)) {
     const basename = path.basename(file)
     const dirname = path.dirname(file)
 
@@ -547,9 +582,8 @@ export async function findFilesToMovePrefix(
   const fileOps: FileOp[] = []
   const normOld = oldPrefix.replace(/\/+$/, "")
   const normNew = newPrefix.replace(/\/+$/, "")
-  const globber = new Glob(glob)
 
-  for await (const file of globber.scan({ cwd, onlyFiles: true })) {
+  for (const file of await listCandidateFiles(glob, cwd)) {
     // Only files at or under the old prefix.
     if (file !== normOld && !file.startsWith(normOld + "/")) continue
 

@@ -43,6 +43,7 @@ function setupFixtures() {
   fs.writeFileSync(path.join(FIXTURE_DIR, "widget.ts"), 'export const widget = "test"')
   fs.writeFileSync(path.join(FIXTURE_DIR, "widget-loader.ts"), 'import { widget } from "./widget"')
   fs.writeFileSync(path.join(FIXTURE_DIR, "WidgetConfig.ts"), "export interface WidgetConfig {}")
+  fs.writeFileSync(path.join(FIXTURE_DIR, ".widgetrc"), "hidden config")
   fs.mkdirSync(path.join(FIXTURE_DIR, "testing"), { recursive: true })
   fs.writeFileSync(path.join(FIXTURE_DIR, "testing/fake-widget.ts"), "export class FakeWidget {}")
 
@@ -116,6 +117,14 @@ describe("read-only file operations", () => {
       expect(ops.length).toBe(3)
       const paths = ops.map((op) => op.oldPath)
       expect(paths).not.toContain("testing/fake-widget.ts")
+    })
+
+    test("includes dotfiles when the glob allows them", async () => {
+      const ops = await findFilesToRename("widget", "gadget", "**/*", FIXTURE_DIR)
+      const dotfileOp = ops.find((op) => op.oldPath === ".widgetrc")
+
+      expect(dotfileOp).toBeDefined()
+      expect(dotfileOp?.newPath).toBe(".gadgetrc")
     })
   })
 
@@ -203,6 +212,9 @@ function setupMoveFixtures() {
     'import { shared } from "../shared/shared"\nimport { u } from "./util"\nexport const a = shared + u\n',
   )
   fs.writeFileSync(path.join(MOVE_DIR, "pkgA/util.ts"), "export const u = 2\n")
+  fs.writeFileSync(path.join(MOVE_DIR, "pkgA/.gitkeep"), "")
+  fs.mkdirSync(path.join(MOVE_DIR, "pkgA/.config"), { recursive: true })
+  fs.writeFileSync(path.join(MOVE_DIR, "pkgA/.config/settings.json"), "{}\n")
   fs.writeFileSync(path.join(MOVE_DIR, "shared/shared.ts"), "export const shared = 3\n")
   // A consumer OUTSIDE the moved dir importing from it — its import must be rewritten.
   fs.writeFileSync(path.join(MOVE_DIR, "pkgB/uses.ts"), 'import { a } from "../pkgA/index"\n')
@@ -234,6 +246,14 @@ describe("findFilesToMovePrefix", () => {
   test("respects the file-type glob", async () => {
     const ops = await findFilesToMovePrefix("pkgA", "pkgC", "**/*.md", MOVE_DIR)
     expect(ops.length).toBe(0)
+  })
+
+  test("includes dotfiles and files inside dot-directories", async () => {
+    const ops = await findFilesToMovePrefix("pkgA", "pkgC", "**/*", MOVE_DIR)
+    const byOld = Object.fromEntries(ops.map((o) => [o.oldPath, o.newPath]))
+
+    expect(byOld["pkgA/.gitkeep"]).toBe("pkgC/.gitkeep")
+    expect(byOld["pkgA/.config/settings.json"]).toBe("pkgC/.config/settings.json")
   })
 })
 
