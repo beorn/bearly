@@ -60,6 +60,8 @@ function listGitCandidateFiles(cwd: string): string[] | null {
         return fs.existsSync(absolute) && fs.statSync(absolute).isFile()
       })
   } catch {
+    // silent-fallback-allow: non-git fixtures and Git-unavailable environments
+    // use the Bun glob scanner below.
     return null
   }
 }
