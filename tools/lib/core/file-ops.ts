@@ -165,10 +165,6 @@ export function checkFileConflicts(fileOps: FileOp[], cwd: string = process.cwd(
 export function findImportEdits(fileOps: FileOp[], cwd: string = process.cwd()): Edit[] {
   if (fileOps.length === 0) return []
 
-  // Only process TypeScript/JavaScript file renames
-  const tsFileOps = fileOps.filter((op) => /\.(ts|tsx|js|jsx)$/.test(op.oldPath))
-  if (tsFileOps.length === 0) return []
-
   // Try to find tsconfig.json, fall back to scanning files directly
   const tsconfigPath = path.join(cwd, "tsconfig.json")
   const project = fs.existsSync(tsconfigPath)
@@ -180,13 +176,19 @@ export function findImportEdits(fileOps: FileOp[], cwd: string = process.cwd()):
     project.addSourceFilesAtPaths(path.join(cwd, "**/*.{ts,tsx,js,jsx}"))
   }
 
-  // Build a map of old absolute paths -> FileOp for quick lookup
+  // Build maps of old absolute paths -> FileOp / moved source path for quick lookup.
   const oldPathToOp = new Map<string, FileOp>()
-  for (const op of tsFileOps) {
-    const absOldPath = path.isAbsolute(op.oldPath) ? op.oldPath : path.join(cwd, op.oldPath)
+  const movedSourcePathByOldPath = new Map<string, string>()
+  for (const op of fileOps) {
+    const absOldPath = absolutePathFor(op.oldPath, cwd)
+    const absNewPath = absolutePathFor(op.newPath, cwd)
     oldPathToOp.set(absOldPath, op)
-    // Also add without extension for module resolution
-    oldPathToOp.set(absOldPath.replace(/\.(ts|tsx|js|jsx)$/, ""), op)
+
+    if (/\.(ts|tsx|js|jsx)$/.test(op.oldPath)) {
+      // Also add without extension for module resolution.
+      oldPathToOp.set(stripTsJsExtension(absOldPath), op)
+      movedSourcePathByOldPath.set(absOldPath, absNewPath)
+    }
   }
 
   const edits: Edit[] = []
@@ -211,6 +213,7 @@ export function findImportEdits(fileOps: FileOp[], cwd: string = process.cwd()):
         specNode.getEnd(),
         fileContent,
         oldPathToOp,
+        movedSourcePathByOldPath,
         cwd,
       )
       if (edit) edits.push(edit)
@@ -230,6 +233,7 @@ export function findImportEdits(fileOps: FileOp[], cwd: string = process.cwd()):
         specNode.getEnd(),
         fileContent,
         oldPathToOp,
+        movedSourcePathByOldPath,
         cwd,
       )
       if (edit) edits.push(edit)
@@ -260,6 +264,7 @@ export function findImportEdits(fileOps: FileOp[], cwd: string = process.cwd()):
               end,
               fileContent,
               oldPathToOp,
+              movedSourcePathByOldPath,
               cwd,
             )
             if (edit) edits.push(edit)
@@ -288,16 +293,20 @@ function createImportEdit(
   end: number,
   fileContent: string,
   oldPathToOp: Map<string, FileOp>,
+  movedSourcePathByOldPath: Map<string, string>,
   cwd: string,
 ): Edit | null {
   if (!moduleSpecifier.startsWith(".")) return null
 
   const resolvedPath = resolveModulePath(sourceFileDir, moduleSpecifier)
-  const op = oldPathToOp.get(resolvedPath) || oldPathToOp.get(resolvedPath.replace(/\.(ts|tsx|js|jsx)$/, ""))
-  if (!op) return null
+  const op = oldPathToOp.get(resolvedPath) || oldPathToOp.get(stripTsJsExtension(resolvedPath))
+  const newSourcePath = movedSourcePathByOldPath.get(absolutePathFor(sourceFilePath, cwd))
+  if (!op && !newSourcePath) return null
 
-  const absNewPath = path.isAbsolute(op.newPath) ? op.newPath : path.join(cwd, op.newPath)
-  const newRelativePath = computeNewRelativePath(sourceFileDir, absNewPath, moduleSpecifier)
+  const fromDir = newSourcePath ? path.dirname(newSourcePath) : sourceFileDir
+  const toPath = op ? absolutePathFor(op.newPath, cwd) : resolvedPath
+  const newRelativePath = computeNewRelativePath(fromDir, toPath, moduleSpecifier)
+  if (newRelativePath === moduleSpecifier) return null
 
   const originalQuote = fileContent[start]
   const newSpecifier = `${originalQuote}${newRelativePath}${originalQuote}`
@@ -308,6 +317,14 @@ function createImportEdit(
     length: end - start,
     replacement: newSpecifier,
   }
+}
+
+function absolutePathFor(filePath: string, cwd: string): string {
+  return path.resolve(path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath))
+}
+
+function stripTsJsExtension(filePath: string): string {
+  return filePath.replace(/\.(ts|tsx|js|jsx)$/, "")
 }
 
 /**

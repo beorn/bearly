@@ -197,8 +197,13 @@ function setupMoveFixtures() {
   if (fs.existsSync(MOVE_DIR)) fs.rmSync(MOVE_DIR, { recursive: true })
   fs.mkdirSync(path.join(MOVE_DIR, "pkgA"), { recursive: true })
   fs.mkdirSync(path.join(MOVE_DIR, "pkgB"), { recursive: true })
-  fs.writeFileSync(path.join(MOVE_DIR, "pkgA/index.ts"), "export const a = 1\n")
+  fs.mkdirSync(path.join(MOVE_DIR, "shared"), { recursive: true })
+  fs.writeFileSync(
+    path.join(MOVE_DIR, "pkgA/index.ts"),
+    'import { shared } from "../shared/shared"\nimport { u } from "./util"\nexport const a = shared + u\n',
+  )
   fs.writeFileSync(path.join(MOVE_DIR, "pkgA/util.ts"), "export const u = 2\n")
+  fs.writeFileSync(path.join(MOVE_DIR, "shared/shared.ts"), "export const shared = 3\n")
   // A consumer OUTSIDE the moved dir importing from it — its import must be rewritten.
   fs.writeFileSync(path.join(MOVE_DIR, "pkgB/uses.ts"), 'import { a } from "../pkgA/index"\n')
 }
@@ -252,6 +257,18 @@ describe("createDirectoryMoveProposal", () => {
     const editset = await createDirectoryMoveProposal("pkgA", "pkgC", "**/*.ts", MOVE_DIR)
     const keys = editset.importEdits.map((e) => `${e.file}|${e.offset}`)
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test("rewrites imports using the importer and target post-move paths", async () => {
+    const editset = await createDirectoryMoveProposal("pkgA", "packages/pkgC", "**/*.ts", MOVE_DIR)
+
+    const editsForMovedIndex = editset.importEdits.filter((e) => e.file.endsWith("pkgA/index.ts"))
+    const replacements = editsForMovedIndex.map((e) => e.replacement)
+    expect(replacements).toContain('"../../shared/shared"')
+    expect(replacements).not.toContain('"../packages/pkgC/util"')
+
+    const utilImportEdit = editsForMovedIndex.find((e) => e.replacement.includes("util"))
+    expect(utilImportEdit).toBeUndefined()
   })
 })
 
