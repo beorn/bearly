@@ -1,254 +1,153 @@
 ---
 name: big
 effort: max
-description: "Reframe recurring or patchy problems with 10-20 hypotheses and external review to find a design where the bug cannot happen."
+description: "Reframe recurring or wrong-shaped problems into a design where the bug cannot happen."
 argument-hint: [problem or area]
 benefits-from: [recall, tent, gbrain]
 escalate-to:
   { arch: "reframing reveals missing abstraction or layer", render: "root cause is in the rendering pipeline design" }
 ---
 
-# Think Big — What If This Problem Didn't Need to Exist?
+# /big - Reframe Before Fixing
 
-**Keywords**: big, think big, reframe, hypotheses, architecture
-
-**This is a meta-protocol, not an LLM tool.** It calls `/pro` or `/deep` internally during Phase 3 — its value is the structured 10-20-hypothesis reframing workflow, not the model call.
-
-**STOP fixing. START reframing.**
-
-You're here because either: (a) the user asked you to think bigger, (b) you're about to write a patch that feels wrong, or (c) the same class of bug keeps appearing. The goal is not to solve the problem in front of you — it's to find the design where this problem **can't happen**.
+`/big` is for wrong-shaped fixes, recurring bugs, and patches that feel like they preserve the failure mode. It is not an LLM tool and not "think longer"; it is a compact evidence loop: frame, generate, validate, synthesize, act.
 
 ## Resolver
 
-Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
-
 ### Always Read
 
-- [[#Phase 1 See the Problem Five Ways]] — start by separating symptom, system, architecture, history, and counterfactual.
-- [[#Phase 7 Final Synthesis]] — use the L0-L5 quality rubric for the recommendation.
+- [[#Operating Loop]] - the required reframe loop.
+- [[#Final Shape]] - the required synthesis format.
+- [[../agent-system/references/resolver|resolver quality plateau]] - use when this reframe changes routing or ownership.
 
 ### By Intent
 
-- [[#Phase 2 Generate Hypotheses Round 1]] — read if creating the first 10-20 framings.
-- [[#Phase 3 Explore Round 1]] — read if grounding hypotheses in code and external review.
-- [[#Phases 5-6 Iterate Rounds 2-5]] — read if the first synthesis is not converged.
-- [[#Phase 8 Action Plan]] — read when converting the reframe into DO/ASK actions.
-- [[#big-vs-fresh]] — read if deciding between `/big` and `/fresh`.
+- [[#Fan Out]] - use when many hypotheses can be checked independently.
+- [[#External Review]] - use before trusting your own frame.
+- [[#Big Vs Fresh]] - use when choosing between design reframe and implementation unsticking.
 
-## The Problem
+## Problem
 
 $ARGUMENTS
 
-**If no arguments**: Infer from recent conversation — what bugs keep appearing? What area feels fragile? What did the user just report? Don't ask "what should I think about?"
+If no arguments are supplied, infer the problem from the recent conversation: what kept breaking, what felt fragile, or what the user just rejected. Do not ask what to think about.
 
-## Phase 1: See the Problem Five Ways
+## Principles
 
-Before generating solutions, understand the problem from 5 different angles. Write 1-2 sentences for each:
+- Stop patching long enough to name the design that would make the bug impossible.
+- Generate hypotheses before exploring any single one. Breadth first, depth second.
+- Hypotheses are framings, not fixes: missing abstraction, wrong owner, missing invariant, wrong layer, deletion, inversion, composition, unification, lifecycle/API shape, prior art.
+- Ground every surviving hypothesis in code, command output, history, or a concrete external view.
+- End with action: DO the obvious low-risk work; ASK for architectural or product-direction calls.
 
-1. **The user's words** — What did they literally say/see? (not your interpretation)
-2. **The system's perspective** — What state transition or invariant was violated?
-3. **The architectural view** — Which layer boundary was crossed, leaked, or missing?
-4. **The historical view** — `bun recall "keywords"` — has this class of problem appeared before? How many times? What was tried?
-5. **The counterfactual** — In a perfectly designed system, why would this problem be impossible?
+## Operating Loop
 
-The counterfactual (#5) is the most important. It points toward the real fix.
+### 1. Frame Five Ways
 
-## Phase 2: Generate Hypotheses (Round 1)
+Write 1-2 sentences for each:
 
-Generate **10-20 hypotheses** — not solutions, but _framings_. Each hypothesis proposes a different root cause or a different way to eliminate the problem entirely.
+1. User words: what they literally saw or said.
+2. System invariant: what state transition or guarantee failed.
+3. Architecture: which layer boundary leaked, crossed, or was missing.
+4. History: run `bun recall "<keywords>"`; summarize recurrence and prior attempts.
+5. Counterfactual: in a well-designed system, why would this problem be impossible?
 
-Categories to force breadth:
+### 2. Generate Round 1
 
-| Category                   | Question                                                            | Example hypothesis                                                                                     |
-| -------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Missing abstraction**    | What concept should exist but doesn't?                              | "There should be a CursorScope that guarantees valid cursor at all times"                              |
-| **Wrong ownership**        | Who owns this state? Should someone else?                           | "The view owns cursor state but the model should — then undo gets it free"                             |
-| **Missing invariant**      | What rule is enforced by convention but should be enforced by code? | "Node parent_id validity is checked at render time but should be checked at mutation time"             |
-| **Unnecessary complexity** | What if this entire subsystem didn't exist?                         | "If cards auto-expanded during edit, the expand-on-edit bug can't exist"                               |
-| **Wrong layer**            | Is this logic in the right place?                                   | "This is a view concern solved in the model — move it to the view"                                     |
-| **Prior art**              | How do VS Code / Obsidian / Notion / Asana handle this?             | "Notion doesn't have this problem because editing is always inline, never modal"                       |
-| **Inverse**                | What if we did the opposite of what we're doing?                    | "Instead of detecting edit mode and special-casing, make edit mode the default"                        |
-| **Composition**            | Can two simpler things replace one complex thing?                   | "Split the monolithic action handler into keyboard-layer + mutation-layer"                             |
-| **Deletion**               | What if we deleted this code entirely?                              | "The [error] fallback exists because we handle missing nodes — what if we didn't allow missing nodes?" |
-| **Unification**            | Are there 2-3 similar mechanisms that should be one?                | "Card edit, sub-item edit, and title edit are 3 code paths — should be 1"                              |
+Write 10-20 numbered hypotheses before exploring any of them. Force breadth across these categories: missing abstraction, wrong ownership, missing invariant, unnecessary complexity/deletion, wrong layer, prior art, inverse design, composition, unification, and lifecycle/API shape.
 
-**Write all hypotheses as a numbered list before exploring any of them.** Breadth first, depth second.
-
-## Phase 3: Explore (Round 1)
+### 3. Validate
 
 For each hypothesis, spend 2-5 minutes:
 
-1. **Grep/read** the relevant code to check feasibility
-2. **Estimate blast radius** — how many files change? Is it additive or rewrite?
-3. **Score**: Does this solve just the immediate problem, or a whole class of problems?
+- grep/read the relevant files or docs;
+- estimate blast radius and whether the change is additive, replacement, or rewrite;
+- mark it `NARROW` (this bug only), `BROAD` (bug class), or `REFRAME` (invalid state becomes impossible).
 
-Mark each: `NARROW` (fixes this bug only), `BROAD` (fixes a class), `REFRAME` (makes the problem impossible).
+### 4. External Review
 
-### Ask an External LLM (REQUIRED)
+Get at least one outside view unless the user explicitly said not to or the tool is unavailable. Lead with symptoms, include full relevant files when possible, and ask discovery questions instead of confirmation questions.
 
-Your own hypotheses have blind spots. **Always consult at least one external perspective** during exploration. Pick the right tool:
+- `/pro` - design review with multiple legs and a judge.
+- `/ask` - quick prior art or second opinion.
+- `/deep` - web/prior-art research with citations.
+- `/csw` - internal option matrix when no external call is warranted.
 
-| Tool                        | Best for                                                                     | Cost            |
-| --------------------------- | ---------------------------------------------------------------------------- | --------------- |
-| **`/pro "question"`**       | "Is this design sound? What am I missing?" — 3-leg + judge with code context | ~$0.20          |
-| **`/ask "question"`**       | Quick prior art — "how does VS Code handle X?" — single model                | ~$0.02          |
-| **`/llm --deep`**           | Research with web search + citations                                         | ~$2-5           |
-| **`/csw`**                  | Compare 4+ approaches with decision matrix                                   | Free (internal) |
-| **`bun recall "keywords"`** | Check if prior sessions already explored this                                | Free            |
+For silvery/km/ag topics, include `docs/silvery-positioning-brief.md` in `/pro`, `/ask`, or `/deep` context.
 
-**How to ask well** (from `/fresh`):
+### 5. Synthesize
 
-- Lead with **symptoms**, not diagnosis — let the LLM form its own model
-- Include **full source files**, not snippets — the LLM needs to see how functions interact
-- Ask **open discovery questions** ("What mechanism could cause X?"), not confirmation questions ("Is my fix correct?")
-- State **failed approaches last** — constrain the solution space without anchoring
+Write 3-5 sentences: which hypotheses survived, what pattern they share, which new question appeared, and which frame now looks wrong or too small.
 
-Build a context file with the relevant code, then:
+Repeat one more generate -> validate -> synthesize round if no high-confidence `REFRAME` or `BROAD` option has emerged. Stop when the synthesis stops changing or a clear reframe wins.
 
-```bash
-bun llm --deep -y --no-recover --context-file /tmp/big-context.md "What design would make [problem] impossible?"
-```
+### 6. Act
 
-## Phase 4: Synthesize (Round 1)
+Classify outcomes:
 
-Write a 3-5 sentence synthesis:
+- DO now: narrow fix with tests, missing invariant, dead-code deletion, or a reframe bead with a strong first paragraph.
+- ASK: changes touching 3+ packages, public API/user behavior, product direction, or conflicts with in-flight work.
 
-- Which hypotheses were `REFRAME` or `BROAD`?
-- What patterns do they share?
-- What new questions emerged?
-- What didn't you consider in Phase 2 that's now obvious?
+Do not stall on ASK items when a low-risk DO item is already clear.
 
-## Phases 5-6: Iterate (Rounds 2-5)
+## Final Shape
 
-**Repeat the generate→explore→synthesize cycle.** Each round builds on the previous:
+Use the L0-L5 rubric from [[../../../hub/quality-rubric]] rather than percentages:
 
-- **Round 2**: Combinations of Round 1 ideas + deeper exploration of REFRAME scores
-- **Round 3+**: Only if the synthesis raises new questions or the REFRAME ideas aren't converging yet
+- L0 workaround/env tweak
+- L1 runtime guard
+- L2 invariant plus diagnostics
+- L3 API/lifecycle makes invalid state hard
+- L4 architecture makes invalid state impossible
+- L5 old workaround code deleted plus property/fuzz coverage
 
-**Stop iterating when**: the synthesis stops producing new insights, or you have a clear REFRAME with high confidence. Most problems need 2-3 rounds. Complex architectural questions may need 4-5.
-
-**Each round**: Generate **5-20 hypotheses** (scale with problem complexity — a simple guard bug needs 5, an architectural reframe needs 15-20). Explore each. Synthesize.
-
-## Phase 7: Final Synthesis
-
-### Quality levels (preferred over "plateau distance %")
-
-When framing how far the current state is from a real fix, **use the L0-L5 rubric, not percentages**. Percentages drift to vibe ("this is 65% to plateau"); the rubric is verifiable per-bead.
-
-- **L0** — workaround / threshold / env tweak
-- **L1** — runtime guard catches it
-- **L2** — invariant asserted + debug diagnostics
-- **L3** — API/lifecycle structure makes invalid state hard
-- **L4** — architecture makes invalid state impossible by construction
-- **L5** — old workaround code deleted + property/fuzz tests cover regression
-
-Full definitions, examples, and anti-patterns: [hub/quality-rubric.md](../../../hub/quality-rubric.md).
-
-State both the **current level** and the **target level** in the recommendation. "Current L1 → target L4" frames the work honestly; "65% → 90%" doesn't.
-
-Write the recommendation:
+Return this:
 
 ```markdown
-### Reframing: [problem]
+### Reframing: <problem>
 
-**The real problem is**: [1 sentence — what's actually wrong at the design level]
+**The real problem is**: <one sentence>
+**Current level -> target level**: Lx -> Ly
+**The solution that makes it unnecessary**: <1-3 sentences>
+**What it solves beyond this bug**: <related bug classes>
+**Effort**: <files/packages/risk/phases>
+**First step**: <smallest aligned move>
 
-**Current level → target level**: Lx → Ly (see [hub/quality-rubric.md](../../../hub/quality-rubric.md))
-
-**The solution that makes it unnecessary**: [1-3 sentences — the design change that moves the bead from Lx to Ly]
-
-**What it solves beyond the immediate bug**: [list of related problems this also fixes]
-
-**Effort**: [rough scope — files, risk, phases]
-
-**First step**: [the smallest move toward this design]
-```
-
-## Phase 8: Action Plan
-
-Convert findings into concrete actions. Classify each by confidence:
-
-### DO (obvious, low-risk — execute immediately)
-
-- Ship the narrow fix for the immediate bug
-- Create issues for reframes with a great first paragraph capturing the analysis: 1-3 sentences (50-400 chars) saying WHAT this issue is + WHY it matters — that's what an issue tracker's quick-list view surfaces. Make it scannable cold; full reframe detail (hypothesis exploration, alternatives considered) goes in body sections after the lead paragraph.
-- Delete dead code identified during exploration
-- Add missing invariants that are clearly correct
-
-### ASK (significant, needs user approval — present and wait)
-
-- Architectural changes touching 3+ packages
-- Reframes that change public API or user-visible behavior
-- Changes that conflict with existing beads or in-progress work
-- Anything where the "right" answer depends on product direction
-
-Present each ASK item with: what, why, effort, and what you'd recommend.
-
-### Format
-
-```markdown
 ## Actions
 
-### Doing now:
+### Doing now
+1. <low-risk action>
 
-1. Fix [immediate bug] — [1 sentence]
-2. Create bead km-<scope>.<reframe> — [title] (P3, design captured)
-3. [any other obvious actions]
-
-### Need your call:
-
-1. **[Change X]** — [why it's better]. Effort: [scope]. Recommend: [yes/no/defer].
-2. **[Change Y]** — [why]. Effort: [scope]. Recommend: [yes/no/defer].
+### Need your call
+1. **<decision>** - <why, effort, recommendation>
 ```
 
-**Execute the DO items. Ask about the ASK items. Don't stall on asking — ship what's obvious.**
+## Fan Out
 
-## /big vs /fresh
+When hypotheses are independent, validate them in parallel. Prompt each worker:
 
-Both involve stepping back from implementation. The difference:
+```text
+Hypothesis: <H>. Validate against the codebase by grepping <paths> and reading <files>. Return <=150 words: evidence for, evidence against, confidence 0-1, and 1-3 follow-up questions.
+```
 
-|                   | `/big`                                                          | `/fresh`                                                          |
-| ----------------- | --------------------------------------------------------------- | ----------------------------------------------------------------- |
-| **Trigger**       | Proactive — before coding, when the fix feels wrong             | Reactive — after 20+ min stuck, going in circles                  |
-| **Core activity** | Generate 10-20 hypotheses, 2 rounds, score NARROW/BROAD/REFRAME | Gather context (full files), structure question, ask external LLM |
-| **External LLM**  | Required (Phase 3)                                              | Required (Phase 4)                                                |
-| **Output**        | Action plan with DO/ASK items                                   | LLM response + concrete plan                                      |
-| **Best at**       | Finding the design where the problem can't happen               | Getting unstuck on a specific implementation problem              |
+Integrate wave 1 into a ranking; send wave 2 only for the top 2-3 questions.
 
-**Use `/big` when the problem is the design. Use `/fresh` when the problem is you're stuck.** `/big` subsumes `/fresh` — if you're running `/big`, you don't also need `/fresh`.
+## Big Vs Fresh
 
-## When to Use This
+- `/big`: the frame or design is suspect; output is a reframe plus DO/ASK actions.
+- `/fresh`: implementation is stuck; output is an external second opinion plus a concrete plan.
 
-- The fix you're about to write feels like duct tape
-- The same area has had 3+ bugs in the last month
-- You're adding a special case to handle an edge case of a special case
-- The user says "this keeps happening" or "why does this keep breaking"
-- You've been debugging for 20+ minutes and the root cause keeps shifting
+Use `/big` when the problem should not need to exist. Use `/fresh` when the problem is that you are stuck implementing.
 
 ## Anti-Patterns
 
-| Don't                                          | Why                                                                      |
-| ---------------------------------------------- | ------------------------------------------------------------------------ |
-| Jump to the first good hypothesis              | You'll miss the reframe — explore all 10-20                              |
-| Only generate "fix" hypotheses                 | Include deletion, inversion, and unification                             |
-| Skip the synthesis between rounds              | Round 2 hypotheses should build on Round 1 learnings                     |
-| Propose a massive rewrite without a narrow fix | Ship the narrow fix, bead the reframe                                    |
-| Think big without checking code                | Hypotheses must be grounded — grep and read                              |
-| Stop at Round 1                                | The best ideas come from Round 2, after you've learned what doesn't work |
+- Jumping to the first plausible hypothesis.
+- Generating only fixes, with no deletion/inversion/unification options.
+- Asking external review to confirm your diagnosis instead of explaining symptoms.
+- Skipping code/history checks.
+- Proposing a rewrite without a narrow fix or reframe bead.
+- Ending without DO/ASK actions.
 
-## Wave-loop fan-out (canonical: /tent JIT bead context completion)
+## References
 
-The 10-20 hypotheses /big generates are independent → fan out validation via `Explore` sub-agents in ONE message. Each hypothesis = one sub-agent:
-
-- Prompt: "Hypothesis: <H>. Validate against codebase by grepping <paths> + reading <files>. 150 words: evidence-for, evidence-against, confidence (0-1), 1-3 follow-up questions."
-- Return: signal vs. noise on each hypothesis surfaces fast; high-confidence-low-evidence ones survive to wave 2
-
-After wave 1: integrate into hypothesis ranking; harvest follow-ups for any surviving high-leverage branches; wave 2 drills into "where does invariant X actually live?" for the top 2-3.
-
-This turns /big's serial hypothesis-eval into parallel. Canonical: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.
-
-## Pairs with
-
-- [/undead](../undead/SKILL.md) — when a bead reopens (n≥2 #undead recurrence), the bead's REPEATED failure is itself evidence. Load /undead for the 20-mode failure-hypothesis sweep tuned to recurrence patterns + Gate 0 scope-escalation. /big's 10 reframe categories apply on top.
-- [/why](../why/SKILL.md) — 5-Whys causal-chain analysis. Complementary, not redundant: /big generates breadth (10-20 hypotheses); /why drills depth (1 chain, 5 levels). Use /big when the fix feels wrong; /why when you've identified ONE candidate and want to trace it to its architectural root.
-- [/trouble](../trouble/SKILL.md) — regression-specific live-repro discipline (used to work / stopped working). /trouble produces the evidence /big reframes on.
+[[../undead/SKILL|/undead]], [[../why/SKILL|/why]], [[../trouble/SKILL|/trouble]], [[../fresh/SKILL|/fresh]], [[../pro/SKILL|/pro]], [[../ask/SKILL|/ask]], [[../deep/SKILL|/deep]], [[../csw/SKILL|/csw]], [[../../../hub/quality-rubric]].
