@@ -55,55 +55,17 @@ FREQUENCY: [Once? Every time? Intermittent?]
 
 For each "why", do actual investigation — grep, read code, check history. Don't guess.
 
-### Why 1: Why did [symptom] happen?
+Use this template for each level:
 
-**Investigate**: Read the code path. What directly caused the visible symptom?
+| Level | Investigate | Output |
+| ----- | ----------- | ------ |
+| Why 1 | Direct code/state that produced the symptom | `ANSWER`, `EVIDENCE`, and the narrow patch |
+| Why 2 | Condition that allowed Why 1 | `ANSWER`, `EVIDENCE` |
+| Why 3 | Design shape or missing abstraction | `ANSWER`, architecture/history evidence |
+| Why 4 | Process/spec/ownership reason for Why 3 | `ANSWER`, prior sessions/beads/docs |
+| Why 5 | Deep structural gap, often missing rules | `ANSWER` and any evidence available |
 
-```
-ANSWER: [Direct cause — the code/state that produced the symptom]
-EVIDENCE: [File:line, grep result, test output]
-```
-
-**If this were the only problem, what would the fix be?** Write it — this is your narrow fix.
-
-### Why 2: Why did [Why 1 answer] happen?
-
-**Investigate**: What allowed that state/code path to exist?
-
-```
-ANSWER: [The condition that enabled Why 1]
-EVIDENCE: [File:line, grep result]
-```
-
-### Why 3: Why did [Why 2 answer] happen?
-
-**Investigate**: Now you're usually at the design level. Why is the system shaped this way?
-
-```
-ANSWER: [The design decision or missing abstraction]
-EVIDENCE: [Architecture, history — bun recall "keywords"]
-```
-
-### Why 4: Why did [Why 3 answer] happen?
-
-**Investigate**: The organizational/process/architectural root. Why was this design chosen?
-
-```
-ANSWER: [The constraint, assumption, or missing spec]
-EVIDENCE: [Prior sessions, beads, docs]
-```
-
-### Why 5: Why did [Why 4 answer] happen?
-
-**Investigate**: The deepest structural cause you can reach. Often: "we never defined the rules for this."
-
-```
-ANSWER: [The fundamental gap]
-```
-
-**Stop earlier if you reach a dead end or the answer is "because we haven't built X yet."** Don't force 5 levels if 3 is the real root.
-
-**Go deeper than 5 if each level keeps revealing genuine new insight.** The number 5 is a minimum, not a maximum.
+Stop earlier if you reach bedrock or "we haven't built X yet"; go past 5 when each level reveals genuine new insight.
 
 ## Phase 3: The Chain
 
@@ -140,6 +102,30 @@ Run `/big` Phase 8 (Action Plan) on the fix levels:
 
 - Present Why 3-5 fixes with effort estimates
 - Recommend which level to fix at based on: how often this area breaks, how much effort, how many related problems it solves
+
+### Durable Record
+
+If the analysis changes routing, process, architecture, or follow-up work, append
+it to `hub/retro/why-log.md` before moving on. Use this field shape so
+`tent sitrep` and `sitrep.html` keep the follow-up visible:
+
+```markdown
+## YYYY-MM-DD — short title
+
+status:: open
+owner:: @chief
+symptom:: <observable symptom>
+causal-chain:: <because-chain from the analysis>
+evidence:: <commands, files, or transcripts that support the chain>
+fix-levels:: PATCH: ...; GUARD: ...; SPEC: ...
+follow-up:: [@km/scope/bead.md](../../@km/scope/bead.md)
+next-action:: <the next concrete action and owner>
+```
+
+When follow-through changes, run
+`tent why-log status <id> resolved|superseded|converted --note "<why>"`;
+`converted` also needs `--follow-up <bead>` so sitrep can show where the action
+moved.
 
 ### Bring in Outside Perspective
 
