@@ -116,9 +116,11 @@ Return this:
 ## Actions
 
 ### Doing now
+
 1. <low-risk action>
 
 ### Need your call
+
 1. **<decision>** - <why, effort, recommendation>
 ```
 

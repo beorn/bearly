@@ -57,13 +57,13 @@ For each "why", do actual investigation — grep, read code, check history. Don'
 
 Use this template for each level:
 
-| Level | Investigate | Output |
-| ----- | ----------- | ------ |
+| Level | Investigate                                 | Output                                     |
+| ----- | ------------------------------------------- | ------------------------------------------ |
 | Why 1 | Direct code/state that produced the symptom | `ANSWER`, `EVIDENCE`, and the narrow patch |
-| Why 2 | Condition that allowed Why 1 | `ANSWER`, `EVIDENCE` |
-| Why 3 | Design shape or missing abstraction | `ANSWER`, architecture/history evidence |
-| Why 4 | Process/spec/ownership reason for Why 3 | `ANSWER`, prior sessions/beads/docs |
-| Why 5 | Deep structural gap, often missing rules | `ANSWER` and any evidence available |
+| Why 2 | Condition that allowed Why 1                | `ANSWER`, `EVIDENCE`                       |
+| Why 3 | Design shape or missing abstraction         | `ANSWER`, architecture/history evidence    |
+| Why 4 | Process/spec/ownership reason for Why 3     | `ANSWER`, prior sessions/beads/docs        |
+| Why 5 | Deep structural gap, often missing rules    | `ANSWER` and any evidence available        |
 
 Stop earlier if you reach bedrock or "we haven't built X yet"; go past 5 when each level reveals genuine new insight.
 
