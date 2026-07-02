@@ -33,6 +33,10 @@ jobs:
           done
           exit 1
 
+      # The refactor backends discover files via ripgrep; runners don't ship it.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Type check
         run: bun run typecheck
 
