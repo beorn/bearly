@@ -2,7 +2,7 @@
   "name": "bearly",
   "version": "0.0.0",
   "private": true,
-  "description": "Reusable Claude Code tools \u2014 coordination, testing, research, refactoring",
+  "description": "Reusable Claude Code tools — coordination, testing, research, refactoring",
   "keywords": [
     "ai",
     "batch-refactor",
