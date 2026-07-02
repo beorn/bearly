@@ -250,6 +250,6 @@ describe("--json mode end-to-end", () => {
     expect(jsonLines).toHaveLength(1)
     const envelope = JSON.parse(jsonLines[0]!) as Record<string, unknown>
     expect(envelope.status).toBe("failed")
-    expect(envelope.error).toMatch(/Unknown model/i)
+    expect(envelope.error).toMatch(/not in registry/i)
   }, 10_000)
 })

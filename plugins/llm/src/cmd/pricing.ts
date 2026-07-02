@@ -7,7 +7,14 @@
 
 import { queryModel } from "../lib/research"
 import { isProviderAvailable } from "../lib/providers"
-import { estimateCost, formatCost, getBestAvailableModel, MODELS, type ModelMode } from "../lib/types"
+import {
+  estimateCost,
+  formatCost,
+  getBestAvailableModel,
+  MODELS,
+  PROVIDER_ENDPOINTS,
+  type ModelMode,
+} from "../lib/types"
 import {
   isPricingStale,
   cacheCurrentPricing,
@@ -234,13 +241,68 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
   return { priceChanges, extractionCost }
 }
 
+/** Strip a trailing ISO date snapshot suffix (`-YYYY-MM-DD`). */
+function stripDateSuffix(id: string): string {
+  return id.replace(/-\d{4}-\d{2}-\d{2}$/, "")
+}
+
 /**
- * Discover new models by querying provider APIs (OpenAI, Anthropic).
- * Returns model IDs not present in the MODELS registry.
+ * Filter provider-reported model ids down to *genuinely* new base models.
+ *
+ * The provider `/v1/models` lists are dominated by ids we already track under
+ * a different shape: dated snapshots (`o3-mini-2025-01-31` when we have
+ * `o3-mini`), `apiModelId` aliases (`gpt-5-pro` is our `gpt-5.4-pro`), and
+ * non-SKU surfaces (`gpt-5-chat-latest`, `gpt-5-search-api`). Surfacing all of
+ * them made the auto-update banner scream "30 new models — add to MODELS",
+ * which read as "your models are being rejected" and caused a misdiagnosis
+ * (2026-07-02). This keeps only ids that aren't a known base, a known alias, a
+ * dated variant of either, a non-SKU surface, or a dated variant of another
+ * candidate (we keep the undated base of that pair).
+ *
+ * Pure + exported so it can be unit-tested without hitting the network.
+ */
+export function filterNewModelCandidates(
+  candidateIds: string[],
+  knownIds: Iterable<string>,
+  knownApiIds: Iterable<string>,
+): string[] {
+  const known = new Set<string>([...knownIds, ...knownApiIds])
+  const knownBases = new Set<string>([...known].map(stripDateSuffix))
+  const isKnownVariant = (id: string): boolean =>
+    [id, stripDateSuffix(id)].some((form) => known.has(form) || knownBases.has(form))
+  const candidateBases = new Set(candidateIds.map(stripDateSuffix))
+
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const id of candidateIds) {
+    if (seen.has(id)) continue
+    if (isKnownVariant(id)) continue
+    // OpenAI non-SKU surfaces we deliberately don't track as models.
+    if (/-chat-latest$/.test(id) || /-search-api(-\d{4}-\d{2}-\d{2})?$/.test(id)) continue
+    // Dated variant whose own base is also a candidate → keep only the base.
+    const base = stripDateSuffix(id)
+    if (base !== id && candidateBases.has(base)) continue
+    seen.add(id)
+    out.push(id)
+  }
+  return out
+}
+
+/** All `apiModelId` overrides declared on provider endpoints (e.g. `gpt-5-pro`
+ *  for our `gpt-5.4-pro` alias) — these are known ids under a different name. */
+function knownApiModelIds(): string[] {
+  return Object.values(PROVIDER_ENDPOINTS)
+    .map((e) => e.apiModelId)
+    .filter((x): x is string => typeof x === "string")
+}
+
+/**
+ * Discover *genuinely new* models by querying provider APIs (OpenAI, Anthropic).
+ * Returns base model ids not represented in the MODELS registry (see
+ * `filterNewModelCandidates` for what "represented" excludes).
  */
 export async function discoverNewModels(): Promise<string[]> {
-  const knownIds = new Set(MODELS.map((m) => m.modelId))
-  const newModels: string[] = []
+  const raw: string[] = []
 
   // OpenAI /v1/models
   if (process.env.OPENAI_API_KEY) {
@@ -263,10 +325,9 @@ export async function discoverNewModels(): Promise<string[]> {
             !m.id.includes("tts") &&
             !m.id.includes("dall-e") &&
             !m.id.includes("embedding") &&
-            !m.id.includes("whisper") &&
-            !knownIds.has(m.id)
+            !m.id.includes("whisper")
           ) {
-            newModels.push(m.id)
+            raw.push(m.id)
           }
         }
       }
@@ -286,15 +347,17 @@ export async function discoverNewModels(): Promise<string[]> {
       if (resp.ok) {
         const data = (await resp.json()) as { data: Array<{ id: string }> }
         for (const m of data.data) {
-          if (m.id.startsWith("claude-") && !knownIds.has(m.id)) {
-            newModels.push(m.id)
-          }
+          if (m.id.startsWith("claude-")) raw.push(m.id)
         }
       }
     } catch {}
   }
 
-  return newModels
+  return filterNewModelCandidates(
+    raw,
+    MODELS.map((m) => m.modelId),
+    knownApiModelIds(),
+  )
 }
 
 /**
@@ -347,14 +410,18 @@ export async function maybeAutoUpdatePricing(command: string | undefined): Promi
     }
 
     if (hasNewModels) {
-      console.error(`\n  🆕 New models (${newModels.length}):`)
+      console.error(`\n  🆕 Provider models not yet in the registry (${newModels.length}):`)
       for (const id of newModels.slice(0, 15)) {
         console.error(`    • ${id}`)
       }
       if (newModels.length > 15) {
         console.error(`    ... and ${newModels.length - 15} more`)
       }
-      console.error(`\n  ℹ️  Add to MODELS in plugins/llm/src/lib/types.ts`)
+      // This banner prints AFTER the response, on stderr — it is informational
+      // only and does NOT mean your query failed or a model was rejected.
+      // (2026-07-02: the old wording caused exactly that misdiagnosis.)
+      console.error(`\n  ℹ️  Informational only — your query was unaffected. Add any you want`)
+      console.error(`     selectable to the registry (plugins/llm/src/lib/types.ts).`)
     }
 
     if (updateResult.extractionCost) {

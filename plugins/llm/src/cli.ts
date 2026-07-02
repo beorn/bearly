@@ -282,7 +282,7 @@ if (modelOverrideId) {
   if (!modelOverride) {
     const available = MODELS.map((m) => m.modelId).join(", ")
     error(
-      `Unknown model: ${modelOverrideId}. Available: ${available}, or ollama:<model>, or <owner>/<model> for OpenRouter`,
+      `model '${modelOverrideId}' not in registry. Available: ${available}, or ollama:<model>, or <owner>/<model> for OpenRouter`,
     )
   }
 }

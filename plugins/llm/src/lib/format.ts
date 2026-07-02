@@ -343,10 +343,25 @@ export async function finishResponse(
   /** Per-call rate-limit headers to include in the JSON envelope. Surface
    *  is gated by the caller — pass only when `--quota` was set. */
   quota?: OutputMeta["quota"],
+  /** Actionable provider error (quota exhausted, rate-limit, renamed model)
+   *  captured upstream by `queryModel`/`describeProviderError`. When the
+   *  completion is empty and this is set, it becomes the headline instead of
+   *  the generic "silent failure" copy — this is the fix for the misleading
+   *  empty-response message on a real provider failure. */
+  error?: string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
-    // Write error to stderr (visible in interactive mode)
-    log.error?.("Model returned empty response (no content). This is a silent failure.")
+    const providerError = error?.trim() || undefined
+    // Write error to stderr (visible in interactive mode). Lead with the real
+    // provider error when we have one; only fall back to the generic
+    // "empty completion" copy when the provider reported no error at all.
+    if (providerError) {
+      log.error?.(providerError)
+    } else {
+      log.error?.(
+        "Model returned an empty completion and the provider reported no error. Likely a content filter, an overloaded model, or reasoning tokens consuming the entire output budget.",
+      )
+    }
     log.error?.(`Model: ${model.displayName}`)
     if (usage) log.error?.(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}`)
     if (durationMs) log.error?.(`Duration: ${Math.round(durationMs / 1000)}s`)
@@ -356,18 +371,18 @@ export async function finishResponse(
     const promptTokens = usage?.promptTokens ?? 0
     const completionTokens = usage?.completionTokens ?? 0
     const errorContent = [
-      "# LLM Error: Empty Response",
+      providerError ? "# LLM Error" : "# LLM Error: Empty Response",
       "",
-      "Model returned no content. This usually means the API call failed silently.",
+      providerError ?? "Model returned no content and the provider reported no error.",
       "",
       `- **Model**: ${model.displayName}`,
       `- **Tokens**: prompt=${promptTokens}, completion=${completionTokens}`,
       `- **Duration**: ${durationStr}`,
       `- **Query**: ${query ?? "(none)"}`,
       "",
-      "Possible causes: API timeout, content filter, rate limit, model overload.",
-      "",
-      "Re-run the command to retry.",
+      providerError
+        ? "Re-run against a different provider with --model, or resolve the issue above."
+        : "Possible causes: API timeout, content filter, rate limit, model overload. Re-run to retry.",
     ].join("\n")
 
     const meta: OutputMeta = {
@@ -383,9 +398,12 @@ export async function finishResponse(
       // Best-effort — if we can't write the file, the stderr log above is all we have
     }
 
-    // Emit JSON metadata to stdout so the caller knows the file exists and can detect the error
+    // Emit JSON metadata to stdout so the caller knows the file exists and can detect the error.
+    // `error` carries the human message; `code` stays stable for machine branching
+    // ("provider_error" when the provider reported a failure, "empty_response" otherwise).
     const result: Record<string, unknown> = {
-      error: "empty_response",
+      error: providerError ?? "empty_response",
+      code: providerError ? "provider_error" : "empty_response",
       status: "failed",
       file: formatEnvelopeFile(outputFile, { fullPaths: isFullPaths(), cwd: process.cwd() }),
       model: model.displayName,

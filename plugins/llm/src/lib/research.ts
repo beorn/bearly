@@ -10,8 +10,77 @@ import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
-import type { Model, ModelResponse, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, getEndpoint, MODELS } from "./types"
+import type { Model, ModelResponse, Provider, ThinkingLevel } from "./types"
+import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
+
+/**
+ * Turn a provider / AI-SDK error into an actionable one-line message.
+ *
+ * The top-level `.message` is frequently unhelpful ("Failed after 3 attempts")
+ * — the real detail (OpenAI's `insufficient_quota`, a 429, a renamed model
+ * id) lives in `responseBody` / `data` / `cause`. We stringify those defensively
+ * and pattern-match the common failure shapes, appending a concrete next step
+ * (switch provider, check billing, retry). Falls back to the raw message when
+ * nothing matches. Exported for tests.
+ *
+ * This is the fix for the "Model returned empty response... silent failure"
+ * class: `streamText` forwards provider errors to `onError` (and ends the text
+ * stream empty) rather than throwing, so without capturing them here the CLI
+ * only ever saw empty content and printed a generic, misleading message.
+ */
+export function describeProviderError(error: unknown, provider: Provider): string {
+  // `streamText`'s onError may hand us anything: an Error, an SDK APICallError
+  // (detail in .responseBody/.data), or the raw `{ type, error: { message } }`
+  // object the provider streamed. Reach a human message for the fallback, and
+  // stringify the WHOLE thing so pattern-matching finds nested markers like
+  // "insufficient_quota" regardless of shape.
+  const stringify = (v: unknown): string => {
+    try {
+      return typeof v === "string" ? v : JSON.stringify(v)
+    } catch {
+      return String(v)
+    }
+  }
+  let raw: string
+  if (error instanceof Error) {
+    raw = error.message
+  } else if (error && typeof error === "object") {
+    const o = error as Record<string, unknown>
+    const nested = o.error && typeof o.error === "object" ? (o.error as Record<string, unknown>) : undefined
+    raw =
+      (typeof o.message === "string" && o.message) ||
+      (nested && typeof nested.message === "string" && nested.message) ||
+      stringify(error)
+  } else {
+    raw = String(error)
+  }
+  const parts = [raw, stringify(error)]
+  if (error && typeof error === "object") {
+    const e = error as { responseBody?: unknown; data?: unknown; cause?: unknown }
+    if (typeof e.responseBody === "string") parts.push(e.responseBody)
+    if (e.data !== undefined) parts.push(stringify(e.data))
+    if (e.cause) parts.push(e.cause instanceof Error ? e.cause.message : stringify(e.cause))
+  }
+  const blob = parts.join(" | ")
+  const envVar = getProviderEnvVar(provider)
+  const alt =
+    provider === "openai"
+      ? "--model moonshotai/kimi-k2.6 (OpenRouter) or --model gemini-2.5-pro (Google)"
+      : "--model gpt-5.4 (OpenAI) or --model moonshotai/kimi-k2.6 (OpenRouter)"
+  if (/insufficient_quota|exceeded your current quota|billing/i.test(blob)) {
+    return `${provider} quota exhausted (insufficient_quota) — check plan & billing for ${envVar}. Retry with another provider: ${alt}.`
+  }
+  if (/rate[ _-]?limit|too many requests|\b429\b/i.test(blob)) {
+    return `${provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`
+  }
+  if (/model_not_found|does not exist|no such model|model .* not found|invalid model/i.test(blob)) {
+    return `${provider} rejected the model id (renamed or unavailable). Run \`llm quota\` for live providers; the registry is plugins/llm/src/lib/types.ts.`
+  }
+  if (/invalid[_ ]?api[_ ]?key|unauthorized|permission|\b401\b/i.test(blob)) {
+    return `${provider} auth failed — check ${envVar}.`
+  }
+  return raw
+}
 
 /**
  * Extract `x-ratelimit-*` / `anthropic-ratelimit-*` headers from a Vercel AI
@@ -309,12 +378,21 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   try {
     if (stream && onToken) {
+      // `streamText` does NOT throw on a provider error mid-stream — it ends
+      // `textStream` empty and forwards the error to `onError` (whose default
+      // is a bare console.error dump). Capture it here so an empty completion
+      // carries a real, actionable `response.error` instead of looking like a
+      // silent success. See describeProviderError.
+      let streamError: string | undefined
       const result = streamText({
         model: languageModel,
         messages,
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
+        onError: ({ error }) => {
+          streamError = describeProviderError(error, model.provider)
+        },
       })
 
       // Consume the stream and call onToken for each part
@@ -331,6 +409,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         response: {
           model,
           content: fullText,
+          // Only surface the stream error when nothing came back — a partial
+          // completion that errored late still gives the user usable content.
+          ...(streamError && fullText.trim().length === 0 ? { error: streamError } : {}),
           usage: usage
             ? {
                 promptTokens: usage.inputTokens ?? 0,
@@ -443,7 +524,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         model,
         content: "",
         durationMs: Date.now() - startTime,
-        error: errorMsg,
+        error: describeProviderError(error, model.provider),
       },
     }
   }

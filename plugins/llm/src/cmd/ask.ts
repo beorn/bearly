@@ -130,5 +130,8 @@ export async function askAndFinish(options: {
     question,
     response.responseId,
     options.includeQuota ? response.quota : undefined,
+    // Surface the provider error (quota, rate-limit, renamed model) instead of
+    // the generic "silent failure" message when the completion came back empty.
+    response.error,
   )
 }

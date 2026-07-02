@@ -177,7 +177,7 @@ describe("cli argv parsing", () => {
 
     expect(env.exitCodes).toContain(1)
     const stderrAll = env.stderr.join("\n")
-    expect(stderrAll).toMatch(/Unknown model:\s+acme\/custom-7b/)
+    expect(stderrAll).toMatch(/model 'acme\/custom-7b' not in registry/)
   }, 10_000)
 
   it("pro --bead VALUE injects bead context without leaking VALUE into the question", async () => {
