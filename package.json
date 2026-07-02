@@ -2,7 +2,7 @@
   "name": "bearly",
   "version": "0.0.0",
   "private": true,
-  "description": "Reusable Claude Code tools — coordination, testing, research, refactoring",
+  "description": "Reusable Claude Code tools \u2014 coordination, testing, research, refactoring",
   "keywords": [
     "ai",
     "batch-refactor",
@@ -26,7 +26,8 @@
     "url": "https://github.com/beorn/bearly.git"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "plugins/*"
   ],
   "files": [
     "tools",
@@ -68,7 +69,8 @@
   "devDependencies": {
     "@types/bun": "^1.3.12",
     "oxfmt": "0.38.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
   },
   "engines": {
     "bun": ">=1.3.13",
