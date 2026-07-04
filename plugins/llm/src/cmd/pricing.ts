@@ -1,28 +1,21 @@
 /**
- * Pricing-update sub-command: scrape provider doc pages, ask an LLM to
- * extract a JSON price diff, validate it (10× outlier guard), and persist
- * a refreshed snapshot. Also auto-update on stale (>5d) cache during a
- * normal dispatch.
+ * Pricing-update sub-command (bead 19899 P5): fetch the community-maintained
+ * LiteLLM price map, diff it against the registry (10× outlier guard), and
+ * persist a refreshed snapshot — deterministic, no scraping, no LLM
+ * extraction. Also auto-updates on stale (>5d) cache during a normal
+ * dispatch. The pre-19899 scrape-provider-pages + LLM-extract pipeline is
+ * retired; stage-1 model discovery now feeds from the same LiteLLM map.
  */
 
-import { queryModel } from "../lib/research"
-import { isProviderAvailable } from "../lib/providers"
-import {
-  estimateCost,
-  formatCost,
-  getBestAvailableModel,
-  MODELS,
-  PROVIDER_ENDPOINTS,
-  type ModelMode,
-} from "../lib/types"
+import { MODELS, PROVIDER_ENDPOINTS, type ModelMode } from "../lib/types"
 import {
   isPricingStale,
   cacheCurrentPricing,
   buildPricingSnapshot,
   savePricingCache,
   applyCachedPricing,
-  PRICING_SOURCES,
 } from "../lib/pricing"
+import { fetchLiteLLMMap, matchLiteLLMEntry, renderUnknownModelsPage } from "../lib/litellm"
 
 export interface PricingUpdateResult {
   priceChanges: Array<{
@@ -37,14 +30,14 @@ export interface PricingUpdateResult {
 }
 
 /**
- * Fetch pricing pages and extract price changes via LLM.
+ * Fetch the LiteLLM price map and persist changed prices.
  * Used by both manual `update-pricing` command and auto-update after invocation.
  */
 export async function performPricingUpdate(options: {
   verbose: boolean
   modelMode?: ModelMode
 }): Promise<PricingUpdateResult> {
-  const { verbose, modelMode = "quick" } = options
+  const { verbose } = options
   const log = verbose ? (msg: string) => console.error(msg) : (_msg: string) => {}
 
   const currentPrices = new Map(
@@ -54,158 +47,88 @@ export async function performPricingUpdate(options: {
     ]),
   )
 
-  // Fetch pricing pages in parallel
-  log("Fetching pricing pages...")
-  const pageTexts: string[] = []
-
-  await Promise.allSettled(
-    Object.entries(PRICING_SOURCES).map(async ([provider, url]) => {
-      try {
-        const resp = await fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; llm-pricing/1.0)" },
-          signal: AbortSignal.timeout(15000),
-          redirect: "follow",
-        })
-        if (!resp.ok) {
-          log(`  ⚠️  ${provider}: HTTP ${resp.status}`)
-          return
-        }
-        const html = await resp.text()
-        const text = html
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&nbsp;/g, " ")
-          .replace(/&#\d+;/g, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 8000)
-
-        pageTexts.push(`[${provider.toUpperCase()} — ${url}]\n${text}`)
-        log(`  ✓ ${provider} (${text.length} chars)`)
-      } catch (e) {
-        log(`  ⚠️  ${provider}: ${e instanceof Error ? e.message : String(e)}`)
-      }
-    }),
-  )
-
-  if (pageTexts.length === 0) {
+  log("Fetching LiteLLM price map...")
+  let liteLLMMap: Awaited<ReturnType<typeof fetchLiteLLMMap>>
+  try {
+    liteLLMMap = await fetchLiteLLMMap()
+  } catch (e) {
     // Don't cacheCurrentPricing on failure — that would reset the stale-timer
     // and block retries for another 5 days. Leaving the timer alone means the
     // next invocation will try again.
-    return { priceChanges: [], error: "Could not fetch any pricing pages. Pricing cache unchanged." }
-  }
-
-  // Build extraction prompt
-  const modelList = MODELS.filter((m) => !m.isDeepResearch)
-    .map((m) => `  ${m.modelId} (${m.displayName}): $${m.inputPricePerM}/M in, $${m.outputPricePerM}/M out`)
-    .join("\n")
-
-  const extractionPrompt = `Extract current API pricing for these AI models from the pricing pages below.
-
-MODELS TO CHECK:
-${modelList}
-
-PRICING PAGES:
-${pageTexts.join("\n\n---\n\n")}
-
-Return a JSON array of objects for models where the price DIFFERS from what's listed above.
-Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outputPricePerM": number }
-- Prices are per 1 MILLION tokens in USD
-- Input = prompt/input tokens, Output = completion/output tokens
-- Only include models whose prices DIFFER. If prices match or model isn't on the pages, skip it.
-- If no prices changed, return []
-- Return ONLY the JSON array, no markdown fences, no explanation.`
-
-  // Find a model for extraction
-  const { model: extractModel, warning: extractWarning } = getBestAvailableModel(modelMode, (p) =>
-    isProviderAvailable(p),
-  )
-  if (!extractModel) {
-    return { priceChanges: [], error: "No LLM available for price extraction. Pricing cache unchanged." }
-  }
-  if (extractWarning) log(`  ℹ ${extractWarning}`)
-
-  log(`\nExtracting prices via ${extractModel.displayName}...`)
-
-  const extractResult = await queryModel({
-    question: extractionPrompt,
-    model: extractModel,
-    systemPrompt: "You are a data extraction assistant. Output only valid JSON arrays. No markdown fences.",
-  })
-
-  if (extractResult.response.error || !extractResult.response.content) {
     return {
       priceChanges: [],
-      error: `LLM extraction failed: ${extractResult.response.error ?? "empty response"}. Pricing cache unchanged.`,
+      error: `Could not fetch any pricing pages. Pricing cache unchanged. (${e instanceof Error ? e.message : String(e)})`,
     }
   }
+  log(`  ✓ ${liteLLMMap.size} priced models`)
 
-  // Parse response
-  let priceUpdates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }> = []
-  try {
-    const jsonStr = extractResult.response.content
-      .replace(/```json?\n?/g, "")
-      .replace(/```/g, "")
-      .trim()
-    priceUpdates = JSON.parse(jsonStr) as typeof priceUpdates
-    if (!Array.isArray(priceUpdates)) priceUpdates = []
-  } catch {
-    return { priceChanges: [], error: "Could not parse LLM response. Pricing cache unchanged." }
-  }
-
-  // Compute changes — pure, no mutation. The accepted updates feed into
-  // `buildPricingSnapshot` which writes a fresh JSON cache; `applyCachedPricing`
-  // then overlays it onto the frozen registry so subsequent reads see the new
-  // values without any in-place mutation of MODELS.
+  // Diff the map against the registry — pure, no mutation. Accepted updates
+  // feed into `buildPricingSnapshot` which writes a fresh JSON cache;
+  // `applyCachedPricing` then overlays it onto the frozen registry so
+  // subsequent reads see the new values without any in-place mutation of
+  // MODELS.
   const priceChanges: PricingUpdateResult["priceChanges"] = []
-  const acceptedUpdates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }> = []
-  for (const u of priceUpdates) {
-    const current = currentPrices.get(u.modelId)
+  const acceptedUpdates: Array<{
+    modelId: string
+    inputPricePerM: number
+    outputPricePerM: number
+    cacheReadPerM?: number
+    cacheWritePerM?: number
+  }> = []
+  for (const model of MODELS) {
+    const current = currentPrices.get(model.modelId)
     if (!current) continue
-    const inChanged = u.inputPricePerM !== current.input
-    const outChanged = u.outputPricePerM !== current.output
+    const endpoint = PROVIDER_ENDPOINTS[model.modelId]
+    const candidates = [
+      model.modelId,
+      ...(endpoint?.apiModelId ? [endpoint.apiModelId] : []),
+      ...(endpoint ? [`${endpoint.provider}/${endpoint.apiModelId ?? model.modelId}`] : []),
+    ]
+    const rates = matchLiteLLMEntry(liteLLMMap, candidates)
+    if (!rates) continue
+
+    const inChanged = rates.inputPerM !== current.input
+    const outChanged = rates.outputPerM !== current.output
     if (inChanged || outChanged) {
       // Sanity bound: reject swings greater than 10× in either direction.
       // Prices do change between model generations, but a real 10× jump is
-      // rare — the likelier explanation is an LLM hallucination (e.g. reading
-      // "$25 per 1K tokens" as "$25 per 1M tokens", or confusing input and
-      // output). Rather than bake a bogus number into the cache and poison
-      // every cost estimate downstream, log the rejection and keep the
-      // previous price. The cache-refresh timer still resets so we don't
-      // retry on every invocation.
-      const inOutlier = Math.abs(u.inputPricePerM - current.input) / current.input > 10
-      const outOutlier = Math.abs(u.outputPricePerM - current.output) / current.output > 10
+      // rare — the likelier explanation is a bad upstream row (mis-keyed
+      // model, per-1K vs per-1M confusion). Rather than bake a bogus number
+      // into the cache and poison every cost estimate downstream, log the
+      // rejection and keep the previous price.
+      const inOutlier = current.input > 0 && Math.abs(rates.inputPerM - current.input) / current.input > 10
+      const outOutlier = current.output > 0 && Math.abs(rates.outputPerM - current.output) / current.output > 10
       if (inOutlier || outOutlier) {
         console.error(
-          `⚠️  Suspicious pricing delta for ${u.modelId}: ` +
-            `in $${current.input}→$${u.inputPricePerM}, out $${current.output}→$${u.outputPricePerM} — rejecting`,
+          `⚠️  Suspicious pricing delta for ${model.modelId}: ` +
+            `in $${current.input}→$${rates.inputPerM}, out $${current.output}→$${rates.outputPerM} — rejecting`,
         )
         continue
       }
       priceChanges.push({
-        modelId: u.modelId,
+        modelId: model.modelId,
         oldInput: current.input,
         oldOutput: current.output,
-        newInput: u.inputPricePerM,
-        newOutput: u.outputPricePerM,
-      })
-      acceptedUpdates.push({
-        modelId: u.modelId,
-        inputPricePerM: u.inputPricePerM,
-        outputPricePerM: u.outputPricePerM,
+        newInput: rates.inputPerM,
+        newOutput: rates.outputPerM,
       })
     }
+    // Persist matched models even when the two headline rates are unchanged —
+    // the cache-class rates (cacheReadPerM/cacheWritePerM) ride the snapshot
+    // and may be new (bead 19899 P3).
+    acceptedUpdates.push({
+      modelId: model.modelId,
+      inputPricePerM: inChanged || outChanged ? rates.inputPerM : current.input,
+      outputPricePerM: inChanged || outChanged ? rates.outputPerM : current.output,
+      ...(rates.cacheReadPerM !== undefined ? { cacheReadPerM: rates.cacheReadPerM } : {}),
+      ...(rates.cacheWritePerM !== undefined ? { cacheWritePerM: rates.cacheWritePerM } : {}),
+    })
   }
 
   // Persist the snapshot and refresh the runtime overlay. `cacheCurrentPricing`
-  // is preserved as the "snapshot current effective pricing" entry point — it
-  // resets the stale timer regardless of whether we had updates (matching the
-  // previous behaviour). When we have accepted updates, we build the snapshot
-  // explicitly so the cache contains the new values; `applyCachedPricing()`
+  // is preserved as the "snapshot current effective pricing" entry point when
+  // nothing matched; otherwise we build the snapshot explicitly so the cache
+  // contains the new values (incl. cache-class rates); `applyCachedPricing()`
   // then makes them effective immediately for the rest of this process.
   if (acceptedUpdates.length > 0) {
     savePricingCache(buildPricingSnapshot(acceptedUpdates))
@@ -214,31 +137,25 @@ Each object: { "modelId": "exact-id-from-above", "inputPricePerM": number, "outp
     cacheCurrentPricing()
   }
 
-  // Extraction cost
-  let extractionCost: string | undefined
-  if (extractResult.response.usage) {
-    const cost = estimateCost(
-      extractModel,
-      extractResult.response.usage.promptTokens,
-      extractResult.response.usage.completionTokens,
-    )
-    extractionCost = formatCost(cost)
-  }
-
   // Stage 1 of the auto-discovery pipeline (km-bearly.llm-registry-auto-update):
-  // we already have the provider doc text in memory — feed it to the discovery
-  // module so it writes `~/.cache/bearly-llm/new-models.json` with capability
-  // hints + snippets. Stage 2 (`bun llm pro --discover-models`) reads that
-  // artifact later and runs the LLM-gated promotion. Best-effort — never blocks
-  // the pricing update.
+  // feed LiteLLM entries we don't track to the discovery module, which writes
+  // `~/.cache/bearly-llm/new-models.json` with pricing snippets. Stage 2
+  // (`bun llm pro --discover-models`) reads that artifact later and runs the
+  // LLM-gated promotion. Best-effort — never blocks the pricing update.
   try {
     const { performDiscovery } = await import("../lib/discover")
-    performDiscovery(pageTexts)
+    const knownIds = new Set<string>([
+      ...MODELS.map((m) => m.modelId),
+      ...Object.values(PROVIDER_ENDPOINTS)
+        .map((e) => e.apiModelId)
+        .filter((x): x is string => typeof x === "string"),
+    ])
+    performDiscovery([renderUnknownModelsPage(liteLLMMap, knownIds)])
   } catch {
     // discovery failure is non-fatal
   }
 
-  return { priceChanges, extractionCost }
+  return { priceChanges }
 }
 
 /** Strip a trailing ISO date snapshot suffix (`-YYYY-MM-DD`). */

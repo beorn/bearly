@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
 import { MODELS, SKUS, setPricingOverlay } from "./types"
+import type { ModelRates } from "./cost.ts"
 
 // Cache location (in user's home directory)
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
@@ -29,6 +30,11 @@ interface PricingCache {
       inputPricePerM: number
       outputPricePerM: number
       typicalLatencyMs?: number
+      /** Cache-class rates from the LiteLLM map (bead 19899 P3). Optional —
+       *  pre-19899 caches lack them; cost.ts then bills cache classes at the
+       *  input rate (LiteLLM's own fallback convention). */
+      cacheReadPerM?: number
+      cacheWritePerM?: number
     }
   >
 }
@@ -131,7 +137,13 @@ export function cacheCurrentPricing(): void {
  * uses this so the registry never has to be mutated in-place.
  */
 export function buildPricingSnapshot(
-  updates: Array<{ modelId: string; inputPricePerM: number; outputPricePerM: number }>,
+  updates: Array<{
+    modelId: string
+    inputPricePerM: number
+    outputPricePerM: number
+    cacheReadPerM?: number
+    cacheWritePerM?: number
+  }>,
 ): PricingCache {
   const models: PricingCache["models"] = {}
   // Seed with SKU defaults so the snapshot is always full.
@@ -158,9 +170,29 @@ export function buildPricingSnapshot(
       inputPricePerM: u.inputPricePerM,
       outputPricePerM: u.outputPricePerM,
       typicalLatencyMs: prev?.typicalLatencyMs,
+      ...(u.cacheReadPerM !== undefined ? { cacheReadPerM: u.cacheReadPerM } : {}),
+      ...(u.cacheWritePerM !== undefined ? { cacheWritePerM: u.cacheWritePerM } : {}),
     }
   }
   return { updatedAt: new Date().toISOString(), models }
+}
+
+/**
+ * Full per-M rates for a model id: input/output from the (overlay-aware)
+ * registry, cache-class rates from the pricing cache when the LiteLLM update
+ * has populated them (bead 19899). Null when the model is unpriced — callers
+ * treat that as cost-source UNKNOWN, never $0.
+ */
+export function lookupModelRates(modelId: string): ModelRates | null {
+  const model = MODELS.find((m) => m.modelId === modelId)
+  if (!model || model.inputPricePerM === undefined || model.outputPricePerM === undefined) return null
+  const cached = loadPricingCache()?.models[modelId]
+  return {
+    inputPerM: model.inputPricePerM,
+    outputPerM: model.outputPricePerM,
+    ...(cached?.cacheReadPerM !== undefined ? { cacheReadPerM: cached.cacheReadPerM } : {}),
+    ...(cached?.cacheWritePerM !== undefined ? { cacheWritePerM: cached.cacheWritePerM } : {}),
+  }
 }
 
 /**

@@ -30,6 +30,7 @@
  */
 
 import { z } from "zod"
+import { resolveCost, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
 
 // ============================================================================
 // Provider identifiers
@@ -1133,11 +1134,40 @@ export function getDeepResearchModels(): Model[] {
   return MODELS.filter((m) => m.isDeepResearch)
 }
 
-/** Estimate cost for a query (USD) — assumes ~500 input / ~1000 output tokens. */
+/**
+ * Estimate cost for a query (USD) — assumes ~500 input / ~1000 output tokens.
+ *
+ * Legacy numeric shim over the canonical substrate (cost.ts, bead 19899): the
+ * public call shape is unchanged, but the math routes through `resolveCost`.
+ * An unpriced model keeps the historical `0` return for numeric callers
+ * (leaderboard sums, thresholds) — DISPLAY paths must not format that 0 as a
+ * dollar figure; use `resolveCostForModel` + `formatResolvedCost` instead.
+ */
 export function estimateCost(model: Model | SkuConfig, inputTokens = 500, outputTokens = 1000): number {
-  const inputCost = (model.inputPricePerM ?? 0) * (inputTokens / 1_000_000)
-  const outputCost = (model.outputPricePerM ?? 0) * (outputTokens / 1_000_000)
-  return inputCost + outputCost
+  const resolved = resolveCost({
+    usage: { input: inputTokens, output: outputTokens },
+    rates: skuRates(model),
+  })
+  return resolved.source === "unknown" ? 0 : resolved.usd
+}
+
+/** Per-M rates from an (overlay-aware) SKU, or null when the model is unpriced. */
+export function skuRates(model: Model | SkuConfig): ModelRates | null {
+  if (model.inputPricePerM === undefined || model.outputPricePerM === undefined) return null
+  return { inputPerM: model.inputPricePerM, outputPerM: model.outputPricePerM }
+}
+
+/**
+ * Provenance-aware cost for a model (19899 P2: unknown is explicit, never $0).
+ * Cache-class rates from the LiteLLM map are layered in by pricing.ts's
+ * `lookupModelRates`; this entry point covers the registry's input/output case.
+ */
+export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, reportedUsd?: number): ResolvedCost {
+  return resolveCost({
+    usage,
+    rates: skuRates(model),
+    ...(reportedUsd !== undefined ? { reportedUsd } : {}),
+  })
 }
 
 export function formatCost(cost: number): string {
