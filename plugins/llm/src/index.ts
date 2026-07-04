@@ -10,7 +10,22 @@
  */
 
 export { queryModel } from "./lib/research.ts"
-export { getCheapModel, getCheapModels, getModel, estimateCost, formatCost, MODELS } from "./lib/types.ts"
+export {
+  getCheapModel,
+  getCheapModels,
+  getModel,
+  estimateCost,
+  formatCost,
+  resolveCostForModel,
+  skuRates,
+  MODELS,
+} from "./lib/types.ts"
 export type { Model } from "./lib/types.ts"
 export { isProviderAvailable, getAvailableProviders } from "./lib/providers.ts"
 export { buildMockQueryModel, buildPlanJson, alwaysAvailable } from "./lib/mock.ts"
+// Canonical usage/cost substrate (bead 19899 P1–P3): open usage-class map,
+// reported > computed > unknown precedence, unknown never renders as $0.
+export { normalizeUsage, resolveCost, formatResolvedCost, UNKNOWN_COST_LABEL } from "./lib/cost.ts"
+export type { UsageMap, UsageClass, ModelRates, ResolvedCost, CostSource, ProviderUsageLike } from "./lib/cost.ts"
+export { lookupModelRates } from "./lib/pricing.ts"
+export { LITELLM_PRICES_URL, fetchLiteLLMMap, parseLiteLLMMap, matchLiteLLMEntry } from "./lib/litellm.ts"

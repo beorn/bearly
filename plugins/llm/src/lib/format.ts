@@ -8,7 +8,7 @@
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { estimateCost, formatCost } from "./types"
+import { estimateCost, formatCost, resolveCostForModel } from "./types"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
@@ -417,7 +417,15 @@ export async function finishResponse(
 
     process.exit(1)
   }
-  const cost = usage ? estimateCost(model as any, usage.promptTokens, usage.completionTokens) : undefined
+  // Provenance-aware (bead 19899 P2): an unpriced model resolves to source
+  // "unknown" and the cost fields are OMITTED — never a synthetic "$0".
+  const resolved = usage
+    ? resolveCostForModel(model as Parameters<typeof resolveCostForModel>[0], {
+        input: usage.promptTokens,
+        output: usage.completionTokens,
+      })
+    : undefined
+  const cost = resolved !== undefined && resolved.source !== "unknown" ? resolved.usd : undefined
   await finalizeOutput(content, outputFile, sessionTag, {
     query,
     model: model.displayName,

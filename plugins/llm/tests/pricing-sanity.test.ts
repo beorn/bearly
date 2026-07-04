@@ -1,12 +1,16 @@
 /**
  * Regression: pricing auto-update must:
- *   1. Reject 100× (outlier) price swings — a hallucinating extraction model
- *      could turn $2.50 into $250 and poison every cost estimate. The rejection
- *      is logged as "Suspicious pricing delta" and the MODELS entry is left
- *      unchanged. (dispatch.ts:~168-176)
- *   2. NOT call cacheCurrentPricing when fetching pricing pages fails. Writing
- *      the cache on failure would reset the 5-day stale timer and block retries
- *      until the timer re-expired. (dispatch.ts:~87-92)
+ *   1. Reject 100× (outlier) price swings — a bad upstream LiteLLM row could
+ *      turn $2.50 into $250 and poison every cost estimate. The rejection is
+ *      logged as "Suspicious pricing delta" and the MODELS entry is left
+ *      unchanged. (cmd/pricing.ts outlier guard)
+ *   2. NOT call cacheCurrentPricing when fetching the LiteLLM map fails.
+ *      Writing the cache on failure would reset the 5-day stale timer and
+ *      block retries until the timer re-expired.
+ *   3. Skip auto-update entirely for --dry-run invocations.
+ *
+ * (bead 19899: the price source is the LiteLLM community map — deterministic
+ * fetch, no scrape pages, no LLM extraction.)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -27,23 +31,22 @@ vi.mock("../src/lib/pricing", async () => {
   }
 })
 
-// Mock queryModel so the pricing extraction doesn't hit the LLM. Returns
-// whatever JSON the test wires up.
-const queryModelMock = vi.fn()
-
-vi.mock("../src/lib/research", async () => {
-  const actual = await vi.importActual<typeof import("../src/lib/research")>("../src/lib/research")
+/** A LiteLLM-map response body pricing gpt-5.4 at a 100× hike. */
+function outlierLiteLLMBody(): Record<string, unknown> {
   return {
-    ...actual,
-    queryModel: queryModelMock,
+    "gpt-5.4": {
+      // $250/M input, $1500/M output — per-token scientific notation as upstream.
+      input_cost_per_token: 250 / 1_000_000,
+      output_cost_per_token: 1500 / 1_000_000,
+      litellm_provider: "openai",
+    },
   }
-})
+}
 
 describe("pricing sanity", () => {
   beforeEach(() => {
     cacheCurrentPricingMock.mockReset()
     isPricingStaleMock.mockReset()
-    queryModelMock.mockReset()
   })
 
   afterEach(() => {
@@ -53,26 +56,14 @@ describe("pricing sanity", () => {
   it("rejects 100× outlier price delta and leaves MODELS entry unchanged", async () => {
     const env = makeTestEnv()
 
-    // Stub fetch so the pricing pages "load" (short HTML body is enough —
-    // performPricingUpdate strips tags and truncates to 8K). All five PRICING_SOURCES
-    // entries return successful responses.
+    // Stub fetch to serve the LiteLLM map with a 100× hike for gpt-5.4:
+    // $2.5 → $250, $15 → $1500. The sanity bound (>10×) must reject it.
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      text: async () => "<html>pricing page</html>",
+      json: async () => outlierLiteLLMBody(),
     }))
     vi.stubGlobal("fetch", fetchMock)
-
-    // LLM returns a 100× hike for gpt-5.4: $2.5 → $250, $15 → $1500.
-    // The sanity bound (>10×) must reject it.
-    queryModelMock.mockResolvedValue({
-      response: {
-        model: { modelId: "gpt-5.4", displayName: "GPT-5.4", provider: "openai" },
-        content: JSON.stringify([{ modelId: "gpt-5.4", inputPricePerM: 250.0, outputPricePerM: 1500.0 }]),
-        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
-        durationMs: 10,
-      },
-    })
 
     vi.resetModules()
     const dispatch = await import("../src/lib/dispatch")
@@ -99,8 +90,8 @@ describe("pricing sanity", () => {
   it("pricing fetch failure does NOT reset the stale timer (cacheCurrentPricing not called)", async () => {
     makeTestEnv()
 
-    // All fetches fail — either network error or non-OK. performPricingUpdate
-    // must short-circuit BEFORE cacheCurrentPricing.
+    // The LiteLLM fetch fails — performPricingUpdate must short-circuit
+    // BEFORE cacheCurrentPricing.
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
