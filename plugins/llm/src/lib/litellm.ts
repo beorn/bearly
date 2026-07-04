@@ -34,6 +34,17 @@ interface LiteLLMEntry {
 export type LiteLLMRatesMap = Map<string, ModelRates & { provider?: string }>
 
 /**
+ * Per-token USD → per-1M USD, rounded to 6 decimals. Upstream stores values
+ * like `2e-7`; a raw `* 1_000_000` yields float debris
+ * (`0.19999999999999998`) that fabricates phantom price "changes" in the
+ * update diff. Six decimals of a per-M price = $0.000001 resolution — far
+ * below any real price granularity.
+ */
+function perM(perToken: number): number {
+  return Math.round(perToken * 1_000_000 * 1_000_000) / 1_000_000
+}
+
+/**
  * Parse the raw LiteLLM JSON into a per-M rates map. Entries without both an
  * input and output rate are skipped (embeddings, image models, the
  * `sample_spec` documentation entry).
@@ -45,13 +56,13 @@ export function parseLiteLLMMap(json: Record<string, unknown>): LiteLLMRatesMap 
     const entry = value as LiteLLMEntry
     if (typeof entry.input_cost_per_token !== "number" || typeof entry.output_cost_per_token !== "number") continue
     const rates: ModelRates & { provider?: string } = {
-      inputPerM: entry.input_cost_per_token * 1_000_000,
-      outputPerM: entry.output_cost_per_token * 1_000_000,
+      inputPerM: perM(entry.input_cost_per_token),
+      outputPerM: perM(entry.output_cost_per_token),
       ...(typeof entry.cache_read_input_token_cost === "number"
-        ? { cacheReadPerM: entry.cache_read_input_token_cost * 1_000_000 }
+        ? { cacheReadPerM: perM(entry.cache_read_input_token_cost) }
         : {}),
       ...(typeof entry.cache_creation_input_token_cost === "number"
-        ? { cacheWritePerM: entry.cache_creation_input_token_cost * 1_000_000 }
+        ? { cacheWritePerM: perM(entry.cache_creation_input_token_cost) }
         : {}),
       ...(entry.litellm_provider ? { provider: entry.litellm_provider } : {}),
     }
