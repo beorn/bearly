@@ -112,6 +112,39 @@ should map via `apiModelId`, deprecated/private-beta entries, garbage pricing.
 can act on them without them entering the diff. Run weekly via `/sop infra`
 or cron.
 
+## Cost semantics (canonical)
+
+One usage/cost contract for every consumer of this plugin (the `llm` CLI, the
+/ask · /pro · /deep · /fresh skills, and external apps). Implemented in
+`src/lib/cost.ts` + `src/lib/litellm.ts`; km bead 19899.
+
+- **Usage classes are an open map** with OTel-aligned token naming: `input`
+  (always NON-CACHED input), `output`, `cache_read`, `cache_write`, and
+  `reasoning` (informational — a subset of `output` on every provider that
+  reports it; never priced separately). `normalizeUsage()` maps OpenAI
+  chat/responses and Anthropic usage dialects into this shape (OpenAI
+  `cached_tokens` is subtracted out of input; Anthropic classes are already
+  disjoint).
+- **Cost precedence: provider-reported > computed > unknown.**
+  `resolveCost()` returns `{ usd, source, breakdown }`. A provider-reported
+  figure (including a genuine $0) always wins; computed costs require a price
+  in the map; anything else is `source: "unknown"` and MUST render as the
+  unknown label ("—") — never a synthetic `$0`. Use `formatResolvedCost()`.
+- **Cache classes are priced at their own rates** (`cache_read` /
+  `cache_write` per-M rates from the price map); a missing cache rate falls
+  back to the input rate (LiteLLM's convention). Cache reads never count
+  toward a context-window gauge.
+- **One price source, zero hand-typed prices.** The community-maintained
+  LiteLLM `model_prices_and_context_window.json` map is THE price source:
+  `llm update-pricing` fetches it deterministically (no page scraping, no LLM
+  extraction), diffs it against the registry behind a 10× outlier guard, and
+  persists per-model rates (including cache classes) to the pricing cache.
+  Skill prose uses qualitative tiers (cheap/moderate/expensive), never
+  dollar literals.
+- `estimateCost(model, in, out)` remains as a numeric legacy shim over
+  `resolveCost` (unknown → 0 for numeric callers); display paths use
+  `resolveCostForModel` + `formatResolvedCost`.
+
 ## --json envelope
 
 Every command supports `--json` for pipe-friendly output. JSON line on stdout,
