@@ -36,7 +36,7 @@
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "fs"
-import { join, dirname, basename, relative } from "path"
+import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 
 // ANSI colors
@@ -1423,6 +1423,25 @@ export interface RemoveOptions {
   force?: boolean
 }
 
+/**
+ * Resolve a worktree TARGET argument for verbs that operate on an EXISTING
+ * worktree (remove/reset/merge). Accepts:
+ *   - a filesystem path (absolute, containing a separator, or `.`/`..`) —
+ *     used as-is, so a path pasted from `git worktree list` just works
+ *   - a sibling dir name already prefixed with `<repoName>-`
+ *   - a bare name suffix → `<repoParent>/<repoName>-<name>` (historic contract)
+ * `create` keeps the bare-name contract on purpose — creating AT an arbitrary
+ * path is a different feature, not this resolver.
+ */
+export function resolveWorktreeTargetPath(gitRoot: string, name: string): string {
+  if (isAbsolute(name) || name.includes("/") || name === "." || name === "..") {
+    return resolve(name)
+  }
+  const repoName = basename(gitRoot)
+  const dirName = name.startsWith(`${repoName}-`) ? name : `${repoName}-${name}`
+  return join(dirname(gitRoot), dirName)
+}
+
 export async function removeWorktree(name: string, options: RemoveOptions = {}): Promise<void> {
   const { deleteBranch = false, force = false } = options
 
@@ -1432,11 +1451,11 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
     process.exit(1)
   }
 
-  const repoName = basename(gitRoot)
-  const worktreePath = join(dirname(gitRoot), `${repoName}-${name}`)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
 
   if (!existsSync(worktreePath)) {
     error(`Worktree not found: ${worktreePath}`)
+    console.log(DIM + "Accepted forms: a slot name (wt3), a sibling dir name, or a path to the worktree." + RESET)
     console.log("")
     console.log("Current worktrees:")
     const result = await $`cd ${gitRoot} && git worktree list`.quiet()
@@ -1588,8 +1607,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     throw new Error("Not in a git repository")
   }
 
-  const repoName = basename(gitRoot)
-  const worktreePath = join(dirname(gitRoot), `${repoName}-${name}`)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
 
   // Refuse to operate from inside the worktree being reset — the recreate
   // would leave the shell with a missing cwd.
@@ -1738,8 +1756,7 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
     process.exit(1)
   }
 
-  const repoName = basename(gitRoot)
-  const worktreePath = join(dirname(gitRoot), `${repoName}-${name}`)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
 
   // Validate we're on the main worktree
   const currentBranchResult = await $`cd ${gitRoot} && git branch --show-current`.quiet()
