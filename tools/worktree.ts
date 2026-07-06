@@ -35,6 +35,7 @@
  * orphans (which can happen on interrupted removes or older git versions).
  */
 
+import { spawnSync } from "node:child_process"
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "fs"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
@@ -188,6 +189,97 @@ export async function getWorktreeStatus(worktreePath: string): Promise<{ dirty: 
 
   const changes = result.stdout.trim().split("\n").filter(Boolean)
   return { dirty: changes.length > 0, changes }
+}
+
+// ============================================
+// Pool root — configurable slot location
+// ============================================
+//
+// The persistent slot pool (`<repo>-wtN`) historically lives as SIBLINGS of
+// the repo (`<repoParent>/<repo>-wtN`), which sprawls the parent directory.
+// The `worktree.poolRoot` git config key relocates the pool — typically to a
+// contained, git-ignored directory inside the repo
+// (`<repo>/.worktrees/<repo>-wtN`). km bead 20888-contained-worktree-pool.
+//
+//   unset          → sibling parent (historic behavior, zero change)
+//   relative value → resolved under the repo root (contained pool)
+//   absolute value → used as-is
+//   empty value    → loud config error (never a silent sibling fallback)
+//
+// Existing slots are FOUND in both locations (configured pool first, then the
+// legacy sibling), so setting the config never orphans a live slot; creates
+// always land at the configured pool.
+
+/** Git config key that relocates the worktree pool. */
+export const POOL_ROOT_CONFIG_KEY = "worktree.poolRoot"
+
+/**
+ * Read `worktree.poolRoot` from the repo's git config. A path with no `.git`
+ * entry has no config surface at all — that is the defined "unset" answer
+ * (pure path math on non-repos, e.g. in tests), not an error. For a real
+ * repo, `git config --get` exits 1 for "unset" (normal); any other failure
+ * throws — a broken git invocation must never silently fall back to the
+ * sibling pool.
+ */
+export function readPoolRootConfig(gitRoot: string): string | undefined {
+  if (!existsSync(join(gitRoot, ".git"))) return undefined
+  const result = spawnSync("git", ["-C", gitRoot, "config", "--get", POOL_ROOT_CONFIG_KEY], { encoding: "utf8" })
+  if (result.status === 0) return (result.stdout ?? "").trim()
+  const stderr = (result.stderr ?? "").trim()
+  if (result.status === 1 && stderr === "") return undefined
+  throw new Error(`git config --get ${POOL_ROOT_CONFIG_KEY} failed in ${gitRoot}: ${stderr || `exit ${result.status}`}`)
+}
+
+/**
+ * Resolve the pool root directory for a repo. See the section comment for the
+ * config contract. `readValue` is injectable for tests; the default reads the
+ * repo's git config (shared across linked worktrees, so a config set once on
+ * the main checkout applies pool-wide).
+ */
+export function resolvePoolRoot(
+  gitRoot: string,
+  readValue: (gitRoot: string) => string | undefined = readPoolRootConfig,
+): string {
+  const raw = readValue(gitRoot)
+  if (raw === undefined) return dirname(gitRoot)
+  const value = raw.trim().replace(/\/+$/, "")
+  if (value === "") {
+    throw new Error(
+      `${POOL_ROOT_CONFIG_KEY} is set but empty — set a pool path (e.g. .worktrees) or unset it: ` +
+        `git -C ${gitRoot} config --unset ${POOL_ROOT_CONFIG_KEY}`,
+    )
+  }
+  return isAbsolute(value) ? value : join(gitRoot, value)
+}
+
+/** Slot directory name inside a pool: `<repoName>-<name>`, unless already prefixed. */
+export function slotDirName(repoName: string, name: string): string {
+  return name.startsWith(`${repoName}-`) ? name : `${repoName}-${name}`
+}
+
+/**
+ * Ordered filesystem candidates for a slot: the configured pool first, then
+ * the legacy sibling location (deduped when the pool IS the sibling parent).
+ */
+export function slotPathCandidates(gitRoot: string, name: string, poolRoot: string): string[] {
+  const dir = slotDirName(basename(gitRoot), name)
+  const candidates = [join(poolRoot, dir), join(dirname(gitRoot), dir)]
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index)
+}
+
+/**
+ * A worktree name must be non-empty and can never be flag-shaped. Defense in
+ * depth for library callers: the CLI planner already refuses to treat a
+ * `-`-prefixed token as a name (the `bun worktree reset --help` → `<repo>---help`
+ * sprawl incident, km bead 20888), but every verb validates again before any
+ * filesystem work.
+ */
+export function assertValidWorktreeName(name: string): void {
+  if (name.trim() === "" || name.startsWith("-")) {
+    throw new Error(
+      `Invalid worktree name ${JSON.stringify(name)} — a worktree name must be non-empty and cannot start with "-"`,
+    )
+  }
 }
 
 // ============================================
@@ -466,14 +558,17 @@ async function fileSha256(p: string): Promise<string | null> {
 }
 
 /**
- * Canonical pool-slot path: sibling of the repo, named `<repoBasename>-wtN`.
- * Example: repo at /Users/beorn/Code/pim/km → slots at /Users/beorn/Code/pim/km-wt0..wt9.
+ * Canonical pool-slot path: `<poolRoot>/<repoBasename>-wtN`. With the default
+ * (sibling) pool root that is the historic `<repoParent>/<repo>-wtN` layout;
+ * with a configured `worktree.poolRoot` it is the contained pool (e.g.
+ * `<repo>/.worktrees/<repo>-wtN`).
  *
- * Legacy slots live under `<gitRoot>/.claude/worktrees/wtN`. The audit flags
- * those as `slot-location-drift (legacy)` so they migrate as agents recycle.
+ * Legacy slots live under `<gitRoot>/.claude/worktrees/wtN` (pre-sibling era)
+ * or — once a contained pool is configured — at the old sibling location. The
+ * audit flags both so they migrate as agents recycle.
  */
-function isCanonicalSlotPath(wtPath: string, gitRoot: string): boolean {
-  const expectedPrefix = `${gitRoot}-wt`
+export function isCanonicalSlotPath(wtPath: string, gitRoot: string, poolRoot: string): boolean {
+  const expectedPrefix = `${join(poolRoot, basename(gitRoot))}-wt`
   if (!wtPath.startsWith(expectedPrefix)) return false
   return /^\d+$/.test(wtPath.slice(expectedPrefix.length))
 }
@@ -482,6 +577,18 @@ function isLegacySlotPath(wtPath: string, gitRoot: string): boolean {
   const legacyRoot = join(gitRoot, ".claude", "worktrees")
   if (!wtPath.startsWith(legacyRoot + "/")) return false
   return /^wt\d+$/.test(wtPath.slice(legacyRoot.length + 1))
+}
+
+/**
+ * A slot sitting at the historic sibling location while the configured pool
+ * root points elsewhere (i.e. a contained pool is active). Not a defect — a
+ * live slot keeps working from the legacy location — but it should migrate on
+ * its next recycle.
+ */
+function isLegacySiblingSlotPath(wtPath: string, gitRoot: string, poolRoot: string): boolean {
+  const siblingParent = dirname(gitRoot)
+  if (poolRoot === siblingParent) return false
+  return isCanonicalSlotPath(wtPath, gitRoot, siblingParent)
 }
 
 export interface AuditOptions {
@@ -504,6 +611,7 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
   }
   const behindThreshold = opts.behindThreshold ?? 100
   const staleAgeHours = (opts.staleAgeDays ?? 14) * 24
+  const poolRoot = resolvePoolRoot(gitRoot)
 
   const raw = await getWorktrees(gitRoot)
   const worktrees: WorktreeMeta[] = raw.map((w) => ({
@@ -522,23 +630,35 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
 
     // Skip the main worktree from per-worktree drift checks (it's the target).
     if (!isMain) {
+      const canonicalSlot = join(poolRoot, slotDirName(basename(gitRoot), wtName))
       if (isLegacySlotPath(wt.path, gitRoot)) {
         findings.push({
           worktree: wtName,
           branch: wt.branch,
           severity: "info",
           check: "slot-location-legacy",
-          message: `legacy slot at ${wt.path} — recycle to canonical sibling location ${gitRoot}-${wtName}`,
-          details: { path: wt.path, canonical: `${gitRoot}-${wtName}` },
+          message: `legacy slot at ${wt.path} — recycle to canonical pool location ${canonicalSlot}`,
+          details: { path: wt.path, canonical: canonicalSlot },
         })
-      } else if (!isCanonicalSlotPath(wt.path, gitRoot)) {
+      } else if (isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)) {
+        findings.push({
+          worktree: wtName,
+          branch: wt.branch,
+          severity: "info",
+          check: "slot-location-legacy-sibling",
+          message:
+            `slot at legacy sibling location ${wt.path} — the configured pool is ${poolRoot}; ` +
+            `migrate on next recycle: bun worktree remove ${wtName} && bun worktree create ${wtName}`,
+          details: { path: wt.path, canonical: canonicalSlot, poolRoot },
+        })
+      } else if (!isCanonicalSlotPath(wt.path, gitRoot, poolRoot)) {
         findings.push({
           worktree: wtName,
           branch: wt.branch,
           severity: "info",
           check: "slot-location-drift",
-          message: `worktree at non-canonical path ${wt.path} (canonical: ${gitRoot}-wtN sibling layout)`,
-          details: { path: wt.path },
+          message: `worktree at non-canonical path ${wt.path} (canonical: ${join(poolRoot, `${basename(gitRoot)}-wtN`)})`,
+          details: { path: wt.path, poolRoot },
         })
       }
     }
@@ -585,13 +705,13 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
     }
 
     // Vendor-resolution readiness (@km/infra/19945) — only for worktrees that
-    // are SUPPOSED to run the workspace: main + canonical pool slots
-    // (<gitRoot>-wtN, where agents run focused vitest; wt5 was the plateau).
-    // Non-canonical worktrees (chief's `--fs-only` integration worktrees,
-    // ad-hoc clones) deliberately skip submodule init / install, so their
-    // submodule + node_modules state is not a readiness defect — flagging it
-    // is noise (they are already surfaced via slot-location-drift).
-    if (isMain || isCanonicalSlotPath(wt.path, gitRoot)) {
+    // are SUPPOSED to run the workspace: main + pool slots (configured pool or
+    // the legacy sibling location, where agents run focused vitest; wt5 was
+    // the plateau). Non-canonical worktrees (chief's `--fs-only` integration
+    // worktrees, ad-hoc clones) deliberately skip submodule init / install, so
+    // their submodule + node_modules state is not a readiness defect —
+    // flagging it is noise (they are already surfaced via slot-location-drift).
+    if (isMain || isCanonicalSlotPath(wt.path, gitRoot, poolRoot) || isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)) {
       // Uninitialized submodules — the ROOT CAUSE of the wt5 plateau. An empty
       // vendor/<pkg> cannot resolve through node_modules and bare imports fail
       // before code runs. Read-only.
@@ -1262,6 +1382,7 @@ export function resolveBranchArg(input: {
 }
 
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
+  assertValidWorktreeName(name)
   const { install = true, direnv = true, hooks = true, allowDirty = false } = options
 
   const gitRoot = findGitRoot(process.cwd())
@@ -1289,16 +1410,44 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
 
   const repoName = basename(gitRoot)
-  const worktreePath = join(dirname(gitRoot), `${repoName}-${name}`)
+  const poolRoot = resolvePoolRoot(gitRoot)
+  const worktreePath = join(poolRoot, slotDirName(repoName, name))
   // Slot-pattern names (wt0, wt1, ..., wt9) get a plain branch matching the
   // slot id — agents lease `@agent/N` and expect branch `wtN`. Other names
   // get the `feat/` prefix as a courtesy.
   const branchName = branch ?? (/^wt\d+$/.test(name) ? name : `feat/${name}`)
 
-  // Check if directory exists
-  if (existsSync(worktreePath)) {
-    error(`Directory already exists: ${worktreePath}`)
-    process.exit(1)
+  // Check if the slot already exists — in ANY pool location. Creating a
+  // contained slot while its legacy sibling twin is still live would split the
+  // slot's identity across two checkouts (two `wt3` dirs, one branch).
+  for (const candidate of slotPathCandidates(gitRoot, name, poolRoot)) {
+    if (existsSync(candidate)) {
+      error(`Directory already exists: ${candidate}`)
+      if (candidate !== worktreePath) {
+        console.log(
+          DIM +
+            `  (legacy location — the configured pool is ${poolRoot}; migrate with: ` +
+            `bun worktree remove ${name} && bun worktree create ${name})` +
+            RESET,
+        )
+      }
+      process.exit(1)
+    }
+  }
+
+  // A contained pool (inside the repo working tree) MUST be git-ignored:
+  // otherwise every slot pollutes `git status` and the next create refuses on
+  // "uncommitted changes". Fail loud with the exact fix — never create a slot
+  // that dirties the repo. The pool dir itself is created up front so
+  // check-ignore evaluates the real path.
+  if (worktreePath.startsWith(gitRoot + "/")) {
+    mkdirSync(poolRoot, { recursive: true })
+    const ignored = await safeExec($`cd ${gitRoot} && git check-ignore -q ${poolRoot}`)
+    if (ignored.exitCode !== 0) {
+      error(`Contained pool root ${poolRoot} is not git-ignored.`)
+      console.log(CYAN + `  Add "${relative(gitRoot, poolRoot)}/" to ${join(gitRoot, ".gitignore")} and retry.` + RESET)
+      process.exit(1)
+    }
   }
 
   // Get submodules list (used in multiple checks)
@@ -1423,26 +1572,39 @@ export interface RemoveOptions {
   force?: boolean
 }
 
+export interface ResolveTargetOptions {
+  /** Pool root to search first; defaults to the historic sibling parent. */
+  poolRoot?: string
+  /** Filesystem probe, injectable for tests. */
+  exists?: (path: string) => boolean
+}
+
 /**
  * Resolve a worktree TARGET argument for verbs that operate on an EXISTING
  * worktree (remove/reset/merge). Accepts:
  *   - a filesystem path (absolute, containing a separator, or `.`/`..`) —
  *     used as-is, so a path pasted from `git worktree list` just works
- *   - a sibling dir name already prefixed with `<repoName>-`
- *   - a bare name suffix → `<repoParent>/<repoName>-<name>` (historic contract)
+ *   - a dir name already prefixed with `<repoName>-`
+ *   - a bare name suffix → looked up in the configured pool first, then the
+ *     legacy sibling location (so a live slot is never orphaned by a pool
+ *     config flip); when neither exists, the configured pool path is returned
+ *     so create-fresh flows land at the canonical location.
  * `create` keeps the bare-name contract on purpose — creating AT an arbitrary
  * path is a different feature, not this resolver.
  */
-export function resolveWorktreeTargetPath(gitRoot: string, name: string): string {
+export function resolveWorktreeTargetPath(gitRoot: string, name: string, options: ResolveTargetOptions = {}): string {
   if (isAbsolute(name) || name.includes("/") || name === "." || name === "..") {
     return resolve(name)
   }
-  const repoName = basename(gitRoot)
-  const dirName = name.startsWith(`${repoName}-`) ? name : `${repoName}-${name}`
-  return join(dirname(gitRoot), dirName)
+  const poolRoot = options.poolRoot ?? dirname(gitRoot)
+  const candidates = slotPathCandidates(gitRoot, name, poolRoot)
+  if (candidates.length === 1) return candidates[0]!
+  const exists = options.exists ?? existsSync
+  return candidates.find((candidate) => exists(candidate)) ?? candidates[0]!
 }
 
 export async function removeWorktree(name: string, options: RemoveOptions = {}): Promise<void> {
+  assertValidWorktreeName(name)
   const { deleteBranch = false, force = false } = options
 
   const gitRoot = findGitRoot(process.cwd())
@@ -1451,7 +1613,7 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
     process.exit(1)
   }
 
-  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
 
   if (!existsSync(worktreePath)) {
     error(`Worktree not found: ${worktreePath}`)
@@ -1600,6 +1762,7 @@ export interface ResetOptions {
  * leave the caller's shell in a removed directory).
  */
 export async function resetWorktree(name: string, options: ResetOptions = {}): Promise<void> {
+  assertValidWorktreeName(name)
   const { force = false, saveAheadAs, retargetOrigin = false, install = true, direnv = true, hooks = true } = options
 
   const gitRoot = findGitRoot(process.cwd())
@@ -1607,7 +1770,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     throw new Error("Not in a git repository")
   }
 
-  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
 
   // Refuse to operate from inside the worktree being reset — the recreate
   // would leave the shell with a missing cwd.
@@ -1748,6 +1911,7 @@ export interface MergeOptions {
  * (offline, ad-hoc, single-session work).
  */
 export async function mergeWorktree(name: string, options: MergeOptions = {}): Promise<void> {
+  assertValidWorktreeName(name)
   const { deleteBranch = true, fullTests = false, noFetch = false } = options
 
   const gitRoot = findGitRoot(process.cwd())
@@ -1756,7 +1920,7 @@ export async function mergeWorktree(name: string, options: MergeOptions = {}): P
     process.exit(1)
   }
 
-  const worktreePath = resolveWorktreeTargetPath(gitRoot, name)
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
 
   // Validate we're on the main worktree
   const currentBranchResult = await $`cd ${gitRoot} && git branch --show-current`.quiet()
@@ -2059,7 +2223,9 @@ export async function showDefaultInfo(): Promise<void> {
   for (let i = 0; i < worktrees.length; i++) {
     const wt = worktrees[i]
     if (!wt) continue
-    const name = basename(wt.path)
+    // Parent-relative display keeps contained-pool slots honest (e.g.
+    // `hh/.worktrees/hh-wt3`), while sibling slots stay a bare basename.
+    const name = wt.path.startsWith(parentDir + "/") ? relative(parentDir, wt.path) : wt.path
     const isMain = wt.path === gitRoot
     const isCurrent = wt.path === currentDir || currentDir.startsWith(wt.path + "/")
     const isLast = i === worktrees.length - 1
@@ -2108,9 +2274,12 @@ export async function showDefaultInfo(): Promise<void> {
 
   console.log("")
   console.log(BOLD + "Commands" + RESET)
+  const poolRoot = resolvePoolRoot(gitRoot)
+  const slotBase = join(poolRoot, repoName)
   console.log(CYAN + "  bun worktree create <name>" + RESET)
-  console.log(DIM + `     Create worktree at ../${repoName}-<name> on branch feat/<name>` + RESET)
-  console.log(DIM + `     Example: bun worktree create bugfix  →  ../${repoName}-bugfix` + RESET)
+  console.log(DIM + `     Create worktree at ${slotBase}-<name> on branch feat/<name>` + RESET)
+  console.log(DIM + `     Example: bun worktree create bugfix  →  ${slotBase}-bugfix` + RESET)
+  console.log(DIM + `     (pool root via git config worktree.poolRoot; resolve with: bun worktree path <name>)` + RESET)
   console.log("")
   console.log(CYAN + "  bun worktree create <name> <branch>" + RESET)
   console.log(DIM + "     Create worktree on specific branch" + RESET)
@@ -2149,13 +2318,24 @@ ${BOLD}worktree${RESET} - Git worktree management with submodule support
 
 ${BOLD}USAGE${RESET}
   bun worktree                          Show worktrees and help
-  bun worktree create <name> [branch]   Create worktree at ../<repo>-<name>
+  bun worktree create <name> [branch]   Create worktree in the pool (see POOL ROOT)
   bun worktree create --branch <branch> Create worktree using branch as name
   bun worktree merge <name>             Merge worktree branch into main and clean up
   bun worktree remove <name>            Remove worktree
   bun worktree reset <name> [--force]   Recreate worktree at origin/main (DCG-safe slot recovery)
+  bun worktree path <name>              Print the resolved slot path (pool-aware)
   bun worktree list                     Detailed worktree status
   bun worktree gc                       Prune stale agent-isolation clones (.claude/worktrees/agent-*)
+
+${BOLD}POOL ROOT${RESET}
+  Slots are created under the pool root: <poolRoot>/<repo>-<name>.
+  Default pool root is the repo's parent dir (sibling layout: ../<repo>-<name>).
+  Configure a contained, git-ignored pool inside the repo with git config:
+    git config worktree.poolRoot .worktrees    # → <repo>/.worktrees/<repo>-<name>
+  A contained pool root MUST be git-ignored (create fails loud otherwise).
+  Existing slots are found in both the configured pool and the legacy sibling
+  location, so setting the config never orphans a live slot. Scripts and docs
+  should resolve slot paths via \`bun worktree path <name>\`, not hardcode them.
 
 ${BOLD}CREATE OPTIONS${RESET}
   --branch <name>   Use specific branch (also used as worktree name if no <name>)
@@ -2226,200 +2406,269 @@ ${BOLD}POST-CREATE SETUP${RESET}
 // Main CLI
 // ============================================
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const args = argv
-  const command = args[0]
+/** Per-subcommand flag spec: which flags are legal, which take a value. */
+interface SubcommandSpec {
+  /** Max positional args (the name; create also takes an optional branch). */
+  maxPositionals: number
+  /** Flag → whether it consumes the next argv token as its value. */
+  flags: Record<string, { value?: boolean }>
+}
 
-  function hasFlag(name: string): boolean {
-    return args.includes(name)
+const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
+  create: {
+    maxPositionals: 2,
+    flags: {
+      "--branch": { value: true },
+      "--no-install": {},
+      "--no-direnv": {},
+      "--no-hooks": {},
+      "--allow-dirty": {},
+    },
+  },
+  remove: { maxPositionals: 1, flags: { "--delete-branch": {}, "--force": {}, "-f": {} } },
+  rm: { maxPositionals: 1, flags: { "--delete-branch": {}, "--force": {}, "-f": {} } },
+  reset: {
+    maxPositionals: 1,
+    flags: {
+      "--force": {},
+      "-f": {},
+      "--save-ahead-as": { value: true },
+      "--retarget-origin": {},
+      "--no-install": {},
+      "--no-direnv": {},
+      "--no-hooks": {},
+    },
+  },
+  merge: { maxPositionals: 1, flags: { "--keep-branch": {}, "--full-tests": {}, "--no-fetch": {} } },
+  path: { maxPositionals: 1, flags: {} },
+  list: { maxPositionals: 0, flags: {} },
+  ls: { maxPositionals: 0, flags: {} },
+  audit: {
+    maxPositionals: 0,
+    flags: { "--json": {}, "--behind-threshold": { value: true }, "--stale-days": { value: true } },
+  },
+  gc: {
+    maxPositionals: 0,
+    flags: { "--root": { value: true }, "--dry-run": {}, "--min-age": { value: true }, "--include-unique-work": {} },
+  },
+}
+
+export type CliPlan =
+  | { action: "help" }
+  | { action: "default-info" }
+  | { action: "usage-error"; message: string }
+  | { action: "create"; name: string; branch: string | undefined; options: Required<CreateOptions> }
+  | { action: "remove"; name: string; options: Required<RemoveOptions> }
+  | { action: "reset"; name: string; options: ResetOptions }
+  | { action: "merge"; name: string; options: Required<MergeOptions> }
+  | { action: "path"; name: string }
+  | { action: "list" }
+  | { action: "audit"; options: AuditOptions }
+  | { action: "gc"; options: GcOptions }
+
+/**
+ * Pure CLI planner. Guarantees: `-h`/`--help` anywhere is help, never work; a
+ * `-`-prefixed token can never become a worktree name; unknown flags, missing
+ * flag values, and extra positionals fail loud. This makes the
+ * `bun worktree reset --help` → `<repo>---help` sprawl class (km bead
+ * 20888-contained-worktree-pool) unrepresentable in a plan.
+ */
+export function planCliInvocation(argv: string[]): CliPlan {
+  if (argv.some((arg) => arg === "--help" || arg === "-h")) return { action: "help" }
+  const command = argv[0]
+  if (command === undefined) return { action: "default-info" }
+  if (command === "help") return { action: "help" }
+
+  const spec = SUBCOMMAND_SPECS[command]
+  if (!spec) return { action: "usage-error", message: `Unknown command: ${command}` }
+
+  const positionals: string[] = []
+  const flags = new Set<string>()
+  const values = new Map<string, string>()
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (arg.startsWith("-")) {
+      const flagSpec = spec.flags[arg]
+      if (!flagSpec) return { action: "usage-error", message: `Unknown flag for ${command}: ${arg}` }
+      if (flagSpec.value) {
+        const value = argv[i + 1]
+        if (value === undefined || value.startsWith("-")) {
+          return { action: "usage-error", message: `${arg} requires a value` }
+        }
+        values.set(arg, value)
+        i++
+      } else {
+        flags.add(arg)
+      }
+    } else {
+      positionals.push(arg)
+    }
+  }
+  if (positionals.length > spec.maxPositionals) {
+    return {
+      action: "usage-error",
+      message: `Too many arguments for ${command}: ${positionals.slice(spec.maxPositionals).join(" ")}`,
+    }
   }
 
   switch (command) {
     case "create": {
-      // Parse --branch <value> flag if present
-      const branchFlagIndex = args.indexOf("--branch")
-      let branchFromFlag: string | undefined
-      if (branchFlagIndex !== -1) {
-        branchFromFlag = args[branchFlagIndex + 1]
-        if (!branchFromFlag || branchFromFlag.startsWith("--")) {
-          error("--branch requires a value")
-          process.exit(1)
-        }
+      const branchFromFlag = values.get("--branch")
+      const name = positionals[0] ?? branchFromFlag
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree create <name> [--branch <branch>]" }
+      return {
+        action: "create",
+        name,
+        // Branch priority: --branch flag > positional > default (feat/<name>)
+        branch: branchFromFlag ?? positionals[1],
+        options: {
+          install: !flags.has("--no-install"),
+          direnv: !flags.has("--no-direnv"),
+          hooks: !flags.has("--no-hooks"),
+          allowDirty: flags.has("--allow-dirty"),
+        },
       }
-      // Positional args: first non-flag after "create"
-      const positional = args.slice(1).filter((a, i, arr) => {
-        if (a.startsWith("--")) return false
-        // Skip value following --branch
-        const prev = arr[i - 1]
-        if (prev === "--branch") return false
-        return true
-      })
-      const name = positional[0] ?? branchFromFlag
-      if (!name) {
-        error("Usage: bun worktree create <name> [--branch <branch>]")
-        process.exit(1)
-      }
-      // Branch priority: --branch flag > positional > default (feat/<name>)
-      const branch = branchFromFlag ?? positional[1]
-      await createWorktree(name, branch, {
-        install: !hasFlag("--no-install"),
-        direnv: !hasFlag("--no-direnv"),
-        hooks: !hasFlag("--no-hooks"),
-        allowDirty: hasFlag("--allow-dirty"),
-      })
-      break
     }
-
     case "remove":
     case "rm": {
-      const name = args[1]
-      if (!name) {
-        error("Usage: bun worktree remove <name>")
-        process.exit(1)
+      const name = positionals[0]
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree remove <name>" }
+      return {
+        action: "remove",
+        name,
+        options: { deleteBranch: flags.has("--delete-branch"), force: flags.has("--force") || flags.has("-f") },
       }
-      await removeWorktree(name, {
-        deleteBranch: hasFlag("--delete-branch"),
-        force: hasFlag("-f") || hasFlag("--force"),
-      })
-      break
     }
-
     case "reset": {
-      const name = args[1]
+      const name = positionals[0]
       if (!name) {
-        error("Usage: bun worktree reset <name> [--force] [--save-ahead-as <slug>]")
-        process.exit(1)
+        return { action: "usage-error", message: "Usage: bun worktree reset <name> [--force] [--save-ahead-as <slug>]" }
       }
-      const saveAheadIdx = args.indexOf("--save-ahead-as")
-      let saveAheadAs: string | undefined
-      if (saveAheadIdx !== -1) {
-        saveAheadAs = args[saveAheadIdx + 1]
-        if (!saveAheadAs || saveAheadAs.startsWith("--")) {
-          error("--save-ahead-as requires a slug value")
-          process.exit(1)
+      return {
+        action: "reset",
+        name,
+        options: {
+          force: flags.has("--force") || flags.has("-f"),
+          saveAheadAs: values.get("--save-ahead-as"),
+          retargetOrigin: flags.has("--retarget-origin"),
+          install: !flags.has("--no-install"),
+          direnv: !flags.has("--no-direnv"),
+          hooks: !flags.has("--no-hooks"),
+        },
+      }
+    }
+    case "merge": {
+      const name = positionals[0]
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree merge <name>" }
+      return {
+        action: "merge",
+        name,
+        options: {
+          deleteBranch: !flags.has("--keep-branch"),
+          fullTests: flags.has("--full-tests"),
+          noFetch: flags.has("--no-fetch"),
+        },
+      }
+    }
+    case "path": {
+      const name = positionals[0]
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree path <name>" }
+      return { action: "path", name }
+    }
+    case "list":
+    case "ls":
+      return { action: "list" }
+    case "audit": {
+      let behindThreshold: number | undefined
+      const behindRaw = values.get("--behind-threshold")
+      if (behindRaw !== undefined) {
+        behindThreshold = parseInt(behindRaw, 10)
+        if (Number.isNaN(behindThreshold)) {
+          return { action: "usage-error", message: "--behind-threshold must be a number" }
         }
       }
+      let staleAgeDays: number | undefined
+      const staleRaw = values.get("--stale-days")
+      if (staleRaw !== undefined) {
+        staleAgeDays = parseInt(staleRaw, 10)
+        if (Number.isNaN(staleAgeDays)) return { action: "usage-error", message: "--stale-days must be a number" }
+      }
+      return { action: "audit", options: { json: flags.has("--json"), behindThreshold, staleAgeDays } }
+    }
+    case "gc": {
+      let minAgeHours = 0
+      const minAgeRaw = values.get("--min-age")
+      if (minAgeRaw !== undefined) {
+        minAgeHours = parseFloat(minAgeRaw)
+        if (Number.isNaN(minAgeHours)) return { action: "usage-error", message: "--min-age must be a number (hours)" }
+      }
+      return {
+        action: "gc",
+        options: {
+          root: values.get("--root"),
+          dryRun: flags.has("--dry-run"),
+          minAgeHours,
+          includeUniqueWork: flags.has("--include-unique-work"),
+        },
+      }
+    }
+    default:
+      return { action: "usage-error", message: `Unknown command: ${command}` }
+  }
+}
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const plan = planCliInvocation(argv)
+  switch (plan.action) {
+    case "help":
+      printHelp()
+      return
+    case "default-info":
+      await showDefaultInfo()
+      return
+    case "usage-error":
+      error(plan.message)
+      console.log(DIM + "Run `bun worktree --help` for usage." + RESET)
+      process.exit(1)
+      break
+    case "path": {
+      const gitRoot = findGitRoot(process.cwd())
+      if (!gitRoot) {
+        error("Not in a git repository")
+        process.exit(1)
+      }
+      console.log(resolveWorktreeTargetPath(gitRoot, plan.name, { poolRoot: resolvePoolRoot(gitRoot) }))
+      return
+    }
+    case "create":
+      await createWorktree(plan.name, plan.branch, plan.options)
+      return
+    case "remove":
+      await removeWorktree(plan.name, plan.options)
+      return
+    case "reset":
       try {
-        await resetWorktree(name, {
-          force: hasFlag("-f") || hasFlag("--force"),
-          saveAheadAs,
-          retargetOrigin: hasFlag("--retarget-origin"),
-          install: !hasFlag("--no-install"),
-          direnv: !hasFlag("--no-direnv"),
-          hooks: !hasFlag("--no-hooks"),
-        })
+        await resetWorktree(plan.name, plan.options)
       } catch (e) {
         error(e instanceof Error ? e.message : String(e))
         process.exit(1)
       }
-      break
-    }
-
-    case "merge": {
-      const name = args[1]
-      if (!name) {
-        error("Usage: bun worktree merge <name>")
-        process.exit(1)
-      }
-      await mergeWorktree(name, {
-        deleteBranch: !hasFlag("--keep-branch"),
-        fullTests: hasFlag("--full-tests"),
-        noFetch: hasFlag("--no-fetch"),
-      })
-      break
-    }
-
+      return
+    case "merge":
+      await mergeWorktree(plan.name, plan.options)
+      return
     case "list":
-    case "ls":
       await listWorktrees(true)
-      break
-
+      return
     case "audit": {
-      const json = hasFlag("--json")
-      const behindIdx = args.indexOf("--behind-threshold")
-      let behindThreshold: number | undefined
-      if (behindIdx !== -1) {
-        const v = args[behindIdx + 1]
-        if (!v || v.startsWith("--")) {
-          error("--behind-threshold requires a number")
-          process.exit(1)
-        }
-        const n = parseInt(v, 10)
-        if (isNaN(n)) {
-          error("--behind-threshold must be a number")
-          process.exit(1)
-        }
-        behindThreshold = n
-      }
-      const staleIdx = args.indexOf("--stale-days")
-      let staleAgeDays: number | undefined
-      if (staleIdx !== -1) {
-        const v = args[staleIdx + 1]
-        if (!v || v.startsWith("--")) {
-          error("--stale-days requires a number")
-          process.exit(1)
-        }
-        const n = parseInt(v, 10)
-        if (isNaN(n)) {
-          error("--stale-days must be a number")
-          process.exit(1)
-        }
-        staleAgeDays = n
-      }
-      const findings = await auditWorktrees({ json, behindThreshold, staleAgeDays })
+      const findings = await auditWorktrees(plan.options)
       // Exit 1 if any error-severity findings (CI-friendly).
       if (findings.some((f) => f.severity === "error")) process.exit(1)
-      break
+      return
     }
-
-    case "gc": {
-      // Parse --root <dir>
-      const rootIdx = args.indexOf("--root")
-      let root: string | undefined
-      if (rootIdx !== -1) {
-        root = args[rootIdx + 1]
-        if (!root || root.startsWith("--")) {
-          error("--root requires a value")
-          process.exit(1)
-        }
-      }
-      // Parse --min-age <hours>
-      const ageIdx = args.indexOf("--min-age")
-      let minAgeHours = 0
-      if (ageIdx !== -1) {
-        const v = args[ageIdx + 1]
-        if (!v || v.startsWith("--")) {
-          error("--min-age requires a value (hours)")
-          process.exit(1)
-        }
-        minAgeHours = parseFloat(v)
-        if (isNaN(minAgeHours)) {
-          error("--min-age must be a number")
-          process.exit(1)
-        }
-      }
-      await gcAgentClones({
-        root,
-        dryRun: hasFlag("--dry-run"),
-        minAgeHours,
-        includeUniqueWork: hasFlag("--include-unique-work"),
-      })
-      break
-    }
-
-    case "help":
-    case "--help":
-    case "-h":
-      printHelp()
-      break
-
-    default:
-      if (command && !command.startsWith("-")) {
-        error(`Unknown command: ${command}`)
-        printHelp()
-        process.exit(1)
-      }
-      await showDefaultInfo()
+    case "gc":
+      await gcAgentClones(plan.options)
+      return
   }
 }
 
