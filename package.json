@@ -45,7 +45,6 @@
     "llm": "bun tools/llm.ts",
     "typecheck": "tsc --noEmit",
     "test": "bunx --bun vitest run",
-    "fmt": "oxfmt --write .",
     "fmt:check": "oxfmt --check .",
     "fix": "oxfmt --write ."
   },
@@ -70,7 +69,7 @@
     "@types/bun": "^1.3.12",
     "oxfmt": "0.38.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "bun": ">=1.3.13",
