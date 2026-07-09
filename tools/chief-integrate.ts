@@ -32,13 +32,13 @@ async function run(
   args: string[],
   opts: { cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolveP) => {
+  return new Promise((resolve) => {
     const proc = spawn(cmd, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     proc.stdout.on("data", (b) => (stdout += b.toString()))
     proc.stderr.on("data", (b) => (stderr += b.toString()))
-    proc.on("close", (code) => resolveP({ stdout, stderr, exitCode: code ?? -1 }))
+    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
 }
 
@@ -115,7 +115,12 @@ async function main() {
   }
 
   // 3. Cherry-pick with -X theirs for submodule conflicts
-  const cp = await run("git", ["cherry-pick", "-X", "theirs", ...commits.map((c) => c.split(" ")[0]!)], { cwd: main })
+  const shas = commits.map((c) => {
+    const sha = c.split(" ")[0]
+    if (sha === undefined) throw new Error(`chief-integrate: could not parse a SHA from log line "${c}"`)
+    return sha
+  })
+  const cp = await run("git", ["cherry-pick", "-X", "theirs", ...shas], { cwd: main })
   if (cp.exitCode !== 0) {
     console.error(`[chief-integrate] cherry-pick had conflicts:\n${cp.stderr}`)
     console.error(`[chief-integrate] resolve manually with 'git cherry-pick --continue' or 'git cherry-pick --abort'`)

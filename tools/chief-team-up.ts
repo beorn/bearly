@@ -28,7 +28,7 @@ async function run(
   args: string[],
   opts: { cwd?: string; pipe?: boolean } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolveP) => {
+  return new Promise((resolve) => {
     const proc = spawn(cmd, args, {
       cwd: opts.cwd,
       stdio: opts.pipe === false ? "inherit" : ["ignore", "pipe", "pipe"],
@@ -36,10 +36,10 @@ async function run(
     let stdout = ""
     let stderr = ""
     if (opts.pipe !== false) {
-      proc.stdout!.on("data", (b) => (stdout += b.toString()))
-      proc.stderr!.on("data", (b) => (stderr += b.toString()))
+      proc.stdout?.on("data", (b) => (stdout += b.toString()))
+      proc.stderr?.on("data", (b) => (stderr += b.toString()))
     }
-    proc.on("close", (code) => resolveP({ stdout, stderr, exitCode: code ?? -1 }))
+    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
 }
 
@@ -54,8 +54,9 @@ function parseArgs(args: string[]): string[] {
     console.error("usage: bun tools/chief-team-up.ts <count> | <wt0> <wt1> ...")
     process.exit(2)
   }
-  if (args.length === 1 && /^\d+$/.test(args[0]!)) {
-    const count = parseInt(args[0]!, 10)
+  const first = args[0]
+  if (args.length === 1 && first !== undefined && /^\d+$/.test(first)) {
+    const count = parseInt(first, 10)
     return Array.from({ length: count }, (_, i) => `wt${i}`)
   }
   return args.map((s) => s.replace(/^wt?/, "wt"))

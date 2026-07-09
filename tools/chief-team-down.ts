@@ -27,13 +27,13 @@ async function run(
   args: string[],
   opts: { cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolveP) => {
+  return new Promise((resolve) => {
     const proc = spawn(cmd, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     proc.stdout.on("data", (b) => (stdout += b.toString()))
     proc.stderr.on("data", (b) => (stderr += b.toString()))
-    proc.on("close", (code) => resolveP({ stdout, stderr, exitCode: code ?? -1 }))
+    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
 }
 
