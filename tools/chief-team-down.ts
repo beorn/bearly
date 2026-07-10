@@ -31,8 +31,8 @@ async function run(
     const proc = spawn(cmd, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
-    proc.stdout.on("data", (b) => (stdout += b.toString()))
-    proc.stderr.on("data", (b) => (stderr += b.toString()))
+    proc.stdout.on("data", (b: Buffer) => (stdout += b.toString()))
+    proc.stderr.on("data", (b: Buffer) => (stderr += b.toString()))
     proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
 }
@@ -60,7 +60,7 @@ function parseArgs(): { slots: string[] | null; skipTestCi: boolean; forceRetro:
   return { slots, skipTestCi, forceRetro }
 }
 
-async function listPoolSlots(mainRoot: string): Promise<string[]> {
+function listPoolSlots(mainRoot: string): string[] {
   const repoBasename = basename(mainRoot)
   const repoParent = dirname(mainRoot)
   const slots: string[] = []
@@ -167,7 +167,7 @@ async function main() {
   await broadcastWindDown()
 
   // 2. Integrate each slot (chief-integrate is idempotent)
-  const slots = requestedSlots ?? (await listPoolSlots(mainRoot))
+  const slots = requestedSlots ?? listPoolSlots(mainRoot)
   console.log(`[team-down] sweeping ${slots.length} slot(s): ${slots.join(", ")}`)
   const results: { slot: string; integrated: boolean; sha?: string; reason?: string }[] = []
   for (const slot of slots) {

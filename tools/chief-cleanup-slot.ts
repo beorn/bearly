@@ -40,8 +40,8 @@ async function run(
     const proc = spawn(cmd, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
-    proc.stdout.on("data", (b) => (stdout += b.toString()))
-    proc.stderr.on("data", (b) => (stderr += b.toString()))
+    proc.stdout.on("data", (b: Buffer) => (stdout += b.toString()))
+    proc.stderr.on("data", (b: Buffer) => (stderr += b.toString()))
     proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
 }

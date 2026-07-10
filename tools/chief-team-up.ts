@@ -36,8 +36,8 @@ async function run(
     let stdout = ""
     let stderr = ""
     if (opts.pipe !== false) {
-      proc.stdout?.on("data", (b) => (stdout += b.toString()))
-      proc.stderr?.on("data", (b) => (stderr += b.toString()))
+      proc.stdout?.on("data", (b: Buffer) => (stdout += b.toString()))
+      proc.stderr?.on("data", (b: Buffer) => (stderr += b.toString()))
     }
     proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? -1 }))
   })
