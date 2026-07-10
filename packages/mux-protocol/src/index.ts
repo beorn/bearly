@@ -4,7 +4,7 @@
  * talking to cmux, tmux-directly, or silvermux underneath.
  *
  * Extracted BOTTOM-UP from tent/chief's ACTUAL cmux usage (audit:
- * `@km/silvery/19260-silvermux-prototype/17273`), not designed from first
+ * `@si/mux/19260-proto/17273`), not designed from first
  * principles. The surface is deliberately minimal — only the verbs tent calls:
  *
  *   - lifecycle: {@link MuxBackend.spawnPane}, {@link MuxBackend.closePane}
@@ -16,7 +16,7 @@
  *
  * NO event/subscribe verb: the audit found tent is poll-only (it scrapes via
  * `read-screen` on a cadence; nothing consumes cmux's NDJSON event stream), so
- * adding `subscribe()` would be speculative over-design. @km/silvery/17273.
+ * adding `subscribe()` would be speculative over-design. @si/mux/19260-proto/17273.
  *
  * Addressing model mirrors cmux: a **pane** is the lifecycle/metadata unit; a
  * **surface** is the addressable I/O unit inside a pane (tent reads via
@@ -57,7 +57,7 @@ export interface SurfaceRef {
    * e.g. `@chief` / `@agent/5` in `* surface:145  @chief  [selected]` — which
    * tent uses to map an agent hat to its surface. Additive + optional: backends
    * (and surfaces) without a title omit it; callers that only need `{ id,
-   * paneId }` are unaffected. @km/silvery/17273 (19506).
+   * paneId }` are unaffected. @si/mux/19260-proto/17273 (19506).
    */
   readonly owner?: string
 }

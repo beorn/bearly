@@ -3,7 +3,7 @@
 cmux backend for [`@bearly/mux-protocol`](../mux-protocol) — wraps the `cmux` CLI
 behind the `MuxBackend` interface with **no behavior change**. This is the seam
 that lets tent/chief talk to "a mux" instead of shelling out to `cmux` directly
-([`@km/silvery/17273`](https://github.com/beorn), Phase 1).
+([`@si/mux/19260-proto/17273`](https://github.com/beorn), Phase 1).
 
 ## Usage
 

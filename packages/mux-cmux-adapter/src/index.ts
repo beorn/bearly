@@ -2,7 +2,7 @@
  * `@bearly/mux-cmux-adapter` — wraps cmux's CLI behind the backend-agnostic
  * {@link MuxBackend} interface. No behavior change to cmux; this is the seam
  * that lets tent/chief talk to "a mux" instead of shelling out to `cmux`
- * directly. Sibling to `@bearly/mux-protocol`. @km/silvery/17273 (Phase 1).
+ * directly. Sibling to `@bearly/mux-protocol`. @si/mux/19260-proto/17273 (Phase 1).
  *
  * The cmux verb surface mapped here is exactly what tent ACTUALLY calls (audit
  * in 17273): `list-panes`, `list-pane-surfaces`, `read-screen`, `send-*`,

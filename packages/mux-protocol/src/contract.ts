@@ -15,7 +15,7 @@
  * Cases are CAPABILITY-ADAPTIVE: a single case asserts the happy path when the
  * backend declares the capability, and the typed {@link UnsupportedCapabilityError}
  * when it does not. Same suite, any backend — divergence beyond `capabilities()`
- * is a bug (the kill-criterion for @km/silvery/17273).
+ * is a bug (the kill-criterion for @si/mux/19260-proto/17273).
  *
  * Zero test-framework dependency — assertions use `node:assert/strict`.
  */

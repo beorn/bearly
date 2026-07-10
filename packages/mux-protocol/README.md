@@ -6,7 +6,7 @@ tmux-directly, or silvermux is underneath. Sibling to
 [`@bearly/mux-cmux-adapter`](../mux-cmux-adapter).
 
 Extracted **bottom-up** from tent/chief's actual cmux usage
-([`@km/silvery/19260-silvermux-prototype/17273`](https://github.com/beorn)) — only
+([`@si/mux/19260-proto/17273`](https://github.com/beorn)) — only
 the verbs tent calls, nothing speculative.
 
 ## Interface

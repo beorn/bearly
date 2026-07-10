@@ -5,7 +5,7 @@
  * kill-criterion for 17273: divergence beyond capabilities() is a bug). Plus
  * explicit argv-translation + error-mapping assertions that pin how the adapter
  * speaks cmux. The fake encodes the cmux argv contract Phase 2 verifies against
- * the real binary before any tent refactor. @km/silvery/17273 (Phase 1).
+ * the real binary before any tent refactor. @si/mux/19260-proto/17273 (Phase 1).
  */
 import { describe, expect, test } from "vitest"
 import { MuxRefNotFoundError } from "@bearly/mux-protocol"
