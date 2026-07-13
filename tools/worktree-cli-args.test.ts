@@ -100,11 +100,15 @@ describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
   })
 
   test("the retired merge command teaches the repository landing workflow", () => {
-    expect(planCliInvocation(["merge", "wt5"])).toEqual({
+    const refusal = {
       action: "usage-error",
       message:
         "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
-    })
+    } as const
+    expect(planCliInvocation(["merge", "wt5"])).toEqual(refusal)
+    expect(planCliInvocation(["merge", "--help"])).toEqual(refusal)
+    expect(planCliInvocation(["merge", "-h"])).toEqual(refusal)
+    expect(planCliInvocation(["merge"])).toEqual(refusal)
   })
 })
 

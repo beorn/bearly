@@ -2228,17 +2228,15 @@ export type CliPlan =
   | { action: "gc"; options: GcOptions }
 
 /**
- * Pure CLI planner. Guarantees: `-h`/`--help` anywhere is help, never work; a
- * `-`-prefixed token can never become a worktree name; unknown flags, missing
- * flag values, and extra positionals fail loud. This makes the
+ * Pure CLI planner. Guarantees: live commands treat `-h`/`--help` anywhere as
+ * help, while retired commands refuse every spelling; a `-`-prefixed token can
+ * never become a worktree name; unknown flags, missing flag values, and extra
+ * positionals fail loud. This makes the
  * `bun worktree reset --help` → `<repo>---help` sprawl class (km bead
  * 20888-contained-worktree-pool) unrepresentable in a plan.
  */
 export function planCliInvocation(argv: string[]): CliPlan {
-  if (argv.some((arg) => arg === "--help" || arg === "-h")) return { action: "help" }
   const command = argv[0]
-  if (command === undefined) return { action: "default-info" }
-  if (command === "help") return { action: "help" }
   if (command === "merge") {
     return {
       action: "usage-error",
@@ -2246,6 +2244,9 @@ export function planCliInvocation(argv: string[]): CliPlan {
         "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
     }
   }
+  if (argv.some((arg) => arg === "--help" || arg === "-h")) return { action: "help" }
+  if (command === undefined) return { action: "default-info" }
+  if (command === "help") return { action: "help" }
 
   const spec = SUBCOMMAND_SPECS[command]
   if (!spec) return { action: "usage-error", message: `Unknown command: ${command}` }
