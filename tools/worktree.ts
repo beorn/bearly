@@ -11,7 +11,6 @@
  * Commands:
  *   (default)              - Show worktrees and help
  *   create <name> [branch] - Create worktree at ../<repo>-<name>
- *   merge <name>           - Merge worktree branch into main and clean up
  *   remove <name>          - Remove worktree
  *   list                   - Detailed worktree status (with per-submodule HEAD SHAs)
  *
@@ -1585,7 +1584,7 @@ export interface ResolveTargetOptions {
 
 /**
  * Resolve a worktree TARGET argument for verbs that operate on an EXISTING
- * worktree (remove/reset/merge). Accepts:
+ * worktree (remove/reset). Accepts:
  *   - a filesystem path (absolute, containing a separator, or `.`/`..`) —
  *     used as-is, so a path pasted from `git worktree list` just works
  *   - a dir name already prefixed with `<repoName>-`
@@ -2240,6 +2239,13 @@ export function planCliInvocation(argv: string[]): CliPlan {
   const command = argv[0]
   if (command === undefined) return { action: "default-info" }
   if (command === "help") return { action: "help" }
+  if (command === "merge") {
+    return {
+      action: "usage-error",
+      message:
+        "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
+    }
+  }
 
   const spec = SUBCOMMAND_SPECS[command]
   if (!spec) return { action: "usage-error", message: `Unknown command: ${command}` }

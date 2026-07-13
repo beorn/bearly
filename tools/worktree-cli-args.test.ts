@@ -98,6 +98,14 @@ describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
     expect(planCliInvocation(["frobnicate"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation([])).toEqual({ action: "default-info" })
   })
+
+  test("the retired merge command teaches the repository landing workflow", () => {
+    expect(planCliInvocation(["merge", "wt5"])).toEqual({
+      action: "usage-error",
+      message:
+        "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
+    })
+  })
 })
 
 describe("assertValidWorktreeName — defense in depth at the API layer", () => {
