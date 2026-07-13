@@ -21,7 +21,7 @@ describe("planCliInvocation — help interception (the hh---help incident)", () 
   test("`-h`/`--help` anywhere wins over any subcommand", () => {
     expect(planCliInvocation(["--help"])).toEqual({ action: "help" })
     expect(planCliInvocation(["create", "wt3", "--help"])).toEqual({ action: "help" })
-    expect(planCliInvocation(["merge", "-h"])).toEqual({ action: "help" })
+    expect(planCliInvocation(["remove", "-h"])).toEqual({ action: "help" })
     expect(planCliInvocation(["help"])).toEqual({ action: "help" })
   })
 })
@@ -43,9 +43,8 @@ describe("planCliInvocation — name is the first positional, never a flag", () 
     })
   })
 
-  test("`remove` / `merge` with only flags is a usage error, not a flag-named worktree", () => {
+  test("commands with only flags are usage errors, not flag-named worktrees", () => {
     expect(planCliInvocation(["remove", "--force"])).toMatchObject({ action: "usage-error" })
-    expect(planCliInvocation(["merge", "--no-fetch"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation(["reset"])).toMatchObject({ action: "usage-error" })
   })
 
