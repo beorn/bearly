@@ -135,9 +135,7 @@ async function main() {
   }
 
   console.log("\n[team-up] DONE. Manifests below — open each in its own claude session:\n")
-  for (const { slot, path } of ready) {
-    console.log(manifest(slot, path))
-  }
+  for (const { slot, path } of ready) console.log(manifest(slot, path))
 
   console.log("─".repeat(72))
   console.log(`Chief continues in main repo: cd ${mainRoot}`)
