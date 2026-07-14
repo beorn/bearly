@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
 import {
   composeRuntimeInfo,
@@ -35,6 +36,68 @@ describe("@bearly/runtime-info", () => {
       },
     }
     expect(readGitState(deps)).toEqual({ sha: "deadbee", dirty: true })
+  })
+
+  test("status inspection failure invalidates the SHA instead of reporting a false clean identity", () => {
+    const deps: RuntimeInfoDeps = {
+      cwd: "/repo",
+      sh: (_cmd, args) => (args.includes("rev-parse") ? { status: 0, stdout: "deadbee\n" } : { status: 1, stdout: "" }),
+    }
+
+    expect(readGitState(deps)).toEqual({ sha: null, dirty: false })
+  })
+
+  test.each(["abc123", "not-a-sha", "deadbee\ncafebabe", "a".repeat(65)])(
+    "malformed successful HEAD output fails closed: %s",
+    (head) => {
+      const deps: RuntimeInfoDeps = {
+        cwd: "/repo",
+        sh: (_cmd, args) =>
+          args.includes("rev-parse") ? { status: 0, stdout: `${head}\n` } : { status: 0, stdout: "" },
+      }
+
+      expect(readGitState(deps)).toEqual({ sha: null, dirty: false })
+    },
+  )
+
+  test("the default Git probe ignores inherited repository-scoped GIT_* variables", () => {
+    const sourceRoot = resolve(import.meta.dirname, "../../..")
+    const foreign = mkdtempSync(join(tmpdir(), "runtime-info-foreign-"))
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: foreign })
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: foreign })
+      execFileSync("git", ["config", "user.name", "Runtime Info Test"], { cwd: foreign })
+      writeFileSync(join(foreign, "foreign.txt"), "foreign\n")
+      execFileSync("git", ["add", "foreign.txt"], { cwd: foreign })
+      execFileSync("git", ["commit", "-q", "-m", "test: seed foreign repo"], { cwd: foreign })
+
+      const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+        cwd: sourceRoot,
+        encoding: "utf8",
+      }).trim()
+      const dirty =
+        execFileSync("git", ["status", "--porcelain"], { cwd: sourceRoot, encoding: "utf8" }).trim().length > 0
+      const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], {
+        cwd: foreign,
+        encoding: "utf8",
+      }).trim()
+      const output = execFileSync(
+        process.execPath,
+        [
+          "-e",
+          'import { nodeRuntimeInfoDeps, readGitState } from "./packages/runtime-info/src/index.ts"; console.log(JSON.stringify(readGitState(nodeRuntimeInfoDeps(process.cwd()))))',
+        ],
+        {
+          cwd: sourceRoot,
+          encoding: "utf8",
+          env: { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: foreign },
+        },
+      )
+
+      expect(JSON.parse(output)).toEqual({ sha, dirty })
+    } finally {
+      rmSync(foreign, { recursive: true, force: true })
+    }
   })
 
   test("composes runtime info from an explicit version and injected deps", () => {

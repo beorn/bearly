@@ -25,7 +25,12 @@ export function nodeRuntimeInfoDeps(cwd = process.cwd()): RuntimeInfoDeps {
   return {
     cwd,
     sh: (cmd, args) => {
-      const r = spawnSync(cmd, [...args], { cwd, encoding: "utf-8", timeout: 5_000 })
+      const r = spawnSync(cmd, [...args], {
+        cwd,
+        encoding: "utf-8",
+        env: sourceGitEnvironment(),
+        timeout: 5_000,
+      })
       return { status: r.status ?? 1, stdout: r.stdout ?? "" }
     },
   }
@@ -45,9 +50,11 @@ export function readPackageVersion(packageJsonPath: string, fallback = "0.0.0"):
 /** Read the worktree short HEAD SHA + dirty flag for the code this process loaded. */
 export function readGitState(deps: RuntimeInfoDeps): Pick<RuntimeInfo, "sha" | "dirty"> {
   const head = deps.sh("git", ["rev-parse", "--short", "HEAD"])
-  const sha = head.status === 0 && head.stdout.trim().length > 0 ? head.stdout.trim() : null
+  const candidate = head.stdout.trim()
+  const sha = head.status === 0 && isGitAbbreviation(candidate) ? candidate : null
   const status = deps.sh("git", ["status", "--porcelain"])
-  const dirty = status.status === 0 && status.stdout.trim().length > 0
+  if (status.status !== 0) return { sha: null, dirty: false }
+  const dirty = status.stdout.trim().length > 0
   return { sha, dirty }
 }
 
@@ -217,4 +224,16 @@ export function readWorkspaceInstallState(
   const edges = workspaceDepEdges(root)
   const unresolved = edges.filter((edge) => !resolve(edge.dep, edge.dependentDir))
   return { checkedEdges: edges.length, unresolved }
+}
+
+function sourceGitEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_")) delete env[key]
+  }
+  return env
+}
+
+function isGitAbbreviation(value: string): boolean {
+  return /^[0-9a-f]{7,64}$/iu.test(value)
 }
