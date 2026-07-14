@@ -36,7 +36,18 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "fs"
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from "fs"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 
@@ -185,7 +196,9 @@ export async function getWorktreeStatus(worktreePath: string): Promise<{ dirty: 
     return { dirty: false, changes: [] }
   }
 
-  const result = await safeExec($`cd ${worktreePath} && git status --porcelain 2>/dev/null`)
+  const result = await safeExec(
+    $`cd ${worktreePath} && git status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
+  )
 
   const changes = result.stdout.trim().split("\n").filter(Boolean)
   return { dirty: changes.length > 0, changes }
@@ -283,14 +296,15 @@ export function assertValidWorktreeName(name: string): void {
 }
 
 // ============================================
-// Agent-clone GC (cp-c-R isolation worktrees)
+// Agent-clone GC (linked isolation worktrees + preserved legacy clones)
 // ============================================
 
 /**
- * Agent-isolation clones are independent full repos under
- * `<gitRoot>/.claude/worktrees/agent-*` made via APFS `cp -c -R` (not git
- * worktrees). Hosts that run Claude Code with worktree-isolation hooks
- * accumulate these clones over time; the gc command classifies and prunes.
+ * Agent-isolation paths live under `<gitRoot>/.claude/worktrees/agent-*`.
+ * Current paths are registered linked worktrees; older hosts made independent
+ * APFS clones in the same directory. GC may remove only the former, after
+ * proving that their checked-out history is landed and their tree is clean.
+ * Legacy standalone clones and malformed paths are preserved for recovery.
  *
  * Classification mirrors `.claude/lib/classify-clone.sh` (single algorithm,
  * two language-specific implementations for the hooks vs CLI).
@@ -327,25 +341,33 @@ export async function countCascades(clonePath: string): Promise<number> {
 export async function classifyAgentClone(clonePath: string): Promise<AgentCloneClass> {
   if (!existsSync(join(clonePath, ".git"))) return "broken"
 
-  const status = await getWorktreeStatus(clonePath)
-  if (status.dirty) return "dirty"
+  const status = await safeExec(
+    $`git -C ${clonePath} status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
+  )
+  if (status.exitCode !== 0) return "broken"
+  if (status.stdout.trim().length > 0) return "dirty"
 
-  const headResult = await safeExec($`cd ${clonePath} && git rev-parse HEAD 2>/dev/null`)
+  const headResult = await safeExec($`git -C ${clonePath} rev-parse --verify HEAD^{commit} 2>/dev/null`)
   const head = headResult.stdout.trim()
-  if (!head) return "broken"
+  if (headResult.exitCode !== 0 || !head) return "broken"
 
-  const inMain = await safeExec($`cd ${clonePath} && git merge-base --is-ancestor ${head} main 2>/dev/null`)
+  const inMain = await safeExec(
+    $`git -C ${clonePath} merge-base --is-ancestor ${head} refs/remotes/origin/main 2>/dev/null`,
+  )
   if (inMain.exitCode !== 0) return "unique-work"
 
-  // Any local-only branch with commits not in main and not on any remote?
+  // Any local-only branch with commits not in origin/main and not on any remote?
   const branches = await safeExec(
-    $`cd ${clonePath} && git for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null`,
+    $`git -C ${clonePath} for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null`,
   )
+  if (branches.exitCode !== 0) return "broken"
   for (const line of branches.stdout.split("\n")) {
     if (!line.trim()) continue
     const sha = line.split(" ")[0]
     if (!sha) continue
-    const reachable = await safeExec($`cd ${clonePath} && git merge-base --is-ancestor ${sha} main 2>/dev/null`)
+    const reachable = await safeExec(
+      $`git -C ${clonePath} merge-base --is-ancestor ${sha} refs/remotes/origin/main 2>/dev/null`,
+    )
     if (reachable.exitCode === 0) continue
     const onRemote = await commitExistsOnRemote(clonePath, sha)
     if (onRemote) continue
@@ -378,11 +400,208 @@ export interface GcOptions {
   root?: string
   dryRun?: boolean
   minAgeHours?: number
-  /** When true, also delete unique-work clones. Default false (preserved). */
+  /** Deprecated compatibility flag. Unique work is always preserved. */
   includeUniqueWork?: boolean
 }
 
-export async function gcAgentClones(opts: GcOptions = {}): Promise<{
+interface GcCandidateProof {
+  removable: boolean
+  reason: string
+}
+
+export interface ProcessCwdCensus {
+  available: boolean
+  cwdPaths: string[]
+  reason: string
+}
+
+export interface GcDependencies {
+  censusProcessCwds?: () => ProcessCwdCensus | Promise<ProcessCwdCensus>
+}
+
+const CWD_CENSUS_TIMEOUT_MS = 2_000
+const CWD_CENSUS_MAX_BUFFER = 8 * 1024 * 1024
+const CWD_CENSUS_MAX_PROCESSES = 32_768
+
+function unavailableCwdCensus(reason: string): ProcessCwdCensus {
+  return { available: false, cwdPaths: [], reason }
+}
+
+function currentProcessCwd(): string | undefined {
+  try {
+    return realpathSync(process.cwd())
+  } catch {
+    return undefined
+  }
+}
+
+function censusDarwinProcessCwds(currentCwd: string): ProcessCwdCensus {
+  const lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].find(existsSync)
+  if (!lsof) return unavailableCwdCensus("lsof is unavailable")
+
+  const result = spawnSync(lsof, ["-a", "-d", "cwd", "-F0n"], {
+    encoding: "utf8",
+    timeout: CWD_CENSUS_TIMEOUT_MS,
+    maxBuffer: CWD_CENSUS_MAX_BUFFER,
+  })
+  if (result.error || result.status !== 0 || (result.stderr ?? "").trim() !== "") {
+    const stderr = (result.stderr ?? "").trim()
+    return unavailableCwdCensus(result.error?.message ?? (stderr || `lsof exit ${result.status}`))
+  }
+
+  const cwdPaths = new Set<string>([currentCwd])
+  let observedCwds = 0
+  for (const rawField of (result.stdout ?? "").split("\0")) {
+    const field = rawField.startsWith("\n") ? rawField.slice(1) : rawField
+    if (!field.startsWith("n")) continue
+    const cwd = field.slice(1)
+    if (!isAbsolute(cwd)) return unavailableCwdCensus("lsof returned a non-absolute CWD")
+    cwdPaths.add(cwd)
+    observedCwds++
+  }
+  if (observedCwds === 0) return unavailableCwdCensus("lsof returned no process CWDs")
+  return { available: true, cwdPaths: [...cwdPaths], reason: "macOS lsof census" }
+}
+
+function censusLinuxProcessCwds(currentCwd: string): ProcessCwdCensus {
+  let processIds: string[]
+  try {
+    processIds = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))
+  } catch (error) {
+    return unavailableCwdCensus(`cannot enumerate /proc: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (processIds.length > CWD_CENSUS_MAX_PROCESSES) {
+    return unavailableCwdCensus(`process count exceeds ${CWD_CENSUS_MAX_PROCESSES}`)
+  }
+
+  const cwdPaths = new Set<string>([currentCwd])
+  for (const processId of processIds) {
+    try {
+      const cwd = readlinkSync(`/proc/${processId}/cwd`)
+      if (!isAbsolute(cwd)) return unavailableCwdCensus(`/proc/${processId}/cwd is not absolute`)
+      cwdPaths.add(cwd)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOENT" || code === "ESRCH" || code === "EINVAL") continue
+      return unavailableCwdCensus(`cannot read /proc/${processId}/cwd: ${code ?? String(error)}`)
+    }
+  }
+  return { available: true, cwdPaths: [...cwdPaths], reason: "Linux /proc census" }
+}
+
+/** Bounded, fail-closed census of process working directories. */
+export function censusProcessCwds(): ProcessCwdCensus {
+  const currentCwd = currentProcessCwd()
+  if (!currentCwd) return unavailableCwdCensus("current process CWD is unavailable")
+  if (process.platform === "darwin") return censusDarwinProcessCwds(currentCwd)
+  if (process.platform === "linux") return censusLinuxProcessCwds(currentCwd)
+  return unavailableCwdCensus(`unsupported platform ${process.platform}`)
+}
+
+function proveNoLiveCwd(candidatePath: string, census: ProcessCwdCensus): GcCandidateProof {
+  if (!census.available) return { removable: false, reason: `CWD census unavailable: ${census.reason}` }
+
+  let candidate: string
+  try {
+    candidate = realpathSync(candidatePath)
+  } catch {
+    return { removable: false, reason: "candidate path proof unavailable" }
+  }
+
+  for (const cwdPath of census.cwdPaths) {
+    if (!isAbsolute(cwdPath)) return { removable: false, reason: "CWD census returned a non-absolute path" }
+    const rel = relative(candidate, resolve(cwdPath))
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+      return { removable: false, reason: `live process CWD inside ${candidatePath}` }
+    }
+  }
+  return { removable: true, reason: "no live process CWD" }
+}
+
+async function registeredWorktreePaths(gitRoot: string): Promise<Set<string>> {
+  const result = await safeExec($`git -C ${gitRoot} worktree list --porcelain -z`)
+  if (result.exitCode !== 0) {
+    throw new Error(`git worktree list failed in ${gitRoot}; no paths were removed`)
+  }
+
+  const paths = new Set<string>()
+  for (const field of result.stdout.split("\0")) {
+    if (field.startsWith("worktree ")) paths.add(resolve(field.slice("worktree ".length)))
+  }
+  return paths
+}
+
+/**
+ * Prove that a path is a registered linked worktree whose complete reachable
+ * history is already on origin/main. `rev-list origin/main..HEAD` counts
+ * merge-only commits as well as ordinary commits; a clean tree alone is never
+ * sufficient proof.
+ */
+async function proveGcCandidate(
+  gitRoot: string,
+  candidatePath: string,
+  knownRegistrations?: ReadonlySet<string>,
+): Promise<GcCandidateProof> {
+  const path = resolve(candidatePath)
+  if (path === resolve(gitRoot)) return { removable: false, reason: "main worktree" }
+
+  const registrations = knownRegistrations ?? (await registeredWorktreePaths(gitRoot))
+  if (!registrations.has(path)) return { removable: false, reason: "unregistered path" }
+  if (!existsSync(path)) return { removable: false, reason: "registered path is missing" }
+
+  const status = await safeExec(
+    $`git -C ${path} status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
+  )
+  if (status.exitCode !== 0) return { removable: false, reason: "status proof unavailable" }
+  if (status.stdout.trim().length > 0) return { removable: false, reason: "dirty worktree" }
+
+  const head = await safeExec($`git -C ${path} rev-parse --verify HEAD^{commit} 2>/dev/null`)
+  if (head.exitCode !== 0 || head.stdout.trim() === "") {
+    return { removable: false, reason: "HEAD proof unavailable" }
+  }
+
+  const upstream = await safeExec($`git -C ${path} rev-parse --verify refs/remotes/origin/main^{commit} 2>/dev/null`)
+  if (upstream.exitCode !== 0 || upstream.stdout.trim() === "") {
+    return { removable: false, reason: "origin/main proof unavailable" }
+  }
+
+  const unique = await safeExec($`git -C ${path} rev-list --count refs/remotes/origin/main..HEAD 2>/dev/null`)
+  if (unique.exitCode !== 0 || !/^\d+$/.test(unique.stdout.trim())) {
+    return { removable: false, reason: "unique-history proof unavailable" }
+  }
+  if (unique.stdout.trim() !== "0") return { removable: false, reason: "unique history" }
+
+  return { removable: true, reason: "registered, clean, and landed" }
+}
+
+async function removeGcCandidate(
+  gitRoot: string,
+  candidatePath: string,
+  censusProvider: NonNullable<GcDependencies["censusProcessCwds"]>,
+): Promise<void> {
+  const liveProof = proveNoLiveCwd(candidatePath, await censusProvider())
+  if (!liveProof.removable) {
+    throw new Error(`Refusing to remove ${candidatePath}: ${liveProof.reason}`)
+  }
+
+  const proof = await proveGcCandidate(gitRoot, candidatePath)
+  if (!proof.removable) {
+    throw new Error(`Refusing to remove ${candidatePath}: ${proof.reason}`)
+  }
+
+  const removal = await safeExec($`git -C ${gitRoot} worktree remove --force ${candidatePath}`)
+  if (removal.exitCode !== 0) throw new Error(`git worktree remove failed for ${candidatePath}`)
+
+  const registrations = await registeredWorktreePaths(gitRoot)
+  if (existsSync(candidatePath) || registrations.has(resolve(candidatePath))) {
+    throw new Error(`git reported success but did not fully remove linked worktree ${candidatePath}`)
+  }
+}
+
+export async function gcAgentClones(
+  opts: GcOptions = {},
+  dependencies: GcDependencies = {},
+): Promise<{
   deleted: AgentCloneStatus[]
   preserved: AgentCloneStatus[]
 }> {
@@ -404,11 +623,25 @@ export async function gcAgentClones(opts: GcOptions = {}): Promise<{
 
   const deleted: AgentCloneStatus[] = []
   const preserved: AgentCloneStatus[] = []
+  const reasons = new Map<string, string>()
+  const registrations = await registeredWorktreePaths(gitRoot)
+  const censusProvider = dependencies.censusProcessCwds ?? censusProcessCwds
+  const cwdCensus = await censusProvider()
+
+  if (includeUnique) {
+    warn("--include-unique-work is retained for compatibility but is now a safety no-op; unique work is preserved")
+  }
 
   for (const c of clones) {
-    const eligible = c.class === "clean" || c.class === "broken" || (includeUnique && c.class === "unique-work")
     const oldEnough = c.ageHours >= minAgeHours
-    if (eligible && oldEnough) {
+    const liveProof = proveNoLiveCwd(c.path, cwdCensus)
+    const proof = !oldEnough
+      ? { removable: false, reason: `younger than ${minAgeHours}h` }
+      : !liveProof.removable
+        ? liveProof
+        : await proveGcCandidate(gitRoot, c.path, registrations)
+    reasons.set(c.path, proof.reason)
+    if (proof.removable) {
       deleted.push(c)
     } else {
       preserved.push(c)
@@ -422,13 +655,13 @@ export async function gcAgentClones(opts: GcOptions = {}): Promise<{
   for (const c of clones) {
     const tag = deleted.includes(c) ? RED + "DELETE  " + RESET : GREEN + "PRESERVE" + RESET
     const ageStr = `${c.ageHours.toFixed(1)}h`
-    const why = c.class === "dirty" ? `${c.class} (${c.uncommitted} uncommitted)` : c.class
+    const classSummary = c.class === "dirty" ? `${c.class} (${c.uncommitted} uncommitted)` : c.class
+    const why = `${classSummary}; ${reasons.get(c.path) ?? "unproven"}`
     const cascade = c.cascadeCount > 0 ? YELLOW + ` +${c.cascadeCount} nested cascade` + RESET : ""
     console.log(`  ${tag}  ${c.name.padEnd(40)} ${DIM}${ageStr.padStart(7)}${RESET}  ${why}${cascade}`)
   }
   // Surface cascades inside PRESERVED clones — those won't be cleaned by
-  // outer deletion. User can investigate or pass --include-unique-work to
-  // force-delete the parent.
+  // outer deletion. They require deliberate recovery before any cleanup.
   const preservedWithCascade = preserved.filter((c) => c.cascadeCount > 0)
   if (preservedWithCascade.length > 0) {
     console.log("")
@@ -443,22 +676,12 @@ export async function gcAgentClones(opts: GcOptions = {}): Promise<{
     return { deleted, preserved }
   }
 
-  // Use /usr/bin/trash if available (recoverable on macOS), else rm -rf.
-  const hasTrash = existsSync("/usr/bin/trash")
   console.log("")
-  info(`Deleting ${deleted.length} clone(s) via ${hasTrash ? "trash (recoverable)" : "rm -rf"}...`)
+  info(`Removing ${deleted.length} registered linked worktree(s) through Git...`)
   for (const c of deleted) {
-    if (hasTrash) {
-      await safeExec($`/usr/bin/trash ${c.path}`)
-    } else {
-      try {
-        rmSync(c.path, { recursive: true, force: true })
-      } catch {
-        // best-effort
-      }
-    }
+    await removeGcCandidate(gitRoot, c.path, censusProvider)
   }
-  success(`Deleted ${deleted.length} clone(s)`)
+  success(`Removed ${deleted.length} registered linked worktree(s)`)
 
   return { deleted, preserved }
 }
@@ -544,7 +767,9 @@ async function uniqueCommitsCount(wtPath: string): Promise<number> {
 }
 
 async function uuFiles(wtPath: string): Promise<string[]> {
-  const r = await safeExec($`cd ${wtPath} && git status --porcelain 2>/dev/null`)
+  const r = await safeExec(
+    $`cd ${wtPath} && git status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
+  )
   return r.stdout
     .split("\n")
     .filter((l) => l.startsWith("UU ") || l.startsWith("AA ") || l.startsWith("DD "))
@@ -2369,7 +2594,7 @@ ${BOLD}GC OPTIONS${RESET}
   --root <dir>             Directory to scan (default: <gitRoot>/.claude/worktrees)
   --dry-run                Show what would be deleted, don't delete
   --min-age <hours>        Only delete clones older than this many hours (default 0)
-  --include-unique-work    Also delete clones with local-only commits (default preserved)
+  --include-unique-work    Compatibility no-op; unique work is always preserved
 
 ${BOLD}EXAMPLES${RESET}
   bun worktree create my-feature                           # New branch feat/my-feature
