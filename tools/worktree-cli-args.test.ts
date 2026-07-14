@@ -21,7 +21,7 @@ describe("planCliInvocation — help interception (the hh---help incident)", () 
   test("`-h`/`--help` anywhere wins over any subcommand", () => {
     expect(planCliInvocation(["--help"])).toEqual({ action: "help" })
     expect(planCliInvocation(["create", "wt3", "--help"])).toEqual({ action: "help" })
-    expect(planCliInvocation(["merge", "-h"])).toEqual({ action: "help" })
+    expect(planCliInvocation(["remove", "-h"])).toEqual({ action: "help" })
     expect(planCliInvocation(["help"])).toEqual({ action: "help" })
   })
 })
@@ -43,9 +43,8 @@ describe("planCliInvocation — name is the first positional, never a flag", () 
     })
   })
 
-  test("`remove` / `merge` with only flags is a usage error, not a flag-named worktree", () => {
+  test("commands with only flags are usage errors, not flag-named worktrees", () => {
     expect(planCliInvocation(["remove", "--force"])).toMatchObject({ action: "usage-error" })
-    expect(planCliInvocation(["merge", "--no-fetch"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation(["reset"])).toMatchObject({ action: "usage-error" })
   })
 
@@ -98,6 +97,18 @@ describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
   test("unknown command errors; bare invocation is the default info screen", () => {
     expect(planCliInvocation(["frobnicate"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation([])).toEqual({ action: "default-info" })
+  })
+
+  test("the retired merge command teaches the repository landing workflow", () => {
+    const refusal = {
+      action: "usage-error",
+      message:
+        "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
+    } as const
+    expect(planCliInvocation(["merge", "wt5"])).toEqual(refusal)
+    expect(planCliInvocation(["merge", "--help"])).toEqual(refusal)
+    expect(planCliInvocation(["merge", "-h"])).toEqual(refusal)
+    expect(planCliInvocation(["merge"])).toEqual(refusal)
   })
 })
 

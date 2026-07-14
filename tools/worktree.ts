@@ -11,7 +11,6 @@
  * Commands:
  *   (default)              - Show worktrees and help
  *   create <name> [branch] - Create worktree at ../<repo>-<name>
- *   merge <name>           - Merge worktree branch into main and clean up
  *   remove <name>          - Remove worktree
  *   list                   - Detailed worktree status (with per-submodule HEAD SHAs)
  *
@@ -1585,7 +1584,7 @@ export interface ResolveTargetOptions {
 
 /**
  * Resolve a worktree TARGET argument for verbs that operate on an EXISTING
- * worktree (remove/reset/merge). Accepts:
+ * worktree (remove/reset). Accepts:
  *   - a filesystem path (absolute, containing a separator, or `.`/`..`) —
  *     used as-is, so a path pasted from `git worktree list` just works
  *   - a dir name already prefixed with `<repoName>-`
@@ -1882,233 +1881,6 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   success(`Worktree ${name} reset`)
 }
 
-export interface MergeOptions {
-  deleteBranch?: boolean
-  fullTests?: boolean
-  /**
-   * Skip the `git fetch origin <integration-target>` preflight that detects
-   * concurrent integrations. Default `false` — only set when the user knows
-   * origin can't have moved (e.g. offline merge, single-session work).
-   * See: km-bearly.worktree-merge-origin-race-preflight.
-   */
-  noFetch?: boolean
-}
-
-/**
- * Merge a worktree branch into main and clean up.
- *
- * Origin race preflight (km-bearly.worktree-merge-origin-race-preflight)
- * ----------------------------------------------------------------------
- * Two sessions running independent integrations of the same source branch
- * concurrently can race. Witnessed 2026-04-29: share-resolveTask did
- * `bun worktree merge X` (--no-ff merge onto local main) while silvercode2
- * cherry-picked the same commits onto main and pushed first. Local main
- * ended up 4 commits ahead of origin with content-equivalent but
- * SHA-different history; recovery only worked because trees were byte-identical.
- *
- * Mitigation: before `git merge` runs we
- *   1. `git fetch origin <integration-target>`,
- *   2. compare local <integration-target> vs origin/<integration-target>,
- *   3. abort with a fix-up command if origin has commits we don't.
- *
- * `--no-fetch` (MergeOptions.noFetch) bypasses the preflight when needed
- * (offline, ad-hoc, single-session work).
- */
-export async function mergeWorktree(name: string, options: MergeOptions = {}): Promise<void> {
-  assertValidWorktreeName(name)
-  const { deleteBranch = true, fullTests = false, noFetch = false } = options
-
-  const gitRoot = findGitRoot(process.cwd())
-  if (!gitRoot) {
-    error("Not in a git repository")
-    process.exit(1)
-  }
-
-  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
-
-  // Validate we're on the main worktree
-  const currentBranchResult = await $`cd ${gitRoot} && git branch --show-current`.quiet()
-  const currentBranch = currentBranchResult.stdout.toString().trim()
-  if (currentBranch !== "main" && currentBranch !== "master") {
-    error(`Must be on main branch to merge (currently on ${currentBranch})`)
-    process.exit(1)
-  }
-
-  // Validate we're not inside the worktree being merged
-  if (process.cwd().startsWith(worktreePath)) {
-    error("Cannot merge from inside the worktree being merged")
-    console.log(CYAN + `  cd ${gitRoot}` + RESET)
-    process.exit(1)
-  }
-
-  // Check worktree exists
-  if (!existsSync(worktreePath)) {
-    error(`Worktree not found: ${worktreePath}`)
-    process.exit(1)
-  }
-
-  // Get the worktree's branch
-  const branchResult = await $`cd ${worktreePath} && git branch --show-current`.quiet()
-  const branchName = branchResult.stdout.toString().trim()
-  if (!branchName) {
-    error("Worktree has no branch (detached HEAD)")
-    process.exit(1)
-  }
-
-  info(`Merging ${BOLD}${branchName}${RESET} into ${BOLD}${currentBranch}${RESET}`)
-
-  // Check worktree has no uncommitted changes
-  const status = await getWorktreeStatus(worktreePath)
-  if (status.dirty) {
-    error("Worktree has uncommitted changes:")
-    for (const change of status.changes.slice(0, 5)) {
-      console.log(DIM + `  ${change}` + RESET)
-    }
-    if (status.changes.length > 5) {
-      console.log(DIM + `  ... and ${status.changes.length - 5} more` + RESET)
-    }
-    console.log("")
-    console.log("Commit or stash changes in the worktree first:")
-    console.log(CYAN + `  cd ${worktreePath} && git add . && git commit -m "WIP"` + RESET)
-    process.exit(1)
-  }
-  success("Worktree is clean")
-
-  // Check submodules are clean
-  const submodules = getSubmodulePaths(worktreePath)
-  for (const submodule of submodules) {
-    const subPath = join(worktreePath, submodule)
-    if (!existsSync(join(subPath, ".git"))) continue
-
-    const subStatus = await getWorktreeStatus(subPath)
-    if (subStatus.dirty) {
-      error(`Submodule ${submodule} has uncommitted changes`)
-      process.exit(1)
-    }
-  }
-
-  // Origin race preflight — see function-level doc and
-  // km-bearly.worktree-merge-origin-race-preflight.
-  //
-  // Two sessions can independently integrate the same source branch and
-  // race; if origin/<currentBranch> has commits we don't, our local merge
-  // will produce content-equivalent but SHA-different history that's a pain
-  // to reconcile. Abort early with a clear fix-up command. Skipped when
-  // (a) --no-fetch was passed, or (b) origin doesn't track currentBranch.
-  if (!noFetch) {
-    const remoteCheck = await safeExec(
-      $`cd ${gitRoot} && git rev-parse --verify --quiet refs/remotes/origin/${currentBranch}`,
-    )
-    if (remoteCheck.exitCode === 0) {
-      info(`Fetching origin/${currentBranch} (preflight — pass --no-fetch to skip)`)
-      const fetchResult = await safeExec($`cd ${gitRoot} && git fetch origin ${currentBranch}`)
-      if (fetchResult.exitCode !== 0) {
-        warn(`git fetch origin ${currentBranch} failed — proceeding without preflight`)
-      } else {
-        // Commits on origin that we don't have locally → origin moved ahead.
-        const aheadResult = await safeExec(
-          $`cd ${gitRoot} && git rev-list --count ${currentBranch}..origin/${currentBranch}`,
-        )
-        const aheadCount = parseInt(aheadResult.stdout.trim(), 10) || 0
-        if (aheadCount > 0) {
-          const localShaResult = await safeExec($`cd ${gitRoot} && git rev-parse ${currentBranch}`)
-          const originShaResult = await safeExec($`cd ${gitRoot} && git rev-parse origin/${currentBranch}`)
-          const localSha = localShaResult.stdout.trim().slice(0, 12)
-          const originSha = originShaResult.stdout.trim().slice(0, 12)
-          error(`origin/${currentBranch} moved since local ${currentBranch} was last updated.`)
-          console.log(DIM + `  local:  ${localSha}` + RESET)
-          console.log(DIM + `  origin: ${originSha} (${aheadCount} commit${aheadCount === 1 ? "" : "s"} ahead)` + RESET)
-          console.log("")
-          console.log("Pull first:")
-          console.log(CYAN + `  cd ${gitRoot} && git pull --ff-only origin ${currentBranch}` + RESET)
-          console.log("")
-          console.log("Then retry:")
-          console.log(CYAN + `  bun worktree merge ${name}` + RESET)
-          console.log("")
-          console.log(DIM + "Bypass (offline / single-session): bun worktree merge " + name + " --no-fetch" + RESET)
-          process.exit(1)
-        }
-        success(`origin/${currentBranch} is in sync (no race)`)
-      }
-    }
-  }
-
-  // Merge
-  info(`Running: git merge ${branchName} --no-ff`)
-  const mergeResult = await safeExec($`cd ${gitRoot} && git merge ${branchName} --no-ff`)
-  if (mergeResult.exitCode !== 0) {
-    error("Merge conflict! Resolve manually:")
-    console.log(mergeResult.stdout)
-    console.log("")
-    console.log("After resolving:")
-    console.log(CYAN + "  git merge --continue" + RESET)
-    console.log("")
-    console.log("Or abort:")
-    console.log(CYAN + "  git merge --abort" + RESET)
-    process.exit(1)
-  }
-  success("Merged successfully")
-
-  // Validate submodule commits are pushed (prevents losing work on detached HEAD submodules)
-  const mainSubmodules = getSubmodulePaths(gitRoot)
-  if (mainSubmodules.length > 0) {
-    await checkUnpushedSubmodules(gitRoot, mainSubmodules)
-  }
-
-  // Show merge summary
-  const logResult = await safeExec($`cd ${gitRoot} && git log --oneline -5`)
-  console.log("")
-  console.log(DIM + logResult.stdout.trim() + RESET)
-  console.log("")
-
-  // Run tests
-  const testCmd = fullTests ? "test:all" : "test:fast"
-  info(`Running: bun run ${testCmd}`)
-  const testResult = await safeExec($`cd ${gitRoot} && bun run ${testCmd}`)
-  if (testResult.exitCode !== 0) {
-    warn("Tests failed! Review the merge before pushing.")
-    console.log(DIM + "You may want to revert:" + RESET)
-    console.log(CYAN + "  git reset --hard HEAD~1" + RESET)
-    process.exit(1)
-  }
-  success("Tests passed")
-
-  // Remove worktree (pre-clean per-worktree submodule modules first)
-  info("Removing worktree...")
-  const mergedModulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
-  if (mergedModulesDir && existsSync(mergedModulesDir)) {
-    try {
-      rmSync(mergedModulesDir, { recursive: true, force: true })
-    } catch {
-      // fall through — git worktree remove will handle most cases
-    }
-  }
-  await safeExec($`cd ${gitRoot} && git worktree remove ${worktreePath} --force`)
-  await $`cd ${gitRoot} && git worktree prune`.quiet()
-  if (mergedModulesDir && existsSync(mergedModulesDir)) {
-    try {
-      rmSync(mergedModulesDir, { recursive: true, force: true })
-    } catch {
-      // ignore
-    }
-  }
-  success("Worktree removed")
-
-  // Delete branch
-  if (deleteBranch) {
-    if (branchName === "main" || branchName === "master") {
-      warn(`Not deleting protected branch: ${branchName}`)
-    } else {
-      info(`Deleting branch: ${branchName}`)
-      await safeExec($`cd ${gitRoot} && git branch -d ${branchName} 2>/dev/null`)
-      success("Branch deleted")
-    }
-  }
-
-  console.log("")
-  success(`Merge complete: ${branchName} → ${currentBranch}`)
-}
-
 function formatBranchColor(wt: { branch: string; isDetached: boolean }): string {
   if (wt.branch === "main" || wt.branch === "master") return GREEN + wt.branch + RESET
   if (wt.isDetached) return RED + wt.branch + RESET
@@ -2289,10 +2061,6 @@ export async function showDefaultInfo(): Promise<void> {
   console.log(DIM + "     Create worktree on specific branch" + RESET)
   console.log(DIM + "     Example: bun worktree create test main  →  track main branch" + RESET)
   console.log("")
-  console.log(CYAN + "  bun worktree merge <name>" + RESET)
-  console.log(DIM + "     Merge worktree branch into main, run tests, remove worktree" + RESET)
-  console.log(DIM + "     Use --keep-branch to keep branch, --full-tests for test:all" + RESET)
-  console.log("")
   console.log(CYAN + "  bun worktree remove <name>" + RESET)
   console.log(DIM + "     Remove worktree (checks for uncommitted changes)" + RESET)
   console.log(DIM + "     Use --force to skip checks, --delete-branch to also delete branch" + RESET)
@@ -2324,7 +2092,6 @@ ${BOLD}USAGE${RESET}
   bun worktree                          Show worktrees and help
   bun worktree create <name> [branch]   Create worktree in the pool (see POOL ROOT)
   bun worktree create --branch <branch> Create worktree using branch as name
-  bun worktree merge <name>             Merge worktree branch into main and clean up
   bun worktree remove <name>            Remove worktree
   bun worktree reset <name> [--force]   Recreate worktree at origin/main (DCG-safe slot recovery)
   bun worktree path <name>              Print the resolved slot path (pool-aware)
@@ -2347,11 +2114,6 @@ ${BOLD}CREATE OPTIONS${RESET}
   --no-direnv       Skip direnv allow
   --no-hooks        Skip hook installation
   --allow-dirty     Create even with uncommitted changes (not recommended)
-
-${BOLD}MERGE OPTIONS${RESET}
-  --keep-branch     Don't delete the branch after merging
-  --full-tests      Run test:all instead of test:fast
-  --no-fetch        Skip the origin race preflight (offline / single-session)
 
 ${BOLD}REMOVE OPTIONS${RESET}
   --delete-branch   Also delete the branch
@@ -2376,9 +2138,6 @@ ${BOLD}EXAMPLES${RESET}
   bun worktree create bugfix fix/cursor-pos                # Specific branch
   bun worktree create --branch km-ila18-theme-inherit      # Branch as name
   bun worktree create test main                            # Track main branch
-  bun worktree merge my-feature                    # Merge, test, remove, delete branch
-  bun worktree merge my-feature --keep-branch      # Merge but keep branch
-  bun worktree merge my-feature --no-fetch         # Skip origin race preflight
   bun worktree remove my-feature --delete-branch   # Remove and delete branch
 
 ${BOLD}HOW IT WORKS${RESET}
@@ -2443,7 +2202,6 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "--no-hooks": {},
     },
   },
-  merge: { maxPositionals: 1, flags: { "--keep-branch": {}, "--full-tests": {}, "--no-fetch": {} } },
   path: { maxPositionals: 1, flags: {} },
   list: { maxPositionals: 0, flags: {} },
   ls: { maxPositionals: 0, flags: {} },
@@ -2464,22 +2222,29 @@ export type CliPlan =
   | { action: "create"; name: string; branch: string | undefined; options: Required<CreateOptions> }
   | { action: "remove"; name: string; options: Required<RemoveOptions> }
   | { action: "reset"; name: string; options: ResetOptions }
-  | { action: "merge"; name: string; options: Required<MergeOptions> }
   | { action: "path"; name: string }
   | { action: "list" }
   | { action: "audit"; options: AuditOptions }
   | { action: "gc"; options: GcOptions }
 
 /**
- * Pure CLI planner. Guarantees: `-h`/`--help` anywhere is help, never work; a
- * `-`-prefixed token can never become a worktree name; unknown flags, missing
- * flag values, and extra positionals fail loud. This makes the
+ * Pure CLI planner. Guarantees: live commands treat `-h`/`--help` anywhere as
+ * help, while retired commands refuse every spelling; a `-`-prefixed token can
+ * never become a worktree name; unknown flags, missing flag values, and extra
+ * positionals fail loud. This makes the
  * `bun worktree reset --help` → `<repo>---help` sprawl class (km bead
  * 20888-contained-worktree-pool) unrepresentable in a plan.
  */
 export function planCliInvocation(argv: string[]): CliPlan {
-  if (argv.some((arg) => arg === "--help" || arg === "-h")) return { action: "help" }
   const command = argv[0]
+  if (command === "merge") {
+    return {
+      action: "usage-error",
+      message:
+        "The worktree merge command was retired; push the branch and use the repository's authorized landing workflow.",
+    }
+  }
+  if (argv.some((arg) => arg === "--help" || arg === "-h")) return { action: "help" }
   if (command === undefined) return { action: "default-info" }
   if (command === "help") return { action: "help" }
 
@@ -2558,19 +2323,6 @@ export function planCliInvocation(argv: string[]): CliPlan {
           install: !flags.has("--no-install"),
           direnv: !flags.has("--no-direnv"),
           hooks: !flags.has("--no-hooks"),
-        },
-      }
-    }
-    case "merge": {
-      const name = positionals[0]
-      if (!name) return { action: "usage-error", message: "Usage: bun worktree merge <name>" }
-      return {
-        action: "merge",
-        name,
-        options: {
-          deleteBranch: !flags.has("--keep-branch"),
-          fullTests: flags.has("--full-tests"),
-          noFetch: flags.has("--no-fetch"),
         },
       }
     }
@@ -2657,9 +2409,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         error(e instanceof Error ? e.message : String(e))
         process.exit(1)
       }
-      return
-    case "merge":
-      await mergeWorktree(plan.name, plan.options)
       return
     case "list":
       await listWorktrees(true)
