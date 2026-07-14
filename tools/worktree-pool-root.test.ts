@@ -17,12 +17,7 @@
  */
 
 import { describe, expect, test } from "vitest"
-import {
-  isCanonicalSlotPath,
-  resolvePoolRoot,
-  resolveWorktreeTargetPath,
-  slotPathCandidates,
-} from "./worktree.ts"
+import { isCanonicalSlotPath, resolvePoolRoot, resolveWorktreeTargetPath, slotPathCandidates } from "./worktree.ts"
 
 const GIT_ROOT = "/Users/dev/Code/hh"
 const CONTAINED = "/Users/dev/Code/hh/.worktrees"
@@ -102,9 +97,7 @@ describe("resolveWorktreeTargetPath — pool-aware existing-target resolution", 
 
   test("pathlike args stay as-is regardless of pool config", () => {
     const exists = () => false
-    expect(resolveWorktreeTargetPath(GIT_ROOT, "/abs/km-wt-ci", { poolRoot: CONTAINED, exists })).toBe(
-      "/abs/km-wt-ci",
-    )
+    expect(resolveWorktreeTargetPath(GIT_ROOT, "/abs/km-wt-ci", { poolRoot: CONTAINED, exists })).toBe("/abs/km-wt-ci")
   })
 })
 

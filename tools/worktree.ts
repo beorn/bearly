@@ -711,7 +711,11 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
     // worktrees, ad-hoc clones) deliberately skip submodule init / install, so
     // their submodule + node_modules state is not a readiness defect —
     // flagging it is noise (they are already surfaced via slot-location-drift).
-    if (isMain || isCanonicalSlotPath(wt.path, gitRoot, poolRoot) || isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)) {
+    if (
+      isMain ||
+      isCanonicalSlotPath(wt.path, gitRoot, poolRoot) ||
+      isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)
+    ) {
       // Uninitialized submodules — the ROOT CAUSE of the wt5 plateau. An empty
       // vendor/<pkg> cannot resolve through node_modules and bare imports fail
       // before code runs. Read-only.
