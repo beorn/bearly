@@ -36,9 +36,11 @@
 
 import { spawnSync } from "node:child_process"
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -47,6 +49,7 @@ import {
   statSync,
   symlinkSync,
 } from "fs"
+import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 
@@ -1163,8 +1166,8 @@ async function checkUncommittedChanges(gitRoot: string, submodules: string[]): P
     console.log("")
     console.log("Options:")
     console.log(CYAN + "  1. Commit your changes first" + RESET)
-    console.log(CYAN + "  2. Stash your changes: git stash" + RESET)
-    console.log(CYAN + "  3. Use --allow-dirty to create anyway (not recommended)" + RESET)
+    console.log(CYAN + "  2. Use --allow-dirty to create anyway — these MAIN-repo" + RESET)
+    console.log(CYAN + "     changes stay in main; the new slot just starts without them" + RESET)
     process.exit(1)
   }
   success("Working tree is clean")
@@ -1741,6 +1744,15 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     info(`Creating new branch: ${branchName}`)
   }
 
+  // PRESERVE-FIRST (L5): a pool slot recreated over a stale local `wtN` branch
+  // that is ahead of origin/main would lose those commits to the `-B ...
+  // origin/main` reset below. Snapshot them to a durable `wip/…` ref first. (The
+  // dirty-worktree case can't reach here — create refuses on an existing dir —
+  // so removeWorktree owns that; this closes the orphan-ahead-branch gap.)
+  if (isPoolSlot && branchExists.exitCode === 0) {
+    await preserveAheadBranchRef(gitRoot, branchName, name)
+  }
+
   // Create worktree
   // Note: git worktree add has no --recurse-submodules flag (as of git 2.53);
   // we init submodules explicitly below. Each init creates an isolated clone
@@ -1795,9 +1807,259 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   console.log(CYAN + `  bun worktree remove ${name}` + RESET)
 }
 
+// ============================================================================
+// Preserve-first — no destructive worktree op discards uncommitted/ahead work
+// ============================================================================
+//
+// The plateau L5 invariant: before ANY destructive slot step (force-remove,
+// `-B <slot> origin/main` branch reset, checkout-over), a slot's uncommitted
+// working-tree changes (INCLUDING dirt inside a submodule) and its
+// ahead-of-origin/main commits are snapshotted to a durable
+// `wip/<slot>-preserve-<UTCstamp>` ref, printed loudly, and appended to a
+// durable `.git` log line. The snapshot is built from a TEMPORARY index — never
+// `git stash`, so the caller's real index/worktree are untouched. Submodule dirt
+// is transferred into the MAIN submodule store so it survives the per-worktree
+// isolated-store teardown that `removeWorktree` performs — the 21102 loss class,
+// where the uncommitted work lived only inside `vendor/silvery`.
+//
+// There is NO flag that discards. `--force` / `--allow-dirty` mean "don't BLOCK
+// on dirt — preserve automatically and continue", never "throw the work away".
+
+export interface PreservedSubmodule {
+  path: string
+  ref: string
+  sha: string
+}
+
+export interface PreserveResult {
+  preserved: boolean
+  ref?: string
+  sha?: string
+  reason?: "dirty" | "ahead" | "dirty+ahead"
+  submodules: PreservedSubmodule[]
+}
+
+/** UTC stamp safe as a ref component: `YYYYMMDDTHHMMSSZ`. */
+export function preserveStamp(now: Date = new Date()): string {
+  return now
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z")
+}
+
+// Deterministic identity for preserve/rescue commits — so `commit-tree` never
+// fails on a machine without a configured git user (fresh clone / CI).
+const PRESERVE_IDENT = ["-c", "user.name=worktree-preserve", "-c", "user.email=preserve@localhost"]
+
+async function resolveGitCommonDir(gitRoot: string): Promise<string> {
+  const r = await safeExec($`cd ${gitRoot} && git rev-parse --git-common-dir`)
+  let d = r.stdout.trim()
+  if (!d) return join(gitRoot, ".git")
+  if (!isAbsolute(d)) d = join(gitRoot, d)
+  return d
+}
+
+async function appendPreserveLog(gitRoot: string, line: string): Promise<void> {
+  try {
+    const dir = await resolveGitCommonDir(gitRoot)
+    appendFileSync(join(dir, "worktree-preserve.log"), line + "\n")
+  } catch (e) {
+    // Loud, not silent (§ Fail Loud): the ref + commit ARE the durable record;
+    // this log is only a convenience index. Surface a broken log, never swallow.
+    warn(`preserve: could not append durable log line: ${(e as Error).message}`)
+  }
+}
+
+/**
+ * Snapshot a repo's current index+worktree (all tracked-modified + untracked +
+ * deletions) into a commit parented at HEAD, WITHOUT touching the repo's real
+ * index. Uses a throwaway index seeded from HEAD. Never uses `git stash`.
+ * `gitlinkOverrides` repoints named submodule gitlinks — the superproject
+ * snapshot uses it to reference each dirty submodule's own preserve commit.
+ * Returns the new commit SHA (written to the shared object store).
+ */
+async function snapshotDirtyRepo(
+  repoPath: string,
+  message: string,
+  gitlinkOverrides?: Map<string, string>,
+): Promise<string> {
+  const tmpDir = mkdtempSync(join(tmpdir(), "wt-preserve-idx-"))
+  const idxEnv = { ...process.env, GIT_INDEX_FILE: join(tmpDir, "index") }
+  try {
+    const seed = await safeExec($`cd ${repoPath} && git read-tree HEAD 2>&1`.env(idxEnv))
+    if (seed.exitCode !== 0) throw new Error(`preserve: read-tree HEAD failed in ${repoPath}: ${seed.stdout}`)
+    const add = await safeExec($`cd ${repoPath} && git add -A 2>&1`.env(idxEnv))
+    if (add.exitCode !== 0) throw new Error(`preserve: add -A failed in ${repoPath}: ${add.stdout}`)
+    if (gitlinkOverrides) {
+      for (const [sub, subSha] of gitlinkOverrides) {
+        const cacheinfo = `160000,${subSha},${sub}`
+        const upd = await safeExec($`cd ${repoPath} && git update-index --cacheinfo ${cacheinfo} 2>&1`.env(idxEnv))
+        if (upd.exitCode !== 0) throw new Error(`preserve: gitlink override for ${sub} failed: ${upd.stdout}`)
+      }
+    }
+    const treeRes = await safeExec($`cd ${repoPath} && git write-tree`.env(idxEnv))
+    const tree = treeRes.stdout.trim()
+    if (treeRes.exitCode !== 0 || !tree) throw new Error(`preserve: write-tree failed in ${repoPath}`)
+    const headRes = await safeExec($`cd ${repoPath} && git rev-parse HEAD`)
+    const head = headRes.stdout.trim()
+    const commitRes = await safeExec(
+      $`cd ${repoPath} && git ${PRESERVE_IDENT} commit-tree ${tree} -p ${head} -m ${message}`,
+    )
+    const sha = commitRes.stdout.trim()
+    if (commitRes.exitCode !== 0 || !sha) throw new Error(`preserve: commit-tree failed in ${repoPath}`)
+    return sha
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
+export interface PreserveOptions {
+  /** Fixed ref slug: `wip/<label>` instead of `wip/<slot>-preserve-<stamp>`. */
+  label?: string
+  /** Override the UTC stamp (tests). */
+  stamp?: string
+  /**
+   * Preserve ahead-of-origin/main commits when the tree is otherwise clean.
+   * removeWorktree passes `deleteBranch` here: a surviving branch already holds
+   * the ahead work, so we only snapshot ahead-only state when the branch dies.
+   * Dirty state is ALWAYS preserved regardless (its snapshot parents at HEAD, so
+   * ahead commits ride along).
+   */
+  includeAhead?: boolean
+}
+
+/**
+ * Preserve a live slot's uncommitted (working-tree + submodule) changes and/or
+ * ahead-of-origin/main commits to a durable ref BEFORE a destructive step.
+ * No-op (`preserved:false`) when the slot is clean and not ahead. Fails LOUD if
+ * a dirty submodule cannot be transferred to a durable store — never silently.
+ */
+export async function preserveSlotState(
+  worktreePath: string,
+  slotName: string,
+  gitRoot: string,
+  opts: PreserveOptions = {},
+): Promise<PreserveResult> {
+  const empty: PreserveResult = { preserved: false, submodules: [] }
+  if (!existsSync(worktreePath)) return empty
+  const includeAhead = opts.includeAhead ?? true
+
+  // Superproject's OWN file changes (excluding submodule state), + any dirty
+  // submodule working tree. A pure gitlink advance (committed submodule move) is
+  // NOT the uncommitted-work loss class, so it does not trigger preservation.
+  const superFile = await safeExec(
+    $`cd ${worktreePath} && git status --porcelain --untracked-files=all --ignore-submodules=all 2>/dev/null`,
+  )
+  const superFileDirty = superFile.stdout.trim().length > 0
+
+  const dirtySubs: string[] = []
+  for (const sub of getSubmodulePaths(worktreePath)) {
+    const subPath = join(worktreePath, sub)
+    if (!existsSync(join(subPath, ".git"))) continue
+    const st = await getWorktreeStatus(subPath)
+    if (st.dirty) dirtySubs.push(sub)
+  }
+  const dirty = superFileDirty || dirtySubs.length > 0
+
+  const aheadRes = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
+  const ahead = parseInt(aheadRes.stdout.trim(), 10) || 0
+
+  if (!dirty && !(ahead > 0 && includeAhead)) return empty
+
+  const stamp = opts.stamp ?? preserveStamp()
+  const refShort = opts.label ? `wip/${opts.label}` : `wip/${slotName}-preserve-${stamp}`
+  const refFull = `refs/heads/${refShort}`
+  const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead > 0 ? "dirty+ahead" : dirty ? "dirty" : "ahead"
+
+  const preservedSubs: PreservedSubmodule[] = []
+  let sha: string
+
+  if (dirty) {
+    // 1) Snapshot each dirty submodule, then TRANSFER its preserve commit into
+    //    the durable MAIN submodule store so it survives removeWorktree tearing
+    //    down the per-worktree isolated store.
+    const subGitlinks = new Map<string, string>()
+    for (const sub of dirtySubs) {
+      const subPath = join(worktreePath, sub)
+      const subSha = await snapshotDirtyRepo(subPath, `preserve ${refShort} (${sub})`)
+      const subRef = await safeExec($`cd ${subPath} && git update-ref ${refFull} ${subSha}`)
+      if (subRef.exitCode !== 0) throw new Error(`preserve: update-ref ${refFull} in ${sub} failed: ${subRef.stdout}`)
+      const mainSubPath = join(gitRoot, sub)
+      if (!existsSync(join(mainSubPath, ".git"))) {
+        throw new Error(
+          `preserve: cannot durably save dirty submodule ${sub} — main submodule store ${mainSubPath} is not initialized`,
+        )
+      }
+      const fetched = await safeExec($`cd ${mainSubPath} && git fetch -q ${subPath} +${refFull}:${refFull} 2>&1`)
+      if (fetched.exitCode !== 0) {
+        throw new Error(`preserve: transferring ${sub} preserve ref into main store failed: ${fetched.stdout}`)
+      }
+      subGitlinks.set(sub, subSha)
+      preservedSubs.push({ path: sub, ref: refShort, sha: subSha })
+    }
+    // 2) Superproject snapshot, gitlinks repointed at the sub preserve commits.
+    sha = await snapshotDirtyRepo(worktreePath, `preserve ${refShort} (${slotName})`, subGitlinks)
+  } else {
+    // clean-but-ahead → the ref points directly at HEAD (no snapshot commit).
+    const headRes = await safeExec($`cd ${worktreePath} && git rev-parse HEAD`)
+    sha = headRes.stdout.trim()
+  }
+
+  const setRef = await safeExec($`cd ${gitRoot} && git update-ref ${refFull} ${sha}`)
+  if (setRef.exitCode !== 0) throw new Error(`preserve: writing ${refFull} at ${sha} failed: ${setRef.stdout}`)
+
+  // Loud (§ Fail Loud) — print the recovery ref to the operator.
+  console.log("")
+  warn(`Preserved ${reason} state of slot ${slotName} before the destructive step:`)
+  console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
+  console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
+  for (const s of preservedSubs) {
+    console.log(
+      CYAN + `    ${s.path} → ${refShort}` + RESET + DIM + `  (${s.sha.slice(0, 12)}, in that submodule)` + RESET,
+    )
+  }
+  const subLog = preservedSubs.map((s) => `${s.path}@${s.sha.slice(0, 12)}`).join(",")
+  await appendPreserveLog(
+    gitRoot,
+    `${new Date().toISOString()} slot=${slotName} ref=${refShort} sha=${sha} reason=${reason}` +
+      (subLog ? ` submodules=${subLog}` : "") +
+      ` path=${worktreePath}`,
+  )
+
+  return { preserved: true, ref: refShort, sha, reason, submodules: preservedSubs }
+}
+
+/**
+ * Preserve a local slot branch that is ahead of origin/main when NO live slot
+ * dir exists — the pool-slot recreate `-B <branch> origin/main` would otherwise
+ * force-discard those commits. No-op when the branch is not ahead.
+ */
+async function preserveAheadBranchRef(gitRoot: string, branchName: string, slotName: string): Promise<void> {
+  const aheadRes = await safeExec(
+    $`cd ${gitRoot} && git rev-list --count origin/main..refs/heads/${branchName} 2>/dev/null`,
+  )
+  const ahead = parseInt(aheadRes.stdout.trim(), 10) || 0
+  if (ahead === 0) return
+  const tip = (await safeExec($`cd ${gitRoot} && git rev-parse refs/heads/${branchName}`)).stdout.trim()
+  const refShort = `wip/${slotName}-preserve-${preserveStamp()}`
+  const setRef = await safeExec($`cd ${gitRoot} && git update-ref refs/heads/${refShort} ${tip}`)
+  if (setRef.exitCode !== 0) {
+    throw new Error(`preserve: saving ahead branch ${branchName} to ${refShort} failed: ${setRef.stdout}`)
+  }
+  console.log("")
+  warn(`Preserved ${ahead} ahead commit(s) of slot branch ${branchName} before the -B origin/main reset:`)
+  console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${tip.slice(0, 12)})` + RESET)
+  await appendPreserveLog(
+    gitRoot,
+    `${new Date().toISOString()} slot=${slotName} ref=${refShort} sha=${tip} reason=ahead-branch branch=${branchName}`,
+  )
+}
+
 export interface RemoveOptions {
   deleteBranch?: boolean
   force?: boolean
+  /** Fixed preserve ref slug (`wip/<label>`); default `wip/<slot>-preserve-<stamp>`. */
+  preserveLabel?: string
 }
 
 export interface ResolveTargetOptions {
@@ -1833,7 +2095,7 @@ export function resolveWorktreeTargetPath(gitRoot: string, name: string, options
 
 export async function removeWorktree(name: string, options: RemoveOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
-  const { deleteBranch = false, force = false } = options
+  const { deleteBranch = false, force = false, preserveLabel } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -1886,6 +2148,16 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
       }
     }
   }
+
+  // PRESERVE-FIRST (L5): before ANY destructive step, snapshot dirty
+  // working-tree state (incl. submodule dirt) and — when the branch will be
+  // deleted — ahead-of-origin/main commits, to a durable `wip/…` ref. This is
+  // the choke point every removal (direct + via resetWorktree) flows through,
+  // so no `git worktree remove --force` can silently discard the 21102 class.
+  await preserveSlotState(worktreePath, name, gitRoot, {
+    label: preserveLabel,
+    includeAhead: deleteBranch,
+  })
 
   // Kill any `dolt sql-server` rooted in this worktree BEFORE touching the
   // filesystem. Those daemons reparent to launchd and would otherwise outlive
@@ -1948,12 +2220,16 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 }
 
 export interface ResetOptions {
-  /** Discard uncommitted changes and any commits ahead of origin/main. */
+  /**
+   * Proceed past the dirty/ahead safety block and recreate the slot. Work is
+   * NOT discarded — removeWorktree preserves it to a durable `wip/…` ref first
+   * (L5). Without --force, reset refuses so preservation is an explicit action.
+   */
   force?: boolean
   /**
-   * Before discarding, save the worktree's ahead-of-origin/main commits as
-   * `wip/<slug>` in the main repo. No-op when there are no ahead commits.
-   * Always runs before remove + create so the save survives the reset.
+   * Ref-naming label: preserve to `wip/<slug>` instead of the default
+   * `wip/<slot>-preserve-<UTCstamp>`. Preservation happens unconditionally in
+   * removeWorktree's choke point; this only overrides the ref name.
    */
   saveAheadAs?: string
   /**
@@ -1984,7 +2260,9 @@ export interface ResetOptions {
  * git's worktree-remove plumbing rather than `git reset --hard`.
  *
  * Refuses without --force if the worktree is dirty or its branch is ahead of
- * origin/main, so accidental data loss requires explicit opt-in.
+ * origin/main. With --force it PRESERVES that state to a durable `wip/…` ref
+ * before recreating (L5) — no path discards. Preservation is unified into
+ * removeWorktree's preserve-first choke point.
  *
  * Refuses if invoked from inside the target worktree (the recreate would
  * leave the caller's shell in a removed directory).
@@ -2025,41 +2303,24 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     if (status.dirty) {
       throw new Error(
         `Worktree ${name} has uncommitted changes (${status.changes.length} file(s)). ` +
-          `Use --force to discard, or commit/save first.`,
+          `Use --force to preserve them to wip/<slot>-preserve-* and recreate, or commit/save first.`,
       )
     }
     const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
     const ahead = parseInt(aheadResult.stdout.trim(), 10) || 0
     if (ahead > 0) {
       throw new Error(
-        `Worktree ${name} is ${ahead} commit(s) ahead of origin/main. ` + `Use --force to discard, or push/save first.`,
+        `Worktree ${name} is ${ahead} commit(s) ahead of origin/main. ` +
+          `Use --force to preserve them to wip/<slot>-preserve-* and recreate, or push/save first.`,
       )
     }
   }
 
-  // Preflight save-ahead — if requested, snapshot the worktree's ahead-of-
-  // origin/main commits to `wip/<slug>` in the main repo before we discard.
-  // No-op when there are no ahead commits, so it's safe to set unconditionally.
-  if (saveAheadAs) {
-    const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
-    const ahead = parseInt(aheadResult.stdout.trim(), 10) || 0
-    if (ahead > 0) {
-      const tipResult = await safeExec($`cd ${worktreePath} && git rev-parse HEAD`)
-      const tipSha = tipResult.stdout.trim()
-      const saveBranch = `wip/${saveAheadAs}`
-      info(`Saving ${ahead} ahead commit(s) to ${saveBranch}...`)
-      // `git branch <name> <sha> --force` overwrites if it exists. We prefer
-      // explicit overwrite over a partial save when the slug collides — the
-      // caller asked us to save THIS state, not the previous one.
-      const saveResult = await safeExec($`cd ${gitRoot} && git branch -f ${saveBranch} ${tipSha}`)
-      if (saveResult.exitCode !== 0) {
-        throw new Error(
-          `Failed to create save branch ${saveBranch} at ${tipSha}: ${saveResult.stdout || "unknown error"}`,
-        )
-      }
-      success(`Saved to ${saveBranch} (${tipSha.slice(0, 8)})`)
-    }
-  }
+  // Preservation is UNIFIED into removeWorktree's preserve-first choke point
+  // below (dirty working tree + submodule dirt + ahead commits, all captured to
+  // a durable `wip/…` ref before the destructive remove). `saveAheadAs` is now
+  // just the ref-naming label — it flows through as `preserveLabel`, so the
+  // classic `wip/<slug>` name still lands. There is no separate discard path.
 
   // Query the worktree's branch name BEFORE remove — for slot patterns
   // (wt0..wt9) it matches the slot name, but `feat/<name>` for non-pool names.
@@ -2074,7 +2335,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // recreate starts from origin/main (or origin/<branchName>) rather than
   // picking up the existing ref with its ahead commits.
   info(`Resetting worktree ${name}...`)
-  await removeWorktree(name, { force: true, deleteBranch: force })
+  await removeWorktree(name, { force: true, deleteBranch: force, preserveLabel: saveAheadAs })
 
   // Retarget origin/<branch> to origin/main if requested. Done AFTER remove
   // so the worktree's own ref doesn't get yanked out from under git's
@@ -2288,7 +2549,9 @@ export async function showDefaultInfo(): Promise<void> {
   console.log("")
   console.log(CYAN + "  bun worktree remove <name>" + RESET)
   console.log(DIM + "     Remove worktree (checks for uncommitted changes)" + RESET)
-  console.log(DIM + "     Use --force to skip checks, --delete-branch to also delete branch" + RESET)
+  console.log(
+    DIM + "     Use --force to preserve dirt to wip/… then remove, --delete-branch to also delete branch" + RESET,
+  )
   console.log("")
   console.log(CYAN + "  bun worktree list" + RESET)
   console.log(DIM + "     Show detailed status including file changes" + RESET)
@@ -2333,20 +2596,24 @@ ${BOLD}POOL ROOT${RESET}
   location, so setting the config never orphans a live slot. Scripts and docs
   should resolve slot paths via \`bun worktree path <name>\`, not hardcode them.
 
+  ${DIM}Nothing here discards work: a destructive step first preserves a dirty${RESET}
+  ${DIM}or ahead slot to wip/<slot>-preserve-<UTCstamp> (submodule dirt too).${RESET}
+
 ${BOLD}CREATE OPTIONS${RESET}
   --branch <name>   Use specific branch (also used as worktree name if no <name>)
   --no-install      Skip dependency installation
   --no-direnv       Skip direnv allow
   --no-hooks        Skip hook installation
-  --allow-dirty     Create even with uncommitted changes (not recommended)
+  --allow-dirty     Create despite uncommitted changes in the MAIN repo (they stay
+                    in main; a stale ahead slot branch is preserved, not reset away)
 
 ${BOLD}REMOVE OPTIONS${RESET}
   --delete-branch   Also delete the branch
-  -f, --force       Force removal even with uncommitted changes
+  -f, --force       Remove despite uncommitted changes — preserves them to wip/… first
 
 ${BOLD}RESET OPTIONS${RESET}
-  -f, --force            Discard uncommitted changes and ahead-of-main commits
-  --save-ahead-as <slug> Save ahead-of-main commits to wip/<slug> before reset
+  -f, --force            Recreate despite dirt/ahead — PRESERVES to wip/… first (never discards)
+  --save-ahead-as <slug> Name the preserve ref wip/<slug> instead of wip/<slot>-preserve-<stamp>
   --retarget-origin      Force-push origin/<name> back to origin/main before recreate
   --no-install           Skip dependency install on recreate
   --no-direnv            Skip direnv allow on recreate
@@ -2374,8 +2641,11 @@ ${BOLD}HOW IT WORKS${RESET}
   2. No uncommitted changes in any submodule
   3. All submodule commits are pushed to remote
 
-  If any check fails, you'll be prompted to commit/stash first.
-  Use --allow-dirty to bypass (creates worktree without your local changes).
+  If any check fails, you'll be prompted to commit first.
+  Use --allow-dirty to bypass — those MAIN-repo changes stay in main; the new
+  slot simply starts without them. Destructive ops on an EXISTING slot never
+  discard: dirt + ahead commits (submodule dirt included) are preserved to
+  wip/<slot>-preserve-<UTCstamp> first.
 
   ${BOLD}Submodule handling:${RESET}
   Each worktree gets independent submodule clones (not symlinks).

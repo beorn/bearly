@@ -48,7 +48,7 @@ afterEach(() => {
 })
 
 describe("worktree reset round-trip", () => {
-  test("reset --force discards uncommitted + ahead commits, leaves a clean slot at origin/main", async () => {
+  test("reset --force PRESERVES uncommitted + ahead commits to wip/…, leaves a clean slot at origin/main", async () => {
     const mainRepo = join(sandbox, "main")
 
     // Build the upstream repo and push origin/main
@@ -102,10 +102,25 @@ describe("worktree reset round-trip", () => {
       )
       expect(aheadAfter).toBe(0)
 
-      // Uncommitted file is gone
+      // The fresh slot no longer carries the old files (recreated at origin/main)…
       expect(existsSync(join(worktreePath, "uncommitted.txt"))).toBe(false)
-      // Ahead-commit file is gone
       expect(existsSync(join(worktreePath, "ahead.txt"))).toBe(false)
+
+      // …but the work is NOT gone — it was preserved to wip/<slot>-preserve-*
+      // (L5: no destructive step discards). The snapshot recovers the exact
+      // uncommitted content, and its history carries the ahead commit + file.
+      const refsOut = (
+        await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname)"} ${"refs/heads/wip/" + worktreeName + "-preserve-*"}`.text()
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+      expect(refsOut.length).toBe(1)
+      const preserveRef = refsOut[0]!
+      const recoveredDirt = await $`cd ${mainRepo} && git show ${preserveRef}:uncommitted.txt`.text()
+      expect(recoveredDirt).toBe("dirt-after-commit\n")
+      const recoveredAhead = await $`cd ${mainRepo} && git show ${preserveRef}:ahead.txt`.text()
+      expect(recoveredAhead).toBe("ahead\n")
     } finally {
       process.chdir(origCwd)
     }
