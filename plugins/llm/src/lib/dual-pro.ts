@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod"
-import { getModel, getEndpoint, type Model, MODELS, BEST_MODELS } from "./types"
+import { getModel, getEndpoint, type Model, BEST_MODELS } from "./types"
 import { isProviderAvailable } from "./providers"
 import { createLogger } from "loggily"
 
@@ -186,7 +186,8 @@ export function normalizeConfig(raw: DualProConfigInput): DualProConfig {
     // a fresh install boots cleanly.
     mainstays = ["gpt-5.4-pro", "moonshotai/kimi-k2.6"]
   }
-  const splitTestPool = raw.splitTestPool ?? raw.challengerPool ?? ["gemini-2.5-pro", "grok-4", "claude-opus-4-6"]
+  const splitTestPool = raw.splitTestPool ??
+    raw.challengerPool ?? ["gemini-2.5-pro", "grok-4-1-fast-reasoning", "claude-opus-4-6"]
   const splitTestSlots = raw.splitTestSlots ?? 2
   const splitTestStrategy = raw.splitTestStrategy ?? raw.challengerStrategy ?? "round-robin-after-10-calls"
   return {

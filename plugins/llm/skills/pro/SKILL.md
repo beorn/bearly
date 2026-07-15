@@ -7,7 +7,7 @@ argument-hint: ["<question>" | review [<package>] [--deep]]
 
 Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for frontier disagreement and judged review (~$5-15).**
 
-Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-2.5-pro, grok-4, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
+Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-2.5-pro, grok-4-1-fast-reasoning, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
 
 **Keywords**: pro, /pro, ask pro, second opinion, code review, dual-pro, multi-leg
 
@@ -25,6 +25,7 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 ## Cost guidance
 
 - Direct query (3-leg: GPT-5.4 Pro + Kimi K2.6 + rotating challenger): **~$5-15** typical
+- Before expensive legs fire, `/pro` runs one cheap quota/auth probe per provider and fails loud with the key or billing fix. Each leg has a 15-minute ceiling; set `LLM_LEG_TIMEOUT_MS` to override it.
 - Use `--no-challenger` or a single `--model <id>` when a cheaper review is enough.
 - Single-model override (`--model <id>`): pricing of that one model
 - Fast code review: usually same 3-leg cost unless you override model/challenger

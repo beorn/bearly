@@ -40,6 +40,15 @@ vi.mock("../src/lib/openai-deep", async () => {
   }
 })
 
+function mockProviderPreflightSuccess(): void {
+  const success = {
+    text: "OK",
+    reasoning: [],
+    usage: { inputTokens: 1, outputTokens: 1 },
+  }
+  generateTextMock.mockResolvedValueOnce(success).mockResolvedValueOnce(success)
+}
+
 function abProLogPath(home: string): string {
   // Mirrors dispatch.ts:appendAbProLog — CLAUDE_PROJECT_DIR or cwd, /-encoded.
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
@@ -61,7 +70,7 @@ async function runDualPro() {
     await mod.main()
   } catch (e) {
     // process.exit mock throws; that's fine — still return.
-    if (!/^__exit_/.test((e as Error).message)) throw e
+    if (!(e as Error).message.startsWith("__exit_")) throw e
   }
 }
 
@@ -82,6 +91,7 @@ describe("dual-pro failure modes", () => {
       durationMs: 100,
     })
     generateTextMock.mockReset()
+    mockProviderPreflightSuccess()
     generateTextMock.mockResolvedValueOnce({
       text: "Kimi's answer",
       reasoning: [],
@@ -119,6 +129,7 @@ describe("dual-pro failure modes", () => {
     queryBackgroundMock.mockReset()
     queryBackgroundMock.mockRejectedValueOnce(new Error("OpenAI 500"))
     generateTextMock.mockReset()
+    mockProviderPreflightSuccess()
     generateTextMock.mockRejectedValueOnce(new Error("OpenRouter 503"))
 
     await runDualPro()

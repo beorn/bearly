@@ -1208,13 +1208,13 @@ export function requiresConfirmation(model: Model | SkuConfig, threshold = 0.1):
 // ============================================================================
 
 export const BEST_MODELS = {
-  default: ["gpt-5.4", "gemini-2.5-pro", "claude-sonnet-4-6", "grok-4"],
+  default: ["gpt-5.4", "gemini-2.5-pro", "claude-sonnet-4-6", "grok-4-1-fast-reasoning"],
   // Deep research — GPT-5.4 via Responses API + web_search is the best deep
   // research model. The "dedicated" deep research models (o3, gemini) are
   // kept as fallbacks only.
   deep: ["gpt-5.4", "o3-deep-research-2025-06-26", "deep-research-pro-preview-12-2025", "sonar-deep-research"],
-  opinion: ["gemini-2.5-pro", "gpt-5.4", "grok-4"],
-  debate: ["gpt-5.4", "gemini-2.5-pro", "grok-4", "claude-sonnet-4-6"],
+  opinion: ["gemini-2.5-pro", "gpt-5.4", "grok-4-1-fast-reasoning"],
+  debate: ["gpt-5.4", "gemini-2.5-pro", "grok-4-1-fast-reasoning", "claude-sonnet-4-6"],
   quick: ["gpt-5-nano", "gemini-2.0-flash-lite", "grok-3-fast", "claude-haiku-4-5-20251001"],
   // Pro - dual-pro mode (CLI `pro` keyword, no --model override) runs the
   // first two entries in parallel: GPT-5.4 Pro + Kimi K2.6.

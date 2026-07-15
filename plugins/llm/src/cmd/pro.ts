@@ -38,6 +38,13 @@ import { ask } from "../lib/research"
 import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
 import { estimateCost, formatCost, getModel, type Model, type ModelMode } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
+import {
+  assertDispatchableModelIds,
+  formatLegDispatchError,
+  getLegTimeoutMs,
+  preflightProviders,
+  runWithTimeout,
+} from "../lib/dispatch-safety"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
 
@@ -77,6 +84,7 @@ export async function runProDual(options: {
 
   // Explicit --model override bypasses dual mode entirely.
   if (modelOverride) {
+    assertDispatchableModelIds([modelOverride.modelId])
     if (dryRun) {
       const estimate = modelOverride.costTier === "very-high" ? "~$5-15" : "registry-priced single-model call"
       console.error("[pro] Dry run - would query one model:")
@@ -104,6 +112,13 @@ export async function runProDual(options: {
   // Load fleet config (file + env overrides). Legacy env LLM_DUAL_PRO_B and
   // LLM_CHALLENGER_POOL still work — applyEnvOverrides preserves them.
   const cfg = await dualPro.loadConfig({ writeOnMissing: !dryRun })
+  assertDispatchableModelIds([
+    ...cfg.mainstays,
+    ...cfg.splitTestPool,
+    cfg.judge,
+    ...(options.challengerOverride ? [options.challengerOverride] : []),
+  ])
+  const legTimeoutMs = getLegTimeoutMs()
   const [mainstay0Id, mainstay1Id] = cfg.mainstays
   const mainstay0 = getModel(mainstay0Id)
   const mainstay1 = getModel(mainstay1Id)
@@ -222,6 +237,7 @@ export async function runProDual(options: {
     }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
     console.error(`  • Config: ${cfgPath} (or built-in defaults if missing) + env overrides`)
+    console.error(`  • Safety: provider quota/auth preflight; ${Math.round(legTimeoutMs / 60_000)}m per-leg timeout`)
     console.error(`  • Estimated cost: ${dryCost} (${dryProLegCount} Pro-tier legs of ${dryLegs.length})`)
     if (options.noJudge) {
       console.error("  • Judge: disabled (--no-judge)")
@@ -307,6 +323,16 @@ export async function runProDual(options: {
   const tierLabel = proLegCount >= 2 ? `${proLegCount} Pro-tier legs` : "mostly mainstays"
   await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} (${tierLabel}). Proceed? [Y/n] `, skipConfirm)
 
+  const providerCount = new Set(legSlots.map((slot) => slot.model.provider)).size
+  console.error(`[dual-pro] Preflighting ${providerCount} provider${providerCount === 1 ? "" : "s"}...`)
+  await withSignalAbort((signal) =>
+    preflightProviders(
+      legSlots.map((slot) => slot.model.provider),
+      { signal },
+    ),
+  )
+  console.error("  ✓ Provider quota/auth preflight passed")
+
   const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("../lib/openai-deep")
 
   // Route OpenAI Pro legs through the Responses API so they're recoverable:
@@ -318,37 +344,37 @@ export async function runProDual(options: {
   // imagePath disables the background path — the Responses-API background
   // helper is text-only today, and silently dropping the image would be worse
   // than losing recoverability for the rare image+pro case.
-  const dispatchOne = (m: Model, ac: AbortController) => {
+  const dispatchOne = (m: Model, abortSignal: AbortSignal) => {
     const useBackground = isOpenAIBackgroundCapable(m) && !imagePath
     return useBackground
       ? queryOpenAIBackground({
           prompt: enrichedQuestion,
           model: m,
           topic: question,
-          abortSignal: ac.signal,
+          abortSignal,
         })
       : ask(enrichedQuestion, "standard", {
           modelOverride: m.modelId,
           stream: false,
           imagePath,
-          abortSignal: ac.signal,
+          abortSignal,
         })
   }
 
   // Fire ALL legs in parallel — single round trip, timing dominated by the
   // slowest leg. Streaming disabled (multi-stream interleave unreadable).
-  const settledResults = await withSignalAbort(async (outerSignal) => {
-    const ac = new AbortController()
-    const onOuterAbort = () => ac.abort(outerSignal.reason ?? "aborted")
-    if (outerSignal.aborted) onOuterAbort()
-    else outerSignal.addEventListener("abort", onOuterAbort, { once: true })
-    try {
-      const calls = legSlots.map((s) => dispatchOne(s.model, ac))
-      return await Promise.allSettled(calls)
-    } finally {
-      outerSignal.removeEventListener("abort", onOuterAbort)
-    }
-  })
+  const settledResults = await withSignalAbort((outerSignal) =>
+    Promise.allSettled(
+      legSlots.map((slot) =>
+        runWithTimeout({
+          label: `${slot.model.displayName} leg`,
+          timeoutMs: legTimeoutMs,
+          outerSignal,
+          run: (signal) => dispatchOne(slot.model, signal),
+        }),
+      ),
+    ),
+  )
 
   // Normalize each leg to (ok, error). "Success" requires non-empty trimmed
   // content AND no error — a fulfilled promise with empty content
@@ -362,7 +388,12 @@ export async function runProDual(options: {
   const legOutcomes: LegOutcome[] = legSlots.map((slot, i) => {
     const settled = settledResults[i]!
     const response = settled.status === "fulfilled" ? settled.value : undefined
-    const errRaw = settled.status === "rejected" ? String(settled.reason) : response?.error
+    const errRaw =
+      settled.status === "rejected"
+        ? formatLegDispatchError(slot.model, settled.reason)
+        : response?.error
+          ? formatLegDispatchError(slot.model, response.error)
+          : undefined
     const ok = !errRaw && !!response?.content && response.content.trim().length > 0
     const error = errRaw ?? (response && !ok ? "empty content" : undefined)
     return { ...slot, response, error, ok }
