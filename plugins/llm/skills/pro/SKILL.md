@@ -49,7 +49,7 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 
 **Cost dials**: `--no-challenger` (skip leg C, back to 2-leg mainstays only), `--no-judge` (skip rubric scoring), `--challenger <id>` (override rotation), `--exclude <id>` (remove one challenger), or `--model <id>` for a single-model call. `--json` gives a pipe-friendly envelope.
 
-Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) with pairwise judge — see `/tmp/llm-refactor-execution.md` Phase 3.
+Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) with pairwise judge — design not yet committed; when written up, commit it to the repo (or the tracking issue) and cite the commit SHA, not a session-local `/tmp` file.
 
 **Admin** (read-only or interactive — no API spend unless `--backtest` fires):
 
