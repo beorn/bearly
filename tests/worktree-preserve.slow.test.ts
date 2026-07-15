@@ -65,7 +65,7 @@ async function preserveRefs(repo: string, slot: string): Promise<string[]> {
 /** Did any console.log line mention the preserve ref? (loud-print proof) */
 function loggedRef(): string | undefined {
   for (const call of consoleLogSpy.mock.calls) {
-    const line = call.map((a) => String(a)).join(" ")
+    const line = call.map((a: unknown) => String(a)).join(" ")
     const m = /wip\/\S*preserve-\S+/.exec(line)
     if (m) return m[0]
   }
