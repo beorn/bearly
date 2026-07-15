@@ -2683,8 +2683,14 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "--allow-dirty": {},
     },
   },
-  remove: { maxPositionals: 1, flags: { "--delete-branch": {}, "--force": {}, "-f": {} } },
-  rm: { maxPositionals: 1, flags: { "--delete-branch": {}, "--force": {}, "-f": {} } },
+  remove: {
+    maxPositionals: 1,
+    flags: { "--delete-branch": {}, "--force": {}, "-f": {}, "--preserve-label": { value: true } },
+  },
+  rm: {
+    maxPositionals: 1,
+    flags: { "--delete-branch": {}, "--force": {}, "-f": {}, "--preserve-label": { value: true } },
+  },
   reset: {
     maxPositionals: 1,
     flags: {
@@ -2715,7 +2721,7 @@ export type CliPlan =
   | { action: "default-info" }
   | { action: "usage-error"; message: string }
   | { action: "create"; name: string; branch: string | undefined; options: Required<CreateOptions> }
-  | { action: "remove"; name: string; options: Required<RemoveOptions> }
+  | { action: "remove"; name: string; options: RemoveOptions }
   | { action: "reset"; name: string; options: ResetOptions }
   | { action: "path"; name: string }
   | { action: "list" }
@@ -2800,7 +2806,13 @@ export function planCliInvocation(argv: string[]): CliPlan {
       return {
         action: "remove",
         name,
-        options: { deleteBranch: flags.has("--delete-branch"), force: flags.has("--force") || flags.has("-f") },
+        options: {
+          deleteBranch: flags.has("--delete-branch"),
+          force: flags.has("--force") || flags.has("-f"),
+          // Optional ref-naming label; undefined → the default
+          // `wip/<slot>-preserve-<UTCstamp>` name (mirrors reset's --save-ahead-as).
+          preserveLabel: values.get("--preserve-label"),
+        },
       }
     }
     case "reset": {
