@@ -721,14 +721,16 @@ interface WorktreeMeta {
   isDetached: boolean
 }
 
-async function getCommitsAhead(wtPath: string): Promise<number> {
-  const r = await safeExec($`cd ${wtPath} && git rev-list --count main..HEAD 2>/dev/null`)
-  return parseInt(r.stdout.trim() || "0", 10) || 0
-}
-
-async function getCommitsBehind(wtPath: string): Promise<number> {
-  const r = await safeExec($`cd ${wtPath} && git rev-list --count HEAD..main 2>/dev/null`)
-  return parseInt(r.stdout.trim() || "0", 10) || 0
+/**
+ * Ahead/behind vs main in ONE `git rev-list` process instead of two — halves
+ * the divergence-check cost of {@link auditWorktrees} (21150 perf fix). Same
+ * semantics as separate `main..HEAD` / `HEAD..main` counts: `--left-right
+ * --count HEAD...main` prints "<ahead>\t<behind>" (left=HEAD-only, right=main-only).
+ */
+async function getDivergence(wtPath: string): Promise<{ ahead: number; behind: number }> {
+  const r = await safeExec($`cd ${wtPath} && git rev-list --left-right --count HEAD...main 2>/dev/null`)
+  const [aheadStr, behindStr] = r.stdout.trim().split(/\s+/)
+  return { ahead: parseInt(aheadStr || "0", 10) || 0, behind: parseInt(behindStr || "0", 10) || 0 }
 }
 
 async function lastCommitAgeHours(wtPath: string): Promise<number> {
@@ -750,32 +752,26 @@ async function isMidRebaseOrMerge(wtPath: string): Promise<{ rebase: boolean; me
   }
 }
 
-async function dupCommitsAlreadyOnMain(wtPath: string): Promise<number> {
+/**
+ * `git cherry main HEAD` in ONE process, counting both dup ("- ") and unique
+ * ("+ ") lines — {@link auditWorktrees} previously ran this exact command
+ * twice per worktree (once for the dup count, once for the unique count) to
+ * get two numbers from the same output (21150).
+ */
+async function getCherryCounts(wtPath: string): Promise<{ dups: number; unique: number }> {
   const r = await safeExec($`cd ${wtPath} && git cherry main HEAD 2>/dev/null`)
   let dups = 0
-  for (const line of r.stdout.split("\n")) {
-    if (line.startsWith("- ")) dups++
-  }
-  return dups
-}
-
-async function uniqueCommitsCount(wtPath: string): Promise<number> {
-  const r = await safeExec($`cd ${wtPath} && git cherry main HEAD 2>/dev/null`)
   let unique = 0
   for (const line of r.stdout.split("\n")) {
-    if (line.startsWith("+ ")) unique++
+    if (line.startsWith("- ")) dups++
+    else if (line.startsWith("+ ")) unique++
   }
-  return unique
+  return { dups, unique }
 }
 
-async function uuFiles(wtPath: string): Promise<string[]> {
-  const r = await safeExec(
-    $`cd ${wtPath} && git status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
-  )
-  return r.stdout
-    .split("\n")
-    .filter((l) => l.startsWith("UU ") || l.startsWith("AA ") || l.startsWith("DD "))
-    .map((l) => l.slice(3))
+/** UU/AA/DD (unmerged) paths from an already-fetched `git status` change-line list. */
+function uuFilesFromStatus(changes: string[]): string[] {
+  return changes.filter((l) => l.startsWith("UU ") || l.startsWith("AA ") || l.startsWith("DD ")).map((l) => l.slice(3))
 }
 
 async function fileSha256(p: string): Promise<string | null> {
@@ -830,6 +826,304 @@ export interface AuditOptions {
  * Run worktree-hygiene audit. Read-only — never writes, never resets, never
  * deletes. Returns findings (also printed unless json=true).
  */
+/**
+ * Bounded-concurrency map preserving input order. Vendor packages can't
+ * import `tools/branch-triage.ts`'s copy (km-root-only per `vendor/CLAUDE.md`
+ * independence rules), so this is a small dependency-free duplicate of the
+ * same pattern.
+ */
+async function mapPool<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = Array.from({ length: items.length })
+  let next = 0
+  const width = Math.max(1, Math.min(limit, items.length))
+  const workers = Array.from({ length: width }, async () => {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i] as T)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+/** Per-worktree audit outcome — findings plus the raw material for the cross-worktree formatter-noise pass. */
+interface WorktreeAuditResult {
+  findings: AuditFinding[]
+  /** (filePath, sha256) pairs for every non-untracked dirty file in this worktree. */
+  dirtyFiles: Array<{ filePath: string; sha: string }>
+}
+
+/**
+ * Audit ONE worktree. Read-only. Every git subprocess here runs exactly once
+ * per worktree (21150 perf fix — the previous version ran `git status
+ * --ignore-submodules=none` twice, `git cherry main HEAD` twice, and two
+ * separate `git rev-list` calls, all serially across all worktrees; with 150+
+ * worktrees × ~14 submodules each, that hang past a 120s timeout).
+ */
+async function auditOneWorktree(
+  wt: WorktreeMeta,
+  gitRoot: string,
+  poolRoot: string,
+  behindThreshold: number,
+  staleAgeHours: number,
+): Promise<WorktreeAuditResult> {
+  const isMain = wt.path === gitRoot
+  const wtName = wt.name
+  const findings: AuditFinding[] = []
+  const dirtyFiles: Array<{ filePath: string; sha: string }> = []
+
+  // Skip the main worktree from per-worktree drift checks (it's the target).
+  if (!isMain) {
+    const canonicalSlot = join(poolRoot, slotDirName(basename(gitRoot), wtName))
+    if (isLegacySlotPath(wt.path, gitRoot)) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "info",
+        check: "slot-location-legacy",
+        message: `legacy slot at ${wt.path} — recycle to canonical pool location ${canonicalSlot}`,
+        details: { path: wt.path, canonical: canonicalSlot },
+      })
+    } else if (isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "info",
+        check: "slot-location-legacy-sibling",
+        message:
+          `slot at legacy sibling location ${wt.path} — the configured pool is ${poolRoot}; ` +
+          `migrate on next recycle: bun worktree remove ${wtName} && bun worktree create ${wtName}`,
+        details: { path: wt.path, canonical: canonicalSlot, poolRoot },
+      })
+    } else if (!isCanonicalSlotPath(wt.path, gitRoot, poolRoot)) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "info",
+        check: "slot-location-drift",
+        message: `worktree at non-canonical path ${wt.path} (canonical: ${join(poolRoot, `${basename(gitRoot)}-wtN`)})`,
+        details: { path: wt.path, poolRoot },
+      })
+    }
+  }
+
+  // Single `git status` call, reused for both the UU-conflict check and the
+  // cross-worktree dirty-file tracking below (previously two identical calls).
+  const status = await getWorktreeStatus(wt.path)
+  const uu = uuFilesFromStatus(status.changes)
+  if (uu.length > 0) {
+    const sev: AuditSeverity = wt.isDetached ? "error" : "warn"
+    findings.push({
+      worktree: wtName,
+      branch: wt.branch,
+      severity: sev,
+      check: wt.isDetached ? "detached-head-with-uu" : "uu-conflicts",
+      message: `${uu.length} unmerged file(s)${wt.isDetached ? " on detached HEAD" : ""}: ${uu.slice(0, 3).join(", ")}${uu.length > 3 ? "..." : ""}`,
+      details: { uu },
+    })
+  }
+
+  // Mid-rebase / mid-merge
+  const stuck = await isMidRebaseOrMerge(wt.path)
+  if (stuck.rebase || stuck.merge) {
+    findings.push({
+      worktree: wtName,
+      branch: wt.branch,
+      severity: "error",
+      check: "stuck-merge-state",
+      message: stuck.rebase ? "mid-rebase — abort or continue before further use" : "mid-merge — resolve or abort",
+      details: stuck,
+    })
+  }
+
+  // Dist-only workspace packages with no dist/ — slot not vitest-ready
+  for (const pkgDir of listWorkspacePackages(wt.path)) {
+    if (!needsDistBuild(pkgDir)) continue
+    const rel = relative(wt.path, pkgDir)
+    findings.push({
+      worktree: wtName,
+      branch: wt.branch,
+      severity: "warn",
+      check: "dist-missing",
+      message: `${rel} has dist-only exports but no dist/ — targeted vitest cannot load it. Fix: cd ${pkgDir} && bun run build`,
+      details: { package: rel },
+    })
+  }
+
+  // Vendor-resolution readiness (@km/infra/19945) — only for worktrees that
+  // are SUPPOSED to run the workspace: main + pool slots (configured pool or
+  // the legacy sibling location, where agents run focused vitest; wt5 was
+  // the plateau). Non-canonical worktrees (chief's `--fs-only` integration
+  // worktrees, ad-hoc clones) deliberately skip submodule init / install, so
+  // their submodule + node_modules state is not a readiness defect —
+  // flagging it is noise (they are already surfaced via slot-location-drift).
+  if (
+    isMain ||
+    isCanonicalSlotPath(wt.path, gitRoot, poolRoot) ||
+    isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)
+  ) {
+    // Uninitialized submodules — the ROOT CAUSE of the wt5 plateau. An empty
+    // vendor/<pkg> cannot resolve through node_modules and bare imports fail
+    // before code runs. Read-only.
+    for (const sub of await uninitializedSubmodules(wt.path)) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "error",
+        check: "submodule-uninitialized",
+        message:
+          `submodule ${sub} is not initialized — its workspace package cannot resolve through node_modules ` +
+          `and bare imports fail before code runs. Fix: cd ${wt.path} && git submodule update --init --recursive ${sub}`,
+        details: { submodule: sub },
+      })
+    }
+
+    // Vendor/workspace packages whose node_modules/<name> symlink is PRESENT
+    // but does not resolve (dangling / empty target) — a bare `import
+    // "<name>"` dies before code runs. Read-only check.
+    for (const u of unresolvedWorkspaceSymlinks(wt.path)) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "warn",
+        check: "workspace-symlink-unresolved",
+        message:
+          `${u.name} → node_modules/${u.name} does not resolve (${u.reason}) — a bare import of ${u.name} ` +
+          `fails before code runs (targeted vitest cannot load it). ` +
+          `Fix: cd ${wt.path} && git submodule update --init --recursive && bun install`,
+        details: { package: u.packageDir, nodeModulesPath: u.nodeModulesPath, reason: u.reason },
+      })
+    }
+  }
+
+  if (isMain) return { findings, dirtyFiles }
+
+  // Branch divergence vs main — one `git rev-list` process instead of two.
+  const { ahead, behind } = await getDivergence(wt.path)
+
+  // Dup / unique commits vs main — one `git cherry` process instead of two.
+  const { dups, unique } = await getCherryCounts(wt.path)
+
+  // Dup commits already on main (cherry "-")
+  if (ahead > 0 && dups > 0 && unique === 0) {
+    findings.push({
+      worktree: wtName,
+      branch: wt.branch,
+      severity: "warn",
+      check: "duplicate-commits-on-main",
+      message: `${dups} commit(s) already applied to main (cherry "-"), 0 unique. Reset to main is safe.`,
+      details: { dups, unique, ahead },
+    })
+  }
+
+  if (behind > behindThreshold) {
+    findings.push({
+      worktree: wtName,
+      branch: wt.branch,
+      severity: "warn",
+      check: "branch-stale-vs-main",
+      message: `${behind} commits behind main (threshold: ${behindThreshold})`,
+      details: { behind, threshold: behindThreshold },
+    })
+  }
+
+  // Stale: unique work + last commit > N days ago
+  if (unique > 0) {
+    const ageHours = await lastCommitAgeHours(wt.path)
+    if (ageHours > staleAgeHours) {
+      findings.push({
+        worktree: wtName,
+        branch: wt.branch,
+        severity: "warn",
+        check: "stale-unique-work",
+        message: `${unique} unique commit(s), last commit ${(ageHours / 24).toFixed(1)}d ago — rebase or merge before it bitrots`,
+        details: { unique, ageDays: ageHours / 24 },
+      })
+    }
+  }
+
+  // Track dirty files for cross-worktree formatter-noise detection (reuses
+  // the `status` fetched above instead of a second `git status` call).
+  for (const change of status.changes) {
+    // Lines look like " M apps/foo.ts" — strip the 3-char prefix
+    const filePath = change.slice(3)
+    if (!filePath || change.startsWith("??")) continue
+    const abs = join(wt.path, filePath)
+    const sha = await fileSha256(abs)
+    if (!sha) continue
+    dirtyFiles.push({ filePath, sha })
+  }
+
+  return { findings, dirtyFiles }
+}
+
+/** Concurrency for the per-worktree audit fan-out — I/O-bound git subprocesses, not CPU-bound. */
+const AUDIT_CONCURRENCY = 16
+
+/**
+ * Per-worktree wall-clock budget. A worktree currently in use by a live agent
+ * can hold a real (if transient) git-index lock; `git status
+ * --ignore-submodules=none` then blocks until the lock releases instead of
+ * erroring — with 150+ registered worktrees and several routinely live, one
+ * stuck subprocess previously hung the WHOLE audit forever (`mapPool`'s
+ * `Promise.all` never resolves if any single worker's promise never
+ * resolves), matching the exact reported symptom: `timeout 120 bun worktree
+ * audit` producing zero output. Confirmed 21150: `w-hygiene` and `w-nanny`
+ * (both actively owned by concurrent agents at measurement time) blocked on
+ * this exact command for >8s while every other of the 159 worktrees answered
+ * in <1.5s; a retry moments later returned in 0.24s once the lock cleared.
+ * NO SILENT ERRORS: a timed-out worktree gets a loud "audit-timed-out"
+ * finding, never a silently-dropped row.
+ */
+const AUDIT_PER_WORKTREE_TIMEOUT_MS = 12_000
+
+/**
+ * Race `auditOneWorktree` against a wall-clock budget so one worktree with a
+ * held git lock (a live concurrent agent, mid-operation) cannot hang the
+ * entire audit. On timeout, the underlying git subprocesses keep running in
+ * the background (harmless — they hold no resources of ours, and the
+ * `.catch()` below silences the resulting unhandled-rejection noise once they
+ * eventually settle) while this worktree is reported as timed out rather than
+ * silently skipped.
+ */
+async function auditOneWorktreeBounded(
+  wt: WorktreeMeta,
+  gitRoot: string,
+  poolRoot: string,
+  behindThreshold: number,
+  staleAgeHours: number,
+): Promise<WorktreeAuditResult> {
+  const work = auditOneWorktree(wt, gitRoot, poolRoot, behindThreshold, staleAgeHours)
+  // Swallow late resolution/rejection of the abandoned-on-timeout promise —
+  // by the time it settles nothing is listening, and an uncaught rejection
+  // would otherwise crash the process outside the timeout race below.
+  work.catch(() => {})
+  const timedOut = Symbol("timed-out")
+  const raced = await Promise.race([
+    work,
+    new Promise<typeof timedOut>((resolve) => setTimeout(() => resolve(timedOut), AUDIT_PER_WORKTREE_TIMEOUT_MS)),
+  ])
+  if (raced === timedOut) {
+    return {
+      findings: [
+        {
+          worktree: wt.name,
+          branch: wt.branch,
+          severity: "warn",
+          check: "audit-timed-out",
+          message:
+            `git operations did not complete within ${AUDIT_PER_WORKTREE_TIMEOUT_MS / 1000}s — likely a concurrent ` +
+            `process (a live agent) holding a git lock in this worktree. Skipped; re-run the audit to recheck.`,
+          details: { timeoutMs: AUDIT_PER_WORKTREE_TIMEOUT_MS },
+        },
+      ],
+      dirtyFiles: [],
+    }
+  }
+  return raced
+}
+
 export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFinding[]> {
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -848,196 +1142,20 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
     isDetached: w.isDetached,
   }))
 
+  const perWorktree = await mapPool(worktrees, AUDIT_CONCURRENCY, (wt) =>
+    auditOneWorktreeBounded(wt, gitRoot, poolRoot, behindThreshold, staleAgeHours),
+  )
+
   const findings: AuditFinding[] = []
   const dirtyFileShas = new Map<string, Map<string, string[]>>() // file basename → sha → wts
-
-  for (const wt of worktrees) {
-    const isMain = wt.path === gitRoot
-    const wtName = wt.name
-
-    // Skip the main worktree from per-worktree drift checks (it's the target).
-    if (!isMain) {
-      const canonicalSlot = join(poolRoot, slotDirName(basename(gitRoot), wtName))
-      if (isLegacySlotPath(wt.path, gitRoot)) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "info",
-          check: "slot-location-legacy",
-          message: `legacy slot at ${wt.path} — recycle to canonical pool location ${canonicalSlot}`,
-          details: { path: wt.path, canonical: canonicalSlot },
-        })
-      } else if (isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "info",
-          check: "slot-location-legacy-sibling",
-          message:
-            `slot at legacy sibling location ${wt.path} — the configured pool is ${poolRoot}; ` +
-            `migrate on next recycle: bun worktree remove ${wtName} && bun worktree create ${wtName}`,
-          details: { path: wt.path, canonical: canonicalSlot, poolRoot },
-        })
-      } else if (!isCanonicalSlotPath(wt.path, gitRoot, poolRoot)) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "info",
-          check: "slot-location-drift",
-          message: `worktree at non-canonical path ${wt.path} (canonical: ${join(poolRoot, `${basename(gitRoot)}-wtN`)})`,
-          details: { path: wt.path, poolRoot },
-        })
-      }
-    }
-
-    // Detached HEAD with UU files
-    const uu = await uuFiles(wt.path)
-    if (uu.length > 0) {
-      const sev: AuditSeverity = wt.isDetached ? "error" : "warn"
-      findings.push({
-        worktree: wtName,
-        branch: wt.branch,
-        severity: sev,
-        check: wt.isDetached ? "detached-head-with-uu" : "uu-conflicts",
-        message: `${uu.length} unmerged file(s)${wt.isDetached ? " on detached HEAD" : ""}: ${uu.slice(0, 3).join(", ")}${uu.length > 3 ? "..." : ""}`,
-        details: { uu },
-      })
-    }
-
-    // Mid-rebase / mid-merge
-    const stuck = await isMidRebaseOrMerge(wt.path)
-    if (stuck.rebase || stuck.merge) {
-      findings.push({
-        worktree: wtName,
-        branch: wt.branch,
-        severity: "error",
-        check: "stuck-merge-state",
-        message: stuck.rebase ? "mid-rebase — abort or continue before further use" : "mid-merge — resolve or abort",
-        details: stuck,
-      })
-    }
-
-    // Dist-only workspace packages with no dist/ — slot not vitest-ready
-    for (const pkgDir of listWorkspacePackages(wt.path)) {
-      if (!needsDistBuild(pkgDir)) continue
-      const rel = relative(wt.path, pkgDir)
-      findings.push({
-        worktree: wtName,
-        branch: wt.branch,
-        severity: "warn",
-        check: "dist-missing",
-        message: `${rel} has dist-only exports but no dist/ — targeted vitest cannot load it. Fix: cd ${pkgDir} && bun run build`,
-        details: { package: rel },
-      })
-    }
-
-    // Vendor-resolution readiness (@km/infra/19945) — only for worktrees that
-    // are SUPPOSED to run the workspace: main + pool slots (configured pool or
-    // the legacy sibling location, where agents run focused vitest; wt5 was
-    // the plateau). Non-canonical worktrees (chief's `--fs-only` integration
-    // worktrees, ad-hoc clones) deliberately skip submodule init / install, so
-    // their submodule + node_modules state is not a readiness defect —
-    // flagging it is noise (they are already surfaced via slot-location-drift).
-    if (
-      isMain ||
-      isCanonicalSlotPath(wt.path, gitRoot, poolRoot) ||
-      isLegacySiblingSlotPath(wt.path, gitRoot, poolRoot)
-    ) {
-      // Uninitialized submodules — the ROOT CAUSE of the wt5 plateau. An empty
-      // vendor/<pkg> cannot resolve through node_modules and bare imports fail
-      // before code runs. Read-only.
-      for (const sub of await uninitializedSubmodules(wt.path)) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "error",
-          check: "submodule-uninitialized",
-          message:
-            `submodule ${sub} is not initialized — its workspace package cannot resolve through node_modules ` +
-            `and bare imports fail before code runs. Fix: cd ${wt.path} && git submodule update --init --recursive ${sub}`,
-          details: { submodule: sub },
-        })
-      }
-
-      // Vendor/workspace packages whose node_modules/<name> symlink is PRESENT
-      // but does not resolve (dangling / empty target) — a bare `import
-      // "<name>"` dies before code runs. Read-only check.
-      for (const u of unresolvedWorkspaceSymlinks(wt.path)) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "warn",
-          check: "workspace-symlink-unresolved",
-          message:
-            `${u.name} → node_modules/${u.name} does not resolve (${u.reason}) — a bare import of ${u.name} ` +
-            `fails before code runs (targeted vitest cannot load it). ` +
-            `Fix: cd ${wt.path} && git submodule update --init --recursive && bun install`,
-          details: { package: u.packageDir, nodeModulesPath: u.nodeModulesPath, reason: u.reason },
-        })
-      }
-    }
-
-    if (isMain) continue
-
-    // Branch divergence vs main
-    const ahead = await getCommitsAhead(wt.path)
-    const behind = await getCommitsBehind(wt.path)
-
-    // Dup commits already on main (cherry "-")
-    if (ahead > 0) {
-      const dups = await dupCommitsAlreadyOnMain(wt.path)
-      const unique = await uniqueCommitsCount(wt.path)
-      if (dups > 0 && unique === 0) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "warn",
-          check: "duplicate-commits-on-main",
-          message: `${dups} commit(s) already applied to main (cherry "-"), 0 unique. Reset to main is safe.`,
-          details: { dups, unique, ahead },
-        })
-      }
-    }
-
-    if (behind > behindThreshold) {
-      findings.push({
-        worktree: wtName,
-        branch: wt.branch,
-        severity: "warn",
-        check: "branch-stale-vs-main",
-        message: `${behind} commits behind main (threshold: ${behindThreshold})`,
-        details: { behind, threshold: behindThreshold },
-      })
-    }
-
-    // Stale: unique work + last commit > N days ago
-    const unique = await uniqueCommitsCount(wt.path)
-    if (unique > 0) {
-      const ageHours = await lastCommitAgeHours(wt.path)
-      if (ageHours > staleAgeHours) {
-        findings.push({
-          worktree: wtName,
-          branch: wt.branch,
-          severity: "warn",
-          check: "stale-unique-work",
-          message: `${unique} unique commit(s), last commit ${(ageHours / 24).toFixed(1)}d ago — rebase or merge before it bitrots`,
-          details: { unique, ageDays: ageHours / 24 },
-        })
-      }
-    }
-
-    // Track dirty files for cross-worktree formatter-noise detection
-    const status = await getWorktreeStatus(wt.path)
-    for (const change of status.changes) {
-      // Lines look like " M apps/foo.ts" — strip the 3-char prefix
-      const filePath = change.slice(3)
-      if (!filePath || change.startsWith("??")) continue
-      const abs = join(wt.path, filePath)
-      const sha = await fileSha256(abs)
-      if (!sha) continue
+  for (let i = 0; i < worktrees.length; i++) {
+    const wt = worktrees[i] as WorktreeMeta
+    const result = perWorktree[i] as WorktreeAuditResult
+    findings.push(...result.findings)
+    for (const { filePath, sha } of result.dirtyFiles) {
       const byFile = dirtyFileShas.get(filePath) ?? new Map<string, string[]>()
       const wts = byFile.get(sha) ?? []
-      wts.push(wtName)
+      wts.push(wt.name)
       byFile.set(sha, wts)
       dirtyFileShas.set(filePath, byFile)
     }
@@ -3005,9 +3123,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return
     case "audit": {
       const findings = await auditWorktrees(plan.options)
-      // Exit 1 if any error-severity findings (CI-friendly).
-      if (findings.some((f) => f.severity === "error")) process.exit(1)
-      return
+      // Explicit exit (never a bare `return`): a per-worktree timeout
+      // (AUDIT_PER_WORKTREE_TIMEOUT_MS) can leave abandoned `git status`
+      // subprocesses still running in the background for a locked worktree —
+      // their open stdio pipes keep the event loop alive, so the process
+      // would otherwise hang indefinitely AFTER printing results even though
+      // the audit itself already completed (21150).
+      process.exit(findings.some((f) => f.severity === "error") ? 1 : 0)
     }
     case "gc":
       await gcAgentClones(plan.options)
