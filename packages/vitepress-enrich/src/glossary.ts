@@ -7,10 +7,9 @@
  * Skips: code spans, code blocks, fences, existing links, headings.
  * First-occurrence-only per page. Longest-match-first.
  */
-// @ts-expect-error — markdown-it has no declaration file
 import type MarkdownIt from "markdown-it"
-// @ts-expect-error — markdown-it has no declaration file
 import type Token from "markdown-it/lib/token.mjs"
+import type StateCore from "markdown-it/lib/rules_core/state_core.mjs"
 import type { GlossaryEntity } from "./types.ts"
 import { compileEntities, replaceEntities, replaceInHtml } from "./entity-engine.ts"
 
@@ -44,7 +43,7 @@ export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): 
 
   md.core.ruler.push(
     "glossary_links",
-    (state: { tokens: Token[]; Token: new (type: string, tag: string, nesting: number) => Token }) => {
+    (state: StateCore) => {
       const linkedTerms = new Set<string>()
 
       for (const blockToken of state.tokens) {
@@ -61,11 +60,12 @@ export function glossaryPlugin(md: MarkdownIt, options: GlossaryPluginOptions): 
         const blockIdx = state.tokens.indexOf(blockToken)
         let inHeading = false
         for (let i = blockIdx - 1; i >= 0; i--) {
-          if (state.tokens[i].type === "heading_open") {
+          const prev = state.tokens[i]
+          if (prev?.type === "heading_open") {
             inHeading = true
             break
           }
-          if (state.tokens[i].type === "heading_close") break
+          if (prev?.type === "heading_close") break
         }
         if (inHeading) continue
 
