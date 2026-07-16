@@ -74,6 +74,7 @@
     "build": "tsdown"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "tsdown": "^0.22.5"
   },
   "peerDependencies": {
