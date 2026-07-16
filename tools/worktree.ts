@@ -1125,6 +1125,14 @@ export interface CreateOptions {
   direnv?: boolean
   hooks?: boolean
   allowDirty?: boolean // Skip uncommitted changes check
+  /**
+   * Explicit base ref for a NEW branch / pool slot (`--base <ref>`). Skips the
+   * default fetch-then-`origin/main` base resolution — the offline / deliberate
+   * escape hatch. Ignored-with-a-loud-error when the target branch already
+   * exists (the branch's own tip is the base then; a silently dropped flag
+   * would be a silent error).
+   */
+  base?: string
 }
 
 async function checkUncommittedChanges(gitRoot: string, submodules: string[]): Promise<void> {
@@ -1599,22 +1607,67 @@ async function installHooks(worktreePath: string): Promise<void> {
  * (@km/inbox/19363). `-B` resets-or-creates `wtN` AT origin/main, so the
  * pool-slot rule MUST precede the branch-exists check. Non-slot names keep
  * tracking their stable upstream.
+ *
+ * `base` is the START POINT for any branch this call CUTS (pool-slot `-B` and
+ * brand-new `-b`): the fetched `origin/main` by default, or the operator's
+ * explicit `--base <ref>`. A brand-new branch with NO start point would be cut
+ * from the invoking repo's HEAD — the stale-LOCAL-main birth defect
+ * (worktree-base-origin-main: `hh-adhoc1` born 226 commits behind). Branches
+ * that already exist (local or remote-tracking) keep their own tip; `base`
+ * does not apply to them.
  */
 export function resolveBranchArg(input: {
   isPoolSlot: boolean
   branchExists: boolean
   remoteBranchExists: boolean
   branchName: string
+  base: string
 }): string[] {
-  if (input.isPoolSlot) return ["-B", input.branchName, "origin/main"]
+  if (input.isPoolSlot) return ["-B", input.branchName, input.base]
   if (input.branchExists) return [input.branchName]
   if (input.remoteBranchExists) return [input.branchName]
-  return ["-b", input.branchName]
+  return ["-b", input.branchName, input.base]
+}
+
+/**
+ * Resolve the start point for a branch this create will CUT (pool slot `-B` /
+ * brand-new `-b`) — worktree-base-origin-main.
+ *
+ * Default: `git fetch origin main` FIRST (`--no-recurse-submodules` — only the
+ * superproject ref gates base freshness; submodules are fetched on demand by
+ * `submodule update --init` later), then base on the freshly-updated
+ * `refs/remotes/origin/main`. A failed fetch is FATAL: silently proceeding on
+ * the cached remote-tracking ref (or worse, local HEAD) would re-open the
+ * born-stale defect this exists to close (`hh-adhoc1` born 226 commits behind;
+ * NO SILENT ERRORS). Offline / deliberate re-basing passes `--base <ref>`,
+ * which skips the fetch and uses that ref verbatim. Either way the chosen ref
+ * must resolve to a commit — fail loud, never fall back to a stale local ref.
+ */
+async function resolveCreateBase(gitRoot: string, explicitBase: string | undefined): Promise<string> {
+  if (explicitBase === undefined) {
+    info("Fetching origin main (fresh base for the new branch)...")
+    const fetched = await safeExec($`cd ${gitRoot} && git fetch --no-recurse-submodules origin main 2>&1`)
+    if (fetched.exitCode !== 0) {
+      error("`git fetch origin main` failed — refusing to cut a new branch from a possibly-stale ref:")
+      console.log((fetched.stdout ?? "").trim())
+      console.log(CYAN + "  Offline? Pass an explicit base: bun worktree create <name> --base <ref>" + RESET)
+      process.exit(1)
+    }
+  }
+  const base = explicitBase ?? "refs/remotes/origin/main"
+  const resolved = await safeExec($`cd ${gitRoot} && git rev-parse --verify --quiet ${base}^{commit} 2>/dev/null`)
+  if (resolved.exitCode !== 0 || resolved.stdout.trim() === "") {
+    error(`Base ref does not resolve to a commit: ${base}`)
+    console.log(CYAN + "  A new branch is never silently based on local HEAD (worktree-base-origin-main)." + RESET)
+    console.log(CYAN + "  Check the remote, or pass an explicit base: bun worktree create <name> --base <ref>" + RESET)
+    process.exit(1)
+  }
+  return base
 }
 
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
-  const { install = true, direnv = true, hooks = true, allowDirty = false } = options
+  const { install = true, direnv = true, hooks = true, allowDirty = false, base: explicitBase } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -1726,22 +1779,38 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // tracking a stable upstream.
   const isPoolSlot = /^wt\d+$/.test(name) && branchName === name
 
+  // Base-ref freshness (worktree-base-origin-main): any branch this create
+  // CUTS is based on a freshly-fetched origin/main (or the explicit --base
+  // escape hatch) — never on local HEAD / a stale cached ref. Resolved BEFORE
+  // preserveAheadBranchRef below so the ahead-of-origin/main preserve check
+  // also sees the fresh tip.
+  const cutsNewBranch = isPoolSlot || (branchExists.exitCode !== 0 && remoteBranchExists.exitCode !== 0)
+  if (explicitBase !== undefined && !cutsNewBranch) {
+    error(
+      `--base ${explicitBase} conflicts with existing branch ${branchName} — checking out an existing branch keeps that branch's tip.`,
+    )
+    console.log(CYAN + "  Drop --base to track the existing branch, or pick a new branch name." + RESET)
+    process.exit(1)
+  }
+  const base = cutsNewBranch ? await resolveCreateBase(gitRoot, explicitBase) : "refs/remotes/origin/main"
+
   const branchArg = resolveBranchArg({
     isPoolSlot,
     branchExists: branchExists.exitCode === 0,
     remoteBranchExists: remoteBranchExists.exitCode === 0,
     branchName,
+    base,
   })
   if (isPoolSlot) {
-    // -B resets-or-creates the slot branch at origin/main, even over a stale
+    // -B resets-or-creates the slot branch at the fresh base, even over a stale
     // local wtN ref left by a prior task/<id> cycle (@km/inbox/19363).
-    info(`Creating slot branch ${branchName} at origin/main (reset-or-create)`)
+    info(`Creating slot branch ${branchName} at ${base} (reset-or-create)`)
   } else if (branchExists.exitCode === 0) {
     info(`Using existing branch: ${branchName}`)
   } else if (remoteBranchExists.exitCode === 0) {
     info(`Tracking remote branch: origin/${branchName}`)
   } else {
-    info(`Creating new branch: ${branchName}`)
+    info(`Creating new branch: ${branchName} at ${base}`)
   }
 
   // PRESERVE-FIRST (L5): a pool slot recreated over a stale local `wtN` branch
@@ -2601,6 +2670,9 @@ ${BOLD}POOL ROOT${RESET}
 
 ${BOLD}CREATE OPTIONS${RESET}
   --branch <name>   Use specific branch (also used as worktree name if no <name>)
+  --base <ref>      Base a NEW branch/slot on <ref> instead of the default
+                    fetch-then-origin/main (offline / deliberate escape hatch;
+                    errors loud if the branch already exists)
   --no-install      Skip dependency installation
   --no-direnv       Skip direnv allow
   --no-hooks        Skip hook installation
@@ -2633,8 +2705,10 @@ ${BOLD}EXAMPLES${RESET}
   bun worktree remove my-feature --delete-branch   # Remove and delete branch
 
 ${BOLD}HOW IT WORKS${RESET}
-  Worktrees are created from your COMMITTED state, not your working tree.
-  This ensures each worktree is an exact, reproducible copy.
+  Worktrees are created from COMMITTED state, not your working tree.
+  A NEW branch (or pool slot) is cut from a freshly-fetched origin/main —
+  never from local HEAD, which may be stale (worktree-base-origin-main);
+  \`--base <ref>\` overrides. Existing branches keep their own tip.
 
   ${BOLD}Before creating, the tool validates:${RESET}
   1. No uncommitted changes in main repo
@@ -2677,6 +2751,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     maxPositionals: 2,
     flags: {
       "--branch": { value: true },
+      "--base": { value: true },
       "--no-install": {},
       "--no-direnv": {},
       "--no-hooks": {},
@@ -2716,11 +2791,18 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   },
 }
 
+/**
+ * Create plan options: every toggle resolved, but `base` stays optional —
+ * `undefined` means "fetch, then origin/main" (the enforced default), an
+ * explicit value is the operator's deliberate `--base <ref>` escape hatch.
+ */
+export type CreatePlanOptions = Required<Omit<CreateOptions, "base">> & Pick<CreateOptions, "base">
+
 export type CliPlan =
   | { action: "help" }
   | { action: "default-info" }
   | { action: "usage-error"; message: string }
-  | { action: "create"; name: string; branch: string | undefined; options: Required<CreateOptions> }
+  | { action: "create"; name: string; branch: string | undefined; options: CreatePlanOptions }
   | { action: "remove"; name: string; options: RemoveOptions }
   | { action: "reset"; name: string; options: ResetOptions }
   | { action: "path"; name: string }
@@ -2796,6 +2878,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
           direnv: !flags.has("--no-direnv"),
           hooks: !flags.has("--no-hooks"),
           allowDirty: flags.has("--allow-dirty"),
+          base: values.get("--base"),
         },
       }
     }
