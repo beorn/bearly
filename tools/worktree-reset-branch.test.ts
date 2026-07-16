@@ -38,9 +38,12 @@ describe("resolveBranchArg — pool slots land at origin/main (@km/inbox/19363)"
     ).toEqual(["feat/y"])
   })
 
-  test("non-slot brand-new branch is created", () => {
+  // Base selection for new branches generalized beyond slots on 2026-07-15 —
+  // see worktree-base-ref.test.ts. This case previously expected a base-less
+  // ["-b", "feat/z"], which git resolves against local HEAD.
+  test("non-slot brand-new branch is created at origin/main", () => {
     expect(
       resolveBranchArg({ isPoolSlot: false, branchExists: false, remoteBranchExists: false, branchName: "feat/z" }),
-    ).toEqual(["-b", "feat/z"])
+    ).toEqual(["-b", "feat/z", "origin/main"])
   })
 })

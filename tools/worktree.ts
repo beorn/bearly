@@ -1125,6 +1125,10 @@ export interface CreateOptions {
   direnv?: boolean
   hooks?: boolean
   allowDirty?: boolean // Skip uncommitted changes check
+  /** Base for a NEW branch. Default `origin/main`; pass `HEAD` for local, in-progress work. */
+  baseRef?: string
+  /** Refresh `baseRef` from the remote before cutting. Default true; `--no-fetch` to skip. */
+  fetch?: boolean
 }
 
 async function checkUncommittedChanges(gitRoot: string, submodules: string[]): Promise<void> {
@@ -1590,31 +1594,67 @@ async function installHooks(worktreePath: string): Promise<void> {
 }
 
 /**
- * Pick the `git worktree add` branch argument. A pool-slot branch (wtN) is an
- * anonymous, disposable pool resource: on (re)create it must ALWAYS land at
- * origin/main — even when a stale LOCAL wtN branch survives a prior cycle. When
- * the slot last ran a `task/<id>` branch, `bun worktree reset wtN` removes that
- * task branch but leaves the old `wtN` ref pinned at an ancient SHA; reusing it
- * via `branchExists` would silently land the slot N-behind origin/main
- * (@km/inbox/19363). `-B` resets-or-creates `wtN` AT origin/main, so the
- * pool-slot rule MUST precede the branch-exists check. Non-slot names keep
- * tracking their stable upstream.
+ * The base a NEW branch is cut from. The remote, never local HEAD: local main
+ * is routinely stale (a dirty tree + `rebase.autostash=false` means `pull` can
+ * never run), and a worktree born behind is the root of the recut spiral —
+ * conflict on land → recut a new worktree → born behind again → recut again.
+ *
+ * `origin/main` and not `origin/HEAD`: `origin/HEAD` is a local convenience ref
+ * written at clone time. It is absent in many clones (bare, `--single-branch`,
+ * fetched-not-cloned) and, when absent, `git worktree add -b x origin/HEAD`
+ * fails loudly rather than silently — but every consumer of this repo already
+ * names `origin/main` directly (~20 sites: the ahead/behind preservation
+ * checks, the pool-slot reset, the GC removability proof). One spelling.
+ */
+const DEFAULT_BASE_REF = "origin/main"
+
+/**
+ * Pick the `git worktree add` branch argument.
+ *
+ * A NEW branch — pool slot or not — is cut from `baseRef` (default
+ * `origin/main`). Pool slots (wtN) additionally use `-B` to reset-or-create over
+ * a stale local `wtN` ref: when a slot last ran a `task/<id>` branch, `bun
+ * worktree reset wtN` removes the task branch but leaves the old `wtN` ref at an
+ * ancient SHA, and reusing it via `branchExists` would silently land the slot
+ * N-behind (@km/inbox/19363). So the pool-slot rule MUST precede the
+ * branch-exists check.
+ *
+ * That 19363 fix covered ONLY slot names. A brand-new non-slot branch still fell
+ * through to a base-less `-b <name>`, which git bases on local HEAD — so `bun
+ * worktree create adhoc1` was measured landing 226 commits behind origin/main
+ * (2026-07-15). Both paths now share `baseRef`.
+ *
+ * An EXISTING local or remote branch is reused untouched: it carries real work,
+ * and re-basing it here would move a user's commits behind their back. Only the
+ * base of a branch being created is this function's business.
+ *
+ * Pass `baseRef: "HEAD"` to opt out and branch off local, in-progress work —
+ * the rare "isolate a subagent on top of what I have right now" case.
  */
 export function resolveBranchArg(input: {
   isPoolSlot: boolean
   branchExists: boolean
   remoteBranchExists: boolean
   branchName: string
+  baseRef?: string
 }): string[] {
-  if (input.isPoolSlot) return ["-B", input.branchName, "origin/main"]
+  const base = input.baseRef ?? DEFAULT_BASE_REF
+  if (input.isPoolSlot) return ["-B", input.branchName, base]
   if (input.branchExists) return [input.branchName]
   if (input.remoteBranchExists) return [input.branchName]
-  return ["-b", input.branchName]
+  return ["-b", input.branchName, base]
 }
 
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
-  const { install = true, direnv = true, hooks = true, allowDirty = false } = options
+  const {
+    install = true,
+    direnv = true,
+    hooks = true,
+    allowDirty = false,
+    baseRef = DEFAULT_BASE_REF,
+    fetch: shouldFetch = true,
+  } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -1710,6 +1750,41 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     console.log("")
   }
 
+  // Refresh the base before cutting from it. Basing on origin/main only moves
+  // the staleness from local main to the origin/main REF if nothing fetched it
+  // recently — same bug, quieter. One `fetch origin <branch>` is a single ref
+  // negotiation (~hundreds of ms warm), paid once per create against a worktree
+  // that lives for hours; the failure it removes cost a full recut cycle.
+  //
+  // NEVER `--depth`: all worktrees share ONE gitdir, so a shallow fetch in any
+  // slot makes `merge-base` fatal and `--is-ancestor` FALSE-NEGATIVE for the
+  // whole fleet — committed-vs-shipped proofs start lying. `--no-tags` keeps it
+  // to the one ref we are about to use.
+  //
+  // A fetch failure is NOT fatal (offline is a legitimate way to work) but it is
+  // never silent: creating from a base we could not refresh is exactly the
+  // condition the caller needs told, since the tree may be born behind.
+  if (shouldFetch && baseRef.startsWith("origin/")) {
+    const remoteBranch = baseRef.slice("origin/".length)
+    info(`Fetching ${baseRef}...`)
+    const fetched = await safeExec($`cd ${gitRoot} && git fetch --no-tags origin ${remoteBranch}`)
+    if (fetched.exitCode !== 0) {
+      warn(`Could not fetch ${baseRef} — creating from the last known ${baseRef}, which may be stale.`)
+      warn(`  ${(fetched.stderr || fetched.stdout || "").trim().split("\n")[0] ?? ""}`)
+      warn(`  Re-run with a working network, or pass --no-fetch to silence this.`)
+    }
+  }
+
+  // Fail loud if the base does not resolve — `git worktree add` would otherwise
+  // report it as an opaque "invalid reference", and a typo'd --base should not
+  // read as a git bug.
+  const baseResolves = await safeExec($`cd ${gitRoot} && git rev-parse --verify ${baseRef}^{commit} 2>/dev/null`)
+  if (baseResolves.exitCode !== 0) {
+    error(`Base ref does not resolve: ${baseRef}`)
+    console.log(CYAN + `  Check the spelling, or pass --base <ref> with a ref that exists.` + RESET)
+    process.exit(1)
+  }
+
   // Check if branch exists
   const branchExists = await safeExec($`cd ${gitRoot} && git show-ref --verify refs/heads/${branchName} 2>/dev/null`)
   const remoteBranchExists = await safeExec(
@@ -1731,17 +1806,18 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     branchExists: branchExists.exitCode === 0,
     remoteBranchExists: remoteBranchExists.exitCode === 0,
     branchName,
+    baseRef,
   })
   if (isPoolSlot) {
-    // -B resets-or-creates the slot branch at origin/main, even over a stale
+    // -B resets-or-creates the slot branch at baseRef, even over a stale
     // local wtN ref left by a prior task/<id> cycle (@km/inbox/19363).
-    info(`Creating slot branch ${branchName} at origin/main (reset-or-create)`)
+    info(`Creating slot branch ${branchName} at ${baseRef} (reset-or-create)`)
   } else if (branchExists.exitCode === 0) {
     info(`Using existing branch: ${branchName}`)
   } else if (remoteBranchExists.exitCode === 0) {
     info(`Tracking remote branch: origin/${branchName}`)
   } else {
-    info(`Creating new branch: ${branchName}`)
+    info(`Creating new branch: ${branchName} at ${baseRef}`)
   }
 
   // PRESERVE-FIRST (L5): a pool slot recreated over a stale local `wtN` branch
@@ -2581,6 +2657,14 @@ ${BOLD}USAGE${RESET}
   bun worktree create <name> [branch]   Create worktree in the pool (see POOL ROOT)
   bun worktree create --branch <branch> Create worktree using branch as name
   bun worktree remove <name>            Remove worktree
+
+${BOLD}BASE${RESET}
+  A new branch is cut from origin/main, which is fetched first — a worktree born
+  behind local main's HEAD is the start of the conflict-then-recut spiral.
+    --base <ref>   Cut from <ref> instead. \`--base HEAD\` branches off local,
+                   in-progress work (isolating a subagent on top of what you have).
+    --no-fetch     Skip refreshing the base. Offline, or when speed beats freshness.
+  An EXISTING branch is always reused at its own tip; --base applies to new ones.
   bun worktree reset <name> [--force]   Recreate worktree at origin/main (DCG-safe slot recovery)
   bun worktree path <name>              Print the resolved slot path (pool-aware)
   bun worktree list                     Detailed worktree status
@@ -2677,6 +2761,8 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     maxPositionals: 2,
     flags: {
       "--branch": { value: true },
+      "--base": { value: true },
+      "--no-fetch": {},
       "--no-install": {},
       "--no-direnv": {},
       "--no-hooks": {},
@@ -2796,6 +2882,10 @@ export function planCliInvocation(argv: string[]): CliPlan {
           direnv: !flags.has("--no-direnv"),
           hooks: !flags.has("--no-hooks"),
           allowDirty: flags.has("--allow-dirty"),
+          // New branches cut from the remote, not local HEAD. `--base HEAD` is
+          // the opt-out for branching off in-progress local work.
+          baseRef: values.get("--base") ?? DEFAULT_BASE_REF,
+          fetch: !flags.has("--no-fetch"),
         },
       }
     }

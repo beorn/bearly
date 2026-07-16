@@ -61,19 +61,41 @@ describe("planCliInvocation — name is the first positional, never a flag", () 
       action: "create",
       name: "km-theme-inherit",
       branch: "km-theme-inherit",
-      options: { install: true, direnv: true, hooks: true, allowDirty: false },
+      options: { install: true, direnv: true, hooks: true, allowDirty: false, baseRef: "origin/main", fetch: true },
     })
     expect(planCliInvocation(["create", "wt3"])).toEqual({
       action: "create",
       name: "wt3",
       branch: undefined,
-      options: { install: true, direnv: true, hooks: true, allowDirty: false },
+      options: { install: true, direnv: true, hooks: true, allowDirty: false, baseRef: "origin/main", fetch: true },
     })
     expect(planCliInvocation(["create", "bugfix", "fix/cursor-pos", "--no-install"])).toEqual({
       action: "create",
       name: "bugfix",
       branch: "fix/cursor-pos",
-      options: { install: false, direnv: true, hooks: true, allowDirty: false },
+      options: { install: false, direnv: true, hooks: true, allowDirty: false, baseRef: "origin/main", fetch: true },
+    })
+  })
+
+  // The default IS the fix: a create with no base flag must plan origin/main,
+  // never local HEAD. Asserted here at the CLI boundary so a future flag-parsing
+  // refactor can't quietly drop the default and re-open the 226-behind bug.
+  test("create defaults to basing on origin/main, with --base/--no-fetch as opt-outs", () => {
+    const planned = planCliInvocation(["create", "adhoc1"])
+    expect(planned).toMatchObject({ options: { baseRef: "origin/main", fetch: true } })
+
+    expect(planCliInvocation(["create", "adhoc1", "--base", "HEAD"])).toMatchObject({
+      options: { baseRef: "HEAD", fetch: true },
+    })
+    expect(planCliInvocation(["create", "adhoc1", "--no-fetch"])).toMatchObject({
+      options: { baseRef: "origin/main", fetch: false },
+    })
+  })
+
+  test("--base requires a value rather than swallowing the next flag", () => {
+    expect(planCliInvocation(["create", "adhoc1", "--base"])).toEqual({
+      action: "usage-error",
+      message: "--base requires a value",
     })
   })
 })
