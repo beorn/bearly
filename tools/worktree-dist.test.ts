@@ -12,7 +12,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { needsDistBuild, buildMissingDistPackages } from "./worktree.ts"
+import { buildMissingDistPackages, dependencyInstallPlan, installDependencies, needsDistBuild } from "./worktree.ts"
 
 let root: string
 
@@ -102,6 +102,34 @@ describe("buildMissingDistPackages", () => {
       // Idempotent: second run sees dist present and changes nothing.
       await buildMissingDistPackages(root)
       expect(needsDistBuild(distOnly)).toBe(false)
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+})
+
+describe("dependency installation is immutable and fail-loud (21301)", () => {
+  test("Bun workspaces use the frozen lockfile command", () => {
+    writePkg(root, { name: "fixture-root" })
+    writeFileSync(join(root, "bun.lock"), "lock\n")
+
+    expect(dependencyInstallPlan(root)).toEqual({
+      command: "bun",
+      args: ["install", "--frozen-lockfile"],
+    })
+  })
+
+  test("an install failure rejects slot preparation instead of continuing", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    writePkg(root, { name: "fixture-root" })
+    writeFileSync(join(root, "bun.lock"), "lock\n")
+
+    try {
+      await expect(
+        installDependencies(root, {
+          run: async () => ({ exitCode: 1, stdout: "", stderr: "lockfile would change" }),
+        }),
+      ).rejects.toThrow(/bun install --frozen-lockfile failed.*lockfile would change/)
     } finally {
       logSpy.mockRestore()
     }

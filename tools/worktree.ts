@@ -1271,21 +1271,48 @@ async function killWorktreeDoltServers(worktreePath: string): Promise<number> {
   return toKill.length
 }
 
-async function installDependencies(worktreePath: string): Promise<void> {
+export interface DependencyInstallPlan {
+  readonly command: "bun" | "npm"
+  readonly args: readonly string[]
+}
+
+export interface InstallDependenciesDeps {
+  readonly run?: (
+    cwd: string,
+    command: DependencyInstallPlan["command"],
+    args: readonly string[],
+  ) => Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }>
+}
+
+export function dependencyInstallPlan(worktreePath: string): DependencyInstallPlan | null {
   const hasBunLock = existsSync(join(worktreePath, "bun.lockb")) || existsSync(join(worktreePath, "bun.lock"))
   const hasPackageJson = existsSync(join(worktreePath, "package.json"))
-  if (!hasPackageJson) return
+  if (!hasPackageJson) return null
+  if (hasBunLock) return { command: "bun", args: ["install", "--frozen-lockfile"] }
+  if (existsSync(join(worktreePath, "package-lock.json"))) return { command: "npm", args: ["ci"] }
+  return null
+}
 
-  if (hasBunLock) {
-    info("Running bun install...")
-    const result = await safeExec($`cd ${worktreePath} && bun install`)
-    if (result.exitCode !== 0) warn("bun install failed (continuing)")
-    else success("Dependencies installed")
-  } else if (existsSync(join(worktreePath, "package-lock.json"))) {
-    info("Running npm install...")
-    const result = await safeExec($`cd ${worktreePath} && npm install`)
-    if (result.exitCode !== 0) warn("npm install failed (continuing)")
-    else success("Dependencies installed")
+async function runDependencyInstall(
+  worktreePath: string,
+  command: DependencyInstallPlan["command"],
+  args: readonly string[],
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const result = await safeExec($`cd ${worktreePath} && ${command} ${args} 2>&1`)
+  return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: "" }
+}
+
+export async function installDependencies(worktreePath: string, deps: InstallDependenciesDeps = {}): Promise<void> {
+  const plan = dependencyInstallPlan(worktreePath)
+
+  if (plan !== null) {
+    const display = `${plan.command} ${plan.args.join(" ")}`
+    info(`Running ${display}...`)
+    const result = await (deps.run ?? runDependencyInstall)(worktreePath, plan.command, plan.args)
+    if (result.exitCode !== 0) {
+      throw new Error(`${display} failed: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`}`)
+    }
+    success("Dependencies installed")
   }
 
   // bun install hoists workspace packages to root node_modules only when
