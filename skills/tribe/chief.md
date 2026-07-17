@@ -51,12 +51,12 @@ Periodically check on the tribe and summarize for the user:
 
 4. **Cross-match blockers.** If member A is blocked on something member B could unblock, send a targeted message to B.
 
-## Dead Member Detection
+## Disconnected Member Diagnosis
 
-When `tribe.health()` shows a member with stale heartbeat or no recent messages:
+When `tribe.health()` shows silence or `tribe.members({all:true})` shows a disconnected row:
 
-1. **Confirm death.** A stale heartbeat (>30s) means the session process is gone. The tribe server auto-prunes dead PIDs on `tribe.members()`.
-2. **Release their beads.** For any in-progress beads claimed by the dead member:
+1. **Confirm transport and owner separately.** Only `transport_state: "disconnected"` proves the daemon transport is absent; only `owner_state: "dead"` is positive process-death evidence. `last_seen_sec` and message age describe activity, never liveness. A live/unknown owner needs bridge recovery, not work reassignment.
+2. **Release only after positive owner death.** If and only if `owner_state: "dead"`, inspect in-progress beads claimed by that member:
 
 ```bash
 bd update <bead-id> --assignee "" --status open
