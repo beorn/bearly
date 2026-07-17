@@ -13,8 +13,9 @@
  *   # With options:
  *   bun vendor/bearly/tools/github-channel.ts --repos beorn/km --poll-interval 30
  *
- *   # Launch Claude Code with the channel:
- *   claude --dangerously-load-development-channels server:github
+ *   # Launch Claude Code with the channel (approved spelling; the legacy
+ *   # --dangerously-load-development-channels renders a blocking trust dialog):
+ *   claude --channels server:github
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
