@@ -12,7 +12,7 @@ const RETIRED_MODEL_REPLACEMENTS: Readonly<Record<string, string>> = Object.free
 const PREFLIGHT_MODEL_IDS: Readonly<Partial<Record<Provider, string>>> = Object.freeze({
   openai: "gpt-5-nano",
   anthropic: "claude-haiku-4-5-20251001",
-  google: "gemini-2.0-flash-lite",
+  google: "gemini-2.5-flash",
   xai: "grok-3-fast",
   perplexity: "sonar",
   openrouter: "deepseek/deepseek-chat",
@@ -132,7 +132,8 @@ async function probeProvider(provider: Provider, signal: AbortSignal): Promise<v
   await generateText({
     model: getLanguageModel(model),
     prompt: "Reply OK.",
-    maxOutputTokens: 1,
+    // OpenAI's Responses API rejects max_output_tokens < 16
+    maxOutputTokens: 16,
     abortSignal: signal,
   })
 }
