@@ -732,6 +732,18 @@ const SKUS_DATA: SkuConfig[] = [
     reasoning: { contextWindow: 262144 },
   },
 
+  // Kimi K3 (2026): 1M context reasoning model; supports reasoning_effort.
+  {
+    modelId: "moonshotai/kimi-k3",
+    displayName: "Kimi K3",
+    isDeepResearch: false,
+    costTier: "medium",
+    inputPricePerM: 3.0,
+    outputPricePerM: 15.0,
+    typicalLatencyMs: 20000,
+    reasoning: { contextWindow: 1048576 },
+  },
+
   // DeepSeek R1 — reasoning frontier via OpenRouter. Strong at deliberate
   // multi-step reasoning; slow (10–30s typical) due to <think>-block emission.
   // Routed for the "punch through intellectual issues" mainstay role.
@@ -942,6 +954,7 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   // exposes a `thinking_enabled` toggle for OpenRouter→DeepSeek, dispatch
   // wires it without a name match.
   "moonshotai/kimi-k2.6": { provider: "openrouter", capabilities: NO_CAPS },
+  "moonshotai/kimi-k3": { provider: "openrouter", capabilities: NO_CAPS },
   "deepseek/deepseek-r1": {
     provider: "openrouter",
     capabilities: NO_CAPS,
