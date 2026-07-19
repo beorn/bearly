@@ -30,6 +30,7 @@ import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { writeFileSync } from "node:fs"
 import { resolve, dirname, basename } from "node:path"
+import { materializeSubmodulesFromLocalWorktreeParallel } from "./submodule-materialize.ts"
 
 async function run(
   cmd: string,
@@ -113,7 +114,12 @@ async function main() {
 
   // 3. Update submodule pointers
   if (submodules.length > 0) {
-    const supdate = await run("git", ["submodule", "update", "--recursive"], { cwd: slotPath })
+    const supdate = await materializeSubmodulesFromLocalWorktreeParallel({
+      worktree: slotPath,
+      referenceWorktree: main,
+      paths: submodules,
+      log: (message) => console.warn(`[chief-cleanup-slot] ${message}`),
+    })
     if (supdate.exitCode !== 0) console.warn(`[chief-cleanup-slot] submodule update warned: ${supdate.stderr.trim()}`)
     else console.log(`[chief-cleanup-slot] synced ${submodules.length} submodules`)
   }

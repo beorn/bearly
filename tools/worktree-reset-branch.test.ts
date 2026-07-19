@@ -16,9 +16,18 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { resolveBranchArg } from "./worktree.ts"
+import { resolveBranchArg, worktreeAddEnvironment } from "./worktree.ts"
 
 const AT_ORIGIN_MAIN = { base: "refs/remotes/origin/main" }
+
+describe("worktree-add hook boundary", () => {
+  test("the creator suppresses hook-owned submodule cloning before its reference-aware materializer runs", () => {
+    expect(worktreeAddEnvironment({ PATH: "/bin", KM_NO_AUTO_SUBMODULE_UPDATE: "0" })).toEqual({
+      PATH: "/bin",
+      KM_NO_AUTO_SUBMODULE_UPDATE: "1",
+    })
+  })
+})
 
 describe("resolveBranchArg — pool slots land at the base (@km/inbox/19363)", () => {
   test("pool slot with a STALE local wtN branch RESETS to the base (-B), never reuse", () => {

@@ -3,7 +3,7 @@
  * worktree.ts - Git worktree management with submodule support
  *
  * Creates, removes, and lists git worktrees with proper setup for projects that use:
- * - Git submodules (independent clones per worktree)
+ * - Git submodules (isolated refs and working trees that borrow local objects)
  * - bun/npm dependencies
  * - direnv
  * - Git hooks
@@ -16,18 +16,18 @@
  *
  * Submodule isolation
  * -------------------
- * Each worktree gets an independent submodule clone stored at
+ * Each worktree gets an independent submodule gitdir stored at
  * `.git/worktrees/<name>/modules/<path>/`. After `git worktree add`,
- * running `git submodule update --init --recursive` inside the worktree
- * populates the working tree AND creates the per-worktree module dir
- * automatically (modern git behavior). This means changes in worktree A's
- * `vendor/silvery` never affect worktree B's `vendor/silvery`.
+ * the materializer populates the working tree and creates that per-worktree
+ * module dir while borrowing object history from the matching main checkout.
+ * Refs, config, index, and working files stay isolated; repeated history is
+ * not downloaded into a private pack first.
  *
  * Note on --recurse-submodules: `git worktree add` does NOT support a
  * `--recurse-submodules` flag (the documentation sometimes suggests
  * otherwise; as of git 2.53 the flag is rejected). The `submodule.recurse`
- * config is respected elsewhere but not for `worktree add`, so we always
- * run an explicit `git submodule update --init --recursive` post-add.
+ * config is respected elsewhere but not for `worktree add`, so the local
+ * materializer populates every required gitlink after the worktree is added.
  *
  * On removal, we explicitly clean up `.git/worktrees/<name>/modules/`
  * before calling `git worktree remove` so git's own cleanup never leaves
@@ -52,6 +52,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
+import { materializeSubmodulesFromLocalWorktreeParallel } from "./submodule-materialize.ts"
 
 // ANSI colors
 const RESET = "\x1b[0m"
@@ -67,6 +68,19 @@ const info = (msg: string) => console.log(`${BLUE}→${RESET} ${msg}`)
 const success = (msg: string) => console.log(`${GREEN}✓${RESET} ${msg}`)
 const warn = (msg: string) => console.log(`${YELLOW}⚠${RESET} ${msg}`)
 const error = (msg: string) => console.error(`${RED}✗${RESET} ${msg}`)
+
+/** Internal parent→delegate handoff after the parent has fetched and verified the base. */
+export const PREPARED_BASE_SHA_ENV = "BEARLY_WORKTREE_PREPARED_BASE_SHA"
+
+/**
+ * `git worktree add` runs the clone-wide post-checkout hook before returning.
+ * The creator owns submodule initialization immediately afterward, using the
+ * matching main-worktree stores as `--reference` sources. Suppress the hook's
+ * generic sync so it cannot perform a full remote clone first.
+ */
+export function worktreeAddEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...environment, KM_NO_AUTO_SUBMODULE_UPDATE: "1" }
+}
 
 // ============================================
 // Core Functions (exported for library use)
@@ -954,7 +968,7 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
           check: "submodule-uninitialized",
           message:
             `submodule ${sub} is not initialized — its workspace package cannot resolve through node_modules ` +
-            `and bare imports fail before code runs. Fix: cd ${wt.path} && git submodule update --init --recursive ${sub}`,
+            `and bare imports fail before code runs. Fix: cd ${wt.path} && bun worktree fix-submodules ${wt.path}`,
           details: { submodule: sub },
         })
       }
@@ -971,7 +985,7 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
           message:
             `${u.name} → node_modules/${u.name} does not resolve (${u.reason}) — a bare import of ${u.name} ` +
             `fails before code runs (targeted vitest cannot load it). ` +
-            `Fix: cd ${wt.path} && git submodule update --init --recursive && bun install`,
+            `Fix: cd ${wt.path} && bun worktree fix-submodules ${wt.path} && bun install`,
           details: { package: u.packageDir, nodeModulesPath: u.nodeModulesPath, reason: u.reason },
         })
       }
@@ -1671,7 +1685,8 @@ export function resolveBranchArg(input: {
  * must resolve to a commit — fail loud, never fall back to a stale local ref.
  */
 async function resolveCreateBase(gitRoot: string, explicitBase: string | undefined): Promise<string> {
-  if (explicitBase === undefined) {
+  const preparedBase = explicitBase ?? process.env[PREPARED_BASE_SHA_ENV]
+  if (preparedBase === undefined) {
     info("Fetching origin main (fresh base for the new branch)...")
     const fetched = await safeExec($`cd ${gitRoot} && git fetch --no-recurse-submodules origin main 2>&1`)
     if (fetched.exitCode !== 0) {
@@ -1681,7 +1696,7 @@ async function resolveCreateBase(gitRoot: string, explicitBase: string | undefin
       process.exit(1)
     }
   }
-  const base = explicitBase ?? "refs/remotes/origin/main"
+  const base = preparedBase ?? "refs/remotes/origin/main"
   const resolved = await safeExec($`cd ${gitRoot} && git rev-parse --verify --quiet ${base}^{commit} 2>/dev/null`)
   if (resolved.exitCode !== 0 || resolved.stdout.trim() === "") {
     error(`Base ref does not resolve to a commit: ${base}`)
@@ -1855,7 +1870,9 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // under .git/worktrees/<name>/modules/<submodule>/ so worktrees can't
   // collide in each other's vendor/ trees.
   info(`Creating worktree at ${worktreePath}...`)
-  const wtResult = await safeExec($`cd ${gitRoot} && git worktree add ${worktreePath} ${branchArg}`)
+  const wtResult = await safeExec(
+    $`cd ${gitRoot} && git worktree add ${worktreePath} ${branchArg}`.env(worktreeAddEnvironment()),
+  )
   if (wtResult.exitCode !== 0) {
     error("Failed to create worktree")
     console.log(wtResult.stdout)
@@ -1863,13 +1880,18 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
   success("Worktree created")
 
-  // Initialize submodules (per-worktree isolated clones)
+  // Initialize submodules (per-worktree isolated checkouts). Borrow objects from
+  // the matching main-worktree checkout BEFORE clone; the slot keeps its own
+  // refs/config/worktree while avoiding a private history download.
   if (submodules.length > 0) {
-    info(`Initializing ${submodules.length} submodule(s) (isolated per-worktree clones)...`)
-    const subResult = await safeExec($`cd ${worktreePath} && git submodule update --init --recursive 2>&1`)
+    info(`Initializing ${submodules.length} submodule(s) (isolated refs, local shared objects)...`)
+    const subResult = await materializeSubmodulesFromLocalWorktreeParallel({
+      worktree: worktreePath,
+      referenceWorktree: gitRoot,
+    })
     if (subResult.exitCode !== 0) {
       error("Failed to initialize submodules:")
-      console.log(subResult.stdout)
+      console.log(subResult.stderr || subResult.stdout)
       // Clean up
       await $`git worktree remove ${worktreePath} --force`.quiet()
       process.exit(1)
@@ -1877,7 +1899,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     // Verify isolation — each submodule's .git should point at per-worktree modules dir
     const modulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
     if (modulesDir && existsSync(modulesDir)) {
-      success("Submodules initialized (isolated)")
+      success(`Submodules initialized (isolated; ${subResult.borrowed} local store(s) borrowed)`)
       console.log(DIM + `    ${modulesDir}` + RESET)
     } else {
       success("Submodules initialized")
@@ -2663,8 +2685,8 @@ export async function showDefaultInfo(): Promise<void> {
     console.log(DIM + "  • Fails if any submodule has uncommitted changes" + RESET)
     console.log(DIM + "  • Fails if submodule commits aren't pushed to remote" + RESET)
     console.log("")
-    console.log(DIM + "  Each worktree gets independent submodule clones (not symlinks)," + RESET)
-    console.log(DIM + "  so changes in one worktree don't affect others." + RESET)
+    console.log(DIM + "  Each worktree gets isolated submodule refs and working files," + RESET)
+    console.log(DIM + "  while immutable object history is borrowed from the main checkout." + RESET)
   }
 }
 
@@ -2748,13 +2770,13 @@ ${BOLD}HOW IT WORKS${RESET}
   discard: dirt + ahead commits (submodule dirt included) are preserved to
   wip/<slot>-preserve-<UTCstamp> first.
 
-  ${BOLD}Submodule handling:${RESET}
-  Each worktree gets independent submodule clones (not symlinks).
-  Changes in one worktree's submodules don't affect others.
-  This means you can have different submodule states per worktree.
+${BOLD}Submodule handling:${RESET}
+  Each worktree gets independent submodule refs, config, and working files.
+  Existing object history is borrowed from the matching main checkout before
+  Git uses the remote, so different pins stay possible without full re-clones.
 
 ${BOLD}POST-CREATE SETUP${RESET}
-  - Runs 'git submodule update --init --recursive'
+  - Materializes submodules from matching local object stores (remote fallback)
   - Runs 'bun install' (or npm if no bun.lock)
   - Runs 'direnv allow' if .envrc present
   - Runs 'bun run prepare' for git hooks
