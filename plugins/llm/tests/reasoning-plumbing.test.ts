@@ -72,6 +72,28 @@ describe("reasoning-plumbing", () => {
     expect(call.messages).toEqual([{ role: "user", content: "Answer briefly." }])
   })
 
+  it("AI SDK 7: reads text reasoning from finalStep without serializing reasoning files", async () => {
+    makeTestEnv()
+    vi.resetModules()
+    generateTextMock.mockResolvedValueOnce({
+      text: "ok",
+      reasoning: [
+        { type: "reasoning", text: "kept reasoning" },
+        { type: "reasoning-file", file: { mediaType: "text/plain" } },
+      ],
+      finalStep: { reasoningText: "kept reasoning" },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    })
+
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+
+    const model = getModel("gpt-5-nano")!
+    const { response } = await queryModel({ question: "Answer briefly.", model })
+
+    expect(response.reasoning).toBe("kept reasoning")
+  })
+
   it("OpenAI o-series: passes providerOptions.openai.reasoningEffort when model.reasoning.openaiEffort is set", async () => {
     makeTestEnv()
     vi.resetModules()
