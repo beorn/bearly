@@ -51,6 +51,7 @@ function mockOk() {
   generateTextMock.mockResolvedValue({
     text: "ok",
     reasoning: [],
+    finalStep: { reasoningText: undefined },
     usage: { inputTokens: 10, outputTokens: 5 },
   })
   streamTextMock.mockReset()

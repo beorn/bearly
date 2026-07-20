@@ -48,6 +48,7 @@ function resetGenerateTextToOk() {
   generateTextMock.mockResolvedValue({
     text: "ok",
     reasoning: [],
+    finalStep: { reasoningText: undefined },
     usage: { inputTokens: 10, outputTokens: 5 },
   })
   streamTextMock.mockReset()
@@ -104,12 +105,16 @@ describe("cli-single-fire", () => {
     const mod = await import("../src/cli")
     await mod.main()
 
-    // Dual-pro fires both legs in parallel (non-streaming). The GPT leg now
-    // routes through queryOpenAIBackground (Responses API — recoverable),
-    // K2.6 stays on generateText (OpenRouter has no Responses API). Exactly
-    // one call on each mock. Double-fire would be two each.
+    // Dual-pro first probes both providers, then fires both legs in parallel
+    // (non-streaming). The GPT leg routes through queryOpenAIBackground
+    // (Responses API — recoverable); K2.6 stays on generateText (OpenRouter
+    // has no Responses API). Count the two intentional preflights separately
+    // from the one K2.6 leg so a module-scope double-fire still fails.
     expect(queryBackgroundMock.mock.calls.length).toBe(1)
-    expect(generateTextMock.mock.calls.length).toBe(1)
+    const preflightCalls = generateTextMock.mock.calls.filter(([call]) => call.prompt === "Reply OK.")
+    const legCalls = generateTextMock.mock.calls.filter(([call]) => call.prompt !== "Reply OK.")
+    expect(preflightCalls).toHaveLength(2)
+    expect(legCalls).toHaveLength(1)
 
     // A/B log: one line per invocation. Path built from CLAUDE_PROJECT_DIR or
     // cwd — makeTestEnv doesn't override either, so the log lands under

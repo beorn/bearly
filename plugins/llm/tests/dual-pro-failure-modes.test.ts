@@ -44,6 +44,7 @@ function mockProviderPreflightSuccess(): void {
   const success = {
     text: "OK",
     reasoning: [],
+    finalStep: { reasoningText: undefined },
     usage: { inputTokens: 1, outputTokens: 1 },
   }
   generateTextMock.mockResolvedValueOnce(success).mockResolvedValueOnce(success)
@@ -95,6 +96,7 @@ describe("dual-pro failure modes", () => {
     generateTextMock.mockResolvedValueOnce({
       text: "Kimi's answer",
       reasoning: [],
+      finalStep: { reasoningText: undefined },
       usage: { inputTokens: 10, outputTokens: 20 },
     })
 

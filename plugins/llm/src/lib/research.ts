@@ -177,6 +177,8 @@ export function estimateTokens(text: string): number {
  *   without cutting into the output budget meaningfully.
  *
  * Static path (`reasoning.maxOutputTokens` set): cap = that value.
+ * AI SDK 7 sends system instructions outside `messages`; they still count
+ * toward the dynamic input budget and must be supplied separately here.
  *
  * If dynamic math produces a non-positive value (input already exceeds
  * the window — impossible in practice but worth guarding), fall back to
@@ -185,6 +187,7 @@ export function estimateTokens(text: string): number {
 export function computeMaxOutputTokens(
   model: Model,
   messages: Array<{ role: string; content: unknown }>,
+  instructions?: string,
 ): number | undefined {
   const reasoning = model.reasoning
   if (!reasoning) return undefined
@@ -197,8 +200,9 @@ export function computeMaxOutputTokens(
     // distributions). Cost: 4096 tokens off the output budget on models
     // that enforce a combined limit — negligible on K2.6's 262K window.
     const SAFETY = 4096
-    const inputText = messages
-      .map((m) => {
+    const inputText = [
+      instructions ?? "",
+      ...messages.map((m) => {
         if (typeof m.content === "string") return m.content
         if (Array.isArray(m.content)) {
           return (m.content as Array<{ type: string; text?: string }>)
@@ -207,8 +211,8 @@ export function computeMaxOutputTokens(
             .join("")
         }
         return ""
-      })
-      .join("")
+      }),
+    ].join("")
     const estimatedInput = estimateTokens(inputText)
     const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
     if (dynamicCap > 0) return dynamicCap
@@ -297,10 +301,11 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     ]
   }
 
-  const messages = [
-    ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
-    { role: "user" as const, content: userContent },
-  ]
+  const messages = [{ role: "user" as const, content: userContent }]
+  const promptOptions = {
+    ...(systemPrompt ? { instructions: systemPrompt } : {}),
+    messages,
+  }
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
@@ -319,7 +324,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   //
   // contextWindow takes precedence when both are set. Non-reasoning chat
   // models leave the block unset entirely (provider default applies).
-  const maxOutputTokens = computeMaxOutputTokens(model, messages)
+  const maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt)
 
   // Provider-specific reasoning knobs. Each provider exposes a
   // *fundamentally different* mechanism — OpenAI's effort enum, Anthropic's
@@ -386,7 +391,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       let streamError: string | undefined
       const result = streamText({
         model: languageModel,
-        messages,
+        ...promptOptions,
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
@@ -426,7 +431,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     } else {
       const result = await generateText({
         model: languageModel,
-        messages,
+        ...promptOptions,
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
@@ -438,10 +443,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         response: {
           model,
           content: result.text,
-          reasoning:
-            Array.isArray(result.reasoning) && result.reasoning.length > 0
-              ? result.reasoning.map((r) => r.text).join("\n")
-              : undefined,
+          reasoning: result.finalStep.reasoningText,
           usage: result.usage
             ? {
                 promptTokens: result.usage.inputTokens ?? 0,
@@ -473,7 +475,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         try {
           const retryResult = await generateText({
             model: languageModel,
-            messages,
+            ...promptOptions,
             abortSignal,
             maxOutputTokens: correctedCap,
             ...(hasProviderOptions ? { providerOptions } : {}),
@@ -482,10 +484,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
             response: {
               model,
               content: retryResult.text,
-              reasoning:
-                Array.isArray(retryResult.reasoning) && retryResult.reasoning.length > 0
-                  ? retryResult.reasoning.map((r) => r.text).join("\n")
-                  : undefined,
+              reasoning: retryResult.finalStep.reasoningText,
               usage: retryResult.usage
                 ? {
                     promptTokens: retryResult.usage.inputTokens ?? 0,

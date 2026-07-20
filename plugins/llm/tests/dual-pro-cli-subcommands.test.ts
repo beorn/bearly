@@ -256,12 +256,14 @@ describe("bun llm pro --backtest", () => {
             winner: "c",
           }),
           reasoning: [],
+          finalStep: { reasoningText: undefined },
           usage: { inputTokens: 200, outputTokens: 80 },
         }
       }
       return {
         text: "answer text",
         reasoning: [],
+        finalStep: { reasoningText: undefined },
         usage: { inputTokens: 100, outputTokens: 50 },
       }
     })
