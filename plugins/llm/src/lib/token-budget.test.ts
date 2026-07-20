@@ -90,6 +90,16 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     expect(cap!).toBeGreaterThan(250000)
   })
 
+  test("AI SDK 7 instructions still count against the combined context window", () => {
+    const messages = [{ role: "user", content: "Hello" }]
+    const instructions = "x".repeat(3500)
+
+    const withoutInstructions = computeMaxOutputTokens(k26Model, messages)
+    const withInstructions = computeMaxOutputTokens(k26Model, messages, instructions)
+
+    expect(withInstructions).toBe(withoutInstructions! - 1000)
+  })
+
   test("Non-reasoning model — returns undefined (provider default)", () => {
     const plainModel: Model = {
       provider: "openai",
