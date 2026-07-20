@@ -51,6 +51,27 @@ describe("reasoning-plumbing", () => {
     resetMocksToOk()
   })
 
+  it("AI SDK 7: passes the system prompt as instructions instead of a system-role message", async () => {
+    makeTestEnv()
+    vi.resetModules()
+
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+
+    const model = getModel("gpt-5-nano")!
+    const { response } = await queryModel({
+      question: "Answer briefly.",
+      systemPrompt: "Be precise.",
+      model,
+    })
+    expect(response.error).toBeUndefined()
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1)
+    const call = generateTextMock.mock.calls[0]![0]
+    expect(call.instructions).toBe("Be precise.")
+    expect(call.messages).toEqual([{ role: "user", content: "Answer briefly." }])
+  })
+
   it("OpenAI o-series: passes providerOptions.openai.reasoningEffort when model.reasoning.openaiEffort is set", async () => {
     makeTestEnv()
     vi.resetModules()
