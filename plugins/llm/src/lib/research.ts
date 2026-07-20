@@ -5,6 +5,7 @@
  */
 
 import { generateText, streamText } from "ai"
+import type { ModelMessage, Prompt, UserContent } from "ai"
 import { getLanguageModel, isProviderAvailable } from "./providers"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
@@ -141,7 +142,7 @@ export interface QueryOptions {
   onToken?: (token: string) => void
   /** Optional context passed to deep research models */
   context?: string
-  /** Optional image path — sent as base64 for multimodal models */
+  /** Optional image path — sent as image content for multimodal models */
   imagePath?: string
   /** AbortSignal to cancel the request */
   abortSignal?: AbortSignal
@@ -171,24 +172,24 @@ export function estimateTokens(text: string): number {
  * non-reasoning models (provider default applies).
  *
  * Dynamic path (`reasoning.contextWindow` set): cap =
- *   contextWindow − estimatedInputTokens − 2048 safety margin. Handles
+ *   contextWindow − estimatedInputTokens − 4096 safety margin. Handles
  *   providers like Kimi K2.6 that enforce a combined input+output limit.
  *   Safety margin is generous enough to absorb tokenizer-estimation error
  *   without cutting into the output budget meaningfully.
  *
  * Static path (`reasoning.maxOutputTokens` set): cap = that value.
- * AI SDK 7 sends system instructions outside `messages`; they still count
- * toward the dynamic input budget and must be supplied separately here.
+ * AI SDK 7 sends system instructions outside `messages`; the canonical prompt
+ * object keeps those instructions in the dynamic input budget too.
  *
  * If dynamic math produces a non-positive value (input already exceeds
  * the window — impossible in practice but worth guarding), fall back to
  * the static ceiling if any, or `undefined` to defer to the provider. */
+type QueryPrompt = Extract<Prompt, { messages: Array<ModelMessage> }> & {
+  instructions?: string
+}
+
 // @internal — exported for testing only
-export function computeMaxOutputTokens(
-  model: Model,
-  messages: Array<{ role: string; content: unknown }>,
-  instructions?: string,
-): number | undefined {
+export function computeMaxOutputTokens(model: Model, prompt: QueryPrompt): number | undefined {
   const reasoning = model.reasoning
   if (!reasoning) return undefined
   if (reasoning.contextWindow) {
@@ -201,8 +202,8 @@ export function computeMaxOutputTokens(
     // that enforce a combined limit — negligible on K2.6's 262K window.
     const SAFETY = 4096
     const inputText = [
-      instructions ?? "",
-      ...messages.map((m) => {
+      prompt.instructions ?? "",
+      ...prompt.messages.map((m) => {
         if (typeof m.content === "string") return m.content
         if (Array.isArray(m.content)) {
           return (m.content as Array<{ type: string; text?: string }>)
@@ -287,17 +288,16 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const languageModel = getLanguageModel(model)
 
   // Build user message content — text or multimodal (text + image)
-  let userContent: any = question
+  let userContent: UserContent = question
   if (options.imagePath) {
     const { readFileSync } = await import("fs")
     const imageData = readFileSync(options.imagePath)
-    const base64 = imageData.toString("base64")
     const ext = options.imagePath.split(".").pop()?.toLowerCase() ?? "png"
     const mimeType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`
-    // Vercel AI SDK expects image as a URL (data URI) or Uint8Array
+    // AI SDK 7 represents images with the general file part shape.
     userContent = [
       { type: "text" as const, text: question },
-      { type: "image" as const, image: new Uint8Array(imageData), mimeType },
+      { type: "file" as const, data: new Uint8Array(imageData), mediaType: mimeType },
     ]
   }
 
@@ -305,7 +305,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const promptOptions = {
     ...(systemPrompt ? { instructions: systemPrompt } : {}),
     messages,
-  }
+  } satisfies QueryPrompt
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
@@ -324,7 +324,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   //
   // contextWindow takes precedence when both are set. Non-reasoning chat
   // models leave the block unset entirely (provider default applies).
-  const maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt)
+  const maxOutputTokens = computeMaxOutputTokens(model, promptOptions)
 
   // Provider-specific reasoning knobs. Each provider exposes a
   // *fundamentally different* mechanism — OpenAI's effort enum, Anthropic's

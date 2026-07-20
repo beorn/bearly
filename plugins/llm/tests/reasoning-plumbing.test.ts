@@ -2,12 +2,12 @@
  * Regression: reasoning-model controls must flow through the Vercel AI SDK
  * provider-options surface for the two providers that expose them.
  *
- *   - OpenAI o-series: `providerOptions.openai.reasoning_effort` = "low" |
+ *   - OpenAI o-series: `providerOptions.openai.reasoningEffort` = "low" |
  *     "medium" | "high". Set in MODELS per-model (o3 / o3-pro / o3-mini /
  *     o4-mini).
  *   - Anthropic Claude 4.5+ extended thinking:
  *     `providerOptions.anthropic.thinking` = { type: "enabled",
- *     budget_tokens: N }. Set in MODELS on claude-opus-4-6 and
+ *     budgetTokens: N }. Set in MODELS on claude-opus-4-6 and
  *     claude-sonnet-4-6.
  *
  * Without the plumbing, the `reasoning` metadata was inert — the fields
@@ -16,6 +16,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { makeTestEnv } from "./helpers"
 
 // Mock `ai` at the import boundary — generateText / streamText never hit
@@ -34,7 +36,6 @@ function resetMocksToOk() {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
     text: "ok",
-    reasoning: [],
     finalStep: { reasoningText: undefined },
     usage: { inputTokens: 10, outputTokens: 5 },
   })
@@ -71,6 +72,31 @@ describe("reasoning-plumbing", () => {
     const call = generateTextMock.mock.calls[0]![0]
     expect(call.instructions).toBe("Be precise.")
     expect(call.messages).toEqual([{ role: "user", content: "Answer briefly." }])
+  })
+
+  it("AI SDK 7: sends images as file parts with mediaType", async () => {
+    const env = makeTestEnv()
+    const imagePath = join(env.tmpDir, "shot.png")
+    writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    vi.resetModules()
+
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+
+    const model = getModel("gpt-5-nano")!
+    const { response } = await queryModel({ question: "Describe this.", imagePath, model })
+    expect(response.error).toBeUndefined()
+
+    const call = generateTextMock.mock.calls[0]![0]
+    expect(call.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this." },
+          { type: "file", data: expect.any(Uint8Array), mediaType: "image/png" },
+        ],
+      },
+    ])
   })
 
   it("AI SDK 7: reads text reasoning from finalStep without serializing reasoning files", async () => {

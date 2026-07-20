@@ -68,8 +68,8 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     // After the fix (divisor 3.5 + SAFETY 4096), the request must land
     // safely under the cap.
     const inputChars = 113218 + 1597 // context + question from failing call
-    const messages = [{ role: "user", content: "x".repeat(inputChars) }]
-    const cap = computeMaxOutputTokens(k26Model, messages)
+    const messages = [{ role: "user" as const, content: "x".repeat(inputChars) }]
+    const cap = computeMaxOutputTokens(k26Model, { messages })
     expect(cap).toBeDefined()
 
     // The provider will see: realInput + cap ≤ contextWindow.
@@ -83,19 +83,19 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
   })
 
   test("Tiny query gets most of the output window", () => {
-    const messages = [{ role: "user", content: "Hello" }]
-    const cap = computeMaxOutputTokens(k26Model, messages)
+    const messages = [{ role: "user" as const, content: "Hello" }]
+    const cap = computeMaxOutputTokens(k26Model, { messages })
     expect(cap).toBeDefined()
     // 262144 - ~1 input - 4096 SAFETY ≈ 258047
     expect(cap!).toBeGreaterThan(250000)
   })
 
   test("AI SDK 7 instructions still count against the combined context window", () => {
-    const messages = [{ role: "user", content: "Hello" }]
+    const messages = [{ role: "user" as const, content: "Hello" }]
     const instructions = "x".repeat(3500)
 
-    const withoutInstructions = computeMaxOutputTokens(k26Model, messages)
-    const withInstructions = computeMaxOutputTokens(k26Model, messages, instructions)
+    const withoutInstructions = computeMaxOutputTokens(k26Model, { messages })
+    const withInstructions = computeMaxOutputTokens(k26Model, { messages, instructions })
 
     expect(withInstructions).toBe(withoutInstructions! - 1000)
   })
@@ -111,8 +111,8 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
       outputPricePerM: 10,
       typicalLatencyMs: 5000,
     }
-    const messages = [{ role: "user", content: "Hello" }]
-    expect(computeMaxOutputTokens(plainModel, messages)).toBeUndefined()
+    const messages = [{ role: "user" as const, content: "Hello" }]
+    expect(computeMaxOutputTokens(plainModel, { messages })).toBeUndefined()
   })
 
   test("OpenRouter/K2.6 context-exceeded error — parsed for retry", () => {
@@ -148,7 +148,7 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
       typicalLatencyMs: 30000,
       reasoning: { maxOutputTokens: 64000 },
     }
-    const messages = [{ role: "user", content: "Hello" }]
-    expect(computeMaxOutputTokens(staticModel, messages)).toBe(64000)
+    const messages = [{ role: "user" as const, content: "Hello" }]
+    expect(computeMaxOutputTokens(staticModel, { messages })).toBe(64000)
   })
 })

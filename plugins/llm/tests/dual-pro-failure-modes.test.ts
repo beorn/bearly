@@ -43,7 +43,6 @@ vi.mock("../src/lib/openai-deep", async () => {
 function mockProviderPreflightSuccess(): void {
   const success = {
     text: "OK",
-    reasoning: [],
     finalStep: { reasoningText: undefined },
     usage: { inputTokens: 1, outputTokens: 1 },
   }
@@ -95,7 +94,6 @@ describe("dual-pro failure modes", () => {
     mockProviderPreflightSuccess()
     generateTextMock.mockResolvedValueOnce({
       text: "Kimi's answer",
-      reasoning: [],
       finalStep: { reasoningText: undefined },
       usage: { inputTokens: 10, outputTokens: 20 },
     })

@@ -72,9 +72,9 @@ function getPerplexity() {
   return perplexityProvider
 }
 
-// OpenRouter is OpenAI-compatible (/v1/chat/completions) — we reuse createOpenAI
-// with a baseURL override. HTTP-Referer and X-Title are optional but recommended
-// for app attribution in OpenRouter's dashboard.
+// OpenRouter accepts OpenAI-compatible requests, including /responses.
+// createOpenAI's default language-model factory targets that endpoint; the
+// baseURL override and attribution headers route those requests to OpenRouter.
 function getOpenRouter() {
   if (!openrouterProvider) {
     const apiKey = process.env.OPENROUTER_API_KEY

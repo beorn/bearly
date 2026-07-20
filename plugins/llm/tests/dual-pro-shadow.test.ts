@@ -760,14 +760,12 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
                   reasoning: "A more thorough.",
                 },
           ),
-          reasoning: [],
           finalStep: { reasoningText: undefined },
           usage: { inputTokens: 200, outputTokens: 80 },
         }
       }
       return {
         text: "kimi answer",
-        reasoning: [],
         finalStep: { reasoningText: undefined },
         usage: { inputTokens: 100, outputTokens: 50 },
       }
@@ -842,7 +840,6 @@ describe("3-leg dual-pro dispatch (shadow challenger + judge)", () => {
     generateTextMock3.mockReset()
     generateTextMock3.mockResolvedValueOnce({
       text: "kimi answer",
-      reasoning: [],
       finalStep: { reasoningText: undefined },
       usage: { inputTokens: 50, outputTokens: 50 },
     })
