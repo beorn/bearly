@@ -234,16 +234,18 @@ If a bead is active, update its notes with the findings.
 | Rush to implement                        | Present advice first, get user buy-in             |
 | Forget `--no-recover`                    | Stale recovered responses waste a moderate spend  |
 
-## Wave-loop fan-out (canonical: /tent JIT bead context completion)
+## Wave-loop fan-out
 
-The "gather context" phase of /fresh is JIT BCC. When stuck, fan out via `Explore` sub-agents in ONE message:
+Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a stuck problem — that canonical section owns the mechanics: one narrow question per leg, `model: "sonnet"`/economy pins (fan-out never inherits the seat model), synthesis in-seat, and stated width before spawning.
 
-- One agent per related-bug area (recall + bd query for prior beads in this scope)
-- One agent per cited file: recent commits + comment headers + call sites
-- One agent for "what did I try last? was it ruled out?" — read current session transcript
-- One agent for "what does the canonical design doc say about this subsystem?"
-- One agent for adjacent test failures or warnings being masked
+/fresh's domain legs — each spawned `model: "sonnet"`, in ONE message:
 
-Returns: a complete context bundle to hand to /deep or /pro. Canonical wave-loop: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.
+- One `sonnet` leg per related-bug area (recall + bd query for prior beads in this scope)
+- One `sonnet` leg per cited file: recent commits + comment headers + call sites
+- One `sonnet` leg for "what did I try last? was it ruled out?" — read current session transcript
+- One `sonnet` leg for "what does the canonical design doc say about this subsystem?"
+- One `sonnet` leg for adjacent test failures or warnings being masked
+
+State the leg count before you spawn — width must be bounded — then assemble the returns in-seat into a complete context bundle to hand to /deep or /pro.
 
 Cost tiers in this skill (cheap ≈ cents · moderate ≈ low single dollars · expensive ≈ $5+ class) are qualitative. Live per-model rates come from the canonical /llm pricing substrate (LiteLLM map; refresh with `bun llm update-pricing`); each `bun llm` run prints its actual cost.

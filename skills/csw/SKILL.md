@@ -186,15 +186,17 @@ Present the analysis **directly in the conversation** — do not write it to a f
 | Present without a recommendation | The whole point is the decision-maker says "approved", not "let me think" |
 | Bury the recommendation | Lead with context, but make the recommendation unmissable |
 
-## Wave-loop fan-out (canonical: /tent JIT bead context completion)
+## Wave-loop fan-out
 
-The context-gathering phase of CSW is JIT BCC applied to a decision instead of a bead. Fan out via `Explore` sub-agents in ONE message:
+Phase 1 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a decision instead of a bead — that canonical section owns the mechanics: one narrow question per leg, `model: "sonnet"`/economy pins (fan-out never inherits the seat model), synthesis in-seat, and stated width before spawning.
 
-- One agent per option being evaluated (gather evidence for/against)
-- One agent per constraint named in the prompt (verify constraint still holds)
-- One agent for prior-art: similar decisions in this repo or industry
-- One agent for blast-radius: who/what depends on the area this decision touches
-- One agent for "what did past sessions decide on adjacent questions?" (`bun recall`)
+CSW's domain legs — each spawned `model: "sonnet"`, in ONE message:
 
-Returns: comparative evidence per option, surfacing trade-offs the user can call. No hard wave cap; stop on fixed-point or clear winner. Canonical: `.claude/skills/tent/SKILL.md#jit-bead-context-completion`.
+- One `sonnet` leg per option being evaluated (gather evidence for/against)
+- One `sonnet` leg per constraint named in the prompt (verify constraint still holds)
+- One `sonnet` leg for prior-art: similar decisions in this repo or industry
+- One `sonnet` leg for blast-radius: who/what depends on the area this decision touches
+- One `sonnet` leg for "what did past sessions decide on adjacent questions?" (`bun recall`)
+
+State the leg count before you spawn — width must be bounded, not "no hard cap" — then synthesize the comparative evidence in-seat. Returns: trade-offs per option the user can call.
 ```
