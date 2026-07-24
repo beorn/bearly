@@ -23,7 +23,11 @@ function normalizeGlobs(glob?: string | string[]): string[] {
  * @param caseInsensitive - If true, pass `-i` to ripgrep for case-insensitive matching
  */
 export function findPatterns(pattern: string, glob?: string | string[], caseInsensitive = false): Reference[] {
-  const args = ["--json", "--line-number", "--column"]
+  // --hidden: ripgrep skips dot-directories by default, which silently drops
+  // whole tracked trees like `.claude/` and `.agents/` (skills, tent scripts) from
+  // any refactor. In a git repo ripgrep still auto-excludes `.git/` and honors
+  // `.gitignore` even with --hidden, so tracked hidden files are found and .git is not.
+  const args = ["--json", "--line-number", "--column", "--hidden"]
   if (caseInsensitive) args.push("-i")
   args.push(pattern)
   for (const g of normalizeGlobs(glob)) {

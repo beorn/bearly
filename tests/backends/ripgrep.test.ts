@@ -382,4 +382,42 @@ const VAULT_ROOT = "SCREAMING_COMPOUND"
       }
     })
   })
+
+  describe("hidden dot-directories are searched (--hidden regression)", () => {
+    let tempDir: string
+
+    beforeAll(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "ripgrep-hidden-test-"))
+      // `.claude/` and `.agents/` are TRACKED trees (skills, tent scripts) that
+      // ripgrep skips by default — a refactor that missed them silently dropped
+      // whole surfaces. This pins that findPatterns descends into dot-directories.
+      mkdirSync(join(tempDir, ".claude/skills"), { recursive: true })
+      writeFileSync(join(tempDir, ".claude/skills/handle.ts"), 'const a = "@agent/7"\n')
+      writeFileSync(join(tempDir, "visible.ts"), 'const b = "@agent/7"\n')
+    })
+
+    afterAll(() => {
+      rmSync(tempDir, { recursive: true, force: true })
+    })
+
+    test("findPatterns finds matches under dot-directories, not just visible files", () => {
+      try {
+        execSync("which rg", { stdio: "pipe" })
+      } catch {
+        console.log("Skipping test: ripgrep (rg) not installed")
+        return
+      }
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const refs = findPatterns("@agent/")
+        const files = refs.map((r) => r.file)
+        // The regression: the dot-dir file must be found (was dropped before --hidden).
+        expect(files.some((f) => f.includes(".claude/skills/handle.ts"))).toBe(true)
+        expect(files.some((f) => f.endsWith("visible.ts"))).toBe(true)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+  })
 })
