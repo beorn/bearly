@@ -388,4 +388,20 @@ describe("worktree gc deletion safety", () => {
     expect(existsSync(clone)).toBe(true)
     expect(await registeredWorktrees(owner)).toContain(clone)
   })
+
+  test("preserves a clean registered worktree if it carries an active .agent-lease.json", async () => {
+    const { owner } = await initOwnerWithRemote()
+    const root = join(sandbox, "worktrees")
+    const clone = join(root, "agent-leased-linked")
+    mkdirSync(root, { recursive: true })
+    await $`git -C ${owner} worktree add -q --detach ${clone} refs/remotes/origin/main`.quiet()
+    const lease = { pid: process.pid, sessionId: "@dev/1", startedAt: new Date().toISOString() }
+    writeFileSync(join(clone, ".agent-lease.json"), JSON.stringify(lease))
+
+    await runGc(owner, root)
+
+    expect(existsSync(clone)).toBe(true)
+    expect(await registeredWorktrees(owner)).toContain(clone)
+  })
 })
+

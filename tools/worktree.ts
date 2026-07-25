@@ -534,6 +534,34 @@ function proveNoLiveCwd(candidatePath: string, census: ProcessCwdCensus): GcCand
   return { removable: true, reason: "no live process CWD" }
 }
 
+function proveNoLiveLease(candidatePath: string): GcCandidateProof {
+  const leaseFile = join(candidatePath, ".agent-lease.json")
+  if (existsSync(leaseFile)) {
+    try {
+      const content = readFileSync(leaseFile, "utf8")
+      const parsed = JSON.parse(content)
+      if (typeof parsed?.pid === "number" && parsed.pid > 0) {
+        let alive = false
+        try {
+          process.kill(parsed.pid, 0)
+          alive = true
+        } catch (err) {
+          alive = (err as NodeJS.ErrnoException).code === "EPERM"
+        }
+        if (alive) {
+          return {
+            removable: false,
+            reason: `active agent lease held by pid ${parsed.pid} (${parsed.sessionId ?? "agent"})`,
+          }
+        }
+      }
+    } catch {
+      return { removable: false, reason: "unreadable .agent-lease.json file present" }
+    }
+  }
+  return { removable: true, reason: "no active lease" }
+}
+
 async function registeredWorktreePaths(gitRoot: string): Promise<Set<string>> {
   const result = await safeExec($`git -C ${gitRoot} worktree list --porcelain -z`)
   if (result.exitCode !== 0) {
@@ -600,6 +628,11 @@ async function removeGcCandidate(
     throw new Error(`Refusing to remove ${candidatePath}: ${liveProof.reason}`)
   }
 
+  const leaseProof = proveNoLiveLease(candidatePath)
+  if (!leaseProof.removable) {
+    throw new Error(`Refusing to remove ${candidatePath}: ${leaseProof.reason}`)
+  }
+
   const proof = await proveGcCandidate(gitRoot, candidatePath)
   if (!proof.removable) {
     throw new Error(`Refusing to remove ${candidatePath}: ${proof.reason}`)
@@ -651,11 +684,14 @@ export async function gcAgentClones(
   for (const c of clones) {
     const oldEnough = c.ageHours >= minAgeHours
     const liveProof = proveNoLiveCwd(c.path, cwdCensus)
+    const leaseProof = proveNoLiveLease(c.path)
     const proof = !oldEnough
       ? { removable: false, reason: `younger than ${minAgeHours}h` }
       : !liveProof.removable
         ? liveProof
-        : await proveGcCandidate(gitRoot, c.path, registrations)
+        : !leaseProof.removable
+          ? leaseProof
+          : await proveGcCandidate(gitRoot, c.path, registrations)
     reasons.set(c.path, proof.reason)
     if (proof.removable) {
       deleted.push(c)
