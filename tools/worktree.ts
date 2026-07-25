@@ -539,19 +539,27 @@ function proveNoLiveLease(candidatePath: string): GcCandidateProof {
   if (existsSync(leaseFile)) {
     try {
       const content = readFileSync(leaseFile, "utf8")
-      const parsed = JSON.parse(content)
-      if (typeof parsed?.pid === "number" && parsed.pid > 0) {
+      const parsed: unknown = JSON.parse(content)
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "pid" in parsed &&
+        typeof parsed.pid === "number" &&
+        parsed.pid > 0
+      ) {
+        const leasePid = parsed.pid
         let alive = false
         try {
-          process.kill(parsed.pid, 0)
+          process.kill(leasePid, 0)
           alive = true
         } catch (err) {
           alive = (err as NodeJS.ErrnoException).code === "EPERM"
         }
         if (alive) {
+          const sessionId = "sessionId" in parsed && typeof parsed.sessionId === "string" ? parsed.sessionId : "agent"
           return {
             removable: false,
-            reason: `active agent lease held by pid ${parsed.pid} (${parsed.sessionId ?? "agent"})`,
+            reason: `active agent lease held by pid ${leasePid} (${sessionId})`,
           }
         }
       }
