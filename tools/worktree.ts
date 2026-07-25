@@ -539,7 +539,7 @@ function proveNoLiveLease(candidatePath: string): GcCandidateProof {
   if (existsSync(leaseFile)) {
     try {
       const content = readFileSync(leaseFile, "utf8")
-      const parsed = JSON.parse(content)
+      const parsed = JSON.parse(content) as { pid?: number; sessionId?: string }
       if (typeof parsed?.pid === "number" && parsed.pid > 0) {
         let alive = false
         try {
