@@ -118,7 +118,7 @@ symptom:: <observable symptom>
 causal-chain:: <because-chain from the analysis>
 evidence:: <commands, files, or transcripts that support the chain>
 fix-levels:: PATCH: ...; GUARD: ...; SPEC: ...
-follow-up:: [@km/scope/bead.md](../../@km/scope/bead.md)
+follow-up:: [[@km/scope/bead|@km/scope/bead.md]]
 next-action:: <the next concrete action and owner>
 ```
 
