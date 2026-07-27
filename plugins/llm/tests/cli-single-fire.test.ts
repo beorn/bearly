@@ -107,7 +107,8 @@ describe("cli-single-fire", () => {
     // Dual-pro fires both legs in parallel (non-streaming). The GPT leg now
     // routes through queryOpenAIBackground (Responses API — recoverable),
     // K2.6 stays on generateText (OpenRouter has no Responses API). Exactly
-    // one call on each mock. Double-fire would be two each.
+    // one call on each mock. Double-fire — including a "preflight" generation
+    // before the real dispatch — would make either count exceed one.
     expect(queryBackgroundMock.mock.calls.length).toBe(1)
     expect(generateTextMock.mock.calls.length).toBe(1)
 

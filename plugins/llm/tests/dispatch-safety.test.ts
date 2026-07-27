@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DEFAULT_CONFIG } from "../src/lib/dual-pro"
-import type { Provider } from "../src/lib/types"
 import {
   assertDispatchableModelIds,
+  formatLegDispatchError,
   getLegTimeoutMs,
-  preflightProviders,
   runWithTimeout,
 } from "../src/lib/dispatch-safety"
 
@@ -22,15 +21,13 @@ describe("dual-pro dispatch safety", () => {
     )
   })
 
-  it("preflights each provider once and makes insufficient quota actionable before dispatch", async () => {
-    const probe = vi.fn(async (provider: Provider) => {
-      if (provider === "openai") throw new Error("insufficient_quota: billing hard limit reached")
-    })
-
-    await expect(preflightProviders(["openai", "openai", "xai"], { probe, timeoutMs: 1_000 })).rejects.toThrow(
-      "OpenAI quota preflight failed: insufficient quota; top up OPENAI_API_KEY billing before retrying.",
-    )
-    expect(probe).toHaveBeenCalledTimes(2)
+  it("makes an actual leg's insufficient-quota error actionable without a probe call", () => {
+    expect(
+      formatLegDispatchError(
+        { provider: "openai", modelId: "gpt-5.4-pro", displayName: "GPT-5.4 Pro" },
+        new Error("insufficient_quota: billing hard limit reached"),
+      ),
+    ).toBe("OpenAI insufficient quota; top up OPENAI_API_KEY billing before retrying.")
   })
 
   it("aborts a hung leg at the configured ceiling with a loud partial-results error", async () => {
