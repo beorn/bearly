@@ -404,4 +404,3 @@ describe("worktree gc deletion safety", () => {
     expect(await registeredWorktrees(owner)).toContain(clone)
   })
 })
-
