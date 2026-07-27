@@ -42,7 +42,6 @@ import {
   assertDispatchableModelIds,
   formatLegDispatchError,
   getLegTimeoutMs,
-  preflightProviders,
   runWithTimeout,
 } from "../lib/dispatch-safety"
 import { confirmOrExit } from "../ui/confirm"
@@ -237,7 +236,9 @@ export async function runProDual(options: {
     }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
     console.error(`  • Config: ${cfgPath} (or built-in defaults if missing) + env overrides`)
-    console.error(`  • Safety: provider quota/auth preflight; ${Math.round(legTimeoutMs / 60_000)}m per-leg timeout`)
+    console.error(
+      `  • Safety: one dispatch per leg with actionable quota/auth errors; ${Math.round(legTimeoutMs / 60_000)}m per-leg timeout`,
+    )
     console.error(`  • Estimated cost: ${dryCost} (${dryProLegCount} Pro-tier legs of ${dryLegs.length})`)
     if (options.noJudge) {
       console.error("  • Judge: disabled (--no-judge)")
@@ -322,16 +323,6 @@ export async function runProDual(options: {
   // they otherwise would be; this is the explicit-opt-in backstop.
   const tierLabel = proLegCount >= 2 ? `${proLegCount} Pro-tier legs` : "mostly mainstays"
   await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} (${tierLabel}). Proceed? [Y/n] `, skipConfirm)
-
-  const providerCount = new Set(legSlots.map((slot) => slot.model.provider)).size
-  console.error(`[dual-pro] Preflighting ${providerCount} provider${providerCount === 1 ? "" : "s"}...`)
-  await withSignalAbort((signal) =>
-    preflightProviders(
-      legSlots.map((slot) => slot.model.provider),
-      { signal },
-    ),
-  )
-  console.error("  ✓ Provider quota/auth preflight passed")
 
   const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("../lib/openai-deep")
 
