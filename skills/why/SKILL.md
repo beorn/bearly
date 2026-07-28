@@ -105,9 +105,20 @@ Run `/big` Phase 8 (Action Plan) on the fix levels:
 
 ### Durable Record
 
-If the analysis changes routing, process, architecture, or follow-up work, append
-it to `hub/retro/why-log.md` before moving on. Use this field shape so
-`tent sitrep` and `sitrep.html` keep the follow-up visible:
+If the analysis changes routing, process, architecture, or follow-up work,
+persist it in the authoritative PM-state checkout, never the hh root replica.
+Run `bun tent state-repo root` first.
+
+- When holding the `@chief` single-writer hat, append the record below to
+  `<state-root>/hub/retro/why-log.md`, then publish exactly that path with
+  `bun tent pm-commit -m "docs(retro): record /why analysis" hub/retro/why-log.md`.
+- From any other managed seat, do not edit shared state. Send `@chief` a
+  codified request whose first line is
+  `UPDATE bead=<owning-bead> action=update value=hub/retro/why-log.md reason="/why durable record follows"`,
+  followed by the full record, and require readback.
+
+Use this field shape so `tent sitrep` and `sitrep.html` keep the follow-up
+visible:
 
 ```markdown
 ## YYYY-MM-DD — short title
@@ -123,7 +134,7 @@ next-action:: <the next concrete action and owner>
 ```
 
 When follow-through changes, run
-`tent why-log status <id> resolved|superseded|converted --note "<why>"`;
+`bun tent why-log status <id> resolved|superseded|converted --note "<why>"`;
 `converted` also needs `--follow-up <bead>` so sitrep can show where the action
 moved.
 
