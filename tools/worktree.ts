@@ -899,6 +899,20 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
   }))
 
   const findings: AuditFinding[] = []
+  if (await sharedWorktreeConfigIsPoisoned(gitRoot)) {
+    const primary = worktrees.find((worktree) => worktree.path === gitRoot)
+    findings.push({
+      worktree: primary?.name ?? basename(gitRoot),
+      branch: primary?.branch ?? "(shared config)",
+      severity: "error",
+      check: "shared-worktree-config-poisoned",
+      message:
+        "shared Git config has extensions.worktreeConfig=true with core.bare=true; every linked worktree can " +
+        `report as bare. Repair from the primary worktree: git -C ${gitRoot} config --worktree core.bare false && ` +
+        `git -C ${gitRoot} config --local --unset-all core.bare`,
+      details: { extensionsWorktreeConfig: true, coreBare: true },
+    })
+  }
   const dirtyFileShas = new Map<string, Map<string, string[]>>() // file basename → sha → wts
 
   for (const wt of worktrees) {
@@ -1164,6 +1178,28 @@ export async function auditWorktrees(opts: AuditOptions = {}): Promise<AuditFind
   }
 
   return findings
+}
+
+async function sharedWorktreeConfigIsPoisoned(gitRoot: string): Promise<boolean> {
+  const [worktreeConfig, coreBare] = await Promise.all([
+    sharedConfigBool(gitRoot, "extensions.worktreeConfig"),
+    sharedConfigBool(gitRoot, "core.bare"),
+  ])
+  return worktreeConfig === true && coreBare === true
+}
+
+async function sharedConfigBool(gitRoot: string, key: string): Promise<boolean | undefined> {
+  const result = await safeExec($`git -C ${gitRoot} config --local --get --bool ${key} 2>/dev/null`)
+  if (result.exitCode === 1) return undefined
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `worktree audit could not read shared ${key}; run \`git -C ${gitRoot} config --local --get ${key}\` to repair it`,
+    )
+  }
+  const value = result.stdout.trim()
+  if (value === "true") return true
+  if (value === "false") return false
+  throw new Error(`worktree audit received invalid boolean ${key}=${JSON.stringify(value)}`)
 }
 
 // ============================================
