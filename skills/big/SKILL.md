@@ -126,7 +126,7 @@ Return this:
 
 ## Fan Out
 
-When hypotheses are independent, validate them in parallel. Pin wave workers sonnet/economy — fan-out never inherits the seat model (@pm/infra/22211-spawn-model-pins); wave-2 deep dives may use opus if the top questions need judgment. Prompt each worker:
+When hypotheses are independent, validate them in parallel. Give wave workers the explicit task tier `routine` — fan-out never inherits the parent binding; wave-2 deep dives may use `advanced` only when the top questions need judgment. Prompt each worker:
 
 ```text
 Hypothesis: <H>. Validate against the codebase by grepping <paths> and reading <files>. Return <=150 words: evidence for, evidence against, confidence 0-1, and 1-3 follow-up questions.
