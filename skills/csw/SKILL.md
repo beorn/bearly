@@ -188,15 +188,15 @@ Present the analysis **directly in the conversation** — do not write it to a f
 
 ## Wave-loop fan-out
 
-Phase 1 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a decision instead of a bead — that canonical section owns the mechanics: one narrow question per leg, `model: "sonnet"`/economy pins (fan-out never inherits the seat model), synthesis in-seat, and stated width before spawning.
+Phase 1 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a decision instead of a bead — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
 
-CSW's domain legs — each spawned `model: "sonnet"`, in ONE message:
+CSW's domain legs — each spawned at task tier `routine`, in ONE message:
 
-- One `sonnet` leg per option being evaluated (gather evidence for/against)
-- One `sonnet` leg per constraint named in the prompt (verify constraint still holds)
-- One `sonnet` leg for prior-art: similar decisions in this repo or industry
-- One `sonnet` leg for blast-radius: who/what depends on the area this decision touches
-- One `sonnet` leg for "what did past sessions decide on adjacent questions?" (`bun recall`)
+- One `routine` leg per option being evaluated (gather evidence for/against)
+- One `routine` leg per constraint named in the prompt (verify constraint still holds)
+- One `routine` leg for prior-art: similar decisions in this repo or industry
+- One `routine` leg for blast-radius: who/what depends on the area this decision touches
+- One `routine` leg for "what did past sessions decide on adjacent questions?" (`bun recall`)
 
 State the leg count before you spawn — width must be bounded, not "no hard cap" — then synthesize the comparative evidence in-seat. Returns: trade-offs per option the user can call.
 ```

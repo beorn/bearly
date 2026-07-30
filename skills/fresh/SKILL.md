@@ -17,7 +17,7 @@ benefits-from: [recall, tent, gbrain]
 - `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
 - `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
 - `/ask` — Direct: single-model quick question (cheap tier).
-- `/pro "question"` — Direct: 3-leg dispatch + judge for hard problems (~-15 by default: GPT-5.4 Pro + Kimi K2.6 + rotating challenger). Use `--no-challenger` or `--model <id>` when cost matters.
+- `/pro "question"` — Direct: multi-leg dispatch + judge for hard problems. Use its documented cost controls when a smaller review is enough.
 - `/deep` — Direct: web-search research with citations (moderate tier, 2-15 min).
 
 Use when you've been iterating on a problem and each fix breaks something else. Forces you to **stop coding**, reflect, gather context, and get an outside architectural opinion via `/llm --deep`.
@@ -236,15 +236,15 @@ If a bead is active, update its notes with the findings.
 
 ## Wave-loop fan-out
 
-Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a stuck problem — that canonical section owns the mechanics: one narrow question per leg, `model: "sonnet"`/economy pins (fan-out never inherits the seat model), synthesis in-seat, and stated width before spawning.
+Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a stuck problem — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
 
-/fresh's domain legs — each spawned `model: "sonnet"`, in ONE message:
+/fresh's domain legs — each spawned at task tier `routine`, in ONE message:
 
-- One `sonnet` leg per related-bug area (recall + bd query for prior beads in this scope)
-- One `sonnet` leg per cited file: recent commits + comment headers + call sites
-- One `sonnet` leg for "what did I try last? was it ruled out?" — read current session transcript
-- One `sonnet` leg for "what does the canonical design doc say about this subsystem?"
-- One `sonnet` leg for adjacent test failures or warnings being masked
+- One `routine` leg per related-bug area (recall + bd query for prior beads in this scope)
+- One `routine` leg per cited file: recent commits + comment headers + call sites
+- One `routine` leg for "what did I try last? was it ruled out?" — read current session transcript
+- One `routine` leg for "what does the canonical design doc say about this subsystem?"
+- One `routine` leg for adjacent test failures or warnings being masked
 
 State the leg count before you spawn — width must be bounded — then assemble the returns in-seat into a complete context bundle to hand to /deep or /pro.
 
