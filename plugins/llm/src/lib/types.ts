@@ -769,6 +769,95 @@ const SKUS_DATA: SkuConfig[] = [
     typicalLatencyMs: 5000,
   },
 
+  // OpenRouter — six further families so split-test rotation isn't limited to
+  // the Moonshot/DeepSeek pair. Prices are the live-catalog per-token rates
+  // ×1M at registration; latencies are pre-measurement estimates the pricing
+  // overlay refines from real calls. All eight support the OpenRouter
+  // `reasoning` parameter; `reasoning.contextWindow` carries each catalog
+  // context length for dynamic max_tokens.
+  {
+    modelId: "qwen/qwen3.7-flash",
+    displayName: "Qwen3.7 Flash",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.03,
+    outputPricePerM: 0.13,
+    typicalLatencyMs: 8000,
+    reasoning: { contextWindow: 1000000 },
+  },
+  {
+    modelId: "google/gemini-3.6-flash",
+    displayName: "Gemini 3.6 Flash",
+    isDeepResearch: false,
+    costTier: "medium",
+    inputPricePerM: 1.5,
+    outputPricePerM: 7.5,
+    typicalLatencyMs: 12000,
+    reasoning: { contextWindow: 1048576 },
+  },
+  {
+    modelId: "google/gemini-3-flash-preview",
+    displayName: "Gemini 3 Flash Preview",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.5,
+    outputPricePerM: 3.0,
+    typicalLatencyMs: 8000,
+    reasoning: { contextWindow: 1048576 },
+  },
+  // Same weights as the google-direct "gemini-2.5-pro" SKU — this row is the
+  // OpenRouter route for when the direct Google key is unavailable.
+  {
+    modelId: "google/gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro (OpenRouter)",
+    isDeepResearch: false,
+    costTier: "medium",
+    inputPricePerM: 1.25,
+    outputPricePerM: 10.0,
+    typicalLatencyMs: 15000,
+    reasoning: { contextWindow: 1048576 },
+  },
+  {
+    modelId: "poolside/laguna-s-2.1",
+    displayName: "Laguna S 2.1",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.09,
+    outputPricePerM: 0.18,
+    typicalLatencyMs: 8000,
+    reasoning: { contextWindow: 1048576 },
+  },
+  {
+    modelId: "meituan/longcat-2.0",
+    displayName: "LongCat 2.0",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.3,
+    outputPricePerM: 1.2,
+    typicalLatencyMs: 8000,
+    reasoning: { contextWindow: 1048756 },
+  },
+  {
+    modelId: "thinkingmachines/inkling",
+    displayName: "Inkling",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 1.0,
+    outputPricePerM: 4.05,
+    typicalLatencyMs: 20000,
+    reasoning: { contextWindow: 1048576 },
+  },
+  {
+    modelId: "moonshotai/kimi-k2.7-code",
+    displayName: "Kimi K2.7 Code",
+    isDeepResearch: false,
+    costTier: "low",
+    inputPricePerM: 0.73,
+    outputPricePerM: 3.5,
+    typicalLatencyMs: 15000,
+    reasoning: { contextWindow: 262144 },
+  },
+
   // Perplexity
   {
     modelId: "sonar",
@@ -961,6 +1050,14 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
     reasoningParam: { kind: "deepseek-thinking", defaultEnabled: true },
   },
   "deepseek/deepseek-chat": { provider: "openrouter", capabilities: NO_CAPS },
+  "qwen/qwen3.7-flash": { provider: "openrouter", capabilities: NO_CAPS },
+  "google/gemini-3.6-flash": { provider: "openrouter", capabilities: NO_CAPS },
+  "google/gemini-3-flash-preview": { provider: "openrouter", capabilities: NO_CAPS },
+  "google/gemini-2.5-pro": { provider: "openrouter", capabilities: NO_CAPS },
+  "poolside/laguna-s-2.1": { provider: "openrouter", capabilities: NO_CAPS },
+  "meituan/longcat-2.0": { provider: "openrouter", capabilities: NO_CAPS },
+  "thinkingmachines/inkling": { provider: "openrouter", capabilities: NO_CAPS },
+  "moonshotai/kimi-k2.7-code": { provider: "openrouter", capabilities: NO_CAPS },
 
   // Perplexity Sonar has internal web search, but dispatch goes through the
   // standard Vercel AI SDK path (generateText) — `webSearch` capability flags
