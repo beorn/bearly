@@ -50,6 +50,7 @@
     "prepublishOnly": "bun run build"
   },
   "devDependencies": {
+    "@types/node": "^25.9.4",
     "tsdown": "^0.22.5"
   },
   "tsdown": {
