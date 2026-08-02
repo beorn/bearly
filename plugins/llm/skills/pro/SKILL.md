@@ -1,13 +1,13 @@
 ---
-description: "Multi-leg dual-pro dispatch (GPT-5.4 Pro + Kimi K2.6 + rotating challenger) — second opinions, code reviews, architectural advice. Parallel models judged on a rubric. Heavier than /ask."
+description: "Multi-leg dual-pro dispatch (config-driven fleet: mainstays + split-test slots) — second opinions, code reviews, architectural advice. Parallel models judged on a rubric. Heavier than /ask."
 argument-hint: ["<question>" | review [<package>] [--deep]]
 ---
 
 # /pro — multi-leg second opinion + code review
 
-Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for frontier disagreement and judged review (~$5-15).**
+Parallel multi-model dispatch with a cheap judge — for hard problems where one model isn't enough. **Use `/ask` for quick single-model questions (~$0.02). Use `/pro` for frontier disagreement and judged review** — cost tracks the configured fleet (all-OpenRouter configs run well under $1/round; the baked OpenAI fallback ~$5-15; every run prints its actual cost).
 
-Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotating challenger from `[gemini-2.5-pro, grok-4-1-fast-reasoning, claude-opus-4-6]`. Verify with `bun llm pro --help` before relying on cost or model claims.
+The fleet is CONFIG-DRIVEN: `~/.config/llm/dual-pro-config.json` (documented inline — mainstays, split-test pool, judge) is the source of truth; this file must not assert model names. With no config the baked fallback is `gpt-5.4-pro` + `moonshotai/kimi-k2.6`. Verify with `bun llm pro --help` before relying on cost or model claims.
 
 **Keywords**: pro, /pro, ask pro, second opinion, code review, dual-pro, multi-leg
 
@@ -15,8 +15,8 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 
 | User says                  | Mode                   | Command                                                                         |
 | -------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
-| `/pro "question"`          | 3-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`                   |
-| `pro, <question>`          | 3-leg dispatch + judge | same — casual form                                                              |
+| `/pro "question"`          | multi-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`               |
+| `pro, <question>`          | multi-leg dispatch + judge | same — casual form                                                          |
 | `/pro review <pkg>`        | code review (fast)     | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
 | `/pro review --deep <pkg>` | code review (deep)     | add `--deep` to the above — promotes to `/deep` semantics                       |
 | `/pro review` (no arg)     | discover + cost        | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
@@ -24,7 +24,7 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 
 ## Cost guidance
 
-- Direct query (3-leg: GPT-5.4 Pro + Kimi K2.6 + rotating challenger): **~$5-15** typical
+- Direct query (mainstays + split-test slots from the config): cost tracks the configured fleet — all-OpenRouter configs run **well under $1/round**; the baked OpenAI fallback is **~$5-15**
 - Before expensive legs fire, `/pro` runs one cheap quota/auth probe per provider and fails loud with the key or billing fix. Each leg has a 15-minute ceiling; set `LLM_LEG_TIMEOUT_MS` to override it.
 - Use `--no-challenger` or a single `--model <id>` when a cheaper review is enough.
 - Single-model override (`--model <id>`): pricing of that one model
@@ -44,13 +44,13 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 - For `--deep` runs (fire-and-forget, exit ~5s): recover with `bun llm recover <id>` (interactive) or `bun llm await <id>` (silent block, prints final file path — better for background tasks).
 - Never restart an interrupted deep run — it continues server-side at OpenAI. Just recover.
 
-## Dual-pro mode (3-leg dispatch)
+## Dual-pro mode (multi-leg dispatch)
 
-`bun llm pro "..."` fires **GPT-5.4 Pro + Kimi K2.6 + a rotating challenger** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
+`bun llm pro "..."` fires **the config's mainstays plus split-test slots** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
 
 **Cost dials**: `--no-challenger` (skip leg C, back to 2-leg mainstays only), `--no-judge` (skip rubric scoring), `--challenger <id>` (override rotation), `--exclude <id>` (remove one challenger), or `--model <id>` for a single-model call. `--json` gives a pipe-friendly envelope.
 
-Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) with pairwise judge — see `/tmp/llm-refactor-execution.md` Phase 3.
+The 4-leg shape (2 mainstays + 2 split-test slots: slot C explores the pool, slot D re-faces the most recent winner) is live when `dual-pro-config.json` defines a split-test pool; each slot is documented inline in the config.
 
 **Admin** (read-only or interactive — no API spend unless `--backtest` fires):
 
@@ -66,7 +66,7 @@ Future (planned): 4-leg parallel dispatch (2 mainstays + 2 split-test slots) wit
 - Using `--context` instead of `--context-file` → shell quoting breaks on backticks / `$(...)` in source.
 - Forgetting `--no-recover` → stale results waste money.
 - Restarting an interrupted `--deep` call → wastes $2-5, response is still completing remotely.
-- Forgetting the current default includes GPT-5.4 Pro → unexpected spend. Check `bun llm pro --help` or use `--no-challenger` / `--model` when cost matters.
+- Assuming this doc's fleet is current → the CONFIG is the truth (`~/.config/llm/dual-pro-config.json`). Check `bun llm pro --help`, and use `--no-challenger` / `--model` when cost matters.
 
 ## Companion docs (multi-package review rounds)
 
