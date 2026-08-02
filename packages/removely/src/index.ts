@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
 import { mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, sep } from "node:path"
+import { join, resolve, sep } from "node:path"
 
 /**
  * Guarded recursive removal + scope-bound temp trees.
@@ -53,10 +53,47 @@ export interface SafeRemoveOptions {
   readonly allowedRoots?: readonly string[]
 }
 
-/** Segment-wise strict descendant. `/tmp/foo-evil` is NOT under `/tmp/foo`. */
-function isStrictDescendant(child: string, parent: string): boolean {
+/**
+ * Segment-wise strict descendant. `/tmp/foo-evil` is NOT under `/tmp/foo`.
+ *
+ * Exported because the containment QUESTION outlives the delete. Callers that
+ * must merely *ask* it — a prune loop's bound, "is this process cwd mine to
+ * kill", "does this config path escape the checkout" — were each hand-rolling
+ * an answer, and the copies disagreed on the one thing that matters: whether a
+ * path that merely prefixes the root counts as inside it. Three of them said
+ * yes. Two of those guarded a delete.
+ *
+ * Deliberately LEXICAL and deliberately STRICT:
+ *   - lexical — it does no `realpath`, so it is safe in hot loops and on paths
+ *     that do not exist yet. When the answer must survive a symlink, use
+ *     `safeRemove`/`safeRemoveSync`, which resolve both sides first.
+ *   - strict — `isStrictlyInside(p, p)` is `false`. Equality is the case the
+ *     hand-rolled copies split on, so it is spelled at the call site
+ *     (`path === root || isStrictlyInside(path, root)`) rather than hidden
+ *     behind an option nobody reads.
+ *
+ * Both arguments must already be absolute and normalized (`resolve()` them).
+ */
+export function isStrictlyInside(child: string, parent: string): boolean {
   if (child === parent) return false
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+}
+
+/**
+ * Normalize an allowed root for comparison against a resolved `within`.
+ *
+ * A root that does not exist is NOT an error here — `allowedRoots` is a policy
+ * list, and "this root is not on disk" is a legitimate way for a candidate to
+ * fail the containment test. It is normalized with `resolve()` so it still
+ * compares as a path rather than being dropped, which would silently widen the
+ * policy instead of narrowing it.
+ */
+function resolveForComparison(root: string): string {
+  try {
+    return realpathSync(root)
+  } catch {
+    return resolve(root)
+  }
 }
 
 /**
@@ -92,8 +129,13 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
     throw new Error(`${caller}: containment root does not resolve: ${withinRaw}`)
   }
 
-  const allowed = options.allowedRoots ?? [realpathSync(tmpdir())]
-  const rootOk = allowed.some((root) => withinReal === root || isStrictDescendant(withinReal, root))
+  // `within` is compared in RESOLVED form, so the allowed roots must be too, or
+  // the comparison is between two different naming systems. `/tmp` is a symlink
+  // to `/private/tmp` on macOS: an unresolved allowed root of `/tmp` rejects a
+  // `within` of `/tmp` — a refusal with a correct-sounding message and no bug in
+  // the caller. The default was already resolved; caller-supplied ones were not.
+  const allowed = (options.allowedRoots ?? [tmpdir()]).map(resolveForComparison)
+  const rootOk = allowed.some((root) => withinReal === root || isStrictlyInside(withinReal, root))
   if (!rootOk) {
     throw new Error(
       `${caller}: containment root ${withinReal} is not under an allowed root (${allowed.join(", ")}). Deleting outside these requires an explicit \`allowedRoots\`.`,
@@ -110,7 +152,7 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
     )
   }
 
-  if (!isStrictDescendant(targetReal, withinReal)) {
+  if (!isStrictlyInside(targetReal, withinReal)) {
     throw new Error(
       `${caller}: REFUSED. Resolved target ${targetReal} is not strictly inside resolved root ${withinReal}. (Requested target: ${raw}.)`,
     )

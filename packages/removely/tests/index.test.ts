@@ -21,7 +21,7 @@ import { mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/p
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
-import { safeRemove, safeRemoveSync, tempTree } from "../src/index.ts"
+import { isStrictlyInside, safeRemove, safeRemoveSync, tempTree } from "../src/index.ts"
 
 const roots: string[] = []
 
@@ -35,6 +35,40 @@ afterEach(async () => {
   for (const root of roots.splice(0)) {
     await safeRemove(root, { within: await realpath(tmpdir()), allowMissing: true })
   }
+})
+
+describe("isStrictlyInside — the containment question, exported", () => {
+  // The literal trap. Every hand-rolled copy that got this wrong got it wrong
+  // here, and two of them guarded a recursive delete.
+  test("a sibling sharing a string prefix is NOT inside", () => {
+    expect(isStrictlyInside("/repo-evil", "/repo")).toBe(false)
+    expect(isStrictlyInside("/repo-evil/nested/deep", "/repo")).toBe(false)
+  })
+
+  test("a real descendant is inside", () => {
+    expect(isStrictlyInside("/repo/pkg", "/repo")).toBe(true)
+    expect(isStrictlyInside("/repo/pkg/src/index.ts", "/repo")).toBe(true)
+  })
+
+  test("strict: a path is not inside itself", () => {
+    expect(isStrictlyInside("/repo", "/repo")).toBe(false)
+  })
+
+  test("a trailing separator on the root does not change the answer", () => {
+    expect(isStrictlyInside("/repo/pkg", "/repo/")).toBe(true)
+    expect(isStrictlyInside("/repo-evil", "/repo/")).toBe(false)
+  })
+
+  // `relative()`-based copies answered this one differently from each other:
+  // one read the leading `..` of `..foo` as an escape and refused a path that
+  // is genuinely inside. Prefix-plus-separator has no such ambiguity.
+  test("a child whose name begins with dots is inside", () => {
+    expect(isStrictlyInside("/repo/..foo", "/repo")).toBe(true)
+  })
+
+  test("the parent is not inside its own child", () => {
+    expect(isStrictlyInside("/repo", "/repo/pkg")).toBe(false)
+  })
 })
 
 describe("safeRemove refusals", () => {
