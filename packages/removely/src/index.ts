@@ -1,0 +1,246 @@
+import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
+import { mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, sep } from "node:path"
+
+/**
+ * Guarded recursive removal + scope-bound temp trees.
+ *
+ * Written after a 2026-07-31 incident, in which a sequential `readdir` walk of
+ * `$HOME` deleted 52 top-level entries in ~2 minutes before self-terminating.
+ * The audit that followed found exactly ONE of six production delete sites
+ * validating anything; the shared test-teardown helper — used by nine test
+ * files — had no guard at all.
+ *
+ * Scope, stated honestly: this is HYGIENE, not a security boundary. An in-process
+ * guard binds cooperative callers only, and a raw shell loop running as the same
+ * uid ignores it entirely. The real boundary is a separate uid or a sandbox, and
+ * nothing in this package is a substitute for one. There is also a residual
+ * TOCTOU between `realpath()` and the unlink — documented rather than papered
+ * over. What this package buys is narrower and still worth having: correct
+ * cleanup is easy to write, and incorrect cleanup is loud instead of silent.
+ *
+ * Shell callers get the SAME predicate through the `removely` bin (`cli.ts`)
+ * rather than a second hand-rolled containment check.
+ *
+ * Deliberately ABSENT, per the review that followed the incident:
+ * - no depth heuristic — macOS `$TMPDIR` is already `/var/folders/xx/…/T`, so a
+ *   "must be N levels deep" test passes everything real and forbids nothing;
+ * - no mandatory `reason` string — mandatory strings get filled with "cleanup";
+ *   attribution belongs in log LOCATION, not call-site text;
+ * - no recursive chmod before delete — that is itself a full-tree walk (it is
+ *   what made the incident take two minutes) and it strips exactly the read-only
+ *   bits a canary would rely on. Create fixtures deletable instead.
+ */
+
+export interface SafeRemoveOptions {
+  /**
+   * MANDATORY containment root. There is no default and it is not optional: a
+   * delete that cannot name what it is allowed to touch does not compile. This
+   * is the whole point of the primitive — every call site is forced to answer
+   * the question nobody asked at any of the six audited sites.
+   */
+  readonly within: string
+  /** Absent target throws unless this is passed explicitly. No blanket `force`. */
+  readonly allowMissing?: boolean
+  /**
+   * Retries for `ENOTEMPTY`, which is what a live process writing into the tree
+   * produces mid-delete. In the incident this is why `~/.config`, `~/Music` and
+   * `~/.local` survived as empty shells. Default 3.
+   */
+  readonly retries?: number
+  /** Injectable for tests. Defaults to `[realpath(os.tmpdir())]`. */
+  readonly allowedRoots?: readonly string[]
+}
+
+/** Segment-wise strict descendant. `/tmp/foo-evil` is NOT under `/tmp/foo`. */
+function isStrictDescendant(child: string, parent: string): boolean {
+  if (child === parent) return false
+  return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+}
+
+/**
+ * Remove `target` recursively, or throw explaining exactly why it refused.
+ * Never returns a boolean, never silently no-ops: a guard that can be ignored
+ * by a caller who forgot to check is not a guard.
+ */
+/**
+ * The whole refusal predicate, in ONE place. Both `safeRemove` and
+ * `safeRemoveSync` call it, so there is exactly one definition of "may I delete
+ * this" — the consolidate-first rule applied to the surface that most needs it.
+ * Returns the resolved target, or `null` when an absent target was explicitly
+ * declared expected.
+ */
+function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller: string): string | null {
+  const raw = typeof target === "string" ? target.trim() : ""
+  if (raw.length === 0) {
+    throw new Error(
+      `${caller}: empty target. An unset or mis-expanded path is the single most dangerous input this function can receive, so it is an error rather than a silent no-op.`,
+    )
+  }
+  const withinRaw = options.within?.trim() ?? ""
+  if (withinRaw.length === 0) {
+    throw new Error(`${caller}: empty containment root for target ${raw}. \`within\` is mandatory.`)
+  }
+
+  // Resolve the root first. A root that does not exist is a programming error,
+  // not a reason to skip the check.
+  let withinReal: string
+  try {
+    withinReal = realpathSync(withinRaw)
+  } catch {
+    throw new Error(`${caller}: containment root does not resolve: ${withinRaw}`)
+  }
+
+  const allowed = options.allowedRoots ?? [realpathSync(tmpdir())]
+  const rootOk = allowed.some((root) => withinReal === root || isStrictDescendant(withinReal, root))
+  if (!rootOk) {
+    throw new Error(
+      `${caller}: containment root ${withinReal} is not under an allowed root (${allowed.join(", ")}). Deleting outside these requires an explicit \`allowedRoots\`.`,
+    )
+  }
+
+  let targetReal: string
+  try {
+    targetReal = realpathSync(raw)
+  } catch {
+    if (options.allowMissing === true) return null
+    throw new Error(
+      `${caller}: target does not exist: ${raw}. Pass \`allowMissing: true\` if that is expected — a blanket force is how a wrong path becomes invisible.`,
+    )
+  }
+
+  if (!isStrictDescendant(targetReal, withinReal)) {
+    throw new Error(
+      `${caller}: REFUSED. Resolved target ${targetReal} is not strictly inside resolved root ${withinReal}. (Requested target: ${raw}.)`,
+    )
+  }
+  return targetReal
+}
+
+/**
+ * Synchronous sibling, for callers that cannot await — notably vitest teardown
+ * helpers already written as sync loops. Identical refusal predicate; the only
+ * difference is the removal call.
+ */
+export function safeRemoveSync(target: string, options: SafeRemoveOptions): void {
+  const targetReal = resolveRemovalTarget(target, options, "safeRemoveSync")
+  if (targetReal === null) return
+
+  const retries = options.retries ?? 3
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      rmSync(targetReal, { recursive: true })
+      break
+    } catch (error) {
+      lastError = error
+      const code = (error as NodeJS.ErrnoException).code
+      // EACCES/EPERM: a fixture wrote something read-only. Widen ONLY then, and
+      // only under the already-verified containment root — never as a routine
+      // pre-pass, which on a large tree is itself a multi-minute walk and
+      // strips exactly the read-only bits a canary would rely on.
+      if (code === "EACCES" || code === "EPERM") {
+        widenWritable(targetReal)
+        continue
+      }
+      if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error
+    }
+  }
+
+  if (existsSync(targetReal)) {
+    const survivors = statSync(targetReal).isDirectory() ? readdirSync(targetReal) : []
+    throw new Error(
+      `safeRemoveSync: ${targetReal} still exists after removal (${survivors.length} entries).${
+        survivors.length > 0 ? ` Survivors: ${survivors.slice(0, 10).join(", ")}` : ""
+      } Last error: ${String(lastError)}`,
+    )
+  }
+}
+
+/** Recursive chmod, used ONLY as an EACCES/EPERM fallback inside a verified root. */
+function widenWritable(path: string): void {
+  if (!existsSync(path)) return
+  const info = lstatSync(path)
+  if (info.isSymbolicLink()) return
+  chmodSync(path, info.mode | 0o700)
+  if (info.isDirectory()) {
+    for (const entry of readdirSync(path)) widenWritable(join(path, entry))
+  }
+}
+
+export async function safeRemove(target: string, options: SafeRemoveOptions): Promise<void> {
+  const resolved = resolveRemovalTarget(target, options, "safeRemove")
+  if (resolved === null) return
+  const targetReal = resolved
+
+  const retries = options.retries ?? 3
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await rm(targetReal, { recursive: true })
+      break
+    } catch (error) {
+      lastError = error
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+    }
+  }
+
+  // Verify. A cleanup that silently no-ops leaving the caller green is the
+  // dominant defect class this whole bead exists to kill.
+  const survivors = await readdir(targetReal).catch(() => null)
+  if (survivors !== null) {
+    const detail = survivors.length > 0 ? ` Survivors: ${survivors.slice(0, 10).join(", ")}` : ""
+    throw new Error(
+      `safeRemove: ${targetReal} still exists after removal (${survivors.length} entries).${detail} Last error: ${String(lastError)}`,
+    )
+  }
+  const stillThere = await stat(targetReal).catch(() => null)
+  if (stillThere !== null) {
+    throw new Error(`safeRemove: ${targetReal} still exists after removal (non-directory).`)
+  }
+}
+
+export interface TempTree extends AsyncDisposable {
+  /** Absolute, realpath-resolved fixture root. */
+  readonly path: string
+  /** Join under the fixture root. Never escapes it. */
+  resolve(...segments: readonly string[]): string
+}
+
+export interface TempTreeOptions {
+  /** Parent for the fixture. Defaults to `os.tmpdir()`. Must be under an allowed root. */
+  readonly parent?: string
+  readonly allowedRoots?: readonly string[]
+}
+
+/**
+ * Scope-bound temp tree.
+ *
+ *     await using fixture = await tempTree("hab-config-")
+ *     const cfg = fixture.resolve("hab.yml")
+ *
+ * The create/destroy pairing is established AT CREATION and enforced by the
+ * language, so it cannot be lost the way a `dirs[]` array plus a trailing
+ * teardown step can. Modelled on Go's `t.TempDir()` (cleanup registered at
+ * creation, runs on panic, removal failure fails the test) and JUnit 5's
+ * `@TempDir`. Explicitly NOT modelled on Rust's `tempfile::TempDir`, whose
+ * `Drop`-based cleanup cannot report errors — silent-by-construction cleanup is
+ * the wart we are trying to remove, and `Symbol.asyncDispose` lets us throw.
+ */
+export async function tempTree(prefix: string, options: TempTreeOptions = {}): Promise<TempTree> {
+  const parent = await realpath(options.parent ?? tmpdir())
+  const created = await mkdtemp(join(parent, prefix))
+  const path = await realpath(created)
+  return {
+    path,
+    resolve(...segments: readonly string[]): string {
+      return join(path, ...segments)
+    },
+    async [Symbol.asyncDispose](): Promise<void> {
+      await safeRemove(path, { within: parent, allowedRoots: options.allowedRoots })
+    },
+  }
+}

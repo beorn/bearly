@@ -1,0 +1,61 @@
+{
+  "name": "removely",
+  "version": "0.1.0",
+  "description": "Guarded recursive removal — a delete that cannot name the root it is allowed to touch does not compile",
+  "keywords": [
+    "cleanup",
+    "containment",
+    "delete",
+    "fixture",
+    "recursive",
+    "remove",
+    "rimraf",
+    "safety",
+    "teardown",
+    "tempdir"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/removely",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "bin": {
+    "removely": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "bin": {
+      "removely": "./dist/cli.mjs"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.5"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": ["src/index.ts", "src/cli.ts"],
+    "format": "esm"
+  }
+}
