@@ -8,6 +8,8 @@ allowed-tools: Bash, Read, Glob, Grep, Task, AskUserQuestion
 
 # /discuss — Implementation Discussion Mode
 
+Read [/agent-system](../agent-system/SKILL.md) before editing this doc.
+
 **Keywords**: discuss, pause, architecture, alternatives
 
 ## Commands
