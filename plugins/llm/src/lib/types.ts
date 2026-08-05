@@ -1296,13 +1296,65 @@ export function getCheapModel(): Model | undefined {
   return MODELS.find((m) => m.costTier === "low" && m.provider === "openai") || MODELS.find((m) => m.costTier === "low")
 }
 
+/**
+ * True when `candidate` should REPLACE `current` as the representative
+ * "cheap" model for their shared provider.
+ *
+ * `costTier` is a PRICE label with no latency dimension — a heavy reasoning
+ * model (Kimi K2.6: `reasoning: {...}`, `typicalLatencyMs: 15000`, burns
+ * ~178 reasoning tokens to say "hi") and a fast non-reasoning model
+ * (DeepSeek Chat V3: no `reasoning` field, `typicalLatencyMs: 5000`) can
+ * both be "low" cost, and array order alone used to decide which one wins
+ * for a provider — hiding the non-reasoning option behind pure accident of
+ * registration order, structurally unreachable for latency-sensitive
+ * callers (recall's synthesis race) no matter how fast or cheap it is.
+ *
+ * Deliberately narrow: only intervenes when reasoning-ness DIFFERS —
+ * `current` reasons and `candidate` doesn't. When both are the same (both
+ * reasoning, or both not — the case for every non-OpenRouter provider
+ * today, none of whose "low"-tier SKUs declare `reasoning`), the first one
+ * registered keeps winning, unchanged from before. This is what keeps the
+ * fix scoped to the reasoning-vs-non-reasoning problem it targets instead
+ * of also re-ranking same-shape candidates by raw `typicalLatencyMs` (which
+ * would silently prefer an OLDER/lesser model — e.g. Claude 3 Haiku over
+ * Claude Haiku 4.5 — for a few hundred ms, a regression nobody asked for).
+ */
+function isBetterCheapPick(candidate: Model, current: Model): boolean {
+  const candidateReasons = candidate.reasoning !== undefined
+  const currentReasons = current.reasoning !== undefined
+  return currentReasons && !candidateReasons
+}
+
+/**
+ * The "low" cost-tier model per provider, non-reasoning preferred over
+ * reasoning (see `isBetterCheapPick`) — not simply whichever happened to be
+ * registered first for a provider, which used to hide a strictly better
+ * (as fast, as cheap, no hidden chain-of-thought latency) option behind
+ * pure array-order accident.
+ *
+ * Provider ORDER in the result is unchanged from before — first-appearance
+ * order in MODELS — only which model represents a given provider can change,
+ * and only for providers that register both a reasoning and a non-reasoning
+ * "low"-tier SKU (OpenRouter today; every other provider's pick is
+ * byte-for-byte the same as before this function existed).
+ */
 export function getCheapModels(max = 2): Model[] {
+  const bestPerProvider = new Map<string, Model>()
+  for (const m of MODELS) {
+    if (m.costTier !== "low" || m.isDeepResearch) continue
+    const current = bestPerProvider.get(m.provider)
+    if (!current || isBetterCheapPick(m, current)) {
+      bestPerProvider.set(m.provider, m)
+    }
+  }
+
   const seen = new Set<string>()
   const result: Model[] = []
   for (const m of MODELS) {
     if (m.costTier !== "low" || m.isDeepResearch || seen.has(m.provider)) continue
     seen.add(m.provider)
-    result.push(m)
+    const picked = bestPerProvider.get(m.provider)
+    if (picked) result.push(picked)
     if (result.length >= max) break
   }
   return result

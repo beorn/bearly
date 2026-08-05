@@ -30,6 +30,25 @@ describe("dual-pro dispatch safety", () => {
     ).toBe("OpenAI insufficient quota; top up OPENAI_API_KEY billing before retrying.")
   })
 
+  it("passes runWithTimeout's own wrapper message through verbatim (pro-specific partial-results semantics)", () => {
+    expect(
+      formatLegDispatchError(
+        { provider: "openrouter", modelId: "moonshotai/kimi-k2.6", displayName: "Kimi K2.6" },
+        new Error("Kimi K2.6 leg timed out after 1s; partial results will be reported."),
+      ),
+    ).toBe("Kimi K2.6 leg timed out after 1s; partial results will be reported.")
+  })
+
+  it("gives generic-timeout callers (e.g. recall's own race, not runWithTimeout) actionable advice that is NOT a credentials fix", () => {
+    const result = formatLegDispatchError(
+      { provider: "openrouter", modelId: "moonshotai/kimi-k2.6", displayName: "Kimi K2.6" },
+      new Error("timed out after 2002ms (given 2000ms)"),
+    )
+    expect(result).toContain("OpenRouter (moonshotai/kimi-k2.6)")
+    expect(result).toContain("not a credentials problem")
+    expect(result).toContain("retry with more time, or use a faster model")
+  })
+
   it("aborts a hung leg at the configured ceiling with a loud partial-results error", async () => {
     vi.useFakeTimers()
     const aborted = vi.fn()

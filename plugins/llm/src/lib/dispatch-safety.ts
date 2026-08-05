@@ -115,6 +115,9 @@ export function formatLegDispatchError(
   error: unknown,
 ): string {
   const message = oneLineError(error)
+  // Exact passthrough for runWithTimeout's OWN wrapper message — it already
+  // explains pro's specific semantics (other legs still report), so don't
+  // rewrite it into the generic timeout advice below.
   if (message.endsWith("partial results will be reported.")) return message
   if (/insufficient[_ -]?quota|billing hard limit|exceeded (?:your )?quota/iu.test(message)) {
     return `${providerDisplayName(model.provider)} insufficient quota; top up ${getProviderEnvVar(model.provider)} billing before retrying.`
@@ -124,6 +127,13 @@ export function formatLegDispatchError(
     return replacement
       ? `Model "${model.modelId}" is unavailable or renamed; replace it with "${replacement}" in dual-pro-config.json.`
       : `Model "${model.modelId}" is unavailable or renamed; run "bun llm discover" and update dual-pro-config.json.`
+  }
+  // Generic timeout — covers callers with their OWN timeout wrapper (recall's
+  // per-batch race, e.g.) whose message doesn't match the exact passthrough
+  // above. A timeout is not a credentials problem; say so explicitly so a
+  // caller doesn't point the user at billing/API-key fixes for a slow model.
+  if (/\btimed?[ -]?out\b/iu.test(message)) {
+    return `${providerDisplayName(model.provider)} (${model.modelId}) was too slow for the time it was given (${message}) — not a credentials problem; retry with more time, or use a faster model.`
   }
   return message
 }
