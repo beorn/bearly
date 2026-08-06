@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 export interface RuntimeInfo {
@@ -14,6 +14,8 @@ export interface RuntimeInfo {
 export interface RuntimeInfoCommandResult {
   status: number
   stdout: string
+  /** Present when the command instrument itself could not produce a verdict. */
+  failure?: { readonly kind: "instrument"; readonly cause: string }
 }
 
 export interface RuntimeInfoDeps {
@@ -23,7 +25,7 @@ export interface RuntimeInfoDeps {
 
 export function nodeRuntimeInfoDeps(cwd = process.cwd()): RuntimeInfoDeps {
   return {
-    cwd,
+    cwd: physicalPath(cwd),
     sh: (cmd, args) => {
       const r = spawnSync(cmd, [...args], {
         cwd,
@@ -31,9 +33,89 @@ export function nodeRuntimeInfoDeps(cwd = process.cwd()): RuntimeInfoDeps {
         env: sourceGitEnvironment(),
         timeout: 5_000,
       })
+      if (r.error !== undefined) {
+        return {
+          status: r.status ?? 1,
+          stdout: r.stdout ?? "",
+          failure: { kind: "instrument", cause: `${cmd} could not run at ${cwd}: ${r.error.message}` },
+        }
+      }
+      if (r.status === null) {
+        return {
+          status: 1,
+          stdout: r.stdout ?? "",
+          failure: { kind: "instrument", cause: `${cmd} died without a status at ${cwd}` },
+        }
+      }
       return { status: r.status ?? 1, stdout: r.stdout ?? "" }
     },
   }
+}
+
+export type RuntimeSourceReceipt =
+  | {
+      readonly path: string
+      readonly sha: string
+      readonly verification: "verified"
+      readonly dirty: "clean" | "dirty"
+    }
+  | {
+      readonly path: string
+      readonly sha: null
+      readonly verification: "unproven"
+      readonly dirty: "unknown"
+      readonly cause: string
+    }
+
+/**
+ * Read a safety-grade source identity. Unlike `readGitState`, this never maps
+ * uncertainty to a plausible clean checkout and requires Git's full object ID.
+ * The caller supplies the source directory through `deps.cwd`; the default
+ * dependency seam canonicalizes it to a physical path.
+ */
+export function readRuntimeSourceReceipt(deps: RuntimeInfoDeps): RuntimeSourceReceipt {
+  const head = sourceProbe(deps, ["rev-parse", "HEAD"])
+  if (head.failure !== undefined) return unprovenRuntimeSource(deps.cwd, head.failure.cause)
+  if (head.status !== 0) {
+    return unprovenRuntimeSource(deps.cwd, `git rev-parse HEAD exited with status ${head.status}`)
+  }
+  const sha = head.stdout.trim()
+  if (!isFullGitObjectId(sha)) {
+    return unprovenRuntimeSource(deps.cwd, "git rev-parse HEAD did not return a full Git SHA")
+  }
+
+  const status = sourceProbe(deps, ["status", "--porcelain"])
+  if (status.failure !== undefined) return unprovenRuntimeSource(deps.cwd, status.failure.cause)
+  if (status.status !== 0) {
+    return unprovenRuntimeSource(deps.cwd, `git status --porcelain exited with status ${status.status}`)
+  }
+  return {
+    path: deps.cwd,
+    sha,
+    verification: "verified",
+    dirty: status.stdout.trim().length === 0 ? "clean" : "dirty",
+  }
+}
+
+function sourceProbe(deps: RuntimeInfoDeps, args: readonly string[]): RuntimeInfoCommandResult {
+  try {
+    return deps.sh("git", args)
+  } catch (error) {
+    return {
+      status: 1,
+      stdout: "",
+      failure: {
+        kind: "instrument",
+        cause: `git ${args[0] ?? ""} instrument threw at ${deps.cwd}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      },
+    }
+  }
+}
+
+function unprovenRuntimeSource(path: string, cause: string): RuntimeSourceReceipt {
+  return { path, sha: null, verification: "unproven", dirty: "unknown", cause }
 }
 
 export function readPackageVersion(packageJsonPath: string, fallback = "0.0.0"): string {
@@ -236,4 +318,16 @@ function sourceGitEnvironment(): NodeJS.ProcessEnv {
 
 function isGitAbbreviation(value: string): boolean {
   return /^[0-9a-f]{7,64}$/iu.test(value)
+}
+
+function isFullGitObjectId(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value)
+}
+
+function physicalPath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
 }

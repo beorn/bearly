@@ -8,6 +8,7 @@ import {
   formatRuntimeInfo,
   formatRuntimeInfoLine,
   readGitState,
+  readRuntimeSourceReceipt,
   readWorkspaceInstallState,
   workspaceDepEdges,
   type RuntimeInfoDeps,
@@ -103,6 +104,74 @@ describe("@bearly/runtime-info", () => {
   test("composes runtime info from an explicit version and injected deps", () => {
     const deps: RuntimeInfoDeps = { cwd: "/repo", sh: () => ({ status: 1, stdout: "" }) }
     expect(composeRuntimeInfo("0.0.0", deps)).toEqual({ version: "0.0.0", sha: null, dirty: false })
+  })
+
+  test("records a verified clean full-SHA source receipt", () => {
+    const sha = "a".repeat(40)
+    const deps: RuntimeInfoDeps = {
+      cwd: "/physical/deployment-1",
+      sh: (_cmd, args) => (args.includes("rev-parse") ? { status: 0, stdout: `${sha}\n` } : { status: 0, stdout: "" }),
+    }
+
+    expect(readRuntimeSourceReceipt(deps)).toEqual({
+      path: "/physical/deployment-1",
+      sha,
+      verification: "verified",
+      dirty: "clean",
+    })
+  })
+
+  test("labels a verified dirty source receipt", () => {
+    const sha = "b".repeat(40)
+    const deps: RuntimeInfoDeps = {
+      cwd: "/physical/development",
+      sh: (_cmd, args) =>
+        args.includes("rev-parse") ? { status: 0, stdout: `${sha}\n` } : { status: 0, stdout: " M src/index.ts\n" },
+    }
+
+    expect(readRuntimeSourceReceipt(deps)).toMatchObject({
+      sha,
+      verification: "verified",
+      dirty: "dirty",
+    })
+  })
+
+  test.each([
+    {
+      name: "missing Git identity",
+      sh: (_cmd: string, args: readonly string[]) =>
+        args.includes("rev-parse") ? { status: 128, stdout: "" } : { status: 0, stdout: "" },
+      cause: /rev-parse.*status 128/u,
+    },
+    {
+      name: "status inspection failure",
+      sh: (_cmd: string, args: readonly string[]) =>
+        args.includes("rev-parse") ? { status: 0, stdout: `${"c".repeat(40)}\n` } : { status: 128, stdout: "" },
+      cause: /status.*status 128/u,
+    },
+    {
+      name: "instrument failure",
+      sh: () => ({
+        status: 1,
+        stdout: "",
+        failure: { kind: "instrument" as const, cause: "spawn EAGAIN" },
+      }),
+      cause: /spawn EAGAIN/u,
+    },
+    {
+      name: "abbreviated SHA",
+      sh: (_cmd: string, args: readonly string[]) =>
+        args.includes("rev-parse") ? { status: 0, stdout: "deadbee\n" } : { status: 0, stdout: "" },
+      cause: /full Git SHA/u,
+    },
+  ])("fails closed with typed uncertainty for $name", ({ sh, cause }) => {
+    expect(readRuntimeSourceReceipt({ cwd: "/repo", sh })).toMatchObject({
+      path: "/repo",
+      sha: null,
+      verification: "unproven",
+      dirty: "unknown",
+      cause: expect.stringMatching(cause),
+    })
   })
 })
 
