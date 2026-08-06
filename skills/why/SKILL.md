@@ -111,10 +111,10 @@ Run `bun tent state-repo root` first.
 
 - When holding the `@chief` single-writer hat, append the record below to
   `<state-root>/hub/retro/why-log.md`, then publish exactly that path with
-  `bun tent pm-commit -m "docs(retro): record /why analysis" hub/retro/why-log.md`.
+  `bun tent pm-commit -m "docs(retro): record /why analysis" "$(bun tent state-repo root)/hub/retro/why-log.md"`.
 - From any other managed seat, do not edit shared state. Send `@chief` a
   codified request whose first line is
-  `UPDATE bead=<owning-bead> action=update value=hub/retro/why-log.md reason="/why durable record follows"`,
+  `UPDATE bead=<owning-bead> action=update value=<state-root>/hub/retro/why-log.md reason="/why durable record follows"`,
   followed by the full record, and require readback.
 
 Use this field shape so `tent sitrep` and `sitrep.html` keep the follow-up
