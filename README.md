@@ -64,9 +64,9 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ### Non-plugin tools
 
-| Tool                | What                                           |
-| ------------------- | ---------------------------------------------- |
-| `tools/worktree.ts` | Git worktree management with submodule support |
+| Tool                | What                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `tools/worktree.ts` | Transitional pool policy/lifecycle adapter over `git-super`; delete it when `@hab/22614` replaces the pool with Hab bays |
 
 ## Packages
 

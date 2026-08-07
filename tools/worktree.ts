@@ -53,6 +53,7 @@ import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
+import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
 
 // ANSI colors
 const RESET = "\x1b[0m"
@@ -80,6 +81,14 @@ export const PREPARED_BASE_SHA_ENV = "BEARLY_WORKTREE_PREPARED_BASE_SHA"
  */
 export function worktreeAddEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...environment, KM_NO_AUTO_SUBMODULE_UPDATE: "1" }
+}
+
+/**
+ * Transitional pool lifecycle/policy adapter over git-super mechanics.
+ * Delete it with the worktree pool when @hab/22614 moves every caller to Hab bays.
+ */
+function poolWorktreeMechanics(gitRoot: string, environment: NodeJS.ProcessEnv = process.env) {
+  return createLocalGitWorktreeStore({ repo: gitRoot, env: environment })
 }
 
 // ============================================
@@ -638,8 +647,9 @@ async function removeGcCandidate(
     throw new Error(`Refusing to remove ${candidatePath}: ${proof.reason}`)
   }
 
-  const removal = await safeExec($`git -C ${gitRoot} worktree remove --force ${candidatePath}`)
-  if (removal.exitCode !== 0) throw new Error(`git worktree remove failed for ${candidatePath}`)
+  await poolWorktreeMechanics(gitRoot).remove(candidatePath, {
+    operation: `agent clone GC worktree remove ${candidatePath}`,
+  })
 
   const registrations = await registeredWorktreePaths(gitRoot)
   if (existsSync(candidatePath) || registrations.has(resolve(candidatePath))) {
@@ -1735,7 +1745,7 @@ export function resolveBranchArg(input: {
   remoteBranchExists: boolean
   branchName: string
   base: string
-}): string[] {
+}): ["-B", string, string] | ["-b", string, string] | [string] {
   if (input.isPoolSlot) return ["-B", input.branchName, input.base]
   if (input.branchExists) return [input.branchName]
   if (input.remoteBranchExists) return [input.branchName]
@@ -1942,12 +1952,18 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // under .git/worktrees/<name>/modules/<submodule>/ so worktrees can't
   // collide in each other's vendor/ trees.
   info(`Creating worktree at ${worktreePath}...`)
-  const wtResult = await safeExec(
-    $`cd ${gitRoot} && git worktree add ${worktreePath} ${branchArg}`.env(worktreeAddEnvironment()),
-  )
-  if (wtResult.exitCode !== 0) {
+  const mechanics = poolWorktreeMechanics(gitRoot, worktreeAddEnvironment())
+  const add: WorktreeAdd =
+    branchArg.length === 3
+      ? branchArg[0] === "-B"
+        ? { kind: "reset-branch", path: worktreePath, branch: branchArg[1], ref: branchArg[2] }
+        : { kind: "new-branch", path: worktreePath, branch: branchArg[1], ref: branchArg[2] }
+      : { kind: "branch", path: worktreePath, branch: branchArg[0] }
+  try {
+    await mechanics.add(add)
+  } catch (cause) {
     error("Failed to create worktree")
-    console.log(wtResult.stdout)
+    console.log(cause instanceof Error ? cause.message : String(cause))
     process.exit(1)
   }
   success("Worktree created")
@@ -1965,7 +1981,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
       error("Failed to initialize submodules:")
       console.log(subResult.stderr || subResult.stdout)
       // Clean up
-      await $`git worktree remove ${worktreePath} --force`.quiet()
+      await mechanics.remove(worktreePath, { operation: `failed setup cleanup ${worktreePath}` })
       process.exit(1)
     }
     // Verify isolation — each submodule's .git should point at per-worktree modules dir
@@ -2376,15 +2392,18 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 
   // Remove worktree
   info("Removing worktree...")
-  const removeResult = await safeExec($`cd ${gitRoot} && git worktree remove ${worktreePath} --force`)
-  if (removeResult.exitCode !== 0) {
+  const mechanics = poolWorktreeMechanics(gitRoot)
+  try {
+    await mechanics.remove(worktreePath, { operation: `pool worktree remove ${worktreePath}` })
+  } catch (cause) {
     error("Failed to remove worktree")
+    console.log(cause instanceof Error ? cause.message : String(cause))
     process.exit(1)
   }
   success("Worktree removed")
 
   // Prune
-  await $`cd ${gitRoot} && git worktree prune`.quiet()
+  await mechanics.prune({ operation: `pool worktree prune after removing ${worktreePath}` })
 
   // Final orphan sweep — defensive, in case git left anything behind
   if (modulesDir && existsSync(modulesDir)) {
