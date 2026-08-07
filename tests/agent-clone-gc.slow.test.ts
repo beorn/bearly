@@ -18,7 +18,6 @@ import { classifyAgentClone, countCascades, gcAgentClones, listAgentClones } fro
 
 let sandbox: string
 let consoleLogSpy: ReturnType<typeof vi.spyOn>
-const worktreeTool = join(import.meta.dirname, "../tools/worktree.ts")
 
 async function initRepo(path: string, opts: { withCommit?: boolean } = {}): Promise<void> {
   mkdirSync(path, { recursive: true })
@@ -30,15 +29,19 @@ async function initRepo(path: string, opts: { withCommit?: boolean } = {}): Prom
   }
 }
 
-async function runGc(repo: string, root: string, args: string[] = []): Promise<void> {
-  const process = Bun.spawn({
-    cmd: ["bun", worktreeTool, "gc", "--root", root, ...args],
-    cwd: repo,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const [exitCode, stderr] = await Promise.all([process.exited, new Response(process.stderr).text()])
-  expect(exitCode, stderr).toBe(0)
+async function runGc(repo: string, root: string, args: string[] = [], activeCwds: string[] = [repo]): Promise<void> {
+  const originalCwd = process.cwd()
+  try {
+    process.chdir(repo)
+    await gcAgentClones(
+      { root, includeUniqueWork: args.includes("--include-unique-work") },
+      {
+        censusProcessCwds: async () => ({ available: true, cwdPaths: activeCwds, reason: "deterministic test census" }),
+      },
+    )
+  } finally {
+    process.chdir(originalCwd)
+  }
 }
 
 async function initOwnerWithRemote(): Promise<{ owner: string; remote: string }> {
@@ -280,7 +283,7 @@ describe("worktree gc deletion safety", () => {
 
     try {
       await expectProcessCwd(holder.pid, clone)
-      await runGc(owner, root)
+      await runGc(owner, root, [], [clone])
 
       expect(existsSync(clone)).toBe(true)
       expect(await registeredWorktrees(owner)).toContain(clone)
