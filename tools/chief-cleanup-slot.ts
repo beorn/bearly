@@ -30,7 +30,7 @@ import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { writeFileSync } from "node:fs"
 import { resolve, dirname, basename } from "node:path"
-import { materializeSubmodulesFromLocalWorktreeParallel } from "./submodule-materialize.ts"
+import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 
 async function run(
   cmd: string,

@@ -52,7 +52,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
-import { materializeSubmodulesFromLocalWorktreeParallel } from "./submodule-materialize.ts"
+import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 
 // ANSI colors
 const RESET = "\x1b[0m"
