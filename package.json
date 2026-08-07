@@ -61,7 +61,7 @@
     "@termless/xtermjs": "^0.3.1",
     "ai": "^6.0.134",
     "commander": "^15.0.0",
-    "git-super": "github:beorn/git-super#ed5423afb21e554aa559181c5cadb6d0b07f0f65",
+    "git-super": "github:beorn/git-super#4e1743634f86b19899c9e13004d6eaa9a72e97a2",
     "loggily": "^0.10.2",
     "openai": "^6.46.0",
     "ts-morph": "^24.0.0",
