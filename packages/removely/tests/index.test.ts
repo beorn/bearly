@@ -17,11 +17,19 @@
  */
 
 import { chmodSync } from "node:fs"
-import { mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, parse } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
-import { isStrictlyInside, safeRemove, safeRemoveSync, tempTree } from "../src/index.ts"
+import {
+  findAncestorWithin,
+  findGitProjectRoot,
+  isStrictlyInside,
+  resolveContainedPath,
+  safeRemove,
+  safeRemoveSync,
+  tempTree,
+} from "../src/index.ts"
 
 const roots: string[] = []
 
@@ -68,6 +76,110 @@ describe("isStrictlyInside — the containment question, exported", () => {
 
   test("the parent is not inside its own child", () => {
     expect(isStrictlyInside("/repo", "/repo/pkg")).toBe(false)
+  })
+})
+
+describe("resolveContainedPath — one physical containment constructor", () => {
+  test("proves existing and prospective descendants", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    await mkdir(within)
+
+    expect(resolveContainedPath(join(within, "existing"), within)).toBe(join(within, "existing"))
+    expect(resolveContainedPath(join(within, "new", "nested.md"), within)).toBe(join(within, "new", "nested.md"))
+  })
+
+  test("refuses traversal and a prospective write through a symlink ancestor", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    const outside = join(base, "outside")
+    await mkdir(within)
+    await mkdir(outside)
+    await symlink(outside, join(within, "escape"))
+
+    expect(() => resolveContainedPath(join(within, "..", "outside", "victim.md"), within)).toThrow(/REFUSED/u)
+    expect(() => resolveContainedPath(join(within, "escape", "new.md"), within)).toThrow(/REFUSED/u)
+  })
+
+  test("root equality is explicit and symlink-leaf following is selectable", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    const outside = join(base, "outside")
+    await mkdir(within)
+    await mkdir(outside)
+    await writeFile(join(outside, "target.md"), "keep")
+    const link = join(within, "link.md")
+    await symlink(join(outside, "target.md"), link)
+
+    expect(() => resolveContainedPath(within, within)).toThrow(/REFUSED/u)
+    expect(resolveContainedPath(within, within, { allowRoot: true })).toBe(await realpath(within))
+    expect(() => resolveContainedPath(link, within)).toThrow(/REFUSED/u)
+    expect(resolveContainedPath(link, within, { followLeaf: false })).toBe(link)
+  })
+
+  test("refuses a dangling symlink leaf instead of branding its unresolved destination", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    await mkdir(within)
+    const link = join(within, "dangling.md")
+    await symlink(join(base, "absent-outside.md"), link)
+
+    expect(() => resolveContainedPath(link, within)).toThrow(/cannot prove physical containment/u)
+    expect(resolveContainedPath(link, within, { followLeaf: false })).toBe(link)
+  })
+})
+
+describe("findAncestorWithin — bounded physical ancestor discovery", () => {
+  test("walks inclusively through the boundary and never visits its parent", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    const start = join(within, "nested", "leaf")
+    await mkdir(start, { recursive: true })
+
+    expect(findAncestorWithin(start, within, (directory) => directory === start)).toBe(start)
+
+    const visited: string[] = []
+    expect(
+      findAncestorWithin(start, within, (directory) => {
+        visited.push(directory)
+        return directory === base
+      }),
+    ).toBeNull()
+    expect(visited).toEqual([start, join(within, "nested"), within])
+  })
+
+  test("follows an internal symlink physically and refuses an escaping symlink", async () => {
+    const base = await scratch()
+    const within = join(base, "within")
+    const physical = join(within, "physical")
+    const nested = join(physical, "nested")
+    const outside = join(base, "outside")
+    await mkdir(nested, { recursive: true })
+    await mkdir(outside)
+    await symlink(physical, join(within, "alias"))
+    await symlink(outside, join(within, "escape"))
+
+    expect(findAncestorWithin(join(within, "alias", "nested"), within, (directory) => directory === physical)).toBe(
+      physical,
+    )
+    expect(() => findAncestorWithin(join(within, "escape"), within, () => true)).toThrow(/REFUSED/u)
+  })
+
+  test("terminates at the platform filesystem root when no ancestor matches", async () => {
+    const base = await scratch()
+    expect(findAncestorWithin(base, parse(base).root, () => false)).toBeNull()
+  })
+})
+
+describe("findGitProjectRoot — not-repo is distinct from probe failure", () => {
+  test("returns null only for an existing directory outside Git", async () => {
+    const base = await scratch()
+    expect(findGitProjectRoot(base)).toBeNull()
+  })
+
+  test("throws when Git cannot inspect the requested directory", async () => {
+    const base = await scratch()
+    expect(() => findGitProjectRoot(join(base, "missing"))).toThrow(/git project boundary probe failed/u)
   })
 })
 
@@ -135,6 +247,37 @@ describe("safeRemove success path", () => {
     await safeRemove(victim, { within: base })
     expect(await readdir(base)).toEqual([])
   })
+
+  test("explicitly unlinks a symlink leaf without following its outside target", async () => {
+    const base = await scratch()
+    const within = join(base, "inside")
+    const outside = join(base, "outside")
+    const link = join(within, "outside-link")
+    await mkdir(within)
+    await mkdir(outside)
+    await writeFile(join(outside, "must-survive.txt"), "survives")
+    await symlink(outside, link)
+
+    await safeRemove(link, { within, symlinkLeaf: "unlink" })
+
+    await expect(lstat(link)).rejects.toThrow()
+    expect(await readdir(outside)).toEqual(["must-survive.txt"])
+  })
+
+  test("refuses a symlink leaf by default without deleting its target", async () => {
+    const base = await scratch()
+    const within = join(base, "inside")
+    const target = join(within, "target")
+    const link = join(within, "target-link")
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, "must-survive.txt"), "survives")
+    await symlink(target, link)
+
+    await expect(safeRemove(link, { within })).rejects.toThrow(/symlink leaf.*symlinkLeaf: "unlink"/u)
+
+    expect((await lstat(link)).isSymbolicLink()).toBe(true)
+    expect(await readdir(target)).toEqual(["must-survive.txt"])
+  })
 })
 
 describe("tempTree", () => {
@@ -188,6 +331,37 @@ describe("safeRemoveSync — same predicate, no await", () => {
     expect(() => safeRemoveSync(evil, { within })).toThrow(/REFUSED/u)
     expect(() => safeRemoveSync("", { within })).toThrow(/empty target/u)
     expect(await readdir(evil)).toEqual([])
+  })
+
+  test("explicitly unlinks a symlink leaf without following its outside target", async () => {
+    const base = await scratch()
+    const within = join(base, "inside")
+    const outside = join(base, "outside")
+    const link = join(within, "outside-link")
+    await mkdir(within)
+    await mkdir(outside)
+    await writeFile(join(outside, "must-survive.txt"), "survives")
+    await symlink(outside, link)
+
+    safeRemoveSync(link, { within, symlinkLeaf: "unlink" })
+
+    await expect(lstat(link)).rejects.toThrow()
+    expect(await readdir(outside)).toEqual(["must-survive.txt"])
+  })
+
+  test("refuses a symlink leaf by default without deleting its target", async () => {
+    const base = await scratch()
+    const within = join(base, "inside")
+    const target = join(within, "target")
+    const link = join(within, "target-link")
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, "must-survive.txt"), "survives")
+    await symlink(target, link)
+
+    expect(() => safeRemoveSync(link, { within })).toThrow(/symlink leaf.*symlinkLeaf: "unlink"/u)
+
+    expect((await lstat(link)).isSymbolicLink()).toBe(true)
+    expect(await readdir(target)).toEqual(["must-survive.txt"])
   })
 
   test("widens permissions only when the removal actually hits EACCES", async () => {

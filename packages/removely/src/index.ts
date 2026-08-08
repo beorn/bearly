@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
-import { mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises"
+import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep } from "node:path"
 
 /**
  * Guarded recursive removal + scope-bound temp trees.
@@ -51,6 +52,8 @@ export interface SafeRemoveOptions {
   readonly retries?: number
   /** Injectable for tests. Defaults to `[realpath(os.tmpdir())]`. */
   readonly allowedRoots?: readonly string[]
+  /** Explicitly unlink a symlink leaf without following its target. Default: refuse. */
+  readonly symlinkLeaf?: "unlink"
 }
 
 /**
@@ -77,6 +80,137 @@ export interface SafeRemoveOptions {
 export function isStrictlyInside(child: string, parent: string): boolean {
   if (child === parent) return false
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+}
+
+declare const containedPathBrand: unique symbol
+
+/** Absolute path whose physical destination is proven inside one root. */
+export type ContainedPath = string & { readonly [containedPathBrand]: true }
+
+export interface ResolveContainedPathOptions {
+  /** Root equality is refused unless the caller states that it is intentional. */
+  readonly allowRoot?: boolean
+  /** Follow an existing symlink leaf by default; false proves the leaf itself. */
+  readonly followLeaf?: boolean
+}
+
+/**
+ * Resolve an existing or prospective path against its nearest existing
+ * ancestor, then prove physical containment with the package's one predicate.
+ */
+export function resolveContainedPath(
+  target: string,
+  within: string,
+  options: ResolveContainedPathOptions = {},
+): ContainedPath {
+  return resolveContainedPathForCaller(target, within, options, "resolveContainedPath")
+}
+
+/** Find the first matching physical ancestor, inclusive, without leaving `within`. */
+export function findAncestorWithin(
+  start: string,
+  within: string,
+  predicate: (directory: ContainedPath) => boolean,
+): ContainedPath | null {
+  const boundary = resolveContainedPath(within, within, { allowRoot: true })
+  let current = resolveContainedPath(start, boundary, { allowRoot: true })
+
+  for (;;) {
+    if (predicate(current)) return current
+    if (current === boundary) return null
+    current = resolveContainedPath(dirname(current), boundary, { allowRoot: true })
+  }
+}
+
+/**
+ * Resolve the enclosing Git/superproject island. Returns null only when the
+ * directory is valid but outside Git; execution and repository errors throw.
+ */
+export function findGitProjectRoot(cwd: string): string | null {
+  const args = ["-C", cwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  if (result.error) {
+    throw new Error(`git project boundary probe failed for ${cwd}: ${result.error.message}`, { cause: result.error })
+  }
+
+  const stdout = (result.stdout ?? "").trim()
+  if (result.status === 0) {
+    const root = stdout
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find(Boolean)
+    if (root) return root
+    throw new Error(`git project boundary probe failed for ${cwd}: git returned no project root`)
+  }
+
+  const stderr = (result.stderr ?? "").trim()
+  if (result.status === 128 && /not a git repository/u.test(stderr)) return null
+  const detail = stderr || stdout || `git exited ${String(result.status)}`
+  throw new Error(`git project boundary probe failed for ${cwd}: ${detail}`)
+}
+
+function resolveContainedPathForCaller(
+  target: string,
+  within: string,
+  options: ResolveContainedPathOptions,
+  caller: string,
+): ContainedPath {
+  const raw = typeof target === "string" ? target.trim() : ""
+  if (raw.length === 0) throw new Error(`${caller}: empty target`)
+  const withinRaw = typeof within === "string" ? within.trim() : ""
+  if (withinRaw.length === 0) throw new Error(`${caller}: empty containment root for target ${raw}`)
+
+  let withinReal: string
+  try {
+    withinReal = realpathSync(withinRaw)
+  } catch {
+    throw new Error(`${caller}: containment root does not resolve: ${withinRaw}`)
+  }
+
+  const absoluteTarget = resolve(raw)
+  const followLeaf = options.followLeaf !== false
+  const segments: string[] = followLeaf ? [] : [basename(absoluteTarget)]
+  let existingAncestor = followLeaf ? absoluteTarget : dirname(absoluteTarget)
+  while (!pathEntryExists(existingAncestor)) {
+    const parent = dirname(existingAncestor)
+    if (parent === existingAncestor) break
+    segments.unshift(basename(existingAncestor))
+    existingAncestor = parent
+  }
+
+  const resolvedTarget = resolve(realpathExistingEntry(existingAncestor, raw, caller), ...segments)
+  const rootAllowed = options.allowRoot === true && resolvedTarget === withinReal
+  if (!rootAllowed && !isStrictlyInside(resolvedTarget, withinReal)) {
+    throw new Error(
+      `${caller}: REFUSED. Resolved target ${resolvedTarget} is not strictly inside resolved root ${withinReal}. (Requested target: ${raw}.)`,
+    )
+  }
+  return resolvedTarget as ContainedPath
+}
+
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    throw error
+  }
+}
+
+function realpathExistingEntry(path: string, requested: string, caller: string): string {
+  try {
+    return realpathSync(path)
+  } catch (cause) {
+    throw new Error(
+      `${caller}: cannot prove physical containment for ${requested}; resolve or remove the dangling symlink before retrying`,
+      { cause },
+    )
+  }
 }
 
 /**
@@ -108,7 +242,12 @@ function resolveForComparison(root: string): string {
  * Returns the resolved target, or `null` when an absent target was explicitly
  * declared expected.
  */
-function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller: string): string | null {
+interface RemovalTarget {
+  readonly path: string
+  readonly kind: "recursive" | "symlink-leaf"
+}
+
+function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller: string): RemovalTarget | null {
   const raw = typeof target === "string" ? target.trim() : ""
   if (raw.length === 0) {
     throw new Error(
@@ -142,22 +281,27 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
     )
   }
 
-  let targetReal: string
+  const absoluteRaw = resolve(raw)
+  let isSymlinkLeaf = false
   try {
-    targetReal = realpathSync(raw)
-  } catch {
+    isSymlinkLeaf = lstatSync(absoluteRaw).isSymbolicLink()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     if (options.allowMissing === true) return null
     throw new Error(
       `${caller}: target does not exist: ${raw}. Pass \`allowMissing: true\` if that is expected — a blanket force is how a wrong path becomes invisible.`,
     )
   }
 
-  if (!isStrictlyInside(targetReal, withinReal)) {
+  if (isSymlinkLeaf && options.symlinkLeaf !== "unlink") {
     throw new Error(
-      `${caller}: REFUSED. Resolved target ${targetReal} is not strictly inside resolved root ${withinReal}. (Requested target: ${raw}.)`,
+      `${caller}: REFUSED symlink leaf ${raw}. Pass \`symlinkLeaf: "unlink"\` to unlink the leaf without following its target.`,
     )
   }
-  return targetReal
+
+  const unlinkLeaf = isSymlinkLeaf
+  const targetReal = resolveContainedPathForCaller(raw, withinRaw, { followLeaf: !unlinkLeaf }, caller)
+  return { path: targetReal, kind: unlinkLeaf ? "symlink-leaf" : "recursive" }
 }
 
 /**
@@ -166,14 +310,16 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
  * difference is the removal call.
  */
 export function safeRemoveSync(target: string, options: SafeRemoveOptions): void {
-  const targetReal = resolveRemovalTarget(target, options, "safeRemoveSync")
-  if (targetReal === null) return
+  const resolved = resolveRemovalTarget(target, options, "safeRemoveSync")
+  if (resolved === null) return
+  const targetReal = resolved.path
 
   const retries = options.retries ?? 3
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      rmSync(targetReal, { recursive: true })
+      if (resolved.kind === "symlink-leaf") unlinkSync(targetReal)
+      else rmSync(targetReal, { recursive: true })
       break
     } catch (error) {
       lastError = error
@@ -190,13 +336,23 @@ export function safeRemoveSync(target: string, options: SafeRemoveOptions): void
     }
   }
 
-  if (existsSync(targetReal)) {
-    const survivors = statSync(targetReal).isDirectory() ? readdirSync(targetReal) : []
+  const survivor = lstatOrNull(targetReal)
+  if (survivor) {
+    const survivors = survivor.isDirectory() && !survivor.isSymbolicLink() ? readdirSync(targetReal) : []
     throw new Error(
       `safeRemoveSync: ${targetReal} still exists after removal (${survivors.length} entries).${
         survivors.length > 0 ? ` Survivors: ${survivors.slice(0, 10).join(", ")}` : ""
       } Last error: ${String(lastError)}`,
     )
+  }
+}
+
+function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
+  try {
+    return lstatSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
   }
 }
 
@@ -214,33 +370,39 @@ function widenWritable(path: string): void {
 export async function safeRemove(target: string, options: SafeRemoveOptions): Promise<void> {
   const resolved = resolveRemovalTarget(target, options, "safeRemove")
   if (resolved === null) return
-  const targetReal = resolved
+  const targetReal = resolved.path
 
   const retries = options.retries ?? 3
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      await rm(targetReal, { recursive: true })
+      if (resolved.kind === "symlink-leaf") await unlink(targetReal)
+      else await rm(targetReal, { recursive: true })
       break
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
       if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error
-      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 20 * (attempt + 1))
+      })
     }
   }
 
   // Verify. A cleanup that silently no-ops leaving the caller green is the
   // dominant defect class this whole bead exists to kill.
-  const survivors = await readdir(targetReal).catch(() => null)
-  if (survivors !== null) {
+  const survivor = await lstat(targetReal).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null
+    throw error
+  })
+  if (survivor?.isDirectory() && !survivor.isSymbolicLink()) {
+    const survivors = await readdir(targetReal)
     const detail = survivors.length > 0 ? ` Survivors: ${survivors.slice(0, 10).join(", ")}` : ""
     throw new Error(
       `safeRemove: ${targetReal} still exists after removal (${survivors.length} entries).${detail} Last error: ${String(lastError)}`,
     )
   }
-  const stillThere = await stat(targetReal).catch(() => null)
-  if (stillThere !== null) {
+  if (survivor !== null) {
     throw new Error(`safeRemove: ${targetReal} still exists after removal (non-directory).`)
   }
 }
