@@ -67,6 +67,19 @@ describe("parseArgs", () => {
 })
 
 describe("runCli", () => {
+  test("--help prints usage and exits successfully", () => {
+    const output: string[] = []
+    const spy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => output.push(args.map(String).join(" ")))
+    try {
+      expect(runCli(["--help"])).toBe(0)
+      expect(output.join("\n")).toMatch(/usage: removely/u)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   test("exit 0 removes a target inside the root", () => {
     const target = makeDir("inside")
     expect(runCli([target, "--within", root])).toBe(0)

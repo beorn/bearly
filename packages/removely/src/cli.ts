@@ -74,6 +74,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 }
 
 export function runCli(argv: readonly string[]): number {
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    console.log(USAGE)
+    return 0
+  }
+
   let parsed: ParsedArgs
   try {
     parsed = parseArgs(argv)
