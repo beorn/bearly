@@ -36,7 +36,11 @@ async function runGc(repo: string, root: string, args: string[] = [], activeCwds
     await gcAgentClones(
       { root, includeUniqueWork: args.includes("--include-unique-work") },
       {
-        censusProcessCwds: async () => ({ available: true, cwdPaths: activeCwds, reason: "deterministic test census" }),
+        censusProcessCwds: async () => ({
+          available: true,
+          rows: activeCwds.map((cwd, index) => ({ pid: index + 1, cwd })),
+          reason: "deterministic test census",
+        }),
       },
     )
   } finally {
@@ -306,7 +310,7 @@ describe("worktree gc deletion safety", () => {
       await gcAgentClones(
         { root },
         {
-          censusProcessCwds: async () => ({ available: false, cwdPaths: [], reason: "test probe unavailable" }),
+          censusProcessCwds: async () => ({ available: false, reason: "test probe unavailable" }),
         },
       )
     } finally {

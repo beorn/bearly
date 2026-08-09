@@ -64,6 +64,7 @@
     "git-super": "github:beorn/git-super#539df0d29e5034253d3522e8e32b107ffeeb5003",
     "loggily": "^0.10.2",
     "openai": "^6.46.0",
+    "removely": "workspace:*",
     "ts-morph": "^24.0.0",
     "zod": "^4.3.6"
   },

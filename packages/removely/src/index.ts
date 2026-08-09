@@ -4,6 +4,14 @@ import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve, sep } from "node:path"
 
+export {
+  censusProcessCwds,
+  type ProcessCwdCensus,
+  type ProcessCwdCensusCommandResult,
+  type ProcessCwdCensusDeps,
+  type ProcessCwdRow,
+} from "./process-census.ts"
+
 /**
  * Guarded recursive removal + scope-bound temp trees.
  *

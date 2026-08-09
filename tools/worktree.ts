@@ -43,7 +43,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -54,6 +53,7 @@ import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
+import { censusProcessCwds, type ProcessCwdCensus } from "removely"
 
 // ANSI colors
 const RESET = "\x1b[0m"
@@ -434,93 +434,8 @@ interface GcCandidateProof {
   reason: string
 }
 
-export interface ProcessCwdCensus {
-  available: boolean
-  cwdPaths: string[]
-  reason: string
-}
-
 export interface GcDependencies {
   censusProcessCwds?: () => ProcessCwdCensus | Promise<ProcessCwdCensus>
-}
-
-const CWD_CENSUS_TIMEOUT_MS = 2_000
-const CWD_CENSUS_MAX_BUFFER = 8 * 1024 * 1024
-const CWD_CENSUS_MAX_PROCESSES = 32_768
-
-function unavailableCwdCensus(reason: string): ProcessCwdCensus {
-  return { available: false, cwdPaths: [], reason }
-}
-
-function currentProcessCwd(): string | undefined {
-  try {
-    return realpathSync(process.cwd())
-  } catch {
-    return undefined
-  }
-}
-
-function censusDarwinProcessCwds(currentCwd: string): ProcessCwdCensus {
-  const lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].find(existsSync)
-  if (!lsof) return unavailableCwdCensus("lsof is unavailable")
-
-  const result = spawnSync(lsof, ["-a", "-d", "cwd", "-F0n"], {
-    encoding: "utf8",
-    timeout: CWD_CENSUS_TIMEOUT_MS,
-    maxBuffer: CWD_CENSUS_MAX_BUFFER,
-  })
-  if (result.error || result.status !== 0 || (result.stderr ?? "").trim() !== "") {
-    const stderr = (result.stderr ?? "").trim()
-    return unavailableCwdCensus(result.error?.message ?? (stderr || `lsof exit ${result.status}`))
-  }
-
-  const cwdPaths = new Set<string>([currentCwd])
-  let observedCwds = 0
-  for (const rawField of (result.stdout ?? "").split("\0")) {
-    const field = rawField.startsWith("\n") ? rawField.slice(1) : rawField
-    if (!field.startsWith("n")) continue
-    const cwd = field.slice(1)
-    if (!isAbsolute(cwd)) return unavailableCwdCensus("lsof returned a non-absolute CWD")
-    cwdPaths.add(cwd)
-    observedCwds++
-  }
-  if (observedCwds === 0) return unavailableCwdCensus("lsof returned no process CWDs")
-  return { available: true, cwdPaths: [...cwdPaths], reason: "macOS lsof census" }
-}
-
-function censusLinuxProcessCwds(currentCwd: string): ProcessCwdCensus {
-  let processIds: string[]
-  try {
-    processIds = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))
-  } catch (error) {
-    return unavailableCwdCensus(`cannot enumerate /proc: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  if (processIds.length > CWD_CENSUS_MAX_PROCESSES) {
-    return unavailableCwdCensus(`process count exceeds ${CWD_CENSUS_MAX_PROCESSES}`)
-  }
-
-  const cwdPaths = new Set<string>([currentCwd])
-  for (const processId of processIds) {
-    try {
-      const cwd = readlinkSync(`/proc/${processId}/cwd`)
-      if (!isAbsolute(cwd)) return unavailableCwdCensus(`/proc/${processId}/cwd is not absolute`)
-      cwdPaths.add(cwd)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === "ENOENT" || code === "ESRCH" || code === "EINVAL") continue
-      return unavailableCwdCensus(`cannot read /proc/${processId}/cwd: ${code ?? String(error)}`)
-    }
-  }
-  return { available: true, cwdPaths: [...cwdPaths], reason: "Linux /proc census" }
-}
-
-/** Bounded, fail-closed census of process working directories. */
-export function censusProcessCwds(): ProcessCwdCensus {
-  const currentCwd = currentProcessCwd()
-  if (!currentCwd) return unavailableCwdCensus("current process CWD is unavailable")
-  if (process.platform === "darwin") return censusDarwinProcessCwds(currentCwd)
-  if (process.platform === "linux") return censusLinuxProcessCwds(currentCwd)
-  return unavailableCwdCensus(`unsupported platform ${process.platform}`)
 }
 
 function proveNoLiveCwd(candidatePath: string, census: ProcessCwdCensus): GcCandidateProof {
@@ -533,7 +448,7 @@ function proveNoLiveCwd(candidatePath: string, census: ProcessCwdCensus): GcCand
     return { removable: false, reason: "candidate path proof unavailable" }
   }
 
-  for (const cwdPath of census.cwdPaths) {
+  for (const { cwd: cwdPath } of census.rows) {
     if (!isAbsolute(cwdPath)) return { removable: false, reason: "CWD census returned a non-absolute path" }
     const rel = relative(candidate, resolve(cwdPath))
     if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
