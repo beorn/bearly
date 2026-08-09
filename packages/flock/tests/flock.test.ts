@@ -237,6 +237,29 @@ describe("@bearly/flock", () => {
     expect(fake.closed).toEqual([10])
   })
 
+  test("close failure preserves local ownership until release can be retried", () => {
+    let failClose = true
+    const fake = fakeIo({
+      close(fd) {
+        if (fd === 10 && failClose) throw new Error("close failed")
+      },
+    })
+    const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+    const lock = runtime.tryAcquire("/lock")
+    expect(lock).not.toBeNull()
+    if (lock === null) return
+
+    expect(() => lock.release()).toThrow("close failed")
+    expect(lock.held).toBe(true)
+    expect(runtime.tryAcquire("/alias")).toBeNull()
+
+    failClose = false
+    lock.release()
+    expect(lock.held).toBe(false)
+    using successor = runtime.tryAcquire("/lock")
+    expect(successor).not.toBeNull()
+  })
+
   test("libc candidates cover glibc, musl fallback, and Darwin without unsupported fallback", () => {
     expect(libcCandidates("linux")).toEqual(["libc.so.6", "libc.so"])
     expect(libcCandidates("darwin")).toEqual(["/usr/lib/libSystem.B.dylib", "libSystem.B.dylib", "libc.dylib"])

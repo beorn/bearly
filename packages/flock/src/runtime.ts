@@ -121,9 +121,9 @@ function publishHandle(
 
   const release = (): void => {
     if (released) return
+    io.close(candidate.fd)
     released = true
     heldIdentities.delete(candidate.identity)
-    io.close(candidate.fd)
   }
 
   const replaceBody = (body: string | Uint8Array): void => {
