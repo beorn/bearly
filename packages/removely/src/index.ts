@@ -131,8 +131,9 @@ export function findAncestorWithin(
 }
 
 /**
- * Resolve the enclosing Git/superproject island. Returns null only when the
- * directory is valid but outside Git; execution and repository errors throw.
+ * Resolve the enclosing Git/superproject island. Returns null when the
+ * directory is absent or valid but outside Git; execution and repository
+ * errors throw.
  */
 export function findGitProjectRoot(cwd: string): string | null {
   const args = ["-C", cwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
@@ -156,6 +157,7 @@ export function findGitProjectRoot(cwd: string): string | null {
   }
 
   const stderr = (result.stderr ?? "").trim()
+  if (!pathEntryExists(cwd)) return null
   if (result.status === 128 && /not a git repository/u.test(stderr)) return null
   const detail = stderr || stdout || `git exited ${String(result.status)}`
   throw new Error(`git project boundary probe failed for ${cwd}: ${detail}`)

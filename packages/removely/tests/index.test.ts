@@ -177,9 +177,16 @@ describe("findGitProjectRoot — not-repo is distinct from probe failure", () =>
     expect(findGitProjectRoot(base)).toBeNull()
   })
 
-  test("throws when Git cannot inspect the requested directory", async () => {
+  test("returns null for a nonexistent directory", async () => {
     const base = await scratch()
-    expect(() => findGitProjectRoot(join(base, "missing"))).toThrow(/git project boundary probe failed/u)
+    expect(findGitProjectRoot(join(base, "missing"))).toBeNull()
+  })
+
+  test("throws when the requested path exists but is not a directory", async () => {
+    const base = await scratch()
+    const file = join(base, "file.txt")
+    await writeFile(file, "not a directory")
+    expect(() => findGitProjectRoot(file)).toThrow(/git project boundary probe failed/u)
   })
 })
 
