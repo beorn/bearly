@@ -87,6 +87,7 @@ A list of async-fetched trees of plain values uses all four together. For React 
 
 | Package                                              | What                                                  |
 | ---------------------------------------------------- | ----------------------------------------------------- |
+| [`@bearly/flock`](packages/flock/)                   | Crash-safe fd-held file ownership for Bun             |
 | [vitest-silvery-dots](packages/vitest-silvery-dots/) | Streaming dot reporter for Vitest, built with Silvery |
 
 ## Development

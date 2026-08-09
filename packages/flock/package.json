@@ -1,0 +1,68 @@
+{
+  "name": "@bearly/flock",
+  "version": "0.1.0",
+  "description": "Crash-safe fd-held flock ownership for Bun on local macOS and Linux filesystems",
+  "keywords": [
+    "advisory-lock",
+    "bun",
+    "file-lock",
+    "flock",
+    "linux",
+    "macos"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/flock",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "packages/flock"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "tsdown": "^0.22.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "tsdown": {
+    "clean": true,
+    "deps": {
+      "neverBundle": [
+        "bun:ffi"
+      ]
+    },
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
+  },
+  "engines": {
+    "bun": ">=1.3.13"
+  }
+}
