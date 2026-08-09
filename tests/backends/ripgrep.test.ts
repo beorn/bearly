@@ -7,6 +7,7 @@ import { execSync } from "child_process"
 // Import to trigger registration
 import { RipgrepBackend, findPatterns, createPatternReplaceProposal } from "../../tools/lib/backends/ripgrep"
 import { getBackendByName, getBackends } from "../../tools/lib/backend"
+import { applyEditset } from "../../tools/lib/core/apply"
 
 describe("ripgrep backend", () => {
   describe("registration", () => {
@@ -415,6 +416,186 @@ const VAULT_ROOT = "SCREAMING_COMPOUND"
         // The regression: the dot-dir file must be found (was dropped before --hidden).
         expect(files.some((f) => f.includes(".claude/skills/handle.ts"))).toBe(true)
         expect(files.some((f) => f.endsWith("visible.ts"))).toBe(true)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("does not descend into .git — a refactor never proposes edits to repository internals", () => {
+      try {
+        execSync("which rg", { stdio: "pipe" })
+      } catch {
+        console.log("Skipping test: ripgrep (rg) not installed")
+        return
+      }
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        mkdirSync(join(tempDir, ".git/worktrees/scratch"), { recursive: true })
+        writeFileSync(join(tempDir, ".git/worktrees/scratch/copy.ts"), 'const c = "@agent/7"\n')
+        const refs = findPatterns("@agent/")
+        expect(refs.some((r) => r.file.includes(".git/"))).toBe(false)
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+  })
+
+  describe("offset contract — every emitted edit points at the text it matched", () => {
+    let tempDir: string
+
+    // Each fixture pairs a file with the multibyte shape that made byte offsets and
+    // character offsets diverge in real prose. `expected` is the whole file after apply.
+    const FIXTURES: { name: string; write: () => Buffer | string; expected: string }[] = [
+      {
+        name: "ascii.md",
+        write: () => "line one\nsee @tent/@dev here\ntail\n",
+        expected: "line one\nsee @tent/agents/@dev here\ntail\n",
+      },
+      {
+        name: "emdash-same-line.md",
+        write: () => "prefix — em dash → @tent/@dev here\n",
+        expected: "prefix — em dash → @tent/agents/@dev here\n",
+      },
+      {
+        name: "emdash-earlier-line.md",
+        write: () => "héader ünicode ✓ ✗ ★\nsee @tent/@dev here\n",
+        expected: "héader ünicode ✓ ✗ ★\nsee @tent/agents/@dev here\n",
+      },
+      {
+        name: "astral.md", // emoji are surrogate pairs: 4 bytes, 2 UTF-16 code units
+        write: () => "emoji 🎉🎉🎉 header\nsee @tent/@dev here\n",
+        expected: "emoji 🎉🎉🎉 header\nsee @tent/agents/@dev here\n",
+      },
+      {
+        name: "cjk.md",
+        write: () => "日本語のテキストです\n@tent/@chief line\n",
+        expected: "日本語のテキストです\n@tent/agents/@chief line\n",
+      },
+      {
+        name: "box-drawing.md", // the ascii-art tables that fill this repo's docs
+        write: () => "╔══════╗\n║ tbl  ║\n╚══════╝\nsee @tent/@fleet\n",
+        expected: "╔══════╗\n║ tbl  ║\n╚══════╝\nsee @tent/agents/@fleet\n",
+      },
+      {
+        name: "two-matches-one-line.md",
+        write: () => "@tent/@dev and ★ then @tent/@cto\n",
+        expected: "@tent/agents/@dev and ★ then @tent/agents/@cto\n",
+      },
+      {
+        name: "no-trailing-newline.md",
+        write: () => "★ head\n@tent/@yrd",
+        expected: "★ head\n@tent/agents/@yrd",
+      },
+      {
+        // ripgrep strips a UTF-8 BOM before searching, so its byte columns on line 1
+        // are BOM-relative. Recomputing line starts from the decoded string (which keeps
+        // the BOM) put every line-1 match three bytes short.
+        name: "bom.md",
+        write: () =>
+          Buffer.concat([
+            Buffer.from([0xef, 0xbb, 0xbf]),
+            Buffer.from("@tent/@dev owns the queue\nsecond line @tent/@cto here\n"),
+          ]),
+        expected: "﻿@tent/agents/@dev owns the queue\nsecond line @tent/agents/@cto here\n",
+      },
+    ]
+
+    const PATTERN = "@tent/@(dev|cto|chief|fleet|yrd)\\b"
+    const REPLACEMENT = "@tent/agents/@$1"
+
+    beforeAll(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "ripgrep-offsets-"))
+      for (const f of FIXTURES) writeFileSync(join(tempDir, f.name), f.write())
+    })
+
+    afterAll(() => {
+      rmSync(tempDir, { recursive: true, force: true })
+    })
+
+    function skipIfNoRg(): boolean {
+      try {
+        execSync("which rg", { stdio: "pipe" })
+        return false
+      } catch {
+        console.log("Skipping test: ripgrep (rg) not installed")
+        return true
+      }
+    }
+
+    test("each edit's offset+length selects exactly the matched text", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const editset = createPatternReplaceProposal(PATTERN, REPLACEMENT, "*.md", false)
+        expect(editset.edits.length).toBeGreaterThan(0)
+
+        const misaligned = editset.edits
+          .map((edit) => {
+            const content = readFileSync(edit.file, "utf-8")
+            const segment = content.slice(edit.offset, edit.offset + edit.length)
+            return { file: edit.file, offset: edit.offset, segment }
+          })
+          .filter((s) => !/^@tent\/@\w+$/.test(s.segment))
+
+        expect(misaligned).toEqual([])
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("emit → apply rewrites exactly the matched spans and nothing else", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      const applyDir = mkdtempSync(join(tmpdir(), "ripgrep-offsets-apply-"))
+      try {
+        for (const f of FIXTURES) writeFileSync(join(applyDir, f.name), f.write())
+        process.chdir(applyDir)
+        const editset = createPatternReplaceProposal(PATTERN, REPLACEMENT, "*.md", false)
+        const result = applyEditset(editset)
+        expect(result.driftDetected).toEqual([])
+
+        const after = FIXTURES.map((f) => `${f.name}: ${JSON.stringify(readFileSync(join(applyDir, f.name), "utf-8"))}`)
+        const want = FIXTURES.map((f) => `${f.name}: ${JSON.stringify(f.expected)}`)
+        expect(after).toEqual(want)
+      } finally {
+        process.chdir(cwd)
+        rmSync(applyDir, { recursive: true, force: true })
+      }
+    })
+
+    test("each edit records the text it expects to replace (`before`)", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const editset = createPatternReplaceProposal(PATTERN, REPLACEMENT, "*.md", false)
+        for (const edit of editset.edits) {
+          const content = readFileSync(edit.file, "utf-8")
+          expect(edit.before).toBeDefined()
+          expect(content.slice(edit.offset, edit.offset + edit.length)).toBe(edit.before)
+        }
+      } finally {
+        process.chdir(cwd)
+      }
+    })
+
+    test("finds every match — one per fixture line, none dropped by offset drift", () => {
+      if (skipIfNoRg()) return
+      const cwd = process.cwd()
+      try {
+        process.chdir(tempDir)
+        const editset = createPatternReplaceProposal(PATTERN, REPLACEMENT, "*.md", false)
+        for (const f of FIXTURES) {
+          const content = readFileSync(join(tempDir, f.name), "utf-8")
+          const truth = [...content.matchAll(new RegExp(PATTERN, "g"))]
+          const got = editset.edits.filter((e) => e.file.endsWith(f.name))
+          expect(`${f.name}:${got.length}`).toBe(`${f.name}:${truth.length}`)
+          const gotOffsets = got.map((e) => e.offset).sort((a, b) => a - b)
+          const truthOffsets = truth.map((m) => m.index!).sort((a, b) => a - b)
+          expect(`${f.name}:${gotOffsets.join(",")}`).toBe(`${f.name}:${truthOffsets.join(",")}`)
+        }
       } finally {
         process.chdir(cwd)
       }

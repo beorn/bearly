@@ -83,7 +83,7 @@ function findKeyEdit(
   if (!m) return null
   const offset = start + m.index // position of the opening quote
   const length = oldName.length + 2 // include both quotes
-  return { offset, length, replacement: `"${newName}"` }
+  return { offset, length, replacement: `"${newName}"`, before: content.slice(offset, offset + length) }
 }
 
 /**
@@ -95,7 +95,7 @@ function findNameValueEdit(content: string, oldName: string, newName: string): O
   if (!m) return null
   const offset = m.index + m[1]!.length // position of the value's opening quote
   const length = oldName.length + 2
-  return { offset, length, replacement: `"${newName}"` }
+  return { offset, length, replacement: `"${newName}"`, before: content.slice(offset, offset + length) }
 }
 
 /**

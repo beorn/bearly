@@ -100,6 +100,7 @@ export function createFileRenameEditset(oldPath: string, newPath: string, search
       offset: link.start,
       length: link.end - link.start,
       replacement,
+      before: content.slice(link.start, link.end),
     })
   }
 

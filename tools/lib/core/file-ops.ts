@@ -19,6 +19,7 @@ import path from "path"
 import { Glob } from "bun"
 import { Project } from "ts-morph"
 import type { FileOp, FileEditset, FileConflict, FileRenameReport, Edit } from "./types"
+import { applyEditsToContent } from "./apply"
 import { findLinksToFile, parseWikiLinks, generateReplacement } from "../backends/wikilink"
 import { findPackageJsonEdits } from "../backends/package-json"
 import { findTsConfigEdits } from "../backends/tsconfig-json"
@@ -66,14 +67,25 @@ function listGitCandidateFiles(cwd: string): string[] | null {
   }
 }
 
-async function listCandidateFiles(glob: string, cwd: string): Promise<string[]> {
+/**
+ * The files a move/rename can see, and where that list came from.
+ *
+ * Inside a git work tree the list is `git ls-files`, which is why a file can be present
+ * on disk and still invisible here: ignored files are excluded, and a nested repository
+ * or submodule appears as a single gitlink rather than its contents. Callers report the
+ * source when they find nothing, so "no files found" never reads as "the path is wrong".
+ */
+export async function listCandidateFiles(
+  glob: string,
+  cwd: string,
+): Promise<{ files: string[]; source: "git" | "filesystem" }> {
   const globber = new Glob(glob)
   const gitFiles = listGitCandidateFiles(cwd)
-  if (gitFiles) return gitFiles.filter((file) => globber.match(file))
+  if (gitFiles) return { files: gitFiles.filter((file) => globber.match(file)), source: "git" }
 
   const files: string[] = []
   for await (const file of globber.scan({ cwd, onlyFiles: true, dot: true })) files.push(file)
-  return files
+  return { files, source: "filesystem" }
 }
 
 /**
@@ -109,7 +121,7 @@ export async function findFilesToRename(
 ): Promise<FileOp[]> {
   const fileOps: FileOp[] = []
 
-  for (const file of await listCandidateFiles(glob, cwd)) {
+  for (const file of (await listCandidateFiles(glob, cwd)).files) {
     const basename = path.basename(file)
     const dirname = path.dirname(file)
 
@@ -353,6 +365,7 @@ function createImportEdit(
     offset: start,
     length: end - start,
     replacement: newSpecifier,
+    before: fileContent.slice(start, end),
   }
 }
 
@@ -461,6 +474,7 @@ export function findWikilinkEdits(fileOps: FileOp[], cwd: string = process.cwd()
             offset: link.start,
             length: link.end - link.start,
             replacement,
+            before: content.slice(link.start, link.end),
           })
         }
       }
@@ -585,7 +599,7 @@ export async function findFilesToMovePrefix(
   const normOld = oldPrefix.replace(/\/+$/, "")
   const normNew = newPrefix.replace(/\/+$/, "")
 
-  for (const file of await listCandidateFiles(glob, cwd)) {
+  for (const file of (await listCandidateFiles(glob, cwd)).files) {
     // Only files at or under the old prefix.
     if (file !== normOld && !file.startsWith(normOld + "/")) continue
 
@@ -796,13 +810,10 @@ function applyLinkEdits(
       errors.push(`${file}: link-edit target missing, skipping ${fileEdits.length} edit(s)`)
       continue
     }
-    let content = fs.readFileSync(absPath, "utf-8")
-    // Apply offset-descending so earlier edits don't shift later offsets.
-    const sorted = [...fileEdits].sort((a, b) => b.offset - a.offset)
-    for (const edit of sorted) {
-      content = content.slice(0, edit.offset) + edit.replacement + content.slice(edit.offset + edit.length)
-      count++
-    }
+    // Same verified primitive the editset applier uses: throws rather than writing a
+    // replacement over text that isn't what the edit recorded.
+    const content = applyEditsToContent(fs.readFileSync(absPath, "utf-8"), fileEdits)
+    count += fileEdits.length
     fs.writeFileSync(absPath, content)
   }
   return count

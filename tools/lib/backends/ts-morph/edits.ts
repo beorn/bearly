@@ -180,7 +180,8 @@ function generateEditsFromRefs(project: Project, refs: Reference[], oldName: str
       fileContents.set(ref.file, content)
     }
 
-    // Calculate byte offset from line/col
+    // Character offset from line/col — ts-morph counts in JS string indices throughout,
+    // which is the unit an Edit carries.
     const lines = content.split("\n")
     let offset = 0
     for (let i = 0; i < ref.range[0] - 1; i++) {
@@ -193,6 +194,7 @@ function generateEditsFromRefs(project: Project, refs: Reference[], oldName: str
       offset,
       length: oldName.length,
       replacement: newName,
+      before: content.slice(offset, offset + oldName.length),
     })
   }
 
@@ -249,7 +251,7 @@ function createDefinitionEdit(
     fileContents.set(sym.file, content)
   }
 
-  // Calculate byte offset from line (sym.line is 1-indexed)
+  // Character offset from line (sym.line is 1-indexed)
   const lines = content.split("\n")
   let offset = 0
   for (let i = 0; i < sym.line - 1 && i < lines.length; i++) {
@@ -269,6 +271,7 @@ function createDefinitionEdit(
     offset,
     length: sym.name.length,
     replacement: newName,
+    before: content.slice(offset, offset + sym.name.length),
   }
 }
 

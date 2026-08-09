@@ -75,6 +75,7 @@ import {
   loadFileEditset,
   findFilesToMovePrefix,
   createDirectoryMoveProposal,
+  listCandidateFiles,
 } from "./lib/core/file-ops"
 
 const args = process.argv.slice(2)
@@ -223,11 +224,21 @@ EDITSET FORMAT (JSON)
   {
     "refs": [{ "refId": "abc123", "file": "src/foo.ts", "line": 42,
                "kind": "call", "scope": "initApp", "replace": "gadget" }],
-    "edits": [{ "file": "src/foo.ts", "checksum": "...", ... }]
+    "edits": [{ "file": "src/foo.ts", "offset": 1204, "length": 6,
+                "replacement": "gadget", "before": "widget" }]
   }
 
-  Fields: refId (unique ID), kind (call|decl|type|string|comment),
-          scope (enclosing function), replace (null to skip)
+  Ref fields:  refId (unique ID), kind (call|decl|type|string|comment),
+               scope (enclosing function), replace (null to skip)
+
+  Edit fields: offset/length are CHARACTER offsets — JS string indices, the unit
+               String.slice uses. Never byte offsets: backends that search in bytes
+               (ripgrep columns, ast-grep byteOffset) convert before emitting.
+               'before' is the exact text at [offset, offset+length) when the edit was
+               proposed. editset.apply re-reads it and REFUSES TO WRITE THE FILE if the
+               text there has changed or the offset is wrong — a mismatch means the
+               editset is stale or miscomputed, and writing through it corrupts the file.
+               Regenerate the editset rather than editing offsets by hand.
 
   Patch editsets with LLM decisions:
     $ bun refactor editset.patch edits.json <<< '{"abc123": null, "def456": "Gadget"}'
@@ -279,8 +290,12 @@ COMMANDS
     --backend <name>                      ast-grep (structural) or ripgrep (text)
     --output <file>                       Editset file (default: editset.json)
 
-  editset.apply <file> [--dry-run] [--verify]  Apply editset (checksums protect against drift, --verify runs tsc before/after)
-  editset.verify <file>                   Check if editset can be applied
+  editset.apply <file> [--dry-run] [--verify]  Apply editset. Every edit is checked against
+                                          the text it recorded before anything is written;
+                                          a changed file is skipped as drift, a wrong offset
+                                          aborts the run. --verify also runs tsc before/after.
+  editset.verify <file>                   Check if editset can be applied (same segment check,
+                                          reported instead of thrown)
   editset.patch <file>                    Apply LLM patch from stdin
   file.apply <file> [--dry-run]           Apply file rename editset
 
@@ -994,6 +1009,11 @@ Moves every file under <old> prefix to <new> prefix and rewrites all references
 (imports, wikilinks, package.json, tsconfig), deduped. --exclude-glob skips
 rewriting links INSIDE matching files (bead-safety, e.g. '@km/**/*.md').
 
+<old> may be a single file as well as a directory. It must be a path this repository
+lists: inside a git work tree the candidates come from git ls-files, so ignored files
+and anything inside a nested repository or submodule are invisible — move those from
+inside their own repository.
+
 Apply the resulting editset with: file.apply <output> [--dry-run]
 
 Example (v0.7 reorg):
@@ -1005,8 +1025,19 @@ Example (v0.7 reorg):
 
       const fileOps = await findFilesToMovePrefix(oldPrefix, newPrefix, glob)
       if (fileOps.length === 0) {
-        output({ message: "No files found under prefix", oldPrefix, glob })
-        break
+        // Say what was searched. A bare "no files found" reads as "your path is wrong",
+        // when the usual cause is that the path is invisible to the file listing.
+        const { files, source } = await listCandidateFiles(glob, process.cwd())
+        error(
+          `No files found under prefix "${oldPrefix}" in ${process.cwd()}.\n` +
+            `Searched ${files.length} file(s) matching --glob '${glob}', listed from ${
+              source === "git"
+                ? "git ls-files for this repository — which excludes ignored files, and lists a " +
+                  "nested repository or submodule as a single entry rather than its contents. " +
+                  "Move paths inside a submodule from inside that submodule."
+                : "a filesystem scan of this directory."
+            }`,
+        )
       }
 
       if (checkConflictsFlag) {
