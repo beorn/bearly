@@ -798,7 +798,8 @@ interface TestEnv { widgetDir: string }  // property definition
 3. **Use editset workflow** for TypeScript identifiers
 4. **Always run tsc** after batch changes
 5. **Preview with --dry-run** before applying
-6. **Trust checksums** - editset won't apply to modified files
+6. **Trust the guards** - a modified file is skipped as drift; an edit whose recorded text
+   no longer matches aborts the run without writing anything
 7. **Vendor submodules** - commit and push separately, then update reference
 8. **Be aggressive** - apply all matches, let tests catch mistakes
 
@@ -1093,11 +1094,29 @@ When an LLM reviews an editset, it sees enriched context for each reference:
     }
   ],
   "edits": [
-    /* ... byte-level edits */
+    {
+      "file": "src/storage.ts",
+      "offset": 1204,
+      "length": 5,
+      "replacement": "repo",
+      "before": "vault"
+    }
   ],
   "createdAt": "2024-01-24T12:00:00.000Z"
 }
 ```
+
+### Edit fields
+
+`offset` and `length` are **character offsets** — JS string indices, the unit
+`String.slice` uses. They are never byte offsets: backends that search in bytes
+(ripgrep columns, ast-grep `byteOffset`) convert before emitting an edit.
+
+`before` is the exact text at `[offset, offset+length)` when the edit was proposed.
+`editset.apply` re-reads it and **refuses to write the file** if what's there has
+changed or the offset is wrong. That check is what makes an offset claim verifiable
+rather than trusted — without it a miscounted offset writes the replacement into the
+wrong place and reports success. Regenerate an editset rather than hand-editing offsets.
 
 ### Field Reference
 
@@ -1420,7 +1439,15 @@ bun tools/refactor.ts editset.apply edits.json
 # Applied: 45 edits in other files
 ```
 
-The editset NEVER corrupts files — if the file changed, it skips that file.
+Two guards, for two different situations:
+
+- **Checksum mismatch** — the file changed since the proposal. That file is skipped and
+  reported as drift; the rest still apply.
+- **Segment mismatch** — the text at an edit's offset is not the text the edit recorded.
+  That means the editset itself is wrong, so the run aborts and **nothing is written**.
+  Regenerate the editset against the current files.
+
+Together they are why an apply cannot silently write a replacement into the wrong place.
 
 ---
 

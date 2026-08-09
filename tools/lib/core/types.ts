@@ -32,12 +32,22 @@ export const Reference = z.object({
 })
 export type Reference = z.infer<typeof Reference>
 
-// A single edit operation
+// A single edit operation.
+//
+// Offsets are CHARACTER offsets — JS string indices, the unit `String.slice` uses.
+// Never byte offsets: a backend that searches in bytes (ripgrep, ast-grep) converts
+// at its own boundary. `before` is what makes that claim checkable — the applier
+// re-reads the file and refuses to write when the text at the offset isn't the text
+// the backend said it matched.
 export const Edit = z.object({
   file: z.string(),
   offset: z.number(), // character offset (JS string index, NOT byte offset)
   length: z.number(), // characters to replace (JS string length, NOT byte length)
   replacement: z.string(),
+  // The exact text at [offset, offset+length) when the edit was proposed.
+  // Optional only so editsets written by older versions still parse; the applier
+  // rejects an edit that lacks it rather than writing something it cannot check.
+  before: z.string().optional(),
 })
 export type Edit = z.infer<typeof Edit>
 

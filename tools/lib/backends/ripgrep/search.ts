@@ -2,6 +2,7 @@ import { execFileSync } from "child_process"
 import { readFileSync, existsSync } from "fs"
 import type { Reference, Editset, Edit } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
+import { createByteToCharMapper } from "../../core/text-utils"
 
 /**
  * Normalize a glob argument to an array. Each entry maps to one ripgrep `--glob`.
@@ -25,9 +26,11 @@ function normalizeGlobs(glob?: string | string[]): string[] {
 export function findPatterns(pattern: string, glob?: string | string[], caseInsensitive = false): Reference[] {
   // --hidden: ripgrep skips dot-directories by default, which silently drops
   // whole tracked trees like `.claude/` and `.agents/` (skills, tent scripts) from
-  // any refactor. In a git repo ripgrep still auto-excludes `.git/` and honors
-  // `.gitignore` even with --hidden, so tracked hidden files are found and .git is not.
-  const args = ["--json", "--line-number", "--column", "--hidden"]
+  // any refactor. `.git/` is only excluded because it is hidden, so --hidden hands it
+  // back — and a refactor must never propose edits to repository internals or to the
+  // scratch worktrees tools keep in there. Exclude it explicitly, first, so a caller
+  // who really means to search it can still say so with a later --glob.
+  const args = ["--json", "--line-number", "--column", "--hidden", "--glob", "!.git/"]
   if (caseInsensitive) args.push("-i")
   args.push(pattern)
   for (const g of normalizeGlobs(glob)) {
@@ -204,9 +207,40 @@ function caseMatch(match: string, replacement: string): string {
   return replacement.toLowerCase()
 }
 
+/**
+ * Everything needed to turn ripgrep's byte positions into character offsets for one file.
+ *
+ * ripgrep strips a leading UTF-8 BOM before searching, so all of its byte positions are
+ * relative to the content *without* the BOM, while the decoded string still carries it.
+ * Doing the arithmetic on the same text ripgrep saw — and adding the BOM character back
+ * at the end — is what keeps line-1 matches from landing three bytes short.
+ */
+interface FileOffsets {
+  content: string
+  /** Byte offset of each line start, in the text ripgrep searched. */
+  lineStarts: number[]
+  toChar: (byteOffset: number) => number
+  /** 1 when the file begins with a BOM that ripgrep did not count. */
+  bomChars: number
+}
+
+function buildFileOffsets(content: string): FileOffsets {
+  const bomChars = content.charCodeAt(0) === 0xfeff ? 1 : 0
+  const searched = bomChars ? content.slice(1) : content
+
+  const lineStarts: number[] = [0]
+  let byteIndex = 0
+  for (const line of searched.split("\n")) {
+    byteIndex += Buffer.byteLength(line, "utf-8") + 1 // +1 for the newline
+    lineStarts.push(byteIndex)
+  }
+
+  return { content, lineStarts, toChar: createByteToCharMapper(searched), bomChars }
+}
+
 function generateEdits(refs: Reference[], pattern: string, replacement: string, caseInsensitive: boolean): Edit[] {
   const edits: Edit[] = []
-  const fileContents = new Map<string, string>()
+  const offsetsByFile = new Map<string, FileOffsets | null>()
   // The `g` flag is always set (we're processing file content, replacing all matches);
   // the `i` flag is only added if the caller asked for case-insensitive matching.
   const regex = new RegExp(pattern, caseInsensitive ? "gi" : "g")
@@ -214,51 +248,52 @@ function generateEdits(refs: Reference[], pattern: string, replacement: string, 
   for (const ref of refs) {
     if (!ref.selected) continue
 
-    // Get file content
-    let content = fileContents.get(ref.file)
-    if (!content) {
-      if (!existsSync(ref.file)) continue
-      content = readFileSync(ref.file, "utf-8")
-      fileContents.set(ref.file, content)
+    let offsets = offsetsByFile.get(ref.file)
+    if (offsets === undefined) {
+      offsets = existsSync(ref.file) ? buildFileOffsets(readFileSync(ref.file, "utf-8")) : null
+      offsetsByFile.set(ref.file, offsets)
     }
+    if (offsets === null) continue
 
-    // Calculate byte offset from line/col
-    // Note: ripgrep returns byte offsets (0-indexed) which we store as 1-indexed in ref.range
-    // We need to convert these to character offsets for string.slice()
-    const lines = content.split("\n")
-    let byteOffset = 0
-    // Add byte length of all previous lines
-    for (let i = 0; i < ref.range[0] - 1; i++) {
-      byteOffset += Buffer.byteLength(lines[i]!, "utf-8") + 1 // +1 for newline
+    // ripgrep reports a 0-indexed byte column within the line; ref.range stores it 1-indexed.
+    const lineStart = offsets.lineStarts[ref.range[0] - 1]
+    if (lineStart === undefined) {
+      throw new Error(
+        `${ref.file}: ripgrep reported a match on line ${ref.range[0]}, but the file has ` +
+          `${offsets.lineStarts.length - 1} lines — it changed while being searched`,
+      )
     }
-    // Add byte offset within the current line (ref.range[1] is 1-indexed byte offset)
-    byteOffset += ref.range[1] - 1
+    const startByte = lineStart + ref.range[1] - 1
+    const endByte = startByte + (ref.range[3] - ref.range[1])
 
-    // Convert byte offset to character offset for string.slice()
-    // We need to find how many characters are in the first byteOffset bytes
-    const contentAsBuffer = Buffer.from(content, "utf-8")
-    const prefixBytes = contentAsBuffer.slice(0, byteOffset)
-    const charOffset = prefixBytes.toString("utf-8").length
+    // Throws rather than guessing when the byte positions don't describe this text.
+    const charOffset = offsets.toChar(startByte) + offsets.bomChars
+    const matchLength = offsets.toChar(endByte) + offsets.bomChars - charOffset
 
-    // Calculate match length: convert byte positions to character positions
-    const matchEndByteOffset = byteOffset + (ref.range[3] - ref.range[1])
-    const matchEndBytes = contentAsBuffer.slice(0, matchEndByteOffset)
-    const matchEndCharOffset = matchEndBytes.toString("utf-8").length
-    const matchLength = matchEndCharOffset - charOffset
-
-    // Get the actual matched text to compute proper replacement
-    const matchedText = content.slice(charOffset, charOffset + matchLength)
+    const matchedText = offsets.content.slice(charOffset, charOffset + matchLength)
     // Case-insensitive matches apply case-preservation (widget→Widget→WIDGET);
     // case-sensitive matches use the replacement literally.
     const actualReplacement = caseInsensitive
       ? matchedText.replace(regex, (m) => caseMatch(m, replacement))
       : matchedText.replace(regex, replacement)
 
+    if (actualReplacement === matchedText) {
+      // ripgrep matched text that this pattern does not rewrite — a Rust/JS regex
+      // difference (lookaround, unicode class, …). Emitting it would be a no-op edit
+      // counted as applied, so say so instead of writing nothing quietly.
+      console.error(
+        `  ⚠ ${ref.file}:${ref.range[0]}: ripgrep matched ${JSON.stringify(matchedText)} but the ` +
+          `JavaScript pattern /${pattern}/ produces no replacement for it — skipping this edit`,
+      )
+      continue
+    }
+
     edits.push({
       file: ref.file,
       offset: charOffset,
       length: matchLength,
       replacement: actualReplacement,
+      before: matchedText,
     })
   }
 

@@ -2,6 +2,7 @@ import { execFileSync } from "child_process"
 import { readFileSync, existsSync } from "fs"
 import type { Reference, Editset, Edit } from "../../core/types"
 import { computeChecksum, computeRefId } from "../../core/apply"
+import { createByteToCharMapper } from "../../core/text-utils"
 
 /**
  * Find patterns using ast-grep structural search
@@ -29,12 +30,16 @@ export function findPatterns(pattern: string, glob?: string): Reference[] {
  * @param glob - Optional file glob filter
  */
 export function createPatternReplaceProposal(pattern: string, replacement: string, glob?: string): Editset {
-  const refs = findPatterns(pattern, glob)
+  const args = ["run", "-p", pattern, "--json"]
+  if (glob) args.push("--filter", glob)
+  const matches = runSg(args) ?? []
 
+  const refs = parseMatches(matches)
   const id = `pattern-replace-${Date.now()}`
 
-  // Generate edits from matches
-  const edits = generateEdits(refs, replacement)
+  // Edits come from the same match objects as the refs, so they can use ast-grep's own
+  // byteOffset instead of reconstructing a position from line/column.
+  const edits = generateEdits(matches, replacement)
 
   return {
     id,
@@ -118,45 +123,44 @@ function parseMatches(matches: SgMatch[]): Reference[] {
   return refs
 }
 
-function generateEdits(refs: Reference[], _replacement: string): Edit[] {
+/**
+ * Turn ast-grep matches into edits.
+ *
+ * ast-grep reports `range.byteOffset` in UTF-8 bytes; an Edit carries character offsets.
+ * Converting through the shared mapper is the whole reason this doesn't rebuild positions
+ * from line/column — mixing a character-counted line start with a byte column is how a
+ * replacement ends up a few characters off in any file with non-ASCII text.
+ */
+function generateEdits(matches: SgMatch[], replacement: string): Edit[] {
   const edits: Edit[] = []
-  const fileContents = new Map<string, string>()
+  const fileOffsets = new Map<string, { content: string; toChar: (byteOffset: number) => number } | null>()
 
-  for (const ref of refs) {
-    if (!ref.selected) continue
-
-    // Get file content
-    let content = fileContents.get(ref.file)
-    if (!content) {
-      if (!existsSync(ref.file)) continue
-      content = readFileSync(ref.file, "utf-8")
-      fileContents.set(ref.file, content)
+  for (const match of matches) {
+    let offsets = fileOffsets.get(match.file)
+    if (offsets === undefined) {
+      if (existsSync(match.file)) {
+        const content = readFileSync(match.file, "utf-8")
+        offsets = { content, toChar: createByteToCharMapper(content) }
+      } else {
+        offsets = null
+      }
+      fileOffsets.set(match.file, offsets)
     }
+    if (offsets === null) continue
 
-    // Calculate byte offset from line/col
-    const lines = content.split("\n")
-    let startOffset = 0
-    for (let i = 0; i < ref.range[0] - 1; i++) {
-      startOffset += lines[i]!.length + 1 // +1 for newline
-    }
-    startOffset += ref.range[1] - 1
-
-    let endOffset = 0
-    for (let i = 0; i < ref.range[2] - 1; i++) {
-      endOffset += lines[i]!.length + 1
-    }
-    endOffset += ref.range[3] - 1
-
-    const length = endOffset - startOffset
+    // Throws rather than guessing when the byte positions don't describe this text.
+    const offset = offsets.toChar(match.range.byteOffset.start)
+    const length = offsets.toChar(match.range.byteOffset.end) - offset
 
     // Note: For ast-grep, the replacement should ideally come from sg --rewrite
     // For now, we use the provided replacement directly
     // TODO: Use `sg run -p <pattern> --rewrite <replacement> --json` to get actual replacements
     edits.push({
-      file: ref.file,
-      offset: startOffset,
+      file: match.file,
+      offset,
       length,
-      replacement: _replacement,
+      replacement,
+      before: offsets.content.slice(offset, offset + length),
     })
   }
 

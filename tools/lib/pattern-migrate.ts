@@ -236,6 +236,7 @@ export function createEditset(matches: Match[], replacements: Replacement[]): Ed
           offset,
           length: lineContent.length,
           replacement: finalReplacement,
+          before: lineContent,
         })
       }
     } catch {

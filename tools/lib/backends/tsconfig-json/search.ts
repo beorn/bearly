@@ -76,6 +76,7 @@ export function findTsConfigEdits(oldPath: string, newPath: string, searchPath: 
           offset: pathRef.start,
           length: pathRef.end - pathRef.start,
           replacement: fullReplacement,
+          before: content.slice(pathRef.start, pathRef.end),
         })
       }
     }

@@ -2,44 +2,71 @@ import { readFileSync, writeFileSync, existsSync } from "fs"
 import { createHash } from "crypto"
 import type { Editset, ApplyOutput, Edit } from "./types"
 
+/** Cap the quoted text in a mismatch message so one bad edit can't print a whole file. */
+function quote(text: string, limit = 60): string {
+  return JSON.stringify(text.length > limit ? `${text.slice(0, limit)}…` : text)
+}
+
 /**
- * Detect whether edits for a file use byte offsets instead of character offsets.
- * Compares: if offsets are byte-based, converting them to char offsets will produce
- * different values for files containing multi-byte characters (UTF-8 sequences > 1 byte
- * per character: CJK, emoji, box-drawing, etc.).
+ * Check every edit against the text it claims to replace.
  *
- * Returns converted edits if byte offsets detected, or the originals if already char-based.
+ * This is the whole safety story. An editset is a set of positions into a file the
+ * producer read earlier; nothing else downstream knows whether those positions still —
+ * or ever did — point at the matched text. Offsets in the wrong unit, a file edited
+ * since the proposal, a backend that miscounted a multi-byte line: every one of them
+ * shows up here as "the text at this offset is not what you said you matched".
+ *
+ * Returns one message per bad edit. Empty means every edit is safe to write.
  */
-function normalizeOffsets(content: string, edits: Edit[]): { edits: Edit[]; converted: boolean } {
-  // Quick check: if content has no multi-byte chars, byte === char offsets
-  const byteLen = Buffer.byteLength(content, "utf-8")
-  if (byteLen === content.length) {
-    return { edits, converted: false }
+export function verifyEdits(content: string, edits: Edit[]): string[] {
+  const problems: string[] = []
+
+  for (const edit of edits) {
+    if (edit.before === undefined) {
+      problems.push(
+        `${edit.file}: edit at offset ${edit.offset} has no 'before' text, so it cannot be checked — ` +
+          `regenerate the editset with a current version of this tool`,
+      )
+      continue
+    }
+    if (edit.offset < 0 || edit.offset + edit.length > content.length) {
+      problems.push(
+        `${edit.file}: segment mismatch at offset ${edit.offset} (+${edit.length}) — ` +
+          `runs past the end of the file (${content.length} characters)`,
+      )
+      continue
+    }
+    const actual = content.slice(edit.offset, edit.offset + edit.length)
+    if (actual !== edit.before) {
+      problems.push(
+        `${edit.file}: segment mismatch at offset ${edit.offset} (+${edit.length}) — ` +
+          `expected ${quote(edit.before)}, found ${quote(actual)}`,
+      )
+    }
   }
 
-  // Build byte→char offset map lazily (only when needed)
-  // Check if any edit offset exceeds content.length (clear sign of byte offsets)
-  const maxCharOffset = content.length
-  const looksLikeBytes = edits.some((e) => e.offset > maxCharOffset || e.offset + e.length > maxCharOffset)
+  return problems
+}
 
-  if (!looksLikeBytes) {
-    // Offsets fit within character range — could still be byte offsets that happen to be
-    // in range. Spot-check: verify the text at each offset is plausible.
-    // For now, trust them as character offsets.
-    return { edits, converted: false }
+/**
+ * Apply verified edits to content, right to left so earlier edits don't shift later ones.
+ * Throws unless every edit still matches the text it recorded — a mismatch is never
+ * something to write through.
+ */
+export function applyEditsToContent(content: string, edits: Edit[]): string {
+  const problems = verifyEdits(content, edits)
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing to apply ${problems.length} edit(s) that do not match the file:\n  ${problems.join("\n  ")}\n` +
+        `Nothing was written. Regenerate the editset against the current files.`,
+    )
   }
 
-  // Convert byte offsets to character offsets
-  const buf = Buffer.from(content, "utf-8")
-  const converted = edits.map((edit) => {
-    const prefix = buf.subarray(0, edit.offset).toString("utf-8")
-    const charOffset = prefix.length
-    const segment = buf.subarray(edit.offset, edit.offset + edit.length).toString("utf-8")
-    const charLength = segment.length
-    return { ...edit, offset: charOffset, length: charLength }
-  })
-
-  return { edits: converted, converted: true }
+  let result = content
+  for (const edit of [...edits].sort((a, b) => b.offset - a.offset)) {
+    result = result.slice(0, edit.offset) + edit.replacement + result.slice(edit.offset + edit.length)
+  }
+  return result
 }
 
 /**
@@ -64,9 +91,16 @@ export function computeRefId(
 }
 
 /**
- * Apply an editset with checksum verification
+ * Apply an editset.
  *
- * Returns details about what was applied, skipped, or had drift detected.
+ * Two different guards, because they answer to two different situations:
+ *   - A file whose checksum no longer matches the proposal has been edited since —
+ *     expected during a long session. Those files are skipped and reported as drift.
+ *   - A file whose checksum matches but whose text at an edit's offset is not what
+ *     the edit recorded means the editset itself is wrong. That is a bug, never a
+ *     data condition, so it throws and nothing is written.
+ *
+ * A dry run performs both checks and writes nothing, so `--dry-run` is a real preflight.
  */
 export function applyEditset(editset: Editset, dryRun = false): ApplyOutput {
   const result: ApplyOutput = {
@@ -124,23 +158,9 @@ export function applyEditset(editset: Editset, dryRun = false): ApplyOutput {
       }
     }
 
-    // Normalize offsets: detect and convert byte offsets to character offsets
-    const { edits: normalizedEdits, converted } = normalizeOffsets(currentContent, fileEdits)
-    if (converted) {
-      console.warn(`  ⚠ ${filePath}: converted byte offsets → character offsets (multi-byte chars detected)`)
-    }
-
-    // Sort edits by offset descending (apply from end to start to avoid offset drift)
-    const sortedEdits = [...normalizedEdits].sort((a, b) => b.offset - a.offset)
-
-    // Apply edits
-    let newContent = currentContent
-    for (const edit of sortedEdits) {
-      const before = newContent.slice(0, edit.offset)
-      const after = newContent.slice(edit.offset + edit.length)
-      newContent = before + edit.replacement + after
-      result.applied++
-    }
+    // Throws if any edit doesn't match the text it recorded — before anything is written.
+    const newContent = applyEditsToContent(currentContent, fileEdits)
+    result.applied += fileEdits.length
 
     // Write file (unless dry run)
     if (!dryRun) {
@@ -152,8 +172,9 @@ export function applyEditset(editset: Editset, dryRun = false): ApplyOutput {
 }
 
 /**
- * Verify an editset can be applied without drift.
- * Checks file existence, checksums, and edit offset validity.
+ * Verify an editset can be applied: files exist, checksums still match, and every
+ * edit still points at the text it recorded. Same segment check the applier runs,
+ * reported instead of thrown so `editset.verify` can list everything at once.
  */
 export function verifyEditset(editset: Editset): {
   valid: boolean
@@ -183,8 +204,9 @@ export function verifyEditset(editset: Editset): {
     }
   }
 
-  // Verify edit offsets are within bounds and detect byte/char offset confusion
+  // Every edit must still select the text it recorded.
   const fileContents = new Map<string, string>()
+  const editsByFile = new Map<string, Edit[]>()
   for (const edit of editset.edits) {
     let content = fileContents.get(edit.file)
     if (content === undefined) {
@@ -192,21 +214,12 @@ export function verifyEditset(editset: Editset): {
       content = readFileSync(edit.file, "utf-8")
       fileContents.set(edit.file, content)
     }
+    if (!editsByFile.has(edit.file)) editsByFile.set(edit.file, [])
+    editsByFile.get(edit.file)!.push(edit)
+  }
 
-    if (edit.offset + edit.length > content.length) {
-      const byteLen = Buffer.byteLength(content, "utf-8")
-      if (edit.offset + edit.length <= byteLen) {
-        warnings.push(
-          `${edit.file}: offset ${edit.offset}+${edit.length} exceeds string length ${content.length} ` +
-            `but fits byte length ${byteLen} — likely byte offsets (will auto-convert on apply)`,
-        )
-      } else {
-        issues.push(
-          `${edit.file}: offset ${edit.offset}+${edit.length} exceeds both string length ${content.length} ` +
-            `and byte length ${byteLen}`,
-        )
-      }
-    }
+  for (const [file, fileEdits] of editsByFile) {
+    issues.push(...verifyEdits(fileContents.get(file)!, fileEdits))
   }
 
   return {

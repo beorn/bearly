@@ -86,6 +86,7 @@ export function findPackageJsonEdits(oldPath: string, newPath: string, searchPat
           offset: pathRef.start,
           length: pathRef.end - pathRef.start,
           replacement: fullReplacement,
+          before: content.slice(pathRef.start, pathRef.end),
         })
       }
     }
