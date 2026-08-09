@@ -131,12 +131,16 @@ export function findAncestorWithin(
 }
 
 /**
- * Resolve the enclosing Git/superproject island. Returns null when the
- * directory is absent or valid but outside Git; execution and repository
- * errors throw.
+ * Resolve the enclosing Git/superproject island. Prospective paths inherit the
+ * boundary of their nearest existing ancestor. Returns null when that ancestor
+ * is valid but outside Git; execution and repository errors throw.
  */
 export function findGitProjectRoot(cwd: string): string | null {
-  const args = ["-C", cwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
+  if (cwd.trim().length === 0) {
+    throw new Error("git project boundary probe failed: empty cwd")
+  }
+  const { existingAncestor: probeCwd } = splitAtNearestExistingAncestor(cwd)
+  const args = ["-C", probeCwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
   const result = spawnSync("git", args, {
     encoding: "utf8",
     env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
@@ -157,7 +161,6 @@ export function findGitProjectRoot(cwd: string): string | null {
   }
 
   const stderr = (result.stderr ?? "").trim()
-  if (!pathEntryExists(cwd)) return null
   if (result.status === 128 && /not a git repository/u.test(stderr)) return null
   const detail = stderr || stdout || `git exited ${String(result.status)}`
   throw new Error(`git project boundary probe failed for ${cwd}: ${detail}`)
@@ -183,14 +186,10 @@ function resolveContainedPathForCaller(
 
   const absoluteTarget = resolve(raw)
   const followLeaf = options.followLeaf !== false
-  const segments: string[] = followLeaf ? [] : [basename(absoluteTarget)]
-  let existingAncestor = followLeaf ? absoluteTarget : dirname(absoluteTarget)
-  while (!pathEntryExists(existingAncestor)) {
-    const parent = dirname(existingAncestor)
-    if (parent === existingAncestor) break
-    segments.unshift(basename(existingAncestor))
-    existingAncestor = parent
-  }
+  const searchStart = followLeaf ? absoluteTarget : dirname(absoluteTarget)
+  const leafSegments = followLeaf ? [] : [basename(absoluteTarget)]
+  const { existingAncestor, missingSegments } = splitAtNearestExistingAncestor(searchStart)
+  const segments = [...missingSegments, ...leafSegments]
 
   const resolvedTarget = resolve(realpathExistingEntry(existingAncestor, raw, caller), ...segments)
   const rootAllowed = options.allowRoot === true && resolvedTarget === withinReal
@@ -209,6 +208,21 @@ function pathEntryExists(path: string): boolean {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
     throw error
+  }
+}
+
+function splitAtNearestExistingAncestor(path: string): {
+  existingAncestor: string
+  missingSegments: string[]
+} {
+  const missingSegments: string[] = []
+  let existingAncestor = path
+  for (;;) {
+    if (pathEntryExists(existingAncestor)) return { existingAncestor, missingSegments }
+    const parent = dirname(existingAncestor)
+    if (parent === existingAncestor) return { existingAncestor, missingSegments }
+    missingSegments.unshift(basename(existingAncestor))
+    existingAncestor = parent
   }
 }
 

@@ -17,6 +17,7 @@
  */
 
 import { chmodSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { lstat, mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, parse } from "node:path"
@@ -182,11 +183,33 @@ describe("findGitProjectRoot — not-repo is distinct from probe failure", () =>
     expect(findGitProjectRoot(join(base, "missing"))).toBeNull()
   })
 
+  test("inherits the nearest Git island for a prospective path", async () => {
+    const base = await scratch()
+    const outer = join(base, "outer")
+    const nested = join(outer, "nested")
+    await mkdir(nested, { recursive: true })
+    execFileSync("git", ["init", "--quiet", outer])
+    execFileSync("git", ["init", "--quiet", nested])
+
+    expect(findGitProjectRoot(join(nested, "future", "deep"))).toBe(nested)
+  })
+
   test("throws when the requested path exists but is not a directory", async () => {
     const base = await scratch()
     const file = join(base, "file.txt")
     await writeFile(file, "not a directory")
     expect(() => findGitProjectRoot(file)).toThrow(/git project boundary probe failed/u)
+  })
+
+  test("throws when a prospective path crosses an existing non-directory", async () => {
+    const base = await scratch()
+    const file = join(base, "file.txt")
+    await writeFile(file, "not a directory")
+    expect(() => findGitProjectRoot(join(file, "missing"))).toThrow()
+  })
+
+  test("throws for a blank working directory", () => {
+    expect(() => findGitProjectRoot("   ")).toThrow(/git project boundary probe failed.*empty cwd/u)
   })
 })
 
