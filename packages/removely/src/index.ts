@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, un
 import { spawnSync } from "node:child_process"
 import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, join, parse, resolve, sep } from "node:path"
 
 export {
   censusProcessCwds,
@@ -164,6 +164,15 @@ export function findGitProjectRoot(cwd: string): string | null {
   if (result.status === 128 && /not a git repository/u.test(stderr)) return null
   const detail = stderr || stdout || `git exited ${String(result.status)}`
   throw new Error(`git project boundary probe failed for ${cwd}: ${detail}`)
+}
+
+/** Find the first matching ancestor without crossing the enclosing Git project boundary. */
+export function findProjectAncestor(
+  cwd: string,
+  predicate: (directory: ContainedPath) => boolean,
+): ContainedPath | null {
+  const start = resolve(cwd)
+  return findAncestorWithin(start, findGitProjectRoot(start) ?? parse(start).root, predicate)
 }
 
 function resolveContainedPathForCaller(

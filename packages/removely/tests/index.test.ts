@@ -16,15 +16,16 @@
  *   - survivor detection  — a cleanup that leaves the root behind must fail
  */
 
-import { chmodSync } from "node:fs"
-import { execFileSync } from "node:child_process"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { execFileSync, spawnSync } from "node:child_process"
 import { lstat, mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, parse } from "node:path"
+import { join, parse, relative } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
 import {
   findAncestorWithin,
   findGitProjectRoot,
+  findProjectAncestor,
   isStrictlyInside,
   resolveContainedPath,
   safeRemove,
@@ -38,6 +39,17 @@ async function scratch(): Promise<string> {
   const dir = await realpath(await mkdtemp(join(await realpath(tmpdir()), "fs-safe-test-")))
   roots.push(dir)
   return dir
+}
+
+function projectScratch(): string {
+  const root = mkdtempSync(join(tmpdir(), "removely-project-boundary-"))
+  roots.push(root)
+  return root
+}
+
+function git(cwd: string, ...args: string[]): void {
+  const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" })
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`)
 }
 
 afterEach(async () => {
@@ -210,6 +222,83 @@ describe("findGitProjectRoot — not-repo is distinct from probe failure", () =>
 
   test("throws for a blank working directory", () => {
     expect(() => findGitProjectRoot("   ")).toThrow(/git project boundary probe failed.*empty cwd/u)
+  })
+})
+
+/**
+ * @failure Ancestor discovery crosses an independent project island or stops at a superproject boundary.
+ * @level l0 — exercises project-boundary resolution against real temporary Git repositories.
+ * @consumer Hab config and Ag controller/materialization project discovery.
+ */
+describe("findProjectAncestor — project-bounded ancestor discovery", () => {
+  test("uses an independent nested repository as its own discovery island", () => {
+    const outer = projectScratch()
+    git(outer, "init", "-q")
+    const nestedRepo = join(outer, "foreign")
+    mkdirSync(nestedRepo)
+    git(nestedRepo, "init", "-q")
+    const cwd = join(nestedRepo, "deep", "work")
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(outer, "marker"), "outer\n")
+
+    expect(findProjectAncestor(cwd, (directory) => existsSync(join(directory, "marker")))).toBeNull()
+  })
+
+  test("uses the enclosing repository for ordinary same-project nesting", () => {
+    const root = projectScratch()
+    git(root, "init", "-q")
+    const cwd = join(root, "apps", "silver")
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(root, "marker"), "project\n")
+
+    expect(findProjectAncestor(cwd, (directory) => existsSync(join(directory, "marker")))).toBe(root)
+  })
+
+  test("uses the superproject boundary for a product submodule", () => {
+    const fixture = projectScratch()
+    const productSource = join(fixture, "product-source")
+    const superproject = join(fixture, "superproject")
+    mkdirSync(productSource)
+    mkdirSync(superproject)
+    git(productSource, "init", "-q")
+    git(productSource, "config", "user.email", "test@example.com")
+    git(productSource, "config", "user.name", "Test")
+    writeFileSync(join(productSource, "README.md"), "product\n")
+    git(productSource, "add", "README.md")
+    git(productSource, "commit", "-qm", "fixture")
+    git(superproject, "init", "-q")
+    git(superproject, "-c", "protocol.file.allow=always", "submodule", "add", "-q", productSource, "product")
+    const cwd = join(superproject, "product", "packages", "app")
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(superproject, "marker"), "superproject\n")
+
+    expect(findProjectAncestor(cwd, (directory) => existsSync(join(directory, "marker")))).toBe(superproject)
+  })
+
+  test("keeps filesystem-root ancestry available outside Git", () => {
+    const root = projectScratch()
+    const cwd = join(root, "plain", "nested")
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(root, "marker"), "filesystem\n")
+
+    expect(
+      findProjectAncestor(relative(process.cwd(), cwd), (directory) => existsSync(join(directory, "marker"))),
+    ).toBe(root)
+  })
+
+  test("keeps filesystem-root ancestry available from a prospective missing directory", () => {
+    const root = projectScratch()
+    writeFileSync(join(root, "marker"), "filesystem\n")
+
+    expect(findProjectAncestor(join(root, "missing"), (directory) => existsSync(join(directory, "marker")))).toBe(root)
+  })
+
+  test("an operational Git probe failure does not widen discovery to filesystem root", () => {
+    const root = projectScratch()
+    const notDirectory = join(root, "not-directory")
+    writeFileSync(notDirectory, "file\n")
+
+    expect(() => findProjectAncestor(notDirectory, () => false)).toThrow(/git project boundary probe failed/u)
   })
 })
 
