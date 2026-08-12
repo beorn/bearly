@@ -9,7 +9,16 @@
 import * as fs from "node:fs"
 import React, { useMemo, useSyncExternalStore, type ReactNode } from "react"
 import type { Reporter, TestCase, TestModule, TestSpecification, TestSuite, Vitest } from "vitest/node"
-import { Box, Text, Console, useBoxRect, createConsole, type Instance, type Term, type PatchedConsole } from "silvery"
+import {
+  Box,
+  Text,
+  Console,
+  useBoxRectDangerously,
+  createConsole,
+  type Instance,
+  type Term,
+  type PatchedConsole,
+} from "silvery"
 import type { TextProps } from "silvery"
 import { createLogger } from "loggily"
 
@@ -89,7 +98,7 @@ function useStore(store: TestStore) {
 export interface ReportProps {
   store: TestStore
   options: Options
-  /** Override width for testing (bypasses useBoxRect) */
+  /** Override width for testing (bypasses useBoxRectDangerously) */
   width?: number
   /** Patched console for capturing output */
   console?: PatchedConsole
@@ -247,11 +256,11 @@ export function DotsLegend({ options }: { options: Options }) {
 export interface DotsSectionProps {
   state: TestStoreState
   options: Options
-  /** Override width for testing (bypasses useBoxRect) */
+  /** Override width for testing (bypasses useBoxRectDangerously) */
   width?: number
 }
 
-/** Wrapper that uses useBoxRect when width is not provided */
+/** Wrapper that uses useBoxRectDangerously when width is not provided */
 export function DotsSection({ width, ...props }: DotsSectionProps) {
   if (width !== undefined) {
     return <DotsSectionInner {...props} width={width} />
@@ -260,7 +269,7 @@ export function DotsSection({ width, ...props }: DotsSectionProps) {
 }
 
 function DotsSectionWithLayout(props: Omit<DotsSectionProps, "width">) {
-  const rect = useBoxRect()
+  const rect = useBoxRectDangerously()
   return <DotsSectionInner {...props} width={rect.width ?? 80} />
 }
 
