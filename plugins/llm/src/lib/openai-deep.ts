@@ -37,12 +37,11 @@ function getClient(): OpenAI {
 
 /** Resolve the string sent as `model:` to the OpenAI API. Endpoint's
  *  `apiModelId` (e.g. "gpt-5-pro" for our internal "gpt-5.4-pro") wins over
- *  the legacy `Model.apiModelId` field, which itself wins over the SKU id.
- *  Synthetic models (CLI-injected OpenRouter SKUs not in the registry) hit
- *  the legacy field. */
+ *  the SKU id. Synthetic models (CLI-injected OpenRouter SKUs not in the
+ *  registry) have no endpoint entry, so this falls straight to the SKU id. */
 function resolveApiModelId(model: Model): string {
   const endpoint = getEndpoint(model.modelId)
-  return endpoint?.apiModelId ?? model.apiModelId ?? model.modelId
+  return endpoint?.apiModelId ?? model.modelId
 }
 
 export interface DeepResearchOptions {

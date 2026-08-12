@@ -399,7 +399,7 @@ export async function selectClassifierModel(): Promise<Model | null> {
     const sku = SKUS.find((s) => s.modelId === "gpt-5-nano")
     const ep = sku ? PROVIDER_ENDPOINTS[sku.modelId] : undefined
     if (sku && ep) {
-      return { ...sku, provider: ep.provider, apiModelId: ep.apiModelId }
+      return { ...sku, provider: ep.provider }
     }
   }
   // Fallback: any available "quick" model.

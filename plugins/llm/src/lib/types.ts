@@ -20,10 +20,6 @@
  *   - getModel(id)            → Model | undefined  (legacy facade; SKU + endpoint flattened)
  *   - MODELS                  → readonly Model[]  (legacy view; do not mutate)
  *
- * `Model.apiModelId` is a deprecated alias preserved for one release window —
- * computed from the endpoint at facade-build time. New routing code should
- * read endpoint capabilities; new providers don't need a name match.
- *
  * Pricing is overlaid at process start by `applyCachedPricing()` — the SKU
  * defaults are frozen, the cache provides current values without mutating
  * the source-of-truth array.
@@ -180,15 +176,11 @@ export type ProviderEndpoint = z.infer<typeof ProviderEndpointSchema>
 
 /** Legacy `Model` shape. Composed from SkuConfig + ProviderEndpoint at
  *  registry-build time. New routing code should prefer `getEndpoint(id)` and
- *  inspect `endpoint.capabilities` directly — `apiModelId` and `provider` are
- *  preserved here for one release window so callers can migrate incrementally. */
+ *  inspect `endpoint.capabilities` directly — `provider` is preserved here so
+ *  callers can migrate incrementally without a per-call `getEndpoint` lookup
+ *  just to learn which provider dispatches a SKU. */
 export const ModelSchema = SkuSchema.extend({
   provider: ProviderSchema,
-  /** @deprecated Read via `getEndpoint(id).apiModelId` — kept as a runtime
-   *  alias so existing call sites (research.ts, openai-deep.ts) keep working
-   *  without per-call lookups. Will be removed once all callers go through
-   *  `getEndpoint`. */
-  apiModelId: z.string().optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 
@@ -1161,7 +1153,6 @@ function buildModel(sku: SkuConfig, endpoint: ProviderEndpoint): Model {
   return {
     ...applyOverlay(sku),
     provider: endpoint.provider,
-    apiModelId: endpoint.apiModelId,
   }
 }
 
@@ -1191,7 +1182,6 @@ export const MODELS: readonly Model[] = Object.freeze(
     const target: Model = {
       ...s,
       provider: endpoint.provider,
-      apiModelId: endpoint.apiModelId,
     }
     Object.defineProperty(target, "inputPricePerM", {
       get: () => pricingOverlay.get(s.modelId)?.inputPricePerM ?? s.inputPricePerM,

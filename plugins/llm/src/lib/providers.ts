@@ -97,12 +97,12 @@ function getOpenRouter() {
  * The endpoint's `apiModelId` overrides the SKU's `modelId` when set — used
  * for OpenAI Pro tiers where our internal alias (`gpt-5.4-pro`) differs from
  * OpenAI's API ID (`gpt-5-pro`). Synthetic models (e.g. ad-hoc OpenRouter
- * SKUs not in the registry) won't have an endpoint entry; the legacy
- * `model.apiModelId` field is consulted as a fallback for that case.
+ * SKUs not in the registry) won't have an endpoint entry, so `id` falls back
+ * to the SKU's own `modelId`.
  */
 export function getLanguageModel(model: Model): LanguageModel {
   const endpoint = getEndpoint(model.modelId)
-  const id = endpoint?.apiModelId ?? model.apiModelId ?? model.modelId
+  const id = endpoint?.apiModelId ?? model.modelId
   switch (model.provider) {
     case "openai":
       return getOpenAI()(id)
