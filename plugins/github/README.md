@@ -22,15 +22,15 @@ claude --dangerously-load-development-channels server:github
                     └──────────────────┘
                            │
                     ┌──────┘
-               ┌──────────────────┐
-               │ .beads/          │
-               │ github-cursor.jso│
-               └──────────────────┘
+        ┌────────────────────────────────┐
+        │ $XDG_DATA_HOME/bearly/          │
+        │   github-cursor.json            │
+        └────────────────────────────────┘
 ```
 
 - **GitHub REST API** polled for repo events, workflow runs, and PR activity
 - **MCP channels** push notifications into Claude Code's context as `<channel>` tags
-- **Cursor persistence** in `.beads/github-cursor.json` — only new events delivered
+- **Cursor persistence** in `$XDG_DATA_HOME/bearly/github-cursor.json` (falls back to `~/.local/share/bearly/`) — only new events delivered, never in the project checkout. A one-time-only `.beads/github-cursor.json` from before this moved is adopted and removed on first run.
 - **Auto-detect repo** from git remote URL in cwd
 - **Token resolution**: `GITHUB_TOKEN` env var, then `gh auth token`
 

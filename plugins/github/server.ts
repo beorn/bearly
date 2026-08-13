@@ -22,9 +22,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { dirname } from "node:path"
 import { parseArgs } from "node:util"
+
+import { defaultLegacyGitHubCursorPath, openGitHubCursorStore, resolveGitHubCursorPath } from "./cursor-store.ts"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -96,42 +97,17 @@ const REPOS = getRepos()
 // ---------------------------------------------------------------------------
 // Cursor persistence
 // ---------------------------------------------------------------------------
+//
+// Lives under XDG_DATA_HOME, never cwd — see cursor-store.ts for why. A
+// pre-existing `.beads/github-cursor.json` in the current cwd (the old
+// location) is adopted once, then removed; there is no ancestor walk.
 
-function findBeadsDir(): string {
-  let dir = process.cwd()
-  while (dir !== "/") {
-    const candidate = resolve(dir, ".beads")
-    if (existsSync(candidate)) return candidate
-    dir = dirname(dir)
-  }
-  const fallback = resolve(process.cwd(), ".beads")
-  mkdirSync(fallback, { recursive: true })
-  return fallback
-}
-
-const CURSOR_PATH = resolve(findBeadsDir(), "github-cursor.json")
-
-interface CursorState {
-  // Per-repo last-seen event ID
-  repos: Record<string, { lastEventId: string; lastPollAt: string }>
-}
-
-function loadCursor(): CursorState {
-  try {
-    if (existsSync(CURSOR_PATH)) {
-      return JSON.parse(readFileSync(CURSOR_PATH, "utf-8")) as CursorState
-    }
-  } catch {
-    // Corrupt file — start fresh
-  }
-  return { repos: {} }
-}
-
-function saveCursor(state: CursorState): void {
-  writeFileSync(CURSOR_PATH, JSON.stringify(state, null, 2))
-}
-
-const cursorState = loadCursor()
+const cursorStore = openGitHubCursorStore({
+  stateDir: dirname(resolveGitHubCursorPath()),
+  legacyPath: defaultLegacyGitHubCursorPath(),
+})
+const CURSOR_PATH = cursorStore.path
+const cursorState = cursorStore.state
 
 // ---------------------------------------------------------------------------
 // GitHub API helpers
@@ -514,7 +490,7 @@ async function pollGitHubEvents(): Promise<void> {
             lastEventId: events[0]!.id,
             lastPollAt: new Date().toISOString(),
           }
-          saveCursor(cursorState)
+          cursorStore.save(cursorState)
         }
         continue
       }
@@ -551,7 +527,7 @@ async function pollGitHubEvents(): Promise<void> {
           lastEventId: events[0]!.id,
           lastPollAt: new Date().toISOString(),
         }
-        saveCursor(cursorState)
+        cursorStore.save(cursorState)
       }
     } catch (err) {
       process.stderr.write(`[github] Error polling ${repo}: ${err instanceof Error ? err.message : err}\n`)
@@ -633,7 +609,7 @@ function cleanup(): void {
   cleaned = true
   clearInterval(eventPollInterval)
   clearInterval(workflowPollInterval)
-  saveCursor(cursorState)
+  cursorStore.save(cursorState)
 }
 
 process.on("SIGINT", () => {
