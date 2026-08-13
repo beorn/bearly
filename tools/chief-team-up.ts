@@ -13,7 +13,7 @@
 //   2. For each slot: ensure its configured pool path exists, branch is wtN
 //      (creates via `bun worktree create wtN` if missing per skills/worktree)
 //   3. Cleans each slot via chief-cleanup-slot.ts --target=origin/main
-//   4. Prints the sanctioned `hab up @dev/N --config /hh/hab.ts` command
+//   4. Prints the sanctioned `hab up @dev/N` command
 //
 // What it does NOT do:
 //   - Launch a session directly (Hab is the only managed-seat actuator)
@@ -164,7 +164,7 @@ function manifest(slot: string, slotPath: string): string {
     "─".repeat(72),
     `Prepared slot: ${slotPath}`,
     "Launch or resume the managed seat through Hab:",
-    `  hab up @dev/${n} --config /hh/hab.ts`,
+    `  hab up @dev/${n}`,
     "",
   ].join("\n")
 }
