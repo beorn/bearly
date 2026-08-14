@@ -15,8 +15,6 @@ argument-hint: "[message]"
 
 Read [/agent-system](../agent-system/SKILL.md) before editing this doc.
 
-**Keywords**: checkpoint, compact, resume, context
-
 Save session context to a single tracking issue (in whichever tracker the project uses) so it survives compaction and can be recovered by the next session or post-compact continuation.
 
 **Argument**: $ARGUMENTS

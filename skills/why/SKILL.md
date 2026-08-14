@@ -19,8 +19,6 @@ escalate-to:
 
 # Why — 5 Whys Root Cause Analysis
 
-**Keywords**: why, root cause, five whys, reframe
-
 **Don't fix the symptom. Find the cause. Then find the cause of the cause.**
 
 This combines Toyota's 5 Whys with `/big`'s hypothesis-driven reframing. The goal: trace from the visible symptom to the structural root cause, then design it away.

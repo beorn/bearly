@@ -16,8 +16,6 @@ allowed-tools: Bash, Read, Glob, Grep, Task, AskUserQuestion
 
 Read [/agent-system](../agent-system/SKILL.md) before editing this doc.
 
-**Keywords**: discuss, pause, architecture, alternatives
-
 ## Commands
 
 | Command             | Action                                     |
