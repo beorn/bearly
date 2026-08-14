@@ -19,8 +19,6 @@ argument-hint: <topic or question to analyze>
 
 # /csw — Complete Staff Work
 
-**Keywords**: csw, complete staff work, options, analysis, decision, tradeoffs, compare, alternatives, which approach, how should we
-
 A military/executive decision protocol: don't just describe the problem — present it with ALL context, ALL options analyzed, and a clear recommendation. The decision-maker says "approved" or picks an option. Nothing left to research.
 
 ## Resolver

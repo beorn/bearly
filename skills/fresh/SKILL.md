@@ -19,8 +19,6 @@ benefits-from: [recall, tent, gbrain]
 
 **This is a meta-protocol, not an LLM tool.** It calls `/deep` (or `/pro`) internally — its value is the structured "stop, gather, frame the question" workflow, not the model call itself.
 
-**Keywords**: stuck, fresh perspective, step back, rethink, going in circles, each fix breaks something, tried everything
-
 **When to use /fresh vs /big vs /ask vs /pro vs /deep:**
 
 - `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.

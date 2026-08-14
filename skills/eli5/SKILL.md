@@ -17,8 +17,6 @@ argument-hint: [topic, or empty = "what we're doing right now"]
 
 Read [/agent-system](../agent-system/SKILL.md) before editing this doc.
 
-**Keywords**: eli5, explain, plain, lost, context-drift, jargon
-
 The user has only general project knowledge — what the project and its top-level packages ARE. Nothing else from the last N minutes of your work. Reset to that floor.
 
 ## The 4 rules
