@@ -1,0 +1,70 @@
+{
+  "name": "@bearly/durable-file",
+  "version": "0.1.0",
+  "description": "Crash-durable atomic files and strict verdict artifacts",
+  "keywords": [
+    "atomic-write",
+    "durability",
+    "fsync",
+    "verdict"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/durable-file",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "packages/durable-file"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./verdict": "./src/verdict.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      },
+      "./verdict": {
+        "types": "./dist/verdict.d.mts",
+        "import": "./dist/verdict.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "bunx --bun vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "removely": "workspace:*",
+    "tsdown": "^0.22.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": [
+      "src/index.ts",
+      "src/verdict.ts"
+    ],
+    "format": "esm"
+  },
+  "engines": {
+    "bun": ">=1.3.13"
+  }
+}
