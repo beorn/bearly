@@ -300,8 +300,9 @@ function assertOptionalDetail(value: unknown): void {
 function assertTimestamp(value: unknown, label: string): asserts value is string {
   requireNonEmpty(value, label)
   const time = Date.parse(value)
-  if (!Number.isFinite(time) || new Date(time).toISOString() !== value)
-    {throw new Error(`${label} must be an ISO timestamp`)}
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== value) {
+    throw new Error(`${label} must be an ISO timestamp`)
+  }
 }
 
 function stringField(value: object, key: string): string | null {
