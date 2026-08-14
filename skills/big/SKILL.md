@@ -2,12 +2,7 @@
 name: big
 effort: max
 description: "Reframe recurring or wrong-shaped problems into a design where the bug cannot happen."
-triggers:
-  - "/big"
-  - "think bigger"
-  - "reframe"
-  - "fix feels wrong"
-  - "same area keeps breaking"
+triggers: ["/big", "think bigger", "reframe", "fix feels wrong", "same area keeps breaking"]
 argument-hint: [problem or area]
 benefits-from: [recall, tent, gbrain]
 escalate-to:

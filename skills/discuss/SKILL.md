@@ -2,12 +2,7 @@
 name: discuss
 effort: max
 description: Pause implementation for architecture or understanding discussion, checkpoint context, then resume with captured decisions.
-triggers:
-  - "/discuss"
-  - "discuss"
-  - "pause"
-  - "architecture"
-  - "alternatives"
+triggers: ["/discuss", "discuss", "pause", "architecture", "alternatives"]
 argument-hint: [<topic>|continue|end|history]
 allowed-tools: Bash, Read, Glob, Grep, Task, AskUserQuestion
 ---
