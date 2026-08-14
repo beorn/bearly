@@ -2,6 +2,14 @@
 name: eli5
 effort: max
 description: Explain current work plainly for a teammate without recent context, defining mechanisms and removing task-specific shorthand.
+triggers:
+  - "/eli5"
+  - "eli5"
+  - "explain"
+  - "plain"
+  - "lost"
+  - "context-drift"
+  - "jargon"
 argument-hint: [topic, or empty = "what we're doing right now"]
 ---
 
@@ -35,7 +43,7 @@ For a simple question, just write prose under "What's happening" and stop.
 
 ## Before / after (a real one)
 
-❌ "Should I (a) try singlePassLayout, (b) hunt the 336-wide text, or (c) audit useBoxRect call sites? Suspect 3 didn't pan out and AsideLayout was reverted."
+❌ "Should I (a) try singlePassLayout, (b) hunt the 336-wide text, or (c) audit useBoxRectDangerously call sites? Suspect 3 didn't pan out and AsideLayout was reverted."
 
 ✅ "The remaining churn is the rendering framework doing layout, then re-rendering, then doing layout again until things settle — call this the cascade. Three angles:
 
