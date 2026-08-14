@@ -2,14 +2,7 @@
 name: eli5
 effort: max
 description: Explain current work plainly for a teammate without recent context, defining mechanisms and removing task-specific shorthand.
-triggers:
-  - "/eli5"
-  - "eli5"
-  - "explain"
-  - "plain"
-  - "lost"
-  - "context-drift"
-  - "jargon"
+triggers: ["/eli5", "eli5", "explain", "plain", "lost", "context-drift", "jargon"]
 argument-hint: [topic, or empty = "what we're doing right now"]
 ---
 

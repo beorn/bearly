@@ -2,15 +2,7 @@
 name: fresh
 effort: max
 description: "When stuck on a specific problem, stop coding, gather context, and ask /deep or /pro for a fresh perspective."
-triggers:
-  - "/fresh"
-  - "stuck"
-  - "fresh perspective"
-  - "step back"
-  - "rethink"
-  - "going in circles"
-  - "each fix breaks something"
-  - "tried everything"
+triggers: ["/fresh", "stuck", "fresh perspective", "step back", "rethink", "going in circles", "each fix breaks something", "tried everything"]
 argument-hint: [<topic>]
 benefits-from: [recall, tent, gbrain]
 ---
