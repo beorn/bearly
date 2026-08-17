@@ -115,6 +115,13 @@ function censusLinux(deps: ProcessCwdCensusDeps): ProcessCwdCensus {
     try {
       cwd = deps.linuxPidCwd(pid)
     } catch (error) {
+      const code = errorCode(error)
+      // EACCES: same-uid process whose /proc/<pid>/cwd we still cannot read (e.g. Yama
+      // ptrace_scope blocking a non-ancestor from reading systemd --user's cwd symlink).
+      // ENOENT/ESRCH: pid exited between the uid check above and this read (TOCTOU).
+      // Neither means the census itself is untrustworthy — only that this one pid can't
+      // be attributed to a cwd, so skip it rather than aborting every other row.
+      if (code === "ENOENT" || code === "ESRCH" || code === "EACCES") continue
       return unavailable(`cannot read /proc/${pid}/cwd: ${errorCode(error)}`)
     }
     if (!isAbsolute(cwd)) return unavailable(`/proc/${pid}/cwd is not absolute`)
@@ -152,7 +159,12 @@ function censusDarwin(deps: ProcessCwdCensusDeps): ProcessCwdCensus {
   return { available: true, rows: [...rows.values()], reason: "macOS lsof census" }
 }
 
-/** Bounded, uid-scoped census. Unreadable in-scope observations invalidate the whole result. */
+/**
+ * Bounded, uid-scoped census. A pid that vanishes or whose cwd is unreadable is skipped,
+ * not attributed to any cwd — it cannot silently keep an unrelated path alive, but it also
+ * cannot be proven to occupy one. Any other observation failure still invalidates the whole
+ * result, since that signals the census mechanism itself is untrustworthy.
+ */
 export function censusProcessCwds(injected?: ProcessCwdCensusDeps): ProcessCwdCensus {
   const deps = injected ?? defaultDeps()
   if ("available" in deps) return deps

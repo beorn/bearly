@@ -26,7 +26,7 @@ describe("censusProcessCwds", () => {
     })
   })
 
-  test("returns unavailable, never a partial row set, when an in-scope cwd is unreadable", () => {
+  test("skips a same-uid pid whose cwd is unreadable (EACCES) rather than aborting the census", () => {
     const result = censusProcessCwds(
       linuxDeps({
         linuxPidCwd: (pid) => {
@@ -37,8 +37,42 @@ describe("censusProcessCwds", () => {
     )
 
     expect(result).toEqual({
+      available: true,
+      rows: [{ pid: 10, cwd: "/work/10" }],
+      reason: "Linux /proc census",
+    })
+  })
+
+  test("skips a same-uid pid that vanished between the owner check and the cwd read (ENOENT)", () => {
+    const result = censusProcessCwds(
+      linuxDeps({
+        linuxPidCwd: (pid) => {
+          if (pid === 12) throw Object.assign(new Error("no such file or directory"), { code: "ENOENT" })
+          return `/work/${pid}`
+        },
+      }),
+    )
+
+    expect(result).toEqual({
+      available: true,
+      rows: [{ pid: 10, cwd: "/work/10" }],
+      reason: "Linux /proc census",
+    })
+  })
+
+  test("returns unavailable, never a partial row set, for an unrecognized cwd read failure", () => {
+    const result = censusProcessCwds(
+      linuxDeps({
+        linuxPidCwd: (pid) => {
+          if (pid === 12) throw Object.assign(new Error("input/output error"), { code: "EIO" })
+          return `/work/${pid}`
+        },
+      }),
+    )
+
+    expect(result).toEqual({
       available: false,
-      reason: "cannot read /proc/12/cwd: EACCES",
+      reason: "cannot read /proc/12/cwd: EIO",
     })
     expect("rows" in result).toBe(false)
   })
