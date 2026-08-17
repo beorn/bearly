@@ -18,6 +18,7 @@ import { createPerplexity } from "@ai-sdk/perplexity"
 import type { LanguageModel } from "ai"
 import type { Provider, Model } from "./types"
 import { getEndpoint } from "./types"
+import { missingApiKeyError } from "./env-preflight"
 
 // Provider instances (lazy-initialized)
 let openaiProvider: ReturnType<typeof createOpenAI> | undefined
@@ -30,7 +31,7 @@ let openrouterProvider: ReturnType<typeof createOpenAI> | undefined
 function getOpenAI() {
   if (!openaiProvider) {
     const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) throw new Error("OPENAI_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("OPENAI_API_KEY")
     openaiProvider = createOpenAI({ apiKey })
   }
   return openaiProvider
@@ -39,7 +40,7 @@ function getOpenAI() {
 function getAnthropic() {
   if (!anthropicProvider) {
     const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("ANTHROPIC_API_KEY")
     anthropicProvider = createAnthropic({ apiKey })
   }
   return anthropicProvider
@@ -48,7 +49,7 @@ function getAnthropic() {
 function getGoogle() {
   if (!googleProvider) {
     const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
-    if (!apiKey) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("GOOGLE_GENERATIVE_AI_API_KEY")
     googleProvider = createGoogleGenerativeAI({ apiKey })
   }
   return googleProvider
@@ -57,7 +58,7 @@ function getGoogle() {
 function getXai() {
   if (!xaiProvider) {
     const apiKey = process.env.XAI_API_KEY
-    if (!apiKey) throw new Error("XAI_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("XAI_API_KEY")
     xaiProvider = createXai({ apiKey })
   }
   return xaiProvider
@@ -66,7 +67,7 @@ function getXai() {
 function getPerplexity() {
   if (!perplexityProvider) {
     const apiKey = process.env.PERPLEXITY_API_KEY
-    if (!apiKey) throw new Error("PERPLEXITY_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("PERPLEXITY_API_KEY")
     perplexityProvider = createPerplexity({ apiKey })
   }
   return perplexityProvider
@@ -78,7 +79,7 @@ function getPerplexity() {
 function getOpenRouter() {
   if (!openrouterProvider) {
     const apiKey = process.env.OPENROUTER_API_KEY
-    if (!apiKey) throw new Error("OPENROUTER_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("OPENROUTER_API_KEY")
     openrouterProvider = createOpenAI({
       apiKey,
       baseURL: "https://openrouter.ai/api/v1",

@@ -21,6 +21,7 @@ import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+import { missingApiKeyError } from "./env-preflight"
 
 const log = createLogger("bearly:llm:openai")
 
@@ -29,7 +30,7 @@ let client: OpenAI | undefined
 function getClient(): OpenAI {
   if (!client) {
     const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) throw new Error("OPENAI_API_KEY not set")
+    if (!apiKey) throw missingApiKeyError("OPENAI_API_KEY")
     client = new OpenAI({ apiKey })
   }
   return client

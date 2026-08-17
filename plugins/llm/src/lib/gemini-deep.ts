@@ -15,6 +15,7 @@ import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+import { missingApiKeyError } from "./env-preflight"
 
 const log = createLogger("bearly:llm:gemini")
 
@@ -22,7 +23,7 @@ const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 function getApiKey(): string {
   const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
-  if (!apiKey) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY not set")
+  if (!apiKey) throw missingApiKeyError("GOOGLE_GENERATIVE_AI_API_KEY")
   return apiKey
 }
 
