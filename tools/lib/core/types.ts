@@ -48,6 +48,14 @@ export const Edit = z.object({
   // Optional only so editsets written by older versions still parse; the applier
   // rejects an edit that lacks it rather than writing something it cannot check.
   before: z.string().optional(),
+  // The refId of the Reference this edit implements. This is what lets selection work
+  // per-reference instead of per-file: a producer sets it to the SAME refId it gave the
+  // matching Reference, and filterEditset()/applyPatch() key off it to keep or drop this
+  // exact edit — never "every edit in a file that has at least one selected ref".
+  // Optional only so editsets written by older versions still parse; filterEditset() and
+  // applyPatch() refuse to scope selection on an edit that lacks it rather than silently
+  // falling back to file-granularity (the bug this field exists to close).
+  refId: z.string().optional(),
 })
 export type Edit = z.infer<typeof Edit>
 

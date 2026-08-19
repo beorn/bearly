@@ -155,12 +155,18 @@ function generateEdits(matches: SgMatch[], replacement: string): Edit[] {
     // Note: For ast-grep, the replacement should ideally come from sg --rewrite
     // For now, we use the provided replacement directly
     // TODO: Use `sg run -p <pattern> --rewrite <replacement> --json` to get actual replacements
+    //
+    // refId is recomputed from the same match.range fields parseMatches() hashed for the
+    // Reference — deterministic, so it lands on the identical id without threading refs
+    // through this function's signature.
+    const { start, end } = match.range
     edits.push({
       file: match.file,
       offset,
       length,
       replacement,
       before: offsets.content.slice(offset, offset + length),
+      refId: computeRefId(match.file, start.line, start.column, end.line, end.column),
     })
   }
 

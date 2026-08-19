@@ -105,7 +105,8 @@ export function findPackageJsonEdits(oldPath: string, newPath: string, searchPat
 export function createPackageJsonEditset(oldPath: string, newPath: string, searchPath: string = "."): Editset {
   const edits = findPackageJsonEdits(oldPath, newPath, searchPath)
 
-  // Convert edits to refs for the editset format
+  // Convert edits to refs for the editset format. refId is computed once per edit and set
+  // on BOTH the ref and the edit — the link filterEditset()/applyPatch() key selection off.
   const refs: Reference[] = []
   for (const edit of edits) {
     const filePath = join(searchPath, edit.file)
@@ -115,9 +116,11 @@ export function createPackageJsonEditset(oldPath: string, newPath: string, searc
     const checksum = computeChecksum(content)
     const [line, col] = offsetToLineCol(content, edit.offset)
     const [endLine, endCol] = offsetToLineCol(content, edit.offset + edit.length)
+    const refId = computeRefId(edit.file, line, col, endLine, endCol)
+    edit.refId = refId
 
     refs.push({
-      refId: computeRefId(edit.file, line, col, endLine, endCol),
+      refId,
       file: edit.file,
       range: [line, col, endLine, endCol],
       preview: `Update path to ${newPath}`,

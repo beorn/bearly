@@ -163,6 +163,8 @@ export function createDependencyRenameEditset(
 ): Editset {
   const edits = findDependencyNameEdits(oldName, newName, searchPath, glob)
 
+  // refId is computed once per edit and set on BOTH the ref and the edit — the link
+  // filterEditset()/applyPatch() key selection off.
   const refs: Reference[] = []
   for (const edit of edits) {
     const filePath = join(searchPath, edit.file)
@@ -171,8 +173,10 @@ export function createDependencyRenameEditset(
     const checksum = computeChecksum(content)
     const [line, col] = offsetToLineCol(content, edit.offset)
     const [endLine, endCol] = offsetToLineCol(content, edit.offset + edit.length)
+    const refId = computeRefId(edit.file, line, col, endLine, endCol)
+    edit.refId = refId
     refs.push({
-      refId: computeRefId(edit.file, line, col, endLine, endCol),
+      refId,
       file: edit.file,
       range: [line, col, endLine, endCol],
       preview: `Rename dependency ${oldName} → ${newName}`,

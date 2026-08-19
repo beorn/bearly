@@ -294,6 +294,7 @@ function generateEdits(refs: Reference[], pattern: string, replacement: string, 
       length: matchLength,
       replacement: actualReplacement,
       before: matchedText,
+      refId: ref.refId,
     })
   }
 

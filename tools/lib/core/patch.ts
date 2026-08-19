@@ -36,21 +36,33 @@ export function applyPatch(editset: Editset, patch: Patch): Editset {
     }
   })
 
-  // Update edits with custom replacements from patched refs
+  // Same file-vs-ref confusion as editset.ts's filterEditset (@hh/tooling/22968): matching
+  // "some ref in this file" instead of "THIS edit's own ref" doesn't just leak unselected
+  // edits through, it can cross-contaminate replacement text — the first selected ref found
+  // in the file would donate its `.replace` string to every other edit in that file, even
+  // ones belonging to a different ref with its own (different) custom replacement. Every
+  // edit must carry the refId of the ref it implements; an edit without one can't be scoped
+  // to "the ref it belongs to" at all, so this refuses rather than guessing (same idiom as
+  // applyEditset's missing-`before` check).
+  const refById = new Map(patchedRefs.map((r) => [r.refId, r] as const))
+  const orphans = editset.edits.filter((e) => e.refId === undefined)
+  if (orphans.length > 0) {
+    const first = orphans[0]!
+    throw new Error(
+      `${orphans.length} edit(s) have no refId, so a patch cannot be scoped to the reference each ` +
+        `belongs to (first: ${first.file}:${first.offset}) — regenerate the editset with a current ` +
+        `version of this tool.`,
+    )
+  }
+
   const patchedEdits = editset.edits
-    .map((edit) => {
-      // Try to find matching ref by computing the key
-      // Edits use byte offset, refs use line/col - we need to match them
-      // For now, just update based on default vs custom replacement
-      const matchingRef = patchedRefs.find((r) => r.file === edit.file && r.selected && r.replace !== null)
-      if (matchingRef && matchingRef.replace !== defaultReplacement) {
-        return { ...edit, replacement: matchingRef.replace! }
-      }
-      return edit
-    })
     .filter((edit) => {
-      // Only keep edits for files that have selected refs
-      return patchedRefs.some((r) => r.file === edit.file && r.selected && r.replace !== null)
+      const ref = refById.get(edit.refId!)
+      return ref !== undefined && ref.selected && ref.replace !== null
+    })
+    .map((edit) => {
+      const ref = refById.get(edit.refId!)!
+      return ref.replace !== defaultReplacement ? { ...edit, replacement: ref.replace! } : edit
     })
 
   return {
