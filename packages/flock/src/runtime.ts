@@ -3,6 +3,7 @@ export interface FlockIo {
   readonly exists: (path: string) => boolean
   readonly open: (path: string, mode: number) => number
   readonly identity: (fd: number) => string
+  readonly pathIdentity: (path: string) => string
   readonly flock: (
     fd: number,
     mode: "try" | "block",
@@ -40,6 +41,7 @@ export interface FlockHandle {
 export interface FlockRuntime {
   readonly tryAcquire: (path: string, options?: FlockOpenOptions) => FlockHandle | null
   readonly acquireBlocking: (path: string, options?: FlockOpenOptions) => FlockHandle
+  readonly adopt: (path: string, fd: number) => FlockHandle | null
   readonly isHeld: (path: string) => boolean
 }
 
@@ -76,6 +78,24 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
         throw flockError(path, result.errno)
       }
       return publishHandle(io, heldIdentities, candidate, openOptions.body)
+    },
+
+    adopt(path, fd) {
+      const identity = io.identity(fd)
+      const expectedIdentity = io.pathIdentity(path)
+      if (identity !== expectedIdentity) {
+        throw new Error(
+          `cannot adopt flock fd ${fd} for ${path}: descriptor identity ${identity} does not match path identity ${expectedIdentity}`,
+        )
+      }
+      if (heldIdentities.has(identity)) return null
+
+      const result = io.flock(fd, "try")
+      if (!result.ok) {
+        if (options.wouldBlockErrnos.includes(result.errno)) return null
+        throw flockError(path, result.errno)
+      }
+      return publishHandle(io, heldIdentities, { fd, identity, path }, undefined)
     },
 
     isHeld(path) {

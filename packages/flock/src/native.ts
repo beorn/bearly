@@ -1,4 +1,14 @@
-import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, writeSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  statSync,
+  writeSync,
+} from "node:fs"
 import { dirname } from "node:path"
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import type { FlockIo } from "./runtime.ts"
@@ -25,6 +35,10 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
       open: (path, mode) => openSync(path, "a+", mode),
       identity(fd) {
         const stat = fstatSync(fd, { bigint: true })
+        return `${String(stat.dev)}:${String(stat.ino)}`
+      },
+      pathIdentity(path) {
+        const stat = statSync(path, { bigint: true })
         return `${String(stat.dev)}:${String(stat.ino)}`
       },
       flock(fd, mode) {

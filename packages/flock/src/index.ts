@@ -16,6 +16,11 @@ export function acquireFlockBlocking(path: string, options?: FlockOpenOptions): 
   return runtime.acquireBlocking(path, options)
 }
 
+/** Adopt an inherited descriptor only when it names and owns this exact flock. */
+export function adoptInheritedFlock(path: string, fd: number): FlockHandle | null {
+  return runtime.adopt(path, fd)
+}
+
 /** Observe flock liveness. Durable pathname/body presence is never authority. */
 export function isFlockHeld(path: string): boolean {
   return runtime.isHeld(path)

@@ -86,6 +86,44 @@ describe("@bearly/flock", () => {
     }
   })
 
+  test("adopts the exact inherited descriptor without opening a replacement", () => {
+    const fake = fakeIo()
+    const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+
+    const lock = runtime.adopt("/lock", 42)
+
+    expect(lock).not.toBeNull()
+    expect(lock?.fd).toBe(42)
+    expect(fake.openedPaths).toEqual([])
+    expect(fake.flockedFds).toEqual([42])
+    lock?.release()
+    expect(fake.closed).toEqual([42])
+  })
+
+  test("an adopted child closes its copy without releasing the parent owner", async () => {
+    const root = tempRoot()
+    const lockPath = join(root, "writer.lock")
+    const parent = tryAcquireFlock(lockPath)
+    expect(parent).not.toBeNull()
+    if (parent === null) return
+
+    const child = Bun.spawn([process.execPath, fixture, "adopt", lockPath], {
+      stdio: ["ignore", "pipe", "pipe", parent.fd],
+    })
+    try {
+      expect(await child.exited, await stderr(child)).toBe(0)
+      expect(tryAcquireFlock(lockPath)).toBeNull()
+
+      parent.release()
+      using successor = tryAcquireFlock(lockPath)
+      expect(successor).not.toBeNull()
+    } finally {
+      child.kill("SIGKILL")
+      await child.exited
+      parent.release()
+    }
+  })
+
   test("same-process aliases cannot reacquire the same inode", () => {
     const root = tempRoot()
     const lockPath = join(root, "writer.lock")
@@ -281,8 +319,9 @@ interface ProcessHandle {
 async function waitForFile(path: string, processHandle: ProcessHandle, label: string): Promise<void> {
   const deadline = Date.now() + 10_000
   while (!existsSync(path)) {
-    if (processHandle.exitCode !== null)
+    if (processHandle.exitCode !== null) {
       throw new Error(`${label} exited before becoming ready: ${await stderr(processHandle)}`)
+    }
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`)
     await Bun.sleep(5)
   }
@@ -292,17 +331,30 @@ async function stderr(processHandle: ProcessHandle): Promise<string> {
   return processHandle.stderr instanceof ReadableStream ? await new Response(processHandle.stderr).text() : ""
 }
 
-function fakeIo(overrides: Partial<FlockIo> = {}): { io: FlockIo; closed: number[]; flockCalls: number } {
+function fakeIo(overrides: Partial<FlockIo> = {}): {
+  io: FlockIo
+  closed: number[]
+  flockCalls: number
+  openedPaths: string[]
+  flockedFds: number[]
+} {
   const closed: number[] = []
+  const openedPaths: string[] = []
+  const flockedFds: number[] = []
   let flockCalls = 0
   let nextFd = 10
   const io: FlockIo = {
     createParent() {},
     exists: () => true,
-    open: () => nextFd++,
+    open: (path) => {
+      openedPaths.push(path)
+      return nextFd++
+    },
     identity: () => "1:2",
-    flock: () => {
+    pathIdentity: () => "1:2",
+    flock: (fd) => {
       flockCalls += 1
+      flockedFds.push(fd)
       return { ok: true }
     },
     truncate() {},
@@ -319,5 +371,7 @@ function fakeIo(overrides: Partial<FlockIo> = {}): { io: FlockIo; closed: number
     get flockCalls() {
       return flockCalls
     },
+    openedPaths,
+    flockedFds,
   }
 }
