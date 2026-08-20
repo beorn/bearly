@@ -2,8 +2,9 @@ import { writeFileSync } from "node:fs"
 import { adoptInheritedFlock, tryAcquireFlock } from "../../src/index.ts"
 
 const [mode, lockPath, readyPath] = process.argv.slice(2)
-if (mode === undefined || lockPath === undefined)
-  {throw new Error("usage: writer.ts <hold|once|adopt> <lock-path> [ready-path]")}
+if (mode === undefined || lockPath === undefined) {
+  throw new Error("usage: writer.ts <hold|once|adopt> <lock-path> [ready-path]")
+}
 
 if (mode === "adopt") {
   using lock = adoptInheritedFlock(lockPath, 3)
