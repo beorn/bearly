@@ -8,7 +8,7 @@ benefits-from: [recall, tent]
 escalate-to:
   {
     arch: "root cause is structural — missing invariant or wrong ownership",
-    render: "root cause is in the rendering pipeline",
+    silvery: "root cause is in the rendering pipeline",
   }
 ---
 
@@ -110,7 +110,7 @@ Run `bun tent state-repo root` first.
 
 - When holding the `@chief` single-writer hat, append the record below to
   `<state-root>/hub/retro/why-log.md`, then publish exactly that path with
-  `bun tent pm-commit -m "docs(retro): record /why analysis" "$(bun tent state-repo root)/hub/retro/why-log.md"`.
+  `git -C "$(bun tent state-repo root)" commit -o -m "docs(retro): record /why analysis" -- hub/retro/why-log.md` then `git -C "$(bun tent state-repo root)" push origin main`.
 - From any other managed seat, do not edit shared state. Send `@chief` a
   codified request whose first line is
   `UPDATE bead=<owning-bead> action=update value=<state-root>/hub/retro/why-log.md reason="/why durable record follows"`,

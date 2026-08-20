@@ -6,7 +6,7 @@ triggers: ["/big", "think bigger", "reframe", "fix feels wrong", "same area keep
 argument-hint: [problem or area]
 benefits-from: [recall, tent, gbrain]
 escalate-to:
-  { arch: "reframing reveals missing abstraction or layer", render: "root cause is in the rendering pipeline design" }
+  { arch: "reframing reveals missing abstraction or layer", silvery: "root cause is in the rendering pipeline design" }
 ---
 
 # /big - Reframe Before Fixing

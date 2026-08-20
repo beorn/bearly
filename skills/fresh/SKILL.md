@@ -240,7 +240,7 @@ Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-
 
 /fresh's domain legs — each spawned at task tier `routine`, in ONE message:
 
-- One `routine` leg per related-bug area (recall + bd query for prior beads in this scope)
+- One `routine` leg per related-bug area (recall + km bd query for prior beads in this scope)
 - One `routine` leg per cited file: recent commits + comment headers + call sites
 - One `routine` leg for "what did I try last? was it ruled out?" — read current session transcript
 - One `routine` leg for "what does the canonical design doc say about this subsystem?"
