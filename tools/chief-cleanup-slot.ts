@@ -30,7 +30,7 @@ import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { writeFileSync } from "node:fs"
 import { resolve, dirname, basename } from "node:path"
-import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
+import { createSubmoduleLogger, materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 
 async function run(
   cmd: string,
@@ -118,7 +118,7 @@ async function main() {
       worktree: slotPath,
       referenceWorktree: main,
       paths: submodules,
-      log: (message) => console.warn(`[chief-cleanup-slot] ${message}`),
+      log: createSubmoduleLogger((line) => console.warn(`[chief-cleanup-slot] ${line}`)),
     })
     if (supdate.exitCode !== 0) console.warn(`[chief-cleanup-slot] submodule update warned: ${supdate.stderr.trim()}`)
     else console.log(`[chief-cleanup-slot] synced ${submodules.length} submodules`)
