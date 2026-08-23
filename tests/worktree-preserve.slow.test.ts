@@ -30,6 +30,7 @@ import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree
 let sandbox: string
 let consoleLogSpy: ReturnType<typeof vi.spyOn>
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>
+let originalPoolSlots: string | undefined
 
 async function initRepo(path: string): Promise<void> {
   mkdirSync(path, { recursive: true })
@@ -74,11 +75,15 @@ function loggedRef(): string | undefined {
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), "wt-preserve-"))
+  originalPoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+  process.env.BEARLY_WORKTREE_POOL_SLOTS = JSON.stringify(["wt5", "wt6", "wt7"])
   consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
   consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 })
 
 afterEach(() => {
+  if (originalPoolSlots === undefined) delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+  else process.env.BEARLY_WORKTREE_POOL_SLOTS = originalPoolSlots
   consoleLogSpy.mockRestore()
   consoleErrorSpy.mockRestore()
   if (sandbox && existsSync(sandbox)) rmSync(sandbox, { recursive: true, force: true })
@@ -179,7 +184,9 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     const origCwd = process.cwd()
     try {
       process.chdir(mainRepo)
-      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      // This hermetic repository deliberately has no remote; make its local
+      // seed commit the explicit branch base instead of testing network policy.
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false, base: "HEAD" })
       expect(existsSync(worktreePath)).toBe(true)
 
       // Dirty ONLY inside the submodule (tracked-modified + untracked-new).

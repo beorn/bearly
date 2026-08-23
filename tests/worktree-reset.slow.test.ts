@@ -23,6 +23,7 @@ import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree
 let sandbox: string
 let consoleLogSpy: ReturnType<typeof vi.spyOn>
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>
+let originalPoolSlots: string | undefined
 
 async function initRepo(path: string): Promise<void> {
   mkdirSync(path, { recursive: true })
@@ -35,11 +36,15 @@ async function commitAll(path: string, message: string): Promise<void> {
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), "wt-reset-"))
+  originalPoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+  process.env.BEARLY_WORKTREE_POOL_SLOTS = JSON.stringify(["wt0", "wt3"])
   consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
   consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 })
 
 afterEach(() => {
+  if (originalPoolSlots === undefined) delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+  else process.env.BEARLY_WORKTREE_POOL_SLOTS = originalPoolSlots
   consoleLogSpy.mockRestore()
   consoleErrorSpy.mockRestore()
   if (sandbox && existsSync(sandbox)) {
