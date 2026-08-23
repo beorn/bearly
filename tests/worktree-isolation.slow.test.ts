@@ -50,6 +50,94 @@ afterEach(() => {
 })
 
 describe("worktree submodule isolation round-trip", () => {
+  test("admits an explicitly declared pool slot above the obsolete literal cap", async () => {
+    const mainRepo = join(sandbox, "main")
+    await initRepo(mainRepo)
+    writeFileSync(join(mainRepo, "README.md"), "main\n")
+    await commitAll(mainRepo, "main-init")
+
+    const originalPoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+    const originalCwd = process.cwd()
+    process.env.BEARLY_WORKTREE_POOL_SLOTS = JSON.stringify(["wt13"])
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt13", undefined, {
+        install: false,
+        direnv: false,
+        hooks: false,
+        base: "HEAD",
+      })
+      expect(existsSync(join(dirname(mainRepo), "main-wt13"))).toBe(true)
+      await removeWorktree("wt13", { force: true })
+    } finally {
+      process.chdir(originalCwd)
+      if (originalPoolSlots === undefined) {
+        delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+      } else {
+        process.env.BEARLY_WORKTREE_POOL_SLOTS = originalPoolSlots
+      }
+    }
+  }, 60_000)
+
+  test("refuses a pool-shaped name when the composing caller omitted admission policy", async () => {
+    const mainRepo = join(sandbox, "main")
+    await initRepo(mainRepo)
+
+    const originalPoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+    const originalCwd = process.cwd()
+    delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+    try {
+      process.chdir(mainRepo)
+      await expect(
+        createWorktree("wt13", undefined, {
+          install: false,
+          direnv: false,
+          hooks: false,
+          base: "HEAD",
+        }),
+      ).rejects.toThrow('process.exit unexpectedly called with "1"')
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("requires explicit admission policy"))
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("BEARLY_WORKTREE_POOL_SLOTS"))
+    } finally {
+      process.chdir(originalCwd)
+      if (originalPoolSlots === undefined) {
+        delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+      } else {
+        process.env.BEARLY_WORKTREE_POOL_SLOTS = originalPoolSlots
+      }
+    }
+  })
+
+  test("refuses a pool slot absent from the composing caller's exact set", async () => {
+    const mainRepo = join(sandbox, "main")
+    await initRepo(mainRepo)
+
+    const originalPoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+    const originalCwd = process.cwd()
+    process.env.BEARLY_WORKTREE_POOL_SLOTS = JSON.stringify(["wt0", "wt13", "wt17"])
+    try {
+      process.chdir(mainRepo)
+      await expect(
+        createWorktree("wt12", undefined, {
+          install: false,
+          direnv: false,
+          hooks: false,
+          base: "HEAD",
+        }),
+      ).rejects.toThrow('process.exit unexpectedly called with "1"')
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("wt12"))
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("declared slot set"))
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("wt0, wt13, wt17"))
+    } finally {
+      process.chdir(originalCwd)
+      if (originalPoolSlots === undefined) {
+        delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+      } else {
+        process.env.BEARLY_WORKTREE_POOL_SLOTS = originalPoolSlots
+      }
+    }
+  })
+
   test("worktree changes to submodule don't leak to main, and remove leaves no orphans", async () => {
     const mainRepo = join(sandbox, "main")
     const subRepo = join(sandbox, "sub")
@@ -80,6 +168,7 @@ describe("worktree submodule isolation round-trip", () => {
         install: false,
         direnv: false,
         hooks: false,
+        base: "HEAD",
       })
     } finally {
       process.chdir(origCwd)
