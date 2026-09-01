@@ -105,6 +105,6 @@ It can also be invoked manually with `/checkpoint` at any time.
 ## Pairs with
 
 - **`/merge`** — orthogonal axis. `/checkpoint` preserves narrative for _resume_; `/merge` integrates _work_ back to main. They compose: `/checkpoint` before `/compact`, `/merge` before stopping the workday.
-- **`/complete`** — different question. `/complete` audits whether the work is finished; `/checkpoint` saves the context whether or not it's finished.
+- **`/verify`** — different question. `/verify` audits whether the work is finished; `/checkpoint` saves the context whether or not it's finished.
 - **`/discuss`** — `/discuss` checkpoints to the tracking issue automatically when entering discussion mode; uses the same machinery.
 - **`/recall`** — recovers checkpoint content in a future session by ID.

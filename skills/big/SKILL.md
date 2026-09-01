@@ -153,4 +153,4 @@ Use `/big` when the problem should not need to exist. Use `/fresh` when the prob
 
 ## References
 
-[[../undead/SKILL|/undead]], [[../why/SKILL|/why]], [[../trouble/SKILL|/trouble]], [[../fresh/SKILL|/fresh]], [[../pro/SKILL|/pro]], [[../ask/SKILL|/ask]], [[../deep/SKILL|/deep]], [[../csw/SKILL|/csw]], [[../../../hub/quality-rubric]].
+[[../why/SKILL|/why]], [[../trouble/SKILL|/trouble]], [[../fresh/SKILL|/fresh]], [[../pro/SKILL|/pro]], [[../ask/SKILL|/ask]], [[../deep/SKILL|/deep]], [[../csw/SKILL|/csw]], [[../../../hub/quality-rubric]].
