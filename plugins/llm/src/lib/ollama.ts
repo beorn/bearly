@@ -6,6 +6,12 @@
  */
 
 import type { Model, ModelResponse } from "./types"
+import { describeDispatchFailure } from "./dispatch-error"
+import {
+  createProviderObservationStore,
+  recordProviderObservation,
+  type ProviderObservationStore,
+} from "./provider-availability"
 
 const DEFAULT_HOST = "http://localhost:11434"
 
@@ -16,13 +22,44 @@ function getOllamaHost(): string {
 /**
  * Check if Ollama server is reachable
  */
-export async function isOllamaAvailable(): Promise<boolean> {
+export async function isOllamaAvailable(
+  options: { observationStore?: ProviderObservationStore | null } = {},
+): Promise<boolean> {
+  const observationStore =
+    options.observationStore === undefined ? createProviderObservationStore() : options.observationStore
+  const target = `${getOllamaHost()}/api/tags`
   try {
-    const resp = await fetch(`${getOllamaHost()}/api/tags`, {
+    const resp = await fetch(target, {
       signal: AbortSignal.timeout(2000),
     })
+    if (observationStore) {
+      await recordProviderObservation(
+        observationStore,
+        resp.ok
+          ? {
+              provider: "ollama",
+              status: "available",
+              source: "ollama:/api/tags",
+              reason: `GET ${target} returned ${resp.status}`,
+            }
+          : {
+              provider: "ollama",
+              status: "refusing",
+              kind: "transport",
+              source: "ollama:/api/tags",
+              reason: `GET ${target} returned ${resp.status} ${resp.statusText}`.trim(),
+            },
+      )
+    }
     return resp.ok
-  } catch {
+  } catch (error) {
+    const described = describeDispatchFailure(error, { provider: "ollama" })
+    if (observationStore && described.observation) {
+      await recordProviderObservation(observationStore, {
+        ...described.observation,
+        source: "ollama:/api/tags",
+      })
+    }
     return false
   }
 }

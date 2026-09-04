@@ -52,6 +52,38 @@ The `📚 Similar past queries` hint surfaces only when `@bearly/recall` is
 installed (`npm install @bearly/recall`). Without it, the hint is
 silently skipped — `@bearly/llm` runs standalone without crashing.
 
+**Provider health is evidence, not key presence.** Real dispatches and Ollama's
+free `/api/tags` endpoint record expiring `available` or `refusing` observations
+under `~/.cache/bearly-llm/providers/<provider>.json`; no billed preflight call
+is added. Missing credentials override cached evidence, stale or absent evidence
+is `unknown`, and corrupt files return a loud unknown fact naming the path.
+
+```ts
+import {
+  createProviderObservationStore,
+  getCheapModels,
+  readProviderAvailability,
+  selectModels,
+} from "@bearly/llm"
+
+const candidates = getCheapModels(6)
+const providers = [...new Set(candidates.map((model) => model.provider))]
+const store = createProviderObservationStore()
+const facts = await Promise.all(
+  providers.map((provider) => readProviderAvailability(provider, { store, now: Date.now() })),
+)
+
+const result = selectModels({ candidates, facts, now: Date.now(), limit: 2 })
+console.log(result.selected) // available first, then unknown; fastest within each band
+console.log(result.excluded) // provider status, kind, reason, and evidence age
+```
+
+`selectModels` is pure and accepts facts explicitly. Persistence writes are
+atomic and throw with their path on failure; unreadable observations never
+collapse to `null` or healthy. `getCheapModel`, `getCheapModels`, and
+`isProviderAvailable` retain their existing behavior, but the boolean helper is
+deprecated for new selection because it reports configuration presence only.
+
 ## Commands
 
 ```bash

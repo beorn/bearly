@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Provider availability is now a barrel-exported `available | refusing |
+  unknown` fact with closed refusal kinds, evidence source, age, expiry, and
+  optional retry time. Real dispatches persist observations atomically at
+  `~/.cache/bearly-llm/providers/<provider>.json`; stale or missing evidence is
+  explicit, corrupt evidence names its path and warns once, and no billed probe
+  is introduced.
+- `selectModels()` ranks fresh available providers before cold or stale unknown
+  providers, then uses the registry's existing `typicalLatencyMs`. Caller
+  exclusions run first, fresh refusing providers are excluded, and the result
+  carries every candidate plus structured exclusion evidence.
+- `describeDispatchFailure()` is the pure structured owner for provider, model,
+  and call failures. It emits provider observations only when the failure proves
+  provider scope; model-not-found and timeout failures record nothing.
+
+### Changed
+
+- `queryModel()` records successful and provider-scoped refusal evidence at the
+  real dispatch seam. Ollama's free `/api/tags` check records available or
+  transport-refusing evidence. `getCheapModels()` keeps its prior return order
+  and representative models.
+
+### Deprecated
+
+- `isProviderAvailable()` remains source-compatible but reports credential
+  presence only; use `readProviderAvailability()` plus `selectModels()` for new
+  selection.
+- `describeProviderError()` and `formatLegDispatchError()` now render
+  `describeDispatchFailure().message`. Both wrappers remain for one release and
+  are scheduled for removal in the following release.
+
 ## 0.10.0 (2026-04-28)
 
 User-visible behavior change: the JSON envelope's `file` field is now

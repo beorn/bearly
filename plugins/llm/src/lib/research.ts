@@ -4,14 +4,20 @@
  * Handles single-model queries with streaming support
  */
 
-import { generateText, streamText } from "ai"
+import { generateText, streamText, type ModelMessage, type UserContent } from "ai"
 import { getLanguageModel, isProviderAvailable } from "./providers"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
 import type { Model, ModelResponse, Provider, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
+import { getModelsForLevel, getModel, getEndpoint, MODELS } from "./types"
+import { describeDispatchFailure, type DispatchFailureDescription } from "./dispatch-error"
+import {
+  createProviderObservationStore,
+  recordProviderObservation,
+  type ProviderObservationStore,
+} from "./provider-availability"
 
 /**
  * Turn a provider / AI-SDK error into an actionable one-line message.
@@ -27,59 +33,12 @@ import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } f
  * class: `streamText` forwards provider errors to `onError` (and ends the text
  * stream empty) rather than throwing, so without capturing them here the CLI
  * only ever saw empty content and printed a generic, misleading message.
+ *
+ * @deprecated Use describeDispatchFailure(). This wrapper remains for one
+ * release and renders the shared description's message.
  */
 export function describeProviderError(error: unknown, provider: Provider): string {
-  // `streamText`'s onError may hand us anything: an Error, an SDK APICallError
-  // (detail in .responseBody/.data), or the raw `{ type, error: { message } }`
-  // object the provider streamed. Reach a human message for the fallback, and
-  // stringify the WHOLE thing so pattern-matching finds nested markers like
-  // "insufficient_quota" regardless of shape.
-  const stringify = (v: unknown): string => {
-    try {
-      return typeof v === "string" ? v : JSON.stringify(v)
-    } catch {
-      return String(v)
-    }
-  }
-  let raw: string
-  if (error instanceof Error) {
-    raw = error.message
-  } else if (error && typeof error === "object") {
-    const o = error as Record<string, unknown>
-    const nested = o.error && typeof o.error === "object" ? (o.error as Record<string, unknown>) : undefined
-    raw =
-      (typeof o.message === "string" && o.message) ||
-      (nested && typeof nested.message === "string" && nested.message) ||
-      stringify(error)
-  } else {
-    raw = String(error)
-  }
-  const parts = [raw, stringify(error)]
-  if (error && typeof error === "object") {
-    const e = error as { responseBody?: unknown; data?: unknown; cause?: unknown }
-    if (typeof e.responseBody === "string") parts.push(e.responseBody)
-    if (e.data !== undefined) parts.push(stringify(e.data))
-    if (e.cause) parts.push(e.cause instanceof Error ? e.cause.message : stringify(e.cause))
-  }
-  const blob = parts.join(" | ")
-  const envVar = getProviderEnvVar(provider)
-  const alt =
-    provider === "openai"
-      ? "--model moonshotai/kimi-k2.6 (OpenRouter) or --model gemini-2.5-pro (Google)"
-      : "--model gpt-5.4 (OpenAI) or --model moonshotai/kimi-k2.6 (OpenRouter)"
-  if (/insufficient_quota|exceeded your current quota|billing/i.test(blob)) {
-    return `${provider} quota exhausted (insufficient_quota) — check plan & billing for ${envVar}. Retry with another provider: ${alt}.`
-  }
-  if (/rate[ _-]?limit|too many requests|\b429\b/i.test(blob)) {
-    return `${provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`
-  }
-  if (/model_not_found|does not exist|no such model|model .* not found|invalid model/i.test(blob)) {
-    return `${provider} rejected the model id (renamed or unavailable). Run \`llm quota\` for live providers; the registry is plugins/llm/src/lib/types.ts.`
-  }
-  if (/invalid[_ ]?api[_ ]?key|unauthorized|permission|\b401\b/i.test(blob)) {
-    return `${provider} auth failed — check ${envVar}.`
-  }
-  return raw
+  return describeDispatchFailure(error, { provider }).message
 }
 
 /**
@@ -145,6 +104,8 @@ export interface QueryOptions {
   imagePath?: string
   /** AbortSignal to cancel the request */
   abortSignal?: AbortSignal
+  /** Explicit provider-evidence sink. `null` intentionally disables recording. */
+  observationStore?: ProviderObservationStore | null
 }
 
 /** Rough token estimate: must OVERESTIMATE, not under-estimate.
@@ -221,12 +182,58 @@ export interface QueryResult {
   stream?: AsyncIterable<string>
 }
 
+async function recordQueryObservation(
+  store: ProviderObservationStore | null,
+  model: Model,
+  response: ModelResponse,
+  describedFailure?: DispatchFailureDescription,
+): Promise<void> {
+  if (!store) return
+  const observation = describedFailure
+    ? describedFailure.observation
+    : response.error
+      ? describeDispatchFailure(response.error, {
+          provider: model.provider,
+          modelId: model.modelId,
+          displayName: model.displayName,
+        }).observation
+      : {
+          provider: model.provider,
+          status: "available" as const,
+          source: "dispatch",
+          reason: `successful completion via ${model.modelId}`,
+        }
+  if (observation) await recordProviderObservation(store, observation)
+}
+
+function resolveObservationStore(store: ProviderObservationStore | null | undefined): ProviderObservationStore | null {
+  return store === undefined ? createProviderObservationStore() : store
+}
+
+async function finishQuery(
+  store: ProviderObservationStore | null,
+  model: Model,
+  response: ModelResponse,
+  describedFailure?: DispatchFailureDescription,
+): Promise<QueryResult> {
+  await recordQueryObservation(store, model, response, describedFailure)
+  return { response }
+}
+
+function streamFailureField(
+  failure: DispatchFailureDescription | undefined,
+  content: string,
+): Pick<ModelResponse, "error"> | object {
+  return failure && content.trim().length === 0 ? { error: failure.message } : {}
+}
+
 /**
  * Query a single model
  */
 export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const { question, model, systemPrompt, stream = false, onToken, context, abortSignal } = options
   const startTime = Date.now()
+  const observationStore = resolveObservationStore(options.observationStore)
 
   // Check provider availability
   if (!isProviderAvailable(model.provider)) {
@@ -251,7 +258,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       onToken,
       abortSignal,
     })
-    return { response }
+    return finishQuery(observationStore, model, response)
   }
 
   // Use direct OpenAI SDK for deep research models (requires web_search_preview)
@@ -264,7 +271,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       context,
       abortSignal,
     })
-    return { response }
+    return finishQuery(observationStore, model, response)
   }
 
   // Use Gemini Interactions API for Gemini deep research models
@@ -277,27 +284,26 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       context,
       abortSignal,
     })
-    return { response }
+    return finishQuery(observationStore, model, response)
   }
 
   const languageModel = getLanguageModel(model)
 
   // Build user message content — text or multimodal (text + image)
-  let userContent: any = question
+  let userContent: UserContent = question
   if (options.imagePath) {
     const { readFileSync } = await import("fs")
     const imageData = readFileSync(options.imagePath)
-    const base64 = imageData.toString("base64")
     const ext = options.imagePath.split(".").pop()?.toLowerCase() ?? "png"
     const mimeType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`
     // Vercel AI SDK expects image as a URL (data URI) or Uint8Array
     userContent = [
       { type: "text" as const, text: question },
-      { type: "image" as const, image: new Uint8Array(imageData), mimeType },
+      { type: "image" as const, image: new Uint8Array(imageData), mediaType: mimeType },
     ]
   }
 
-  const messages = [
+  const messages: ModelMessage[] = [
     ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
     { role: "user" as const, content: userContent },
   ]
@@ -338,18 +344,20 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // for the matching kind. Endpoints without `reasoningParam` get no
   // providerOptions; the legacy fields alone are insufficient because the
   // routing-side intent now lives on the endpoint, not the SKU.
-  const providerOptions: Record<string, Record<string, any>> = {}
+  const providerOptions: NonNullable<Parameters<typeof generateText>[0]["providerOptions"]> = {}
   const endpointForReasoning = getEndpoint(model.modelId)
   const reasoningParam = endpointForReasoning?.reasoningParam
   if (reasoningParam) {
     switch (reasoningParam.kind) {
       case "openai-effort": {
-        const level = model.reasoning?.openaiEffort ?? reasoningParam.defaultLevel
+        const legacy = model.reasoning as { openaiEffort?: "low" | "medium" | "high" } | undefined
+        const level = legacy?.openaiEffort ?? reasoningParam.defaultLevel
         if (level) providerOptions.openai = { reasoningEffort: level }
         break
       }
       case "anthropic-budget": {
-        const tokens = model.reasoning?.anthropicBudget ?? reasoningParam.defaultTokens
+        const legacy = model.reasoning as { anthropicBudget?: number } | undefined
+        const tokens = legacy?.anthropicBudget ?? reasoningParam.defaultTokens
         if (tokens) {
           providerOptions.anthropic = {
             thinking: { type: "enabled", budgetTokens: tokens },
@@ -383,7 +391,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       // is a bare console.error dump). Capture it here so an empty completion
       // carries a real, actionable `response.error` instead of looking like a
       // silent success. See describeProviderError.
-      let streamError: string | undefined
+      let streamFailure: DispatchFailureDescription | undefined
       const result = streamText({
         model: languageModel,
         messages,
@@ -391,7 +399,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
         onError: ({ error }) => {
-          streamError = describeProviderError(error, model.provider)
+          streamFailure = describeDispatchFailure(error, { provider: model.provider })
         },
       })
 
@@ -405,24 +413,23 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       const usage = await result.usage
       const quota = await captureQuotaFromResult(result, model.provider)
 
-      return {
-        response: {
-          model,
-          content: fullText,
-          // Only surface the stream error when nothing came back — a partial
-          // completion that errored late still gives the user usable content.
-          ...(streamError && fullText.trim().length === 0 ? { error: streamError } : {}),
-          usage: usage
-            ? {
-                promptTokens: usage.inputTokens ?? 0,
-                completionTokens: usage.outputTokens ?? 0,
-                totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-              }
-            : undefined,
-          durationMs: Date.now() - startTime,
-          ...(quota ? { quota } : {}),
-        },
+      const response: ModelResponse = {
+        model,
+        content: fullText,
+        // Only surface the stream error when nothing came back — a partial
+        // completion that errored late still gives the user usable content.
+        ...streamFailureField(streamFailure, fullText),
+        usage: usage
+          ? {
+              promptTokens: usage.inputTokens ?? 0,
+              completionTokens: usage.outputTokens ?? 0,
+              totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+            }
+          : undefined,
+        durationMs: Date.now() - startTime,
+        ...(quota ? { quota } : {}),
       }
+      return await finishQuery(observationStore, model, response, streamFailure)
     } else {
       const result = await generateText({
         model: languageModel,
@@ -434,25 +441,23 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
       const quota = captureQuotaFromGenerateResult(result, model.provider)
 
-      return {
-        response: {
-          model,
-          content: result.text,
-          reasoning:
-            Array.isArray(result.reasoning) && result.reasoning.length > 0
-              ? result.reasoning.map((r) => r.text).join("\n")
-              : undefined,
-          usage: result.usage
-            ? {
-                promptTokens: result.usage.inputTokens ?? 0,
-                completionTokens: result.usage.outputTokens ?? 0,
-                totalTokens: (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
-              }
+      return await finishQuery(observationStore, model, {
+        model,
+        content: result.text,
+        reasoning:
+          Array.isArray(result.reasoning) && result.reasoning.length > 0
+            ? result.reasoning.map((r) => r.text).join("\n")
             : undefined,
-          durationMs: Date.now() - startTime,
-          ...(quota ? { quota } : {}),
-        },
-      }
+        usage: result.usage
+          ? {
+              promptTokens: result.usage.inputTokens ?? 0,
+              completionTokens: result.usage.outputTokens ?? 0,
+              totalTokens: (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
+            }
+          : undefined,
+        durationMs: Date.now() - startTime,
+        ...(quota ? { quota } : {}),
+      })
     }
   } catch (error) {
     // Retry once if a combined-limit provider (K2.6 etc.) rejected us because
@@ -478,55 +483,53 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
             maxOutputTokens: correctedCap,
             ...(hasProviderOptions ? { providerOptions } : {}),
           })
-          return {
-            response: {
-              model,
-              content: retryResult.text,
-              reasoning:
-                Array.isArray(retryResult.reasoning) && retryResult.reasoning.length > 0
-                  ? retryResult.reasoning.map((r) => r.text).join("\n")
-                  : undefined,
-              usage: retryResult.usage
-                ? {
-                    promptTokens: retryResult.usage.inputTokens ?? 0,
-                    completionTokens: retryResult.usage.outputTokens ?? 0,
-                    totalTokens: (retryResult.usage.inputTokens ?? 0) + (retryResult.usage.outputTokens ?? 0),
-                  }
+          return await finishQuery(observationStore, model, {
+            model,
+            content: retryResult.text,
+            reasoning:
+              Array.isArray(retryResult.reasoning) && retryResult.reasoning.length > 0
+                ? retryResult.reasoning.map((r) => r.text).join("\n")
                 : undefined,
-              durationMs: Date.now() - startTime,
-            },
-          }
+            usage: retryResult.usage
+              ? {
+                  promptTokens: retryResult.usage.inputTokens ?? 0,
+                  completionTokens: retryResult.usage.outputTokens ?? 0,
+                  totalTokens: (retryResult.usage.inputTokens ?? 0) + (retryResult.usage.outputTokens ?? 0),
+                }
+              : undefined,
+            durationMs: Date.now() - startTime,
+          })
         } catch (retryError) {
           // Retry failed — fall through to the original error below.
           const retryMsg = retryError instanceof Error ? retryError.message : String(retryError)
-          return {
-            response: {
-              model,
-              content: "",
-              durationMs: Date.now() - startTime,
-              error: `${errorMsg} (retry with cap=${correctedCap} also failed: ${retryMsg})`,
-            },
-          }
+          return finishQuery(observationStore, model, {
+            model,
+            content: "",
+            durationMs: Date.now() - startTime,
+            error: `${errorMsg} (retry with cap=${correctedCap} also failed: ${retryMsg})`,
+          })
         }
       }
       // Input alone exceeds the window — no cap will help. Report clearly.
-      return {
-        response: {
-          model,
-          content: "",
-          durationMs: Date.now() - startTime,
-          error: `Input (${capInfo.realInputTokens} tokens) exceeds ${model.displayName}'s ${model.reasoning.contextWindow}-token window. Shorten the prompt or context.`,
-        },
-      }
-    }
-    return {
-      response: {
+      return finishQuery(observationStore, model, {
         model,
         content: "",
         durationMs: Date.now() - startTime,
-        error: describeProviderError(error, model.provider),
-      },
+        error: `Input (${capInfo.realInputTokens} tokens) exceeds ${model.displayName}'s ${model.reasoning.contextWindow}-token window. Shorten the prompt or context.`,
+      })
     }
+    const describedFailure = describeDispatchFailure(error, { provider: model.provider })
+    return finishQuery(
+      observationStore,
+      model,
+      {
+        model,
+        content: "",
+        durationMs: Date.now() - startTime,
+        error: describedFailure.message,
+      },
+      describedFailure,
+    )
   }
 }
 
@@ -543,12 +546,12 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 export function parseContextLengthError(errorMsg: string): { realInputTokens: number } | null {
   // OpenRouter / Moonshot format: "...(30687 of text input, 231502 in the output)."
   const openrouterMatch = errorMsg.match(/(\d+)\s+of\s+text\s+input/i)
-  if (openrouterMatch && openrouterMatch[1]) {
+  if (openrouterMatch?.[1]) {
     return { realInputTokens: parseInt(openrouterMatch[1], 10) }
   }
   // OpenAI-style: "...prompt has N tokens..." — best-effort.
   const openaiMatch = errorMsg.match(/prompt\s+has\s+(\d+)\s+tokens/i)
-  if (openaiMatch && openaiMatch[1] && /maximum.*context|context.*length|too\s+long/i.test(errorMsg)) {
+  if (openaiMatch?.[1] && /maximum.*context|context.*length|too\s+long/i.test(errorMsg)) {
     return { realInputTokens: parseInt(openaiMatch[1], 10) }
   }
   return null

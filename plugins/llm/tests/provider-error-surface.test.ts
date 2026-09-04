@@ -20,6 +20,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { makeTestEnv, runCli } from "./helpers"
 import { describeProviderError } from "../src/lib/research"
+import { describeDispatchFailure } from "../src/index"
 import { filterNewModelCandidates } from "../src/cmd/pricing"
 
 // Mock `ai` so the CLI never touches the network. streamText is driven per-test.
@@ -62,6 +63,50 @@ function quotaApiError(): Error {
 }
 
 describe("describeProviderError", () => {
+  it("keeps the legacy message while exposing the shared provider-scoped observation", () => {
+    const error = quotaStreamError()
+    const described = describeDispatchFailure(error, { provider: "openai" })
+
+    expect(described.message).toBe(describeProviderError(error, "openai"))
+    expect(described).toMatchObject({
+      kind: "quota",
+      scope: "provider",
+      observation: {
+        provider: "openai",
+        status: "refusing",
+        kind: "quota",
+        source: "dispatch",
+      },
+    })
+  })
+
+  it("keeps model-not-found and timeout failures out of provider observations", () => {
+    const modelFailure = describeDispatchFailure(new Error("The model `gemini-x` does not exist"), {
+      provider: "google",
+    })
+    expect(modelFailure).toMatchObject({ kind: "model-unavailable", scope: "model" })
+    expect(modelFailure).not.toHaveProperty("observation")
+
+    const timeout = describeDispatchFailure(new Error("timed out after 2002ms"), { provider: "openrouter" })
+    expect(timeout).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(timeout).not.toHaveProperty("observation")
+  })
+
+  it("carries Retry-After into rate-limit evidence for the recorder-owned expiry", () => {
+    const described = describeDispatchFailure(
+      Object.assign(new Error("429 Too Many Requests"), { responseHeaders: { "retry-after": "12" } }),
+      { provider: "openai" },
+      1_000,
+    )
+
+    expect(described).toMatchObject({
+      kind: "rate-limited",
+      scope: "provider",
+      retryAt: 13_000,
+      observation: { kind: "rate-limited", retryAt: 13_000 },
+    })
+  })
+
   it("surfaces insufficient_quota from the real streamed object (not [object Object])", () => {
     const msg = describeProviderError(quotaStreamError(), "openai")
     expect(msg).toMatch(/insufficient_quota/i)
@@ -133,6 +178,70 @@ describe("filterNewModelCandidates — de-noise the auto-discovery banner", () =
 })
 
 describe("queryModel streaming path — the empty-response silent failure fix", () => {
+  it("records successful dispatch evidence but records nothing for an ambiguous timeout", async () => {
+    makeTestEnv()
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const write = vi.fn(async () => undefined)
+    const observationStore = {
+      pathFor: () => "/test/providers/openai.json",
+      read: vi.fn(async () => ({ status: "absent" as const, path: "/test/providers/openai.json" })),
+      write,
+    }
+    const model = getModel("gpt-5-nano")!
+
+    generateTextMock.mockResolvedValueOnce({
+      text: "alive",
+      reasoning: [],
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await queryModel({ question: "say alive", model, observationStore })
+    expect(write).toHaveBeenCalledOnce()
+    expect(write).toHaveBeenLastCalledWith(
+      expect.objectContaining({ provider: "openai", status: "available", source: "dispatch" }),
+    )
+
+    generateTextMock.mockRejectedValueOnce(new Error("timed out after 2002ms (given 2000ms)"))
+    await queryModel({ question: "say alive", model, observationStore })
+    expect(write).toHaveBeenCalledOnce()
+  })
+
+  it("records a provider refusal when a stream returns usable partial text before failing", async () => {
+    makeTestEnv()
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const write = vi.fn(async () => undefined)
+    const observationStore = {
+      pathFor: () => "/test/providers/openai.json",
+      read: vi.fn(async () => ({ status: "absent" as const, path: "/test/providers/openai.json" })),
+      write,
+    }
+    streamTextMock.mockImplementationOnce((opts: { onError?: (event: { error: unknown }) => void }) => {
+      opts.onError?.({ error: quotaStreamError() })
+      return {
+        textStream: (async function* () {
+          yield "partial"
+        })(),
+        usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+      }
+    })
+
+    const result = await queryModel({
+      question: "say alive",
+      model: getModel("gpt-5-nano")!,
+      stream: true,
+      onToken: vi.fn(),
+      observationStore,
+    })
+
+    expect(result.response).toMatchObject({ content: "partial" })
+    expect(result.response).not.toHaveProperty("error")
+    expect(write).toHaveBeenCalledOnce()
+    expect(write).toHaveBeenLastCalledWith(
+      expect.objectContaining({ provider: "openai", status: "refusing", kind: "quota" }),
+    )
+  })
+
   it("empty stream + onError(insufficient_quota) exits nonzero with the actionable message", async () => {
     const env = makeTestEnv()
     generateTextMock.mockReset()

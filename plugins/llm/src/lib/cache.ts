@@ -47,7 +47,8 @@ function cacheDisabled(): boolean {
   return process.env.LLM_NO_CACHE === "1"
 }
 
-function getCacheDir(): string {
+/** Response-cache directory. Provider observations use its `providers/` sibling. */
+export function getCacheDir(): string {
   if (cachePathOverride) return cachePathOverride
   const xdg = process.env.XDG_CACHE_HOME
   const home = process.env.HOME ?? ""

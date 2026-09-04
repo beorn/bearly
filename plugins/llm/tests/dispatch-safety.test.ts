@@ -6,6 +6,7 @@ import {
   getLegTimeoutMs,
   runWithTimeout,
 } from "../src/lib/dispatch-safety"
+import { describeDispatchFailure } from "../src/lib/dispatch-error"
 
 describe("dual-pro dispatch safety", () => {
   afterEach(() => {
@@ -22,12 +23,12 @@ describe("dual-pro dispatch safety", () => {
   })
 
   it("makes an actual leg's insufficient-quota error actionable without a probe call", () => {
-    expect(
-      formatLegDispatchError(
-        { provider: "openai", modelId: "gpt-5.4-pro", displayName: "GPT-5.4 Pro" },
-        new Error("insufficient_quota: billing hard limit reached"),
-      ),
-    ).toBe("OpenAI insufficient quota; top up OPENAI_API_KEY billing before retrying.")
+    const model = { provider: "openai" as const, modelId: "gpt-5.4-pro", displayName: "GPT-5.4 Pro" }
+    const error = new Error("insufficient_quota: billing hard limit reached")
+    expect(formatLegDispatchError(model, error)).toBe(
+      "OpenAI insufficient quota; top up OPENAI_API_KEY billing before retrying.",
+    )
+    expect(describeDispatchFailure(error, model).message).toBe(formatLegDispatchError(model, error))
   })
 
   it("passes runWithTimeout's own wrapper message through verbatim (pro-specific partial-results semantics)", () => {

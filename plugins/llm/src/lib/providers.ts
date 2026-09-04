@@ -120,12 +120,15 @@ export function getLanguageModel(model: Model): LanguageModel {
     case "ollama":
       throw new Error("Ollama does not use Vercel AI SDK — handle via ollamaChat() directly")
     default:
-      throw new Error(`Unknown provider: ${model.provider}`)
+      throw new Error(`Unknown provider: ${String(model.provider)}`)
   }
 }
 
 /**
  * Check if a provider's API key is available
+ *
+ * Legacy source-compatible configuration-presence check, not endpoint/account
+ * health. New selection must use ProviderAvailabilityFact with selectModels().
  */
 export function isProviderAvailable(provider: Provider): boolean {
   switch (provider) {

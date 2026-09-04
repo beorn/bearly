@@ -27,6 +27,11 @@
 
 import { z } from "zod"
 import { resolveCost, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
+import type {
+  ProviderAvailabilityFact,
+  ProviderAvailabilityStatus,
+  ProviderRefusalKind,
+} from "./provider-availability.ts"
 
 // ============================================================================
 // Provider identifiers
@@ -1175,7 +1180,8 @@ export function getModel(idOrName: string): Model | undefined {
  *  Use `setPricingOverlay()` to update runtime pricing. */
 export const MODELS: readonly Model[] = Object.freeze(
   SKUS.filter((s) => PROVIDER_ENDPOINTS[s.modelId]).map((s) => {
-    const endpoint = PROVIDER_ENDPOINTS[s.modelId]!
+    const endpoint = PROVIDER_ENDPOINTS[s.modelId]
+    if (!endpoint) throw new Error(`Provider endpoint disappeared while building model registry: ${s.modelId}`)
     // Build a getter-backed Model so reads of inputPricePerM / etc. always see
     // the current overlay. Avoids "frozen at module load" pricing while
     // keeping the surface immutable to writes.
@@ -1202,6 +1208,8 @@ export const MODELS: readonly Model[] = Object.freeze(
   }),
 )
 
+const MODEL_REGISTRY_ORDER = new Map(MODELS.map((model, index) => [`${model.provider}:${model.modelId}`, index]))
+
 // ============================================================================
 // Selection helpers
 // ============================================================================
@@ -1221,8 +1229,10 @@ export function getModelsForLevel(level: ThinkingLevel): Model[] {
       }, [] as Model[])
     case "deep":
       return MODELS.filter((m) => m.isDeepResearch)
-    default:
-      return [MODELS[0]!]
+    default: {
+      const first = MODELS[0]
+      return first ? [first] : []
+    }
   }
 }
 
@@ -1328,9 +1338,9 @@ function isBetterCheapPick(candidate: Model, current: Model): boolean {
  * "low"-tier SKU (OpenRouter today; every other provider's pick is
  * byte-for-byte the same as before this function existed).
  */
-export function getCheapModels(max = 2): Model[] {
+function getCheapProviderRepresentatives(models: readonly Model[]): Model[] {
   const bestPerProvider = new Map<string, Model>()
-  for (const m of MODELS) {
+  for (const m of models) {
     if (m.costTier !== "low" || m.isDeepResearch) continue
     const current = bestPerProvider.get(m.provider)
     if (!current || isBetterCheapPick(m, current)) {
@@ -1340,14 +1350,174 @@ export function getCheapModels(max = 2): Model[] {
 
   const seen = new Set<string>()
   const result: Model[] = []
-  for (const m of MODELS) {
+  for (const m of models) {
     if (m.costTier !== "low" || m.isDeepResearch || seen.has(m.provider)) continue
     seen.add(m.provider)
     const picked = bestPerProvider.get(m.provider)
     if (picked) result.push(picked)
+  }
+  return result
+}
+
+export function getCheapModels(max = 2): Model[] {
+  const result: Model[] = []
+  for (const model of getCheapProviderRepresentatives(MODELS)) {
+    result.push(model)
     if (result.length >= max) break
   }
   return result
+}
+
+export interface ModelSelectionEvidence {
+  provider: Provider
+  status: ProviderAvailabilityStatus
+  source: string
+  reason: string
+  kind?: ProviderRefusalKind
+  observedAt?: number
+  expiresAt?: number
+  retryAt?: number
+  ageMs?: number
+}
+
+export interface ModelSelectionExclusion extends Omit<ModelSelectionEvidence, "status"> {
+  model: Model
+  status: "refusing" | "excluded"
+}
+
+export interface ModelSelectionResult {
+  candidates: Model[]
+  selected: Model[]
+  excluded: ModelSelectionExclusion[]
+  evidence: ModelSelectionEvidence[]
+}
+
+export interface SelectModelsOptions {
+  candidates?: readonly Model[]
+  facts: readonly ProviderAvailabilityFact[]
+  now: number
+  exclude?: Iterable<Provider>
+  distinctProviders?: boolean
+  limit: number
+}
+
+function selectionEvidence(
+  provider: Provider,
+  fact: ProviderAvailabilityFact | undefined,
+  now: number,
+): ModelSelectionEvidence {
+  if (!fact) {
+    return {
+      provider,
+      status: "unknown",
+      source: "caller",
+      reason: `no provider fact supplied for ${provider}`,
+    }
+  }
+  const ageMs = fact.observedAt === undefined ? undefined : Math.max(0, now - fact.observedAt)
+  if (fact.expiresAt !== undefined && fact.expiresAt <= now) {
+    return {
+      provider,
+      status: "unknown",
+      source: fact.source,
+      reason: `last ${fact.status} observation is stale (age ${ageMs ?? 0}ms): ${fact.reason}`,
+      ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
+      ...(fact.observedAt !== undefined ? { observedAt: fact.observedAt, ageMs } : {}),
+      expiresAt: fact.expiresAt,
+      ...(fact.retryAt !== undefined ? { retryAt: fact.retryAt } : {}),
+    }
+  }
+  return {
+    provider,
+    status: fact.status,
+    source: fact.source,
+    reason: fact.reason,
+    ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
+    ...(fact.observedAt !== undefined ? { observedAt: fact.observedAt, ageMs } : {}),
+    ...(fact.expiresAt !== undefined ? { expiresAt: fact.expiresAt } : {}),
+    ...(fact.retryAt !== undefined ? { retryAt: fact.retryAt } : {}),
+  }
+}
+
+/**
+ * Select models from explicit provider facts without I/O. Availability is the
+ * first ordering band; static registry latency only orders within a band.
+ */
+export function selectModels(options: SelectModelsOptions): ModelSelectionResult {
+  if (!Number.isSafeInteger(options.limit) || options.limit <= 0) {
+    throw new Error(`selectModels limit must be a positive safe integer; received ${String(options.limit)}`)
+  }
+  if (!Number.isFinite(options.now)) {
+    throw new Error(`selectModels now must be finite; received ${String(options.now)}`)
+  }
+
+  const candidates = options.candidates ? [...options.candidates] : getCheapProviderRepresentatives(MODELS)
+  const excludedProviders = new Set(options.exclude ?? [])
+  const factsByProvider = new Map<Provider, ProviderAvailabilityFact>()
+  for (const fact of options.facts) {
+    if (factsByProvider.has(fact.provider)) {
+      throw new Error(`selectModels received duplicate facts for provider ${fact.provider}`)
+    }
+    factsByProvider.set(fact.provider, fact)
+  }
+
+  const excluded: ModelSelectionExclusion[] = []
+  const evidenceByProvider = new Map<Provider, ModelSelectionEvidence>()
+  const eligible: Array<{
+    model: Model
+    evidence: ModelSelectionEvidence
+    candidateIndex: number
+    registryIndex: number
+  }> = []
+
+  for (const [index, model] of candidates.entries()) {
+    if (excludedProviders.has(model.provider)) {
+      excluded.push({
+        model,
+        provider: model.provider,
+        status: "excluded",
+        source: "caller",
+        reason: "excluded by caller",
+      })
+      continue
+    }
+
+    const evidence = selectionEvidence(model.provider, factsByProvider.get(model.provider), options.now)
+    evidenceByProvider.set(model.provider, evidence)
+    if (evidence.status === "refusing") {
+      excluded.push({ ...evidence, model, status: "refusing" })
+      continue
+    }
+    eligible.push({
+      model,
+      evidence,
+      candidateIndex: index,
+      registryIndex: MODEL_REGISTRY_ORDER.get(`${model.provider}:${model.modelId}`) ?? MODELS.length + index,
+    })
+  }
+
+  eligible.sort((left, right) => {
+    const leftBand = left.evidence.status === "available" ? 0 : 1
+    const rightBand = right.evidence.status === "available" ? 0 : 1
+    if (leftBand !== rightBand) return leftBand - rightBand
+    const leftLatency = left.model.typicalLatencyMs ?? Number.POSITIVE_INFINITY
+    const rightLatency = right.model.typicalLatencyMs ?? Number.POSITIVE_INFINITY
+    if (leftLatency !== rightLatency) return leftLatency - rightLatency
+    if (left.registryIndex !== right.registryIndex) return left.registryIndex - right.registryIndex
+    return left.candidateIndex - right.candidateIndex
+  })
+
+  const distinctProviders = options.distinctProviders ?? true
+  const seen = new Set<Provider>()
+  const selected: Model[] = []
+  for (const candidate of eligible) {
+    if (distinctProviders && seen.has(candidate.model.provider)) continue
+    seen.add(candidate.model.provider)
+    selected.push(candidate.model)
+    if (selected.length >= options.limit) break
+  }
+
+  return { candidates, selected, excluded, evidence: [...evidenceByProvider.values()] }
 }
 
 export function requiresConfirmation(model: Model | SkuConfig, threshold = 0.1): boolean {
@@ -1380,7 +1550,8 @@ export function getBestAvailableModel(
   isProviderAvailable: (provider: Provider) => boolean,
 ): { model: Model | undefined; warning: string | undefined } {
   const candidates = BEST_MODELS[mode]
-  const globalBest = getModel(candidates[0]!)
+  const firstCandidate = candidates[0]
+  const globalBest = firstCandidate ? getModel(firstCandidate) : undefined
 
   for (const modelId of candidates) {
     const model = getModel(modelId)
@@ -1396,8 +1567,8 @@ export function getBestAvailableModel(
 
   const envVars = candidates
     .map((id) => getModel(id))
-    .filter(Boolean)
-    .map((m) => `${m!.displayName}: ${getProviderEnvVar(m!.provider)}`)
+    .filter((model): model is Model => model !== undefined)
+    .map((model) => `${model.displayName}: ${getProviderEnvVar(model.provider)}`)
     .slice(0, 3)
     .join(", ")
 
