@@ -56,7 +56,9 @@ silently skipped — `@bearly/llm` runs standalone without crashing.
 free `/api/tags` endpoint record expiring `available` or `refusing` observations
 under `~/.cache/bearly-llm/providers/<provider>.json`; no billed preflight call
 is added. Missing credentials override cached evidence, stale or absent evidence
-is `unknown`, and corrupt files return a loud unknown fact naming the path.
+is `unknown`, and corrupt files return a loud unknown fact naming the path. An
+expired refusal therefore becomes the zero-probe half-open state: the next
+ordinary dispatch may try that provider and record whether it recovered.
 
 ```ts
 import { createProviderObservationStore, getCheapModels, readProviderAvailability, selectModels } from "@bearly/llm"
@@ -82,8 +84,8 @@ deprecated for new selection because it reports configuration presence only.
 and writes; provider facts then report an explicit cache-disabled `unknown`.
 Runtime-invalid provider identifiers, observations, facts, candidates,
 exclusions, and non-finite times throw before I/O or selection. A continuously
-unreadable observation file emits one warning until a successful read or write
-proves recovery.
+unreadable observation file emits one warning per process until a successful
+read or write proves recovery.
 
 ## Commands
 
