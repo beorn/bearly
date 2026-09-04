@@ -1,8 +1,8 @@
 import { constants as fsConstants } from "node:fs"
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises"
 import * as path from "node:path"
-import { getCacheDir } from "./cache"
-import { getProviderEnvVar, type Provider } from "./types"
+import { getCacheDir, isCacheDisabled } from "./cache"
+import { getProviderEnvVar, ProviderSchema, type Provider } from "./types"
 
 export type ProviderAvailabilityStatus = "available" | "refusing" | "unknown"
 
@@ -81,6 +81,7 @@ export type ProviderObservation =
 export type ProviderObservationReadResult =
   | { status: "found"; path: string; observation: RecordedProviderObservation }
   | { status: "absent"; path: string }
+  | { status: "disabled"; path: string; reason: string }
   | { status: "unreadable"; path: string; reason: string }
 
 export interface ProviderObservationStore {
@@ -125,7 +126,8 @@ function isProviderObservation(value: unknown, provider?: Provider): value is Re
   if (!value || typeof value !== "object") return false
   const item = value as Partial<RecordedProviderObservation>
   if (provider !== undefined && item.provider !== provider) return false
-  if (typeof item.provider !== "string" || typeof item.source !== "string" || item.source.length === 0) return false
+  if (!ProviderSchema.safeParse(item.provider).success || typeof item.source !== "string" || item.source.length === 0)
+    return false
   if (typeof item.reason !== "string" || item.reason.length === 0) return false
   if (!Number.isFinite(item.observedAt) || !Number.isFinite(item.expiresAt)) return false
   if ((item.expiresAt as number) < (item.observedAt as number)) return false
@@ -139,6 +141,30 @@ function isProviderObservation(value: unknown, provider?: Provider): value is Re
     item.kind === "transport" ||
     item.kind === "server-error"
   )
+}
+
+function isPersistedRefusalKind(value: unknown): value is PersistedProviderRefusalKind {
+  return (
+    value === "auth" ||
+    value === "quota" ||
+    value === "rate-limited" ||
+    value === "transport" ||
+    value === "server-error"
+  )
+}
+
+function isProviderObservationInput(value: unknown): value is ProviderObservation {
+  if (!value || typeof value !== "object") return false
+  const item = value as Partial<ProviderObservation>
+  if (!ProviderSchema.safeParse(item.provider).success) return false
+  if (item.status === "available") return item.kind === undefined && item.retryAt === undefined
+  return item.status === "refusing" && isPersistedRefusalKind(item.kind)
+}
+
+function assertProvider(value: unknown): asserts value is Provider {
+  if (!ProviderSchema.safeParse(value).success) {
+    throw new Error(`invalid provider identifier "${String(value)}"`)
+  }
 }
 
 function parseStoredObservation(raw: string, provider: Provider): RecordedProviderObservation {
@@ -181,18 +207,40 @@ export function createProviderObservationStore(
   const cacheRoot = options.cacheRoot ?? path.dirname(getCacheDir())
   const providerDir = path.join(cacheRoot, "providers")
   const warn = options.warn ?? ((message: string) => console.error(message))
+  const warnedUnreadablePaths = new Set<string>()
 
-  const pathFor = (provider: Provider): string => path.join(providerDir, `${provider}.json`)
+  const warnUnreadable = (file: string, reason: string): void => {
+    if (warnedUnreadablePaths.has(file)) return
+    warnedUnreadablePaths.add(file)
+    warn(reason)
+  }
+
+  const pathFor = (provider: Provider): string => {
+    assertProvider(provider)
+    return path.join(providerDir, `${provider}.json`)
+  }
 
   const read = async (provider: Provider): Promise<ProviderObservationReadResult> => {
     const file = pathFor(provider)
+    if (isCacheDisabled()) {
+      return {
+        status: "disabled",
+        path: file,
+        reason: `provider observation cache disabled by LLM_NO_CACHE=1; did not read ${file}`,
+      }
+    }
     try {
       const raw = await readFile(file, "utf8")
-      return { status: "found", path: file, observation: parseStoredObservation(raw, provider) }
+      const observation = parseStoredObservation(raw, provider)
+      warnedUnreadablePaths.delete(file)
+      return { status: "found", path: file, observation }
     } catch (error) {
-      if (isNodeError(error, "ENOENT")) return { status: "absent", path: file }
+      if (isNodeError(error, "ENOENT")) {
+        warnedUnreadablePaths.delete(file)
+        return { status: "absent", path: file }
+      }
       const reason = `observation store unreadable: ${file}: ${errorMessage(error)}`
-      warn(reason)
+      warnUnreadable(file, reason)
       return { status: "unreadable", path: file, reason }
     }
   }
@@ -201,6 +249,7 @@ export function createProviderObservationStore(
     if (!isProviderObservation(observation)) {
       throw new Error("provider observation write rejected invalid observation")
     }
+    if (isCacheDisabled()) return
     const file = pathFor(observation.provider)
     const lockPath = `${file}.lock`
     await mkdir(providerDir, { recursive: true, mode: 0o700 })
@@ -213,7 +262,7 @@ export function createProviderObservationStore(
         current = parseStoredObservation(await readFile(file, "utf8"), observation.provider)
       } catch (error) {
         if (!isNodeError(error, "ENOENT")) {
-          warn(`observation store unreadable: ${file}: ${errorMessage(error)}`)
+          warnUnreadable(file, `observation store unreadable: ${file}: ${errorMessage(error)}`)
         }
       }
       if (current && current.observedAt >= observation.observedAt) return
@@ -222,6 +271,7 @@ export function createProviderObservationStore(
       const stored: StoredProviderObservation = { version: STORE_VERSION, observation }
       await writeFile(temporary, `${JSON.stringify(stored)}\n`, { mode: 0o600 })
       await rename(temporary, file)
+      warnedUnreadablePaths.delete(file)
       temporary = undefined
     } catch (error) {
       operationError = error
@@ -264,6 +314,9 @@ export async function recordProviderObservation(
   store: ProviderObservationStore,
   input: ProviderObservation,
 ): Promise<RecordedProviderObservation> {
+  if (!isProviderObservationInput(input)) {
+    throw new Error("provider observation input rejected invalid observation")
+  }
   if (input.source.trim().length === 0) throw new Error("provider observation source must be non-empty")
   if (input.reason.trim().length === 0) throw new Error("provider observation reason must be non-empty")
   if (input.observedAt !== undefined && !Number.isFinite(input.observedAt)) {
@@ -309,6 +362,10 @@ export async function readProviderAvailability(
   provider: Provider,
   options: ReadProviderAvailabilityOptions,
 ): Promise<ProviderAvailabilityFact> {
+  assertProvider(provider)
+  if (!Number.isFinite(options.now)) {
+    throw new Error(`provider availability now must be finite; received ${String(options.now)}`)
+  }
   const env = options.env ?? process.env
   if (!hasCurrentCredential(provider, env)) {
     const envVar = getProviderEnvVar(provider)
@@ -323,6 +380,9 @@ export async function readProviderAvailability(
 
   const result = await options.store.read(provider)
   if (result.status === "unreadable") {
+    return { provider, status: "unknown", source: "observation-store", reason: result.reason }
+  }
+  if (result.status === "disabled") {
     return { provider, status: "unknown", source: "observation-store", reason: result.reason }
   }
   if (result.status === "absent") {

@@ -190,4 +190,47 @@ describe("selectModels — availability bands before latency", () => {
       "selectModels now must be finite; received NaN",
     )
   })
+
+  it("rejects runtime-invalid candidates and exclusions before selection", () => {
+    const candidate = model("gpt-5-nano", 50)
+    expect(() =>
+      selectModels({
+        candidates: [{ ...candidate, provider: "unknown-provider" } as never],
+        facts: [],
+        now: at,
+        limit: 1,
+      }),
+    ).toThrow("selectModels received invalid candidate at index 0")
+    expect(() =>
+      selectModels({
+        candidates: [candidate],
+        facts: [],
+        now: at,
+        exclude: ["unknown-provider" as never],
+        limit: 1,
+      }),
+    ).toThrow("selectModels received invalid excluded provider at index 0")
+  })
+
+  it.each([
+    { provider: "openai", status: "bogus", source: "test", reason: "test evidence" },
+    {
+      provider: "openai",
+      status: "available",
+      source: "test",
+      reason: "test evidence",
+      observedAt: Number.NaN,
+      expiresAt: at + 1_000,
+    },
+    { provider: "unknown-provider", status: "unknown", source: "test", reason: "test evidence" },
+  ])("rejects a runtime-invalid provider fact: $status/$provider", (invalidFact) => {
+    expect(() =>
+      selectModels({
+        candidates: [model("gpt-5-nano", 50)],
+        facts: [invalidFact as never],
+        now: at,
+        limit: 1,
+      }),
+    ).toThrow("selectModels received invalid provider fact at index 0")
+  })
 })

@@ -40,14 +40,14 @@ export async function isOllamaAvailable(
               provider: "ollama",
               status: "available",
               source: "ollama:/api/tags",
-              reason: `GET ${target} returned ${resp.status}`,
+              reason: `Ollama /api/tags returned HTTP ${resp.status}`,
             }
           : {
               provider: "ollama",
               status: "refusing",
               kind: "transport",
               source: "ollama:/api/tags",
-              reason: `GET ${target} returned ${resp.status} ${resp.statusText}`.trim(),
+              reason: `Ollama /api/tags returned HTTP ${resp.status}`,
             },
       )
     }

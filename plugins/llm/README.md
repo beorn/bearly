@@ -59,12 +59,7 @@ is added. Missing credentials override cached evidence, stale or absent evidence
 is `unknown`, and corrupt files return a loud unknown fact naming the path.
 
 ```ts
-import {
-  createProviderObservationStore,
-  getCheapModels,
-  readProviderAvailability,
-  selectModels,
-} from "@bearly/llm"
+import { createProviderObservationStore, getCheapModels, readProviderAvailability, selectModels } from "@bearly/llm"
 
 const candidates = getCheapModels(6)
 const providers = [...new Set(candidates.map((model) => model.provider))]
@@ -83,6 +78,12 @@ atomic and throw with their path on failure; unreadable observations never
 collapse to `null` or healthy. `getCheapModel`, `getCheapModels`, and
 `isProviderAvailable` retain their existing behavior, but the boolean helper is
 deprecated for new selection because it reports configuration presence only.
+`LLM_NO_CACHE=1` bypasses both response-cache and provider-observation reads
+and writes; provider facts then report an explicit cache-disabled `unknown`.
+Runtime-invalid provider identifiers, observations, facts, candidates,
+exclusions, and non-finite times throw before I/O or selection. A continuously
+unreadable observation file emits one warning until a successful read or write
+proves recovery.
 
 ## Commands
 

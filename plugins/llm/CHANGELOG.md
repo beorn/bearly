@@ -5,7 +5,7 @@
 ### Added
 
 - Provider availability is now a barrel-exported `available | refusing |
-  unknown` fact with closed refusal kinds, evidence source, age, expiry, and
+unknown` fact with closed refusal kinds, evidence source, age, expiry, and
   optional retry time. Real dispatches persist observations atomically at
   `~/.cache/bearly-llm/providers/<provider>.json`; stale or missing evidence is
   explicit, corrupt evidence names its path and warns once, and no billed probe
@@ -24,6 +24,17 @@
   real dispatch seam. Ollama's free `/api/tags` check records available or
   transport-refusing evidence. `getCheapModels()` keeps its prior return order
   and representative models.
+- `LLM_NO_CACHE=1` now bypasses provider-observation reads and writes as well as
+  response caching, so test or manual no-cache runs cannot alter later provider
+  selection. Disabled reads return an explicit unknown fact naming the bypass.
+- Dispatch failures render safe standardized reasons, including timeout and
+  unclassified failures; raw upstream payloads cannot carry secrets or prompt
+  text into human output or the provider cache. Numeric token counts no longer
+  alias HTTP status codes. Model-unavailable remediation now names the shipped
+  `bun llm pro --discover-models` command.
+- Provider stores and selectors reject runtime-invalid providers, observations,
+  facts, candidates, exclusions, and non-finite times before I/O or selection.
+  A continuously unreadable observation file warns once until it recovers.
 
 ### Deprecated
 

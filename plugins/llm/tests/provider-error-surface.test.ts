@@ -27,11 +27,16 @@ import { filterNewModelCandidates } from "../src/cmd/pricing"
 // `vi.hoisted` is required because a static import above (research.ts) pulls in
 // "ai" at module-load, which runs the mock factory before plain consts would
 // initialise.
-const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
+const { generateTextMock, streamTextMock, queryOpenAIDeepResearchMock } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
   streamTextMock: vi.fn(),
+  queryOpenAIDeepResearchMock: vi.fn(),
 }))
 vi.mock("ai", () => ({ generateText: generateTextMock, streamText: streamTextMock }))
+vi.mock("../src/lib/openai-deep", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
+  return { ...actual, queryOpenAIDeepResearch: queryOpenAIDeepResearchMock }
+})
 
 /** The EXACT object `streamText` forwards to `onError` when OpenAI streams an
  *  insufficient_quota error — captured live 2026-07-02. A plain object (NOT an
@@ -107,6 +112,67 @@ describe("describeProviderError", () => {
     })
   })
 
+  it("keeps raw transport and server payloads out of persisted provider observations", () => {
+    const transport = describeDispatchFailure(new Error("fetch failed https://provider.test/run?api_key=sk-secret"), {
+      provider: "openrouter",
+    })
+    const server = describeDispatchFailure(new Error("HTTP 500 upstream prompt=private-text"), {
+      provider: "openrouter",
+    })
+
+    expect(transport.observation?.reason).toBe("openrouter transport failure during dispatch")
+    expect(server.observation?.reason).toBe("openrouter server error during dispatch")
+    expect(transport.message).toBe(
+      "openrouter transport failure during dispatch — check the provider endpoint and network, then retry.",
+    )
+    expect(server.message).toBe("openrouter server error during dispatch — retry later or use another provider.")
+    expect(
+      `${transport.message} ${server.message} ${transport.observation?.reason} ${server.observation?.reason}`,
+    ).not.toMatch(/sk-secret|private-text/)
+  })
+
+  it("keeps raw timeout and unknown payloads out of the human error surface", () => {
+    const timeout = describeDispatchFailure(new Error("timed out url=https://x.test?api_key=sk-secret"), {
+      provider: "openrouter",
+    })
+    const modelTimeout = describeDispatchFailure(new Error("timed out prompt=private-model-text"), {
+      provider: "openrouter",
+      modelId: "safe-model-id",
+    })
+    const unknown = describeDispatchFailure(new Error("unexpected prompt=private-text"), {
+      provider: "openrouter",
+    })
+
+    expect(timeout).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(modelTimeout).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(unknown).toMatchObject({ kind: "unknown", scope: "call" })
+    expect(`${timeout.message} ${modelTimeout.message} ${unknown.message}`).not.toMatch(
+      /sk-secret|private-(?:model-)?text|https:\/\/x\.test/,
+    )
+  })
+
+  it.each([
+    "model supports 401 tokens",
+    "requested 429 output tokens",
+    "prompt exceeds the maximum context length of 500 tokens",
+    "model requested 503 output tokens",
+  ])("does not treat a numeric token count as provider refusal: %s", (message) => {
+    const described = describeDispatchFailure(new Error(message), { provider: "openrouter" })
+
+    expect(described).toMatchObject({ kind: "unknown", scope: "call" })
+    expect(described).not.toHaveProperty("observation")
+  })
+
+  it("points model discovery at the shipped CLI surface", () => {
+    const described = describeDispatchFailure(new Error("model new-name does not exist"), {
+      provider: "openrouter",
+      modelId: "new-name",
+    })
+
+    expect(described.message).toContain("bun llm pro --discover-models")
+    expect(described.message).not.toContain("bun llm discover")
+  })
+
   it("surfaces insufficient_quota from the real streamed object (not [object Object])", () => {
     const msg = describeProviderError(quotaStreamError(), "openai")
     expect(msg).toMatch(/insufficient_quota/i)
@@ -135,8 +201,10 @@ describe("describeProviderError", () => {
     expect(describeProviderError(new Error("401 invalid_api_key"), "openrouter")).toMatch(/auth failed/i)
   })
 
-  it("falls back to the raw message when nothing matches", () => {
-    expect(describeProviderError(new Error("socket hang up"), "xai")).toBe("socket hang up")
+  it("renders a safe transport message without persisting or printing the raw payload", () => {
+    expect(describeProviderError(new Error("socket hang up"), "xai")).toBe(
+      "xai transport failure during dispatch — check the provider endpoint and network, then retry.",
+    )
   })
 })
 
@@ -178,6 +246,30 @@ describe("filterNewModelCandidates — de-noise the auto-discovery banner", () =
 })
 
 describe("queryModel streaming path — the empty-response silent failure fix", () => {
+  it.each([
+    ["Insufficient credits. Check your OpenAI billing at https://platform.openai.com/account/billing", "quota"],
+    ["Organization not verified. Visit https://platform.openai.com/settings/organization/general to verify.", "auth"],
+  ] as const)("records an OpenAI deep refusal classified before the shared dispatch seam: %s", async (error, kind) => {
+    makeTestEnv()
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const write = vi.fn(async () => undefined)
+    const observationStore = {
+      pathFor: () => "/test/providers/openai.json",
+      read: vi.fn(async () => ({ status: "absent" as const, path: "/test/providers/openai.json" })),
+      write,
+    }
+    const model = getModel("o4-mini-deep-research-2025-06-26")!
+    queryOpenAIDeepResearchMock.mockResolvedValueOnce({ model, content: "", durationMs: 1, error })
+
+    await queryModel({ question: "research this", model, observationStore })
+
+    expect(write).toHaveBeenCalledOnce()
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai", status: "refusing", kind, source: "dispatch" }),
+    )
+  })
+
   it("records successful dispatch evidence but records nothing for an ambiguous timeout", async () => {
     makeTestEnv()
     const { queryModel } = await import("../src/lib/research")

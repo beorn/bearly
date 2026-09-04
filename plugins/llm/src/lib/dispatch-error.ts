@@ -133,19 +133,34 @@ function retryAtFromError(error: unknown, now: number): number | undefined {
   return undefined
 }
 
+function responseStatusFromError(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined
+  const item = error as {
+    status?: unknown
+    statusCode?: unknown
+    response?: { status?: unknown; statusCode?: unknown }
+  }
+  for (const candidate of [item.status, item.statusCode, item.response?.status, item.response?.statusCode]) {
+    const numeric = typeof candidate === "number" ? candidate : Number(candidate)
+    if (Number.isInteger(numeric) && numeric >= 100 && numeric <= 599) return numeric
+  }
+  return undefined
+}
+
 function refusing(
   kind: PersistedProviderRefusalKind,
   target: DispatchFailureTarget,
   message: string,
   remedy?: string,
   retryAt?: number,
+  observationReason = message,
 ): DispatchFailureDescription {
   const observation: ProviderObservation = {
     provider: target.provider,
     status: "refusing",
     kind,
     source: "dispatch",
-    reason: message,
+    reason: observationReason,
     ...(retryAt !== undefined ? { retryAt } : {}),
   }
   return {
@@ -164,11 +179,11 @@ export function describeDispatchFailure(
   target: DispatchFailureTarget,
   now = Date.now(),
 ): DispatchFailureDescription {
-  const raw = rawErrorMessage(error)
   const message = oneLineError(error)
   const blob = errorBlob(error)
   const envVar = getProviderEnvVar(target.provider)
   const alt = alternateModel(target.provider)
+  const responseStatus = responseStatusFromError(error)
 
   // runWithTimeout already describes Pro's partial-results semantics exactly.
   if (message.endsWith("partial results will be reported.")) {
@@ -176,8 +191,8 @@ export function describeDispatchFailure(
   }
   if (/\btimed?[ -]?out\b/iu.test(blob)) {
     const rendered = target.modelId
-      ? `${providerDisplayName(target.provider)} (${target.modelId}) was too slow for the time it was given (${message}) — not a credentials problem; retry with more time, or use a faster model.`
-      : raw
+      ? `${providerDisplayName(target.provider)} (${target.modelId}) was too slow for the time it was given — not a credentials problem; retry with more time, or use a faster model.`
+      : `${providerDisplayName(target.provider)} dispatch timed out — not a credentials problem; retry with more time, or use a faster model.`
     return {
       kind: "timeout",
       scope: "call",
@@ -185,13 +200,13 @@ export function describeDispatchFailure(
       remedy: "retry with more time, or use a faster model",
     }
   }
-  if (/insufficient[_ -]?quota|billing hard limit|exceeded (?:your )?(?:current )?quota/iu.test(blob)) {
+  if (/insufficient[_ -]?(?:quota|credits)|billing hard limit|exceeded (?:your )?(?:current )?quota/iu.test(blob)) {
     const rendered = target.modelId
       ? `${providerDisplayName(target.provider)} insufficient quota; top up ${envVar} billing before retrying.`
       : `${target.provider} quota exhausted (insufficient_quota) — check plan & billing for ${envVar}. Retry with another provider: ${alt}.`
     return refusing("quota", target, rendered, `check plan and billing for ${envVar}`)
   }
-  if (/rate[ _-]?limit|too many requests|\b429\b/iu.test(blob)) {
+  if (/rate[ _-]?limit|too many requests|\b429\s+too many requests\b/iu.test(blob) || responseStatus === 429) {
     const rendered = `${target.provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`
     return refusing(
       "rate-limited",
@@ -210,7 +225,7 @@ export function describeDispatchFailure(
     const rendered = target.modelId
       ? replacement
         ? `Model "${target.modelId}" is unavailable or renamed; replace it with "${replacement}" in dual-pro-config.json.`
-        : `Model "${target.modelId}" is unavailable or renamed; run "bun llm discover" and update dual-pro-config.json.`
+        : `Model "${target.modelId}" is unavailable or renamed; run "bun llm pro --discover-models" and update dual-pro-config.json.`
       : `${target.provider} rejected the model id (renamed or unavailable). Run \`llm quota\` for live providers; the registry is plugins/llm/src/lib/types.ts.`
     return {
       kind: "model-unavailable",
@@ -219,17 +234,50 @@ export function describeDispatchFailure(
       remedy: replacement ? `replace it with ${replacement}` : "discover current model ids and update the registry",
     }
   }
-  if (/invalid[_ ]?api[_ ]?key|unauthorized|permission|\b401\b/iu.test(blob)) {
+  if (
+    /invalid[_ ]?api[_ ]?key|unauthorized|permission|auth failed|organization not verified/iu.test(blob) ||
+    responseStatus === 401 ||
+    responseStatus === 403
+  ) {
     const rendered = `${target.provider} auth failed — check ${envVar}.`
     return refusing("auth", target, rendered, `check ${envVar}`)
   }
-  if (/\b(?:500|502|503|504)\b|internal server error|bad gateway|service unavailable/iu.test(blob)) {
-    return refusing("server-error", target, raw, "retry later or use another provider")
+  if (
+    /internal server error|bad gateway|service unavailable|\b(?:http(?: status)?|status(?: code)?|response)\s*[:=]?\s*(?:500|502|503|504)\b/iu.test(
+      blob,
+    ) ||
+    responseStatus === 500 ||
+    responseStatus === 502 ||
+    responseStatus === 503 ||
+    responseStatus === 504
+  ) {
+    const rendered = `${target.provider} server error during dispatch — retry later or use another provider.`
+    return refusing(
+      "server-error",
+      target,
+      rendered,
+      "retry later or use another provider",
+      undefined,
+      `${target.provider} server error during dispatch`,
+    )
   }
   if (/econnrefused|enotfound|connection refused|network error|socket hang up|fetch failed/iu.test(blob)) {
-    return refusing("transport", target, raw, "check the provider endpoint and network, then retry")
+    const rendered = `${target.provider} transport failure during dispatch — check the provider endpoint and network, then retry.`
+    return refusing(
+      "transport",
+      target,
+      rendered,
+      "check the provider endpoint and network, then retry",
+      undefined,
+      `${target.provider} transport failure during dispatch`,
+    )
   }
-  return { kind: "unknown", scope: "call", message: raw }
+  const targetDescription = target.modelId ? ` for model ${target.modelId}` : ""
+  return {
+    kind: "unknown",
+    scope: "call",
+    message: `${providerDisplayName(target.provider)} dispatch failed${targetDescription}: unclassified provider error.`,
+  }
 }
 
 export type DispatchFailureModelTarget = Pick<Model, "displayName" | "modelId" | "provider">

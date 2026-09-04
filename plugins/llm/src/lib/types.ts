@@ -1439,6 +1439,53 @@ function selectionEvidence(
   }
 }
 
+const PERSISTED_REFUSAL_KINDS = new Set<ProviderRefusalKind>([
+  "auth",
+  "quota",
+  "rate-limited",
+  "transport",
+  "server-error",
+])
+
+function isFiniteOptional(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value))
+}
+
+function isValidProviderFact(value: unknown): value is ProviderAvailabilityFact {
+  if (!value || typeof value !== "object") return false
+  const fact = value as Record<string, unknown>
+  if (!ProviderSchema.safeParse(fact.provider).success) return false
+  if (typeof fact.source !== "string" || fact.source.trim().length === 0) return false
+  if (typeof fact.reason !== "string" || fact.reason.trim().length === 0) return false
+  if (!isFiniteOptional(fact.observedAt) || !isFiniteOptional(fact.expiresAt) || !isFiniteOptional(fact.retryAt)) {
+    return false
+  }
+  if (typeof fact.observedAt === "number" && typeof fact.expiresAt === "number" && fact.expiresAt < fact.observedAt) {
+    return false
+  }
+
+  if (fact.status === "available") {
+    return (
+      fact.kind === undefined &&
+      fact.retryAt === undefined &&
+      typeof fact.observedAt === "number" &&
+      typeof fact.expiresAt === "number"
+    )
+  }
+  if (fact.status === "unknown") {
+    return fact.kind === undefined || PERSISTED_REFUSAL_KINDS.has(fact.kind as ProviderRefusalKind)
+  }
+  if (fact.status !== "refusing") return false
+  if (fact.kind === "credential-missing") {
+    return fact.observedAt === undefined && fact.expiresAt === undefined && fact.retryAt === undefined
+  }
+  return (
+    PERSISTED_REFUSAL_KINDS.has(fact.kind as ProviderRefusalKind) &&
+    typeof fact.observedAt === "number" &&
+    typeof fact.expiresAt === "number"
+  )
+}
+
 /**
  * Select models from explicit provider facts without I/O. Availability is the
  * first ordering band; static registry latency only orders within a band.
@@ -1452,9 +1499,23 @@ export function selectModels(options: SelectModelsOptions): ModelSelectionResult
   }
 
   const candidates = options.candidates ? [...options.candidates] : getCheapProviderRepresentatives(MODELS)
-  const excludedProviders = new Set(options.exclude ?? [])
+  for (const [index, candidate] of candidates.entries()) {
+    if (!ModelSchema.safeParse(candidate).success) {
+      throw new Error(`selectModels received invalid candidate at index ${index}`)
+    }
+  }
+  const excludedProviderList = [...(options.exclude ?? [])]
+  for (const [index, provider] of excludedProviderList.entries()) {
+    if (!ProviderSchema.safeParse(provider).success) {
+      throw new Error(`selectModels received invalid excluded provider at index ${index}`)
+    }
+  }
+  const excludedProviders = new Set(excludedProviderList)
   const factsByProvider = new Map<Provider, ProviderAvailabilityFact>()
-  for (const fact of options.facts) {
+  for (const [index, fact] of options.facts.entries()) {
+    if (!isValidProviderFact(fact)) {
+      throw new Error(`selectModels received invalid provider fact at index ${index}`)
+    }
     if (factsByProvider.has(fact.provider)) {
       throw new Error(`selectModels received duplicate facts for provider ${fact.provider}`)
     }

@@ -20,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   rmSync(cacheRoot, { recursive: true, force: true })
 })
 
@@ -34,25 +35,72 @@ function memoryStore(
 }
 
 describe("provider observation store", () => {
-  it("keeps the newest observed fact when two store instances write out of order", async () => {
-    const firstWriter = createProviderObservationStore({ cacheRoot })
-    const secondWriter = createProviderObservationStore({ cacheRoot })
+  it("honors LLM_NO_CACHE for provider observation reads and writes", async () => {
+    vi.stubEnv("LLM_NO_CACHE", "1")
+    const store = createProviderObservationStore({ cacheRoot })
 
-    await recordProviderObservation(firstWriter, {
+    await recordProviderObservation(store, {
       provider: "openai",
       status: "available",
       source: "dispatch",
       reason: "successful completion",
-      observedAt: 2_000,
-    })
-    await recordProviderObservation(secondWriter, {
-      provider: "openai",
-      status: "refusing",
-      kind: "auth",
-      source: "dispatch",
-      reason: "401 invalid_api_key",
       observedAt: 1_000,
     })
+    const fact = await readProviderAvailability("openai", {
+      store,
+      now: 1_001,
+      env: { OPENAI_API_KEY: "configured" },
+    })
+
+    expect(existsSync(join(cacheRoot, "providers", "openai.json"))).toBe(false)
+    expect(fact).toMatchObject({ status: "unknown", source: "observation-store" })
+    expect(fact.reason).toContain("LLM_NO_CACHE=1")
+  })
+
+  it("rejects unknown and path-traversing provider identifiers before resolving a store path", async () => {
+    const store = createProviderObservationStore({ cacheRoot })
+    const invalidProvider = "../escaped" as unknown as RecordedProviderObservation["provider"]
+
+    expect(() => store.pathFor(invalidProvider)).toThrow('invalid provider identifier "../escaped"')
+    await expect(
+      recordProviderObservation(store, {
+        provider: invalidProvider,
+        status: "available",
+        source: "dispatch",
+        reason: "successful completion",
+      }),
+    ).rejects.toThrow("provider observation input rejected invalid observation")
+    await expect(
+      readProviderAvailability(invalidProvider, {
+        store,
+        now: 1_000,
+        env: {},
+      }),
+    ).rejects.toThrow('invalid provider identifier "../escaped"')
+    expect(existsSync(join(cacheRoot, "escaped.json"))).toBe(false)
+  })
+
+  it("keeps the newest observed fact when two store instances write concurrently", async () => {
+    const firstWriter = createProviderObservationStore({ cacheRoot })
+    const secondWriter = createProviderObservationStore({ cacheRoot })
+
+    await Promise.all([
+      recordProviderObservation(firstWriter, {
+        provider: "openai",
+        status: "available",
+        source: "dispatch",
+        reason: "successful completion",
+        observedAt: 2_000,
+      }),
+      recordProviderObservation(secondWriter, {
+        provider: "openai",
+        status: "refusing",
+        kind: "auth",
+        source: "dispatch",
+        reason: "401 invalid_api_key",
+        observedAt: 1_000,
+      }),
+    ])
 
     const fact = await readProviderAvailability("openai", {
       store: firstWriter,
@@ -75,14 +123,20 @@ describe("provider observation store", () => {
     mkdirSync(providerDir, { recursive: true })
     writeFileSync(providerPath, "{not-json")
 
-    const fact = await readProviderAvailability("openai", {
+    const firstFact = await readProviderAvailability("openai", {
+      store,
+      now: 5_000,
+      env: { OPENAI_API_KEY: "configured" },
+    })
+    const secondFact = await readProviderAvailability("openai", {
       store,
       now: 5_000,
       env: { OPENAI_API_KEY: "configured" },
     })
 
-    expect(fact.status).toBe("unknown")
-    expect(fact.reason).toContain(`observation store unreadable: ${providerPath}:`)
+    expect(firstFact.status).toBe("unknown")
+    expect(firstFact.reason).toContain(`observation store unreadable: ${providerPath}:`)
+    expect(secondFact.status).toBe("unknown")
     expect(warn).toHaveBeenCalledOnce()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(providerPath))
   })
@@ -118,7 +172,33 @@ describe("provider observation store", () => {
         observedAt: Number.NaN,
       }),
     ).rejects.toThrow("provider observation observedAt must be finite")
+    await expect(
+      recordProviderObservation(store, {
+        provider: "openai",
+        status: "bogus",
+        source: "dispatch",
+        reason: "unexpected state",
+      } as never),
+    ).rejects.toThrow("provider observation input rejected invalid observation")
     expect(store.write).not.toHaveBeenCalled()
+  })
+
+  it("rejects non-finite read times instead of silently misclassifying freshness", async () => {
+    const store = memoryStore()
+    await expect(
+      readProviderAvailability("openai", {
+        store,
+        now: Number.NaN,
+        env: { OPENAI_API_KEY: "configured" },
+      }),
+    ).rejects.toThrow("provider availability now must be finite")
+    await expect(
+      readProviderAvailability("openai", {
+        store,
+        now: Number.POSITIVE_INFINITY,
+        env: { OPENAI_API_KEY: "configured" },
+      }),
+    ).rejects.toThrow("provider availability now must be finite")
   })
 
   it("retains stale evidence but resolves it to unknown with its prior status and age", async () => {
@@ -198,5 +278,20 @@ describe("Ollama free availability feed", () => {
 
     await expect(isOllamaAvailable({ observationStore: store })).resolves.toBe(false)
     expect(store.write).toHaveBeenCalledTimes(writesAfterTransport)
+  })
+
+  it("never persists credentials embedded in OLLAMA_HOST", async () => {
+    const store = memoryStore()
+    vi.stubEnv("OLLAMA_HOST", "http://user:secret@ollama.test")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 503, statusText: "Service Unavailable" })),
+    )
+
+    await expect(isOllamaAvailable({ observationStore: store })).resolves.toBe(false)
+
+    const observation = vi.mocked(store.write).mock.calls[0]?.[0]
+    expect(observation?.reason).toBe("Ollama /api/tags returned HTTP 503")
+    expect(JSON.stringify(observation)).not.toMatch(/user|secret|ollama\.test/)
   })
 })

@@ -22,6 +22,7 @@ import type { Model, ModelResponse } from "./types"
 import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
 import { missingApiKeyError } from "./env-preflight"
+import { describeDispatchFailure } from "./dispatch-error"
 
 const log = createLogger("bearly:llm:openai")
 
@@ -112,32 +113,12 @@ Please provide:
 5. Sources and references (if available)`
 }
 
-function formatApiError(error: unknown): string {
-  const msg = error instanceof Error ? error.message : String(error)
-
-  const errorMap: Array<{ match: string; message: string }> = [
-    {
-      match: "verified",
-      message: "Organization not verified. Visit https://platform.openai.com/settings/organization/general to verify.",
-    },
-    { match: "rate_limit", message: "Rate limited. Wait a moment and try again." },
-    { match: "429", message: "Rate limited. Wait a moment and try again." },
-    {
-      match: "insufficient_quota",
-      message: "Insufficient credits. Check your OpenAI billing at https://platform.openai.com/account/billing",
-    },
-    {
-      match: "billing",
-      message: "Insufficient credits. Check your OpenAI billing at https://platform.openai.com/account/billing",
-    },
-    { match: "invalid_api_key", message: "Invalid API key. Check OPENAI_API_KEY environment variable." },
-    { match: "401", message: "Invalid API key. Check OPENAI_API_KEY environment variable." },
-  ]
-
-  for (const { match, message } of errorMap) {
-    if (msg.includes(match)) return message
-  }
-  return msg
+function formatApiError(error: unknown, model: Model): string {
+  return describeDispatchFailure(error, {
+    provider: "openai",
+    modelId: model.modelId,
+    displayName: model.displayName,
+  }).message
 }
 
 /**
@@ -285,7 +266,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       durationMs: Date.now() - startTime,
     }
   } catch (error) {
-    const errorMessage = formatApiError(error)
+    const errorMessage = formatApiError(error, model)
     log.error?.(`Deep research error: ${errorMessage}`)
     return {
       model,
@@ -420,7 +401,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       error: pollResult.status === "completed" ? undefined : (pollResult.error ?? `incomplete: ${pollResult.status}`),
     }
   } catch (error) {
-    const errorMessage = formatApiError(error)
+    const errorMessage = formatApiError(error, model)
     log.error?.(`Background query error: ${errorMessage}`)
     return {
       model,
