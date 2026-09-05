@@ -62,6 +62,13 @@ descriptor for that open-file description closes.
 `lock.held` reports only this local handle. It becomes false after
 `lock.release()` even when an inherited child still owns a duplicate.
 
+Call `lock.assertHeld()` before a fenced mutation. It refuses a released handle
+or a lock path that was removed or replaced, naming the path and telling the
+holder to stop. The check only reads metadata; it never reacquires, unlocks or
+closes a descriptor. Keep descriptor ownership exclusive and the lock pathname
+stable: the check does not protect against external descriptor manipulation or
+a pathname change after the check returns.
+
 ## Diagnostic bytes
 
 `lock.replaceBody(body)` truncates, writes every byte, and fsyncs before

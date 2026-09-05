@@ -31,6 +31,13 @@ export interface FlockHandle {
   readonly fd: number
   /** Local handle state only; an inherited duplicate may still own the lock. */
   readonly held: boolean
+  /**
+   * Refuse a released handle or a path that no longer names the acquired inode.
+   * Read-only: never reacquires or closes an fd. The caller exclusively owns
+   * this descriptor; external close/unlock and concurrent path replacement
+   * after the assertion are outside the advisory-lock contract.
+   */
+  assertHeld(): void
   /** Complete and fsynced on success; failure closes this handle. */
   replaceBody(body: string | Uint8Array): void
   /** Close only. Never issues LOCK_UN because another process may own a duplicate fd. */
@@ -82,12 +89,7 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
 
     adopt(path, fd) {
       const identity = io.identity(fd)
-      const expectedIdentity = io.pathIdentity(path)
-      if (identity !== expectedIdentity) {
-        throw new Error(
-          `cannot adopt flock fd ${fd} for ${path}: descriptor identity ${identity} does not match path identity ${expectedIdentity}`,
-        )
-      }
+      assertPathIdentity(io, path, identity)
       if (heldIdentities.has(identity)) return null
 
       const result = io.flock(fd, "try")
@@ -118,6 +120,31 @@ interface Candidate {
   readonly fd: number
   readonly identity: string
   readonly path: string
+}
+
+/** The acquired inode is authority; pathname presence alone never is. */
+function assertPathIdentity(io: FlockIo, path: string, acquiredIdentity: string): void {
+  let currentIdentity: string
+  try {
+    currentIdentity = io.pathIdentity(path)
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      throw new Error(
+        `lock file at ${path}: removed since acquisition (identity ${acquiredIdentity}); this holder must stop`,
+        { cause: error },
+      )
+    }
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `lock file at ${path}: cannot inspect current identity for acquired ${acquiredIdentity}: ${detail}; this holder must stop`,
+      { cause: error },
+    )
+  }
+  if (currentIdentity !== acquiredIdentity) {
+    throw new Error(
+      `lock file at ${path}: acquired identity ${acquiredIdentity} was replaced by ${currentIdentity}; this holder must stop`,
+    )
+  }
 }
 
 function openCandidate(io: FlockIo, path: string, options: FlockOpenOptions): Candidate {
@@ -165,6 +192,14 @@ function publishHandle(
     fd: candidate.fd,
     get held() {
       return !released
+    },
+    assertHeld() {
+      if (released) {
+        throw new Error(
+          `lock file at ${candidate.path}: cannot assert ownership of a released flock; this holder must stop`,
+        )
+      }
+      assertPathIdentity(io, candidate.path, candidate.identity)
     },
     replaceBody,
     release,

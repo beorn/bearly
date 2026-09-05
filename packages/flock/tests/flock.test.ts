@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -54,6 +54,83 @@ describe("@bearly/flock", () => {
     expect(readFileSync(lockPath, "utf8")).toBe("successor\n")
   })
 
+  test("held authority refuses a replaced pathname without closing either real holder", () => {
+    const lockPath = join(tempRoot(), "writer.lock")
+    using original = tryAcquireFlock(lockPath)
+    if (original === null) throw new Error("fixture failed to acquire original lock")
+    expect(() => original.assertHeld()).not.toThrow()
+
+    renameSync(lockPath, `${lockPath}.old`)
+    expect(() => original.assertHeld()).toThrow(/writer\.lock/)
+    using successor = tryAcquireFlock(lockPath)
+    if (successor === null) throw new Error("fixture failed to acquire replacement lock")
+    expect(() => successor.assertHeld()).not.toThrow()
+    expect(() => original.assertHeld()).toThrow(/identity/)
+    expect(original.held).toBe(true)
+    expect(successor.held).toBe(true)
+    expect(tryAcquireFlock(`${lockPath}.old`)).toBeNull()
+    expect(tryAcquireFlock(lockPath)).toBeNull()
+
+    original.release()
+    expect(() => original.assertHeld()).toThrow(/released/)
+    expect(() => successor.assertHeld()).not.toThrow()
+  })
+
+  test("authority compares the acquired identity, not just the current fd and pathname", () => {
+    let identity = "1:2"
+    const fake = fakeIo({ identity: () => identity, pathIdentity: () => identity })
+    const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+    using lock = runtime.tryAcquire("/lock")
+    if (lock === null) throw new Error("fixture failed to acquire lock")
+    identity = "1:3"
+    expect(() => lock.assertHeld()).toThrow(/identity/)
+    expect(fake.closed).toEqual([])
+    expect(fake.flockedFds).toEqual([lock.fd])
+  })
+
+  test.each(["intact", "released", "missing", "replaced", "unreadable"] as const)(
+    "authority assertion is read-only and names a %s lock",
+    (state) => {
+      let pathReads = 0
+      const failure = Object.assign(new Error("path inspection refused"), {
+        code: state === "missing" ? "ENOENT" : "EACCES",
+      })
+      const fake = fakeIo({
+        pathIdentity() {
+          pathReads++
+          if (state === "missing" || state === "unreadable") throw failure
+          return state === "replaced" ? "1:3" : "1:2"
+        },
+      })
+      const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+      using lock = runtime.tryAcquire("/writer.lock")
+      if (lock === null) throw new Error("fixture failed to acquire lock")
+      if (state === "released") lock.release()
+      if (state === "intact") expect(() => lock.assertHeld()).not.toThrow()
+      else {
+        const expected = {
+          released: /released flock/,
+          missing: /removed since acquisition/,
+          replaced: /replaced by 1:3/,
+          unreadable: /path inspection refused/,
+        }[state]
+        let error: unknown
+        try {
+          lock.assertHeld()
+        } catch (caught) {
+          error = caught
+        }
+        expect(String(error)).toMatch(expected)
+        expect(String(error)).toContain("/writer.lock")
+        expect(String(error)).toContain("this holder must stop")
+        if (state === "missing" || state === "unreadable") expect(error).toMatchObject({ cause: failure })
+      }
+      expect(pathReads).toBe(state === "released" ? 0 : 1)
+      expect(fake.closed).toEqual(state === "released" ? [lock.fd] : [])
+      expect(fake.flockedFds).toEqual([lock.fd])
+    },
+  )
+
   test("release closes only the parent copy and preserves an inherited fd owner", async () => {
     const root = tempRoot()
     const lockPath = join(root, "writer.lock")
@@ -96,8 +173,25 @@ describe("@bearly/flock", () => {
     expect(lock?.fd).toBe(42)
     expect(fake.openedPaths).toEqual([])
     expect(fake.flockedFds).toEqual([42])
+    expect(() => lock?.assertHeld()).not.toThrow()
     lock?.release()
     expect(fake.closed).toEqual([42])
+  })
+
+  test.each(["missing", "replaced"] as const)("adoption refuses a %s path without closing the borrowed fd", (state) => {
+    const fake = fakeIo({
+      pathIdentity() {
+        if (state === "missing") throw Object.assign(new Error("absent"), { code: "ENOENT" })
+        return "1:3"
+      },
+    })
+    const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+    expect(() => runtime.adopt("/writer.lock", 42)).toThrow(
+      state === "missing" ? /removed since acquisition/ : /acquired identity 1:2 was replaced by 1:3/,
+    )
+    expect(fake.closed).toEqual([])
+    expect(fake.openedPaths).toEqual([])
+    expect(fake.flockedFds).toEqual([])
   })
 
   test("an adopted child closes its copy without releasing the parent owner", async () => {
