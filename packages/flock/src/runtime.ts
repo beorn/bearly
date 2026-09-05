@@ -8,6 +8,7 @@ export interface FlockIo {
     fd: number,
     mode: "try" | "block",
   ) => { readonly ok: true } | { readonly ok: false; readonly errno: number }
+  readonly closeOnExec: (fd: number) => { readonly ok: true } | { readonly ok: false; readonly errno: number }
   readonly truncate: (fd: number) => void
   readonly write: (fd: number, bytes: Uint8Array, offset: number, length: number) => number
   readonly fsync: (fd: number) => void
@@ -66,7 +67,7 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
       if (!result.ok) {
         io.close(candidate.fd)
         if (options.wouldBlockErrnos.includes(result.errno)) return null
-        throw flockError(path, result.errno)
+        throw syscallError(path, result.errno, "flock")
       }
       return publishHandle(io, heldIdentities, candidate, openOptions.body)
     },
@@ -82,7 +83,7 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
         if (result.ok) break
         if (result.errno === options.interruptedErrno) continue
         io.close(candidate.fd)
-        throw flockError(path, result.errno)
+        throw syscallError(path, result.errno, "flock")
       }
       return publishHandle(io, heldIdentities, candidate, openOptions.body)
     },
@@ -95,8 +96,13 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
       const result = io.flock(fd, "try")
       if (!result.ok) {
         if (options.wouldBlockErrnos.includes(result.errno)) return null
-        throw flockError(path, result.errno)
+        throw syscallError(path, result.errno, "flock")
       }
+      // Explicit stdio handoff clears CLOEXEC. The receiving owner must
+      // restore it before publishing the handle or starting descendants.
+      // Until publication this remains a borrowed fd, including on failure.
+      const sealed = io.closeOnExec(fd)
+      if (!sealed.ok) throw syscallError(path, sealed.errno, "ioctl")
       return publishHandle(io, heldIdentities, { fd, identity, path }, undefined)
     },
 
@@ -111,7 +117,7 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
       io.close(candidate.fd)
       if (result.ok) return false
       if (options.wouldBlockErrnos.includes(result.errno)) return true
-      throw flockError(path, result.errno)
+      throw syscallError(path, result.errno, "flock")
     },
   }
 }
@@ -244,11 +250,17 @@ function flockOrClose(io: FlockIo, fd: number, mode: "try" | "block"): ReturnTyp
   }
 }
 
-function flockError(path: string, errno: number): NodeJS.ErrnoException {
-  return Object.assign(new Error(`flock syscall failed: errno=${errno} path=${path}`), {
+function syscallError(path: string, errno: number, syscall: "flock" | "ioctl"): NodeJS.ErrnoException {
+  const operation = syscall === "ioctl" ? "ioctl(FIOCLEX)" : syscall
+  const remedy =
+    syscall === "ioctl"
+      ? "; inherited flock adoption refused because descendant isolation is unproven; " +
+        "abort startup and close the borrowed descriptor, then verify the inherited fd and native FIOCLEX support before retrying"
+      : ""
+  return Object.assign(new Error(`${operation} syscall failed: errno=${errno} path=${path}${remedy}`), {
     code: `ERRNO_${errno}`,
     errno,
-    syscall: "flock",
+    syscall,
     path,
   })
 }

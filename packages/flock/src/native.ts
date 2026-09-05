@@ -15,6 +15,9 @@ import type { FlockIo } from "./runtime.ts"
 
 const LOCK_EX = 2
 const LOCK_NB = 4
+// Linux asm-generic/ioctls.h and Darwin sys/filio.h (_IO('f', 1)).
+const LINUX_FIOCLEX = 0x5451
+const DARWIN_FIOCLEX = 0x20006601
 
 export interface NativeFlockRuntime {
   readonly io: FlockIo
@@ -23,7 +26,7 @@ export interface NativeFlockRuntime {
 }
 
 export function createNativeFlockRuntime(platform: NodeJS.Platform = process.platform): NativeFlockRuntime {
-  const callFlock = loadFlock(platform)
+  const calls = loadFlock(platform)
   return {
     wouldBlockErrnos: platform === "darwin" ? [35] : [11],
     interruptedErrno: 4,
@@ -42,8 +45,9 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
         return `${String(stat.dev)}:${String(stat.ino)}`
       },
       flock(fd, mode) {
-        return callFlock(fd, LOCK_EX | (mode === "try" ? LOCK_NB : 0))
+        return calls.flock(fd, LOCK_EX | (mode === "try" ? LOCK_NB : 0))
       },
+      closeOnExec: calls.closeOnExec,
       truncate: (fd) => ftruncateSync(fd, 0),
       write: (fd, bytes, offset, length) => writeSync(fd, bytes, offset, length),
       fsync: fsyncSync,
@@ -55,38 +59,57 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
 type FlockResult = { readonly ok: true } | { readonly ok: false; readonly errno: number }
 type FlockCall = (fd: number, operation: number) => FlockResult
 
-interface LinuxSymbols {
+interface LockSymbols {
   flock(fd: number, operation: number): number
+  ioctl(fd: number, request: number): number
+}
+
+interface LinuxSymbols extends LockSymbols {
   __errno_location(): Pointer
 }
 
-interface DarwinSymbols {
-  flock(fd: number, operation: number): number
+interface DarwinSymbols extends LockSymbols {
   __error(): Pointer
 }
 
-function loadFlock(platform: NodeJS.Platform): FlockCall {
+function loadFlock(platform: NodeJS.Platform): { flock: FlockCall; closeOnExec: (fd: number) => FlockResult } {
   if (platform === "linux") {
     const library = openFirst<LinuxSymbols>(platform, {
       flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      ioctl: { args: [FFIType.i32, FFIType.u64], returns: FFIType.i32 },
       __errno_location: { args: [], returns: FFIType.ptr },
     })
-    return (fd, operation) => {
-      const result = library.symbols.flock(fd, operation)
-      return result === 0 ? { ok: true } : { ok: false, errno: read.i32(library.symbols.__errno_location()) }
-    }
+    return bindCalls(library.symbols, () => read.i32(library.symbols.__errno_location()), LINUX_FIOCLEX)
   }
   if (platform === "darwin") {
     const library = openFirst<DarwinSymbols>(platform, {
       flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      ioctl: { args: [FFIType.i32, FFIType.u64], returns: FFIType.i32 },
       __error: { args: [], returns: FFIType.ptr },
     })
-    return (fd, operation) => {
-      const result = library.symbols.flock(fd, operation)
-      return result === 0 ? { ok: true } : { ok: false, errno: read.i32(library.symbols.__error()) }
-    }
+    return bindCalls(library.symbols, () => read.i32(library.symbols.__error()), DARWIN_FIOCLEX)
   }
   throw new Error(`@bearly/flock supports Bun on local macOS and Linux filesystems; unsupported platform: ${platform}`)
+}
+
+function bindCalls(
+  symbols: LockSymbols,
+  errno: () => number,
+  fioclex: number,
+): {
+  flock: FlockCall
+  closeOnExec: (fd: number) => FlockResult
+} {
+  return {
+    flock(fd, operation) {
+      return symbols.flock(fd, operation) === 0 ? { ok: true } : { ok: false, errno: errno() }
+    },
+    closeOnExec(fd) {
+      // FIOCLEX needs only ioctl's two fixed arguments (int, unsigned long).
+      // No variadic payload: Darwin arm64 passes variadic arguments differently.
+      return symbols.ioctl(fd, fioclex) === 0 ? { ok: true } : { ok: false, errno: errno() }
+    },
+  }
 }
 
 function openFirst<Symbols>(

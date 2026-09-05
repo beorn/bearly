@@ -173,10 +173,39 @@ describe("@bearly/flock", () => {
     expect(lock?.fd).toBe(42)
     expect(fake.openedPaths).toEqual([])
     expect(fake.flockedFds).toEqual([42])
+    expect(fake.closeOnExecFds).toEqual([42])
     expect(() => lock?.assertHeld()).not.toThrow()
     lock?.release()
     expect(fake.closed).toEqual([42])
   })
+
+  test.each(["errno", "throw"] as const)(
+    "CLOEXEC %s failure refuses adoption without closing the borrowed fd",
+    (mode) => {
+      let fail = true
+      const failure = new Error("ioctl boundary failed")
+      const fake = fakeIo({
+        closeOnExec() {
+          if (fail) {
+            if (mode === "throw") throw failure
+            return { ok: false, errno: 9 }
+          }
+          return { ok: true }
+        },
+      })
+      const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+      expect(() => runtime.adopt("/writer.lock", 42)).toThrow(
+        mode === "errno"
+          ? /ioctl\(FIOCLEX\).*errno=9.*writer.lock.*adoption refused.*close the borrowed descriptor/
+          : failure,
+      )
+      expect(fake.closed).toEqual([])
+      expect(fake.openedPaths).toEqual([])
+      fail = false
+      using lock = runtime.adopt("/writer.lock", 42)
+      expect(lock?.fd).toBe(42)
+    },
+  )
 
   test.each(["missing", "replaced"] as const)("adoption refuses a %s path without closing the borrowed fd", (state) => {
     const fake = fakeIo({
@@ -192,9 +221,10 @@ describe("@bearly/flock", () => {
     expect(fake.closed).toEqual([])
     expect(fake.openedPaths).toEqual([])
     expect(fake.flockedFds).toEqual([])
+    expect(fake.closeOnExecFds).toEqual([])
   })
 
-  test("an adopted child closes its copy without releasing the parent owner", async () => {
+  test("an adopted child makes its fd close-on-exec, excludes descendants, and preserves the parent owner", async () => {
     const root = tempRoot()
     const lockPath = join(root, "writer.lock")
     const parent = tryAcquireFlock(lockPath)
@@ -205,7 +235,15 @@ describe("@bearly/flock", () => {
       stdio: ["ignore", "pipe", "pipe", parent.fd],
     })
     try {
+      const output = await new Response(child.stdout).text()
       expect(await child.exited, await stderr(child)).toBe(0)
+      const report = JSON.parse(output)
+      // Bun's explicit numeric stdio handoff clears CLOEXEC; adoption must
+      // restore it before this root can start any descendants.
+      if (process.platform === "linux") {
+        expect(report).toMatchObject({ before: false, after: true })
+      }
+      expect(report).toHaveProperty("inherited", [])
       expect(tryAcquireFlock(lockPath)).toBeNull()
 
       parent.release()
@@ -431,10 +469,12 @@ function fakeIo(overrides: Partial<FlockIo> = {}): {
   flockCalls: number
   openedPaths: string[]
   flockedFds: number[]
+  closeOnExecFds: number[]
 } {
   const closed: number[] = []
   const openedPaths: string[] = []
   const flockedFds: number[] = []
+  const closeOnExecFds: number[] = []
   let flockCalls = 0
   let nextFd = 10
   const io: FlockIo = {
@@ -449,6 +489,10 @@ function fakeIo(overrides: Partial<FlockIo> = {}): {
     flock: (fd) => {
       flockCalls += 1
       flockedFds.push(fd)
+      return { ok: true }
+    },
+    closeOnExec: (fd) => {
+      closeOnExecFds.push(fd)
       return { ok: true }
     },
     truncate() {},
@@ -467,5 +511,6 @@ function fakeIo(overrides: Partial<FlockIo> = {}): {
     },
     openedPaths,
     flockedFds,
+    closeOnExecFds,
   }
 }
