@@ -95,7 +95,7 @@ Run `/big` Phase 8 (Action Plan) on the fix levels:
 ### Doing now:
 
 - Ship the **Why 1 fix** (PATCH) — the user needs this today
-- Create issues for Why 3+ fixes with a great first-paragraph description: 1-3 sentences (50-400 chars) saying WHAT this deeper-fix issue is + WHY it matters (the root cause it addresses, the class of bugs it prevents). That's what an issue tracker's quick-list view surfaces; the full causal chain goes in the body below.
+- File Why 3+ beads with the [managed `km` commands](../../../pm/about/repo.md#state-write-paths), with a first paragraph that says what the deeper fix is and why it matters; keep the full causal chain in the body.
 
 ### Need your call:
 
@@ -104,17 +104,7 @@ Run `/big` Phase 8 (Action Plan) on the fix levels:
 
 ### Durable Record
 
-If the analysis changes routing, process, architecture, or follow-up work,
-persist it in the authoritative PM-state checkout, never the hh root replica.
-Run `bun tent state-repo root` first.
-
-- When holding the `@chief` single-writer hat, append the record below to
-  `<state-root>/hub/retro/why-log.md`, then publish exactly that path with
-  `git -C "$(bun tent state-repo root)" commit -o -m "docs(retro): record /why analysis" -- hub/retro/why-log.md` then `git -C "$(bun tent state-repo root)" push origin main`.
-- From any other managed seat, do not edit shared state. Send `@chief` a
-  codified request whose first line is
-  `UPDATE bead=<owning-bead> action=update value=<state-root>/hub/retro/why-log.md reason="/why durable record follows"`,
-  followed by the full record, and require readback.
+If the analysis changes routing, process, architecture, or follow-up work, add the record below to vault-relative [`hub/retro/why-log.md`](../../../pm/hub/retro/why-log.md) through [/commit's exact STATE request](../commit/SKILL.md#isolated-seat-state-request), selecting the vault content root. This skill owns the record; `/commit` alone owns the request mechanics. Set `owner` to the person accountable for the next action—never default it to `@chief`.
 
 Use this field shape so `tent sitrep` and `sitrep.html` keep the follow-up
 visible:
@@ -123,27 +113,25 @@ visible:
 ## YYYY-MM-DD — short title
 
 status:: open
-owner:: @chief
+owner:: @<accountable-owner>
 symptom:: <observable symptom>
 causal-chain:: <because-chain from the analysis>
 evidence:: <commands, files, or transcripts that support the chain>
 fix-levels:: PATCH: ...; GUARD: ...; SPEC: ...
-follow-up:: @km/scope/bead.md
+follow-up:: @<scope>/<bead-path>
 next-action:: <the next concrete action and owner>
 ```
 
 When follow-through changes, run
-`bun tent why-log status <id> resolved|superseded|converted --note "<why>"`;
+`@in -- bun tent why-log status <id> resolved|superseded|converted --note "<why>"`;
 `converted` also needs `--follow-up <bead>` so sitrep can show where the action
 moved.
 
 ### Bring in Outside Perspective
 
-If the root cause is architectural (Why 4-5), consult an external LLM:
-
-```bash
-bun llm --deep -y --no-recover --context-file /tmp/why-context.md "Given this causal chain, what's the right level to fix at?"
-```
+If the root cause is architectural (Why 4-5), give the causal chain and evidence
+to [`/deep`](../deep/SKILL.md). That skill owns model choice, command syntax,
+cost, recovery, and citations.
 
 ## Phase 3b: Ishikawa / Fishbone Diagram (Optional)
 
@@ -174,7 +162,7 @@ SYMPTOM: Diagrams have misaligned borders
     └── Dense punctuation confuses visual estimation
 ```
 
-Use this when Phase 3's linear chain feels incomplete — when you suspect **multiple independent causes** contribute. The fishbone reveals which categories need attention; the 5 Whys reveals depth within each.
+Use this when Phase 3's linear chain feels incomplete — when you suspect **multiple independent causes** contribute. The fishbone reveals which categories need investigation; the 5 Whys reveals depth within each.
 
 ## Example
 

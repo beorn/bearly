@@ -74,7 +74,7 @@ Get at least one outside view unless the user explicitly said not to or the tool
 - `/deep` - web/prior-art research with citations.
 - `/csw` - internal option matrix when no external call is warranted.
 
-For silvery/km/ag topics, include `docs/silvery-positioning-brief.md` in `/pro`, `/ask`, or `/deep` context.
+For silvery/km/ag topics, include `/hh/docs/silvery-positioning-brief.md` in `/pro`, `/ask`, or `/deep` context.
 
 ### 5. Synthesize
 
