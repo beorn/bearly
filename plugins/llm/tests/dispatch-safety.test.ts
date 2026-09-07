@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { readFileSync } from "node:fs"
 import { DEFAULT_CONFIG } from "../src/lib/dual-pro"
 import {
   assertDispatchableModelIds,
@@ -7,6 +8,16 @@ import {
   runWithTimeout,
 } from "../src/lib/dispatch-safety"
 import { describeDispatchFailure } from "../src/lib/dispatch-error"
+import { runProDual } from "../src/cmd/pro"
+import { getModel } from "../src/lib/types"
+import { makeTestEnv } from "./helpers"
+
+const { streamTextMock } = vi.hoisted(() => ({ streamTextMock: vi.fn() }))
+
+vi.mock("ai", () => ({
+  generateText: vi.fn(),
+  streamText: streamTextMock,
+}))
 
 describe("dual-pro dispatch safety", () => {
   afterEach(() => {
@@ -76,5 +87,82 @@ describe("dual-pro dispatch safety", () => {
     expect(() => getLegTimeoutMs({ LLM_LEG_TIMEOUT_MS: "never" })).toThrow(
       "LLM_LEG_TIMEOUT_MS must be a positive finite number of milliseconds",
     )
+  })
+
+  it("aborts the actual single-model pro provider call at LLM_LEG_TIMEOUT_MS", async () => {
+    // The helper test above proves runWithTimeout itself. This crosses the
+    // modelOverride branch of runProDual, which used to return before reading
+    // the configured timeout.
+    vi.useFakeTimers()
+    const env = makeTestEnv()
+    const previousTimeout = process.env.LLM_LEG_TIMEOUT_MS
+    process.env.LLM_LEG_TIMEOUT_MS = "25"
+
+    let releaseStream: (() => void) | undefined
+    let providerAborted = false
+    let markProviderStarted: (() => void) | undefined
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve
+    })
+    streamTextMock.mockReset()
+    streamTextMock.mockImplementation(({ abortSignal }: { abortSignal?: AbortSignal }) => {
+      markProviderStarted?.()
+      const untilReleased = new Promise<void>((resolve) => {
+        releaseStream = resolve
+      })
+      abortSignal?.addEventListener(
+        "abort",
+        () => {
+          providerAborted = true
+          releaseStream?.()
+        },
+        { once: true },
+      )
+      return {
+        textStream: (async function* () {
+          await untilReleased
+        })(),
+        usage: Promise.resolve({ inputTokens: 0, outputTokens: 0 }),
+      }
+    })
+
+    const model = getModel("moonshotai/kimi-k2.6")
+    expect(model).toBeDefined()
+    const outputFile = `${env.tmpDir}/single-model-timeout.md`
+    const run = runProDual({
+      question: "Does the configured timeout reach this provider call?",
+      modelOverride: model!,
+      imagePath: undefined,
+      streamToken: () => {},
+      buildContext: async () => undefined,
+      outputFile,
+      sessionTag: "single-model-timeout",
+      skipConfirm: true,
+    })
+
+    try {
+      await providerStarted
+      expect(streamTextMock).toHaveBeenCalledOnce()
+      expect(streamTextMock.mock.calls[0]?.[0]).toHaveProperty("abortSignal")
+
+      vi.advanceTimersByTime(24)
+      expect(providerAborted).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(providerAborted).toBe(true)
+
+      await expect(run).rejects.toThrow("__exit_1")
+      expect(env.exitCodes).toContain(1)
+      const envelopeLine = env.stdout.find((line) => line.includes('"status":"failed"'))
+      expect(envelopeLine).toBeDefined()
+      const envelope = JSON.parse(envelopeLine!) as { code: string; error: string }
+      expect(envelope.code).toBe("provider_error")
+      expect(envelope.error).toBe("Kimi K2.6 leg timed out after 25ms; partial results will be reported.")
+      expect(readFileSync(outputFile, "utf-8")).toContain(envelope.error)
+    } finally {
+      releaseStream?.()
+      await run.catch(() => undefined)
+      if (previousTimeout === undefined) delete process.env.LLM_LEG_TIMEOUT_MS
+      else process.env.LLM_LEG_TIMEOUT_MS = previousTimeout
+    }
   })
 })

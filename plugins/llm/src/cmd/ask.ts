@@ -8,6 +8,7 @@ import { isProviderAvailable } from "../lib/providers"
 import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
+import { formatLegDispatchError, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 
 /** Shared single-model ask: select model, stream, finalize */
 export async function askAndFinish(options: {
@@ -95,7 +96,7 @@ export async function askAndFinish(options: {
     // user wants to kill should stop, not wait out the ai-sdk 300s default.
     // The abort reason surfaces in the response error so finishResponse can
     // write it to the output file instead of silently truncating.
-    response = await withSignalAbort((signal) =>
+    const dispatch = (signal: AbortSignal) =>
       useBackground
         ? queryOpenAIBackground({
             prompt: enrichedQuestion,
@@ -110,8 +111,29 @@ export async function askAndFinish(options: {
             onToken: streamToken,
             imagePath,
             abortSignal: signal,
-          }),
-    )
+          })
+    if (modelMode === "pro") {
+      const startedAt = Date.now()
+      response = await withSignalAbort(async (outerSignal) => {
+        try {
+          return await runWithTimeout({
+            label: `${model.displayName} leg`,
+            timeoutMs: getLegTimeoutMs(),
+            outerSignal,
+            run: dispatch,
+          })
+        } catch (error) {
+          return {
+            model,
+            content: "",
+            durationMs: Date.now() - startedAt,
+            error: formatLegDispatchError(model, error),
+          }
+        }
+      })
+    } else {
+      response = await withSignalAbort(dispatch)
+    }
     if (cacheable && response.content && !response.error) {
       try {
         writeCache(cacheKey, response, response.content)
