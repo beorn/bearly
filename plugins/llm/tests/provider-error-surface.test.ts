@@ -56,14 +56,25 @@ function quotaStreamError(): unknown {
   }
 }
 
-/** The alternate shape: an SDK APICallError whose useful detail is in
- *  `responseBody`, not the retry-wrapper `.message`. */
-function quotaApiError(): Error {
-  return Object.assign(new Error("Failed after 3 attempts"), {
-    statusCode: 429,
-    responseBody: JSON.stringify({
-      error: { type: "insufficient_quota", message: "You exceeded your current quota." },
-    }),
+/** The SDK retry wrapper keeps the final APICallError under `lastError`.
+ *  Its provider response, rather than earlier attempts or request text, is evidence. */
+async function quotaApiError(): Promise<Error> {
+  const { APICallError, RetryError } = await vi.importActual<typeof import("ai")>("ai")
+  return new RetryError({
+    message: "Failed after 2 attempts",
+    reason: "maxRetriesExceeded",
+    errors: [
+      new Error("timed out"),
+      new APICallError({
+        message: "Provider returned error",
+        url: "https://provider.test/run?api_key=sk-request-secret",
+        requestBodyValues: { input: "private-request-text permission" },
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          error: { type: "insufficient_quota", message: "You exceeded your current quota." },
+        }),
+      }),
+    ],
   })
 }
 
@@ -151,6 +162,74 @@ describe("describeProviderError", () => {
     )
   })
 
+  /**
+   * @failure SDK request/config text changes provider classification and persists a false auth refusal.
+   * @level l0
+   * @consumer describeDispatchFailure callers and the provider observation recorder
+   */
+  it.each([
+    [
+      "HTTP 502 with request permission text",
+      {
+        statusCode: 502,
+        responseBody: JSON.stringify({ error: { message: "Provider returned error", code: 502 } }),
+      },
+      "Per-file scan faults (permission, IO, parse)",
+      "server-error",
+    ],
+    ["no provider detail", {}, "permission", "unknown"],
+    [
+      "parsed quota detail with echoed request data",
+      { data: { error: { code: "insufficient_quota" }, requestBodyValues: { input: "timed out" } } },
+      "timed out",
+      "quota",
+    ],
+    [
+      "response body auth detail with echoed config",
+      {
+        responseBody: JSON.stringify({
+          error: { type: "invalid_api_key" },
+          config: { prompt: "private-echo-text timed out" },
+        }),
+      },
+      "insufficient_quota",
+      "auth",
+    ],
+    ["streamed rate-limit code", { error: { code: "rate_limit_exceeded" } }, "timed out", "rate-limited"],
+    ["Error cause timeout", { cause: new Error("timed out") }, "insufficient_quota", "timeout"],
+    [
+      "nested transport cause with request data",
+      {
+        cause: {
+          cause: Object.assign(new Error("fetch failed"), { requestBodyValues: { input: "permission" } }),
+        },
+      },
+      "invalid_api_key",
+      "transport",
+    ],
+  ] as const)("classifies only provider evidence: %s", async (_label, evidence, prompt, kind) => {
+    const { APICallError } = await vi.importActual<typeof import("ai")>("ai")
+    const request = {
+      url: "https://provider.test/permission?api_key=sk-request-secret",
+      requestBodyValues: { input: `private-request-text ${prompt}` },
+      config: { headers: { authorization: "Bearer sk-config-secret" }, prompt },
+    }
+    // Both the SDK Error and message-less stream object must ignore the envelope.
+    const errors = [
+      { ...request, ...evidence },
+      Object.assign(new APICallError({ message: "Provider returned error", ...request, ...evidence }), evidence),
+    ]
+
+    for (const error of errors) {
+      const described = describeDispatchFailure(error, { provider: "openrouter" })
+      const callScoped = kind === "unknown" || kind === "timeout"
+      expect.soft(described).toMatchObject({ kind, scope: callScoped ? "call" : "provider" })
+      if (callScoped) expect.soft(described).not.toHaveProperty("observation")
+      else expect.soft(described.observation).toMatchObject({ kind, status: "refusing", source: "dispatch" })
+      expect.soft(JSON.stringify(described)).not.toMatch(/private-(?:request|echo)-text|sk-(?:request|config)-secret/)
+    }
+  })
+
   it.each([
     "model supports 401 tokens",
     "requested 429 output tokens",
@@ -182,10 +261,15 @@ describe("describeProviderError", () => {
     expect(msg).not.toMatch(/\[object Object\]/)
   })
 
-  it("also surfaces insufficient_quota from an SDK APICallError (detail in responseBody)", () => {
-    const msg = describeProviderError(quotaApiError(), "openai")
+  /**
+   * @failure Retry wrappers hide the final provider quota refusal or classify an earlier attempt instead.
+   * @level l0
+   * @consumer describeProviderError callers
+   */
+  it("also surfaces insufficient_quota from the final retry-wrapped SDK APICallError", async () => {
+    const msg = describeProviderError(await quotaApiError(), "openai")
     expect(msg).toMatch(/quota exhausted/i)
-    expect(msg).not.toBe("Failed after 3 attempts")
+    expect(msg).not.toMatch(/Failed after 2 attempts|private-request-text|sk-request-secret/)
   })
 
   it("detects rate limits (429)", () => {

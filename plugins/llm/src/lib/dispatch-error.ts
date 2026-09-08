@@ -26,14 +26,6 @@ export function getRetiredModelReplacement(modelId: string): string | undefined 
   return RETIRED_MODEL_REPLACEMENTS[modelId]
 }
 
-function stringify(value: unknown): string {
-  try {
-    return typeof value === "string" ? value : JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
-}
-
 function rawErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (error && typeof error === "object") {
@@ -43,7 +35,7 @@ function rawErrorMessage(error: unknown): string {
     return (
       (typeof object.message === "string" && object.message) ||
       (nested && typeof nested.message === "string" && nested.message) ||
-      stringify(error)
+      ""
     )
   }
   return String(error)
@@ -56,15 +48,25 @@ function oneLineError(error: unknown): string {
     .trim()
 }
 
-function errorBlob(error: unknown): string {
-  const parts = [rawErrorMessage(error), stringify(error)]
-  if (error && typeof error === "object") {
-    const item = error as { responseBody?: unknown; data?: unknown; cause?: unknown }
-    if (typeof item.responseBody === "string") parts.push(item.responseBody)
-    if (item.data !== undefined) parts.push(stringify(item.data))
-    if (item.cause) parts.push(item.cause instanceof Error ? item.cause.message : stringify(item.cause))
+function errorBlob(error: unknown, seen = new Set<object>()): string {
+  if (typeof error === "string") {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(error)
+    } catch {
+      // Provider responses and Error messages may be plain text instead of JSON.
+      return error
+    }
+    return errorBlob(parsed, seen)
   }
-  return parts.join(" | ")
+  if (!error || typeof error !== "object" || seen.has(error)) return ""
+  seen.add(error)
+  const item = error as Record<string, unknown>
+  // SDK envelopes also carry prompts, URLs and config. Only error fields are evidence,
+  // including parsed responses, nested causes and the final SDK retry error.
+  return [item.message, item.code, item.type, item.error, item.cause, item.lastError, item.responseBody, item.data]
+    .map((value) => errorBlob(value, seen))
+    .join(" | ")
 }
 
 function providerDisplayName(provider: Provider): string {
