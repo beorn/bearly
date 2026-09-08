@@ -2229,6 +2229,56 @@ export interface ResolveTargetOptions {
  * `create` keeps the bare-name contract on purpose — creating AT an arbitrary
  * path is a different feature, not this resolver.
  */
+/**
+ * Owner attribution for the .git/worktrees registration name (@i/4-supervision/24306).
+ *
+ * Git derives a worktree's registration name from the basename of the path it is
+ * added at, so the registration name IS the basename — and it is the only field a
+ * reconciler gets for free from `git worktree list`. @cto’s 24306 verdict makes it
+ * the place the owner id lives: the registration name encodes the owner id, so
+ * `git worktree list` alone is self-attributing for the reconciler, with no lookup table.
+ *
+ * Without this a reconciler must keep a path->owner table beside git's own registry,
+ * and a second source of truth is exactly the drift this bead exists to remove: on
+ * 2026-09-08 the estate held 866 registered worktrees and not one of their names said
+ * who owned it.
+ *
+ * The separator is the whole parsing contract, so an owner id may not contain it. A
+ * name without exactly one separator is UNATTRIBUTABLE rather than owned by some
+ * accidental prefix — every worktree registered before this existed must read that
+ * way, not as a false owner.
+ */
+const OWNER_SEPARATOR = "~"
+
+export function registrationNameForOwner(ownerId: string, label: string): string {
+  assertNameComponent(ownerId, "owner id")
+  assertNameComponent(label, "label")
+  return `${label}${OWNER_SEPARATOR}${ownerId}`
+}
+
+export function ownerFromRegistrationName(name: string): string | undefined {
+  const parts = name.split(OWNER_SEPARATOR)
+  if (parts.length !== 2) return undefined
+  const [label, ownerId] = parts
+  if (label === undefined || ownerId === undefined) return undefined
+  if (label.length === 0 || ownerId.length === 0) return undefined
+  return ownerId
+}
+
+function assertNameComponent(value: string, what: string): void {
+  if (value.length === 0) {
+    throw new Error(`worktree registration ${what} may not be empty`)
+  }
+  if (value.includes(OWNER_SEPARATOR)) {
+    throw new Error(
+      `worktree registration ${what} may not contain ${OWNER_SEPARATOR}: it is the owner separator, and an id carrying it could register a name that reads as another owner (${value})`,
+    )
+  }
+  if (value.includes("/") || value.includes("\\") || value.includes("\u0000")) {
+    throw new Error(`worktree registration ${what} must be one path segment (${value})`)
+  }
+}
+
 export function resolveWorktreeTargetPath(gitRoot: string, name: string, options: ResolveTargetOptions = {}): string {
   if (isAbsolute(name) || name.includes("/") || name === "." || name === "..") {
     return resolve(name)
