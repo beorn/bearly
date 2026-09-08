@@ -2234,9 +2234,19 @@ export interface ResolveTargetOptions {
  *
  * Git derives a worktree's registration name from the basename of the path it is
  * added at, so the registration name IS the basename — and it is the only field a
- * reconciler gets for free from `git worktree list`. @cto’s 24306 verdict makes it
- * the place the owner id lives: the registration name encodes the owner id, so
- * `git worktree list` alone is self-attributing for the reconciler, with no lookup table.
+ * registration name equals that basename. MEASURED 2026-09-08 (git 2.53), because
+ * the mechanism hinges on it:
+ *   - there is NO flag to name the registration independently of the path;
+ *   - `git worktree list --porcelain` emits worktree/HEAD/branch and does NOT
+ *     expose the registration name at all;
+ *   - two paths sharing a basename collide and git dedupes with a numeric
+ *     suffix (same, same1), so the registration name is not even unique by
+ *     construction.
+ * So the field a reconciler actually reads is the PATH, and encoding the owner in
+ * the last path segment is what makes `git worktree list` self-attributing with no
+ * lookup table. @cto’s 24306 verdict asked for this on the registration name; the
+ * measurement moves it to the path, and since the registration name IS the basename
+ * the same composed segment satisfies both readings.
  *
  * Without this a reconciler must keep a path->owner table beside git's own registry,
  * and a second source of truth is exactly the drift this bead exists to remove: on

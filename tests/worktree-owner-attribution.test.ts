@@ -3,7 +3,7 @@
  *          needs a lookup table that drifts — and 866 worktrees accumulated
  *          because nothing could attribute them to a live owner.
  * @level   l1
- * @consumer vendor/bearly/tools/worktree.ts — pool slot creation
+ * @consumer tools/worktree.ts — pool slot creation
  * @bead    @i/4-supervision/24306-worktrees-have-three-homes-and-no-lifecycle-that-guarantees-removal
  *
  * @cto's verdict on 24306 (2026-09-08) made this an acceptance clause, in these
@@ -11,10 +11,16 @@
  * `git worktree list` alone is self-attributing for the reconciler (no lookup
  * table)."
  *
- * Git derives a worktree's registration name from the basename of the path it
- * is added at, so the registration name is exactly the basename. That makes the
- * name the only field a reconciler gets for free from `git worktree list`, and
- * it is where the owner id has to live.
+ * MEASURED before building on it (git 2.53, /var/tmp probe, 2026-09-08): git
+ * derives the registration name from the basename of the path, there is no flag
+ * to set it independently, `git worktree list --porcelain` does NOT expose the
+ * registration name at all (it emits worktree/HEAD/branch), and two paths
+ * sharing a basename collide into `same` and `same1`.
+ *
+ * So the field a reconciler actually reads is the PATH. @cto's verdict asked for
+ * the owner in the registration name; the measurement moves it to the last path
+ * segment — and because the registration name IS that segment, one composed
+ * value satisfies both readings. Reported to @cto with the probe.
  *
  * Measured on the live estate the same day, both un-attributable:
  *   /hh/dev-wt11                     registers as `dev-wt11`
