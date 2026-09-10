@@ -8,6 +8,7 @@ import { isFlockHeld, tryAcquireFlock } from "../src/index.ts"
 import { createNativeFlockRuntime, libcCandidates } from "../src/native.ts"
 
 const fixture = fileURLToPath(new URL("./fixtures/writer.ts", import.meta.url))
+const FD_CLOEXEC = 1
 const scratch: string[] = []
 
 afterEach(() => {
@@ -122,6 +123,58 @@ describe("@bearly/flock", () => {
       await child.exited
       parent.release()
     }
+  })
+
+  test("adoption sets FD_CLOEXEC on the real inherited descriptor, which arrives without it", async () => {
+    // The failure this exists for: an adopted lock outliving the process that adopted
+    // it. `hab` hands this descriptor to a supervisor that must hold it until it dies,
+    // and a supervisor execs children; each one that inherits a copy keeps the lock
+    // alive in a process nobody can name, so no seat can ever start again.
+    //
+    // What this asserts is the FLAG, on a real fd, in a real child -- deliberately not
+    // "a grandchild holds nothing". Measured 2026-09-10: `Bun.spawn` closes every
+    // descriptor it was not explicitly given, so a Bun-spawned grandchild never sees
+    // this fd with or without the flag, and a test written that way passes just as
+    // happily with the syscall replaced by a no-op. The `before` reading is the control
+    // that keeps this one honest: the descriptor genuinely arrives inheritable.
+    const root = tempRoot()
+    const lockPath = join(root, "writer.lock")
+    const reportPath = join(root, "cloexec.json")
+    const parent = tryAcquireFlock(lockPath)
+    expect(parent).not.toBeNull()
+    if (parent === null) return
+
+    const child = Bun.spawn([process.execPath, fixture, "adopt-cloexec", lockPath, reportPath], {
+      stdio: ["ignore", "pipe", "pipe", parent.fd],
+    })
+    try {
+      expect(await child.exited, await stderr(child)).toBe(0)
+      const report = JSON.parse(readFileSync(reportPath, "utf8")) as { before: number; after: number }
+      expect(report.before & FD_CLOEXEC, "the inherited fd already had the flag; this test proves nothing").toBe(0)
+      expect(report.after & FD_CLOEXEC, "adopt left the descriptor inheritable across exec").toBe(FD_CLOEXEC)
+    } finally {
+      child.kill("SIGKILL")
+      await child.exited
+      parent.release()
+    }
+  })
+
+  test("adopt marks the inherited descriptor close-on-exec, and refuses loudly when it cannot", () => {
+    const marked: number[] = []
+    const runtime = createFlockRuntime(fakeIo({ setCloexec: (fd) => (marked.push(fd), { ok: true }) }).io, {
+      wouldBlockErrnos: [11, 35],
+      interruptedErrno: 4,
+    })
+    runtime.adopt("/lock", 42)?.release()
+    expect(marked).toEqual([42])
+
+    // A refusal, never a warning: the l3 test above is what a silent failure here would
+    // cost, and it costs it in production rather than in the suite.
+    const refusing = fakeIo({ setCloexec: () => ({ ok: false, errno: 9 }) })
+    const strict = createFlockRuntime(refusing.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+    expect(() => strict.adopt("/lock", 42)).toThrow(/close-on-exec .*errno 9/u)
+    // And it refuses BEFORE touching the lock, so the parent's own hold is untouched.
+    expect(refusing.flockedFds).toEqual([])
   })
 
   test("same-process aliases cannot reacquire the same inode", () => {
@@ -357,6 +410,7 @@ function fakeIo(overrides: Partial<FlockIo> = {}): {
       flockedFds.push(fd)
       return { ok: true }
     },
+    setCloexec: () => ({ ok: true }) as const,
     truncate() {},
     write: (_fd, _bytes, _offset, length) => length,
     fsync() {},

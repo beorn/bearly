@@ -8,6 +8,12 @@ export interface FlockIo {
     fd: number,
     mode: "try" | "block",
   ) => { readonly ok: true } | { readonly ok: false; readonly errno: number }
+  /**
+   * Mark a descriptor close-on-exec. Called on every ADOPTED descriptor, so a holder's
+   * exec'd children inherit no lock: an orphaned grandchild still holding it after its
+   * parent dies is a lock nothing can release and nobody can find.
+   */
+  readonly setCloexec: (fd: number) => { readonly ok: true } | { readonly ok: false; readonly errno: number }
   readonly truncate: (fd: number) => void
   readonly write: (fd: number, bytes: Uint8Array, offset: number, length: number) => number
   readonly fsync: (fd: number) => void
@@ -90,6 +96,19 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
       }
       if (heldIdentities.has(identity)) return null
 
+      // The adopter holds this until it dies; its exec'd children must not. Marked
+      // BEFORE the lock call, so a failure leaves nothing of ours mutated -- and it is
+      // fatal rather than ignorable, because an inherited copy in a grandchild is a lock
+      // held by a process nobody can name. Never unlock on this path: the descriptor is
+      // the same open file description the parent locked, so releasing it here would
+      // release the parent's lock too.
+      const cloexec = io.setCloexec(fd)
+      if (!cloexec.ok) {
+        throw new Error(
+          `cannot adopt flock fd ${fd} for ${path}: the descriptor could not be marked close-on-exec ` +
+            `(errno ${cloexec.errno}); an adopted lock that survives exec would outlive its holder`,
+        )
+      }
       const result = io.flock(fd, "try")
       if (!result.ok) {
         if (options.wouldBlockErrnos.includes(result.errno)) return null

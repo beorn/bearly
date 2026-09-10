@@ -15,6 +15,9 @@ import type { FlockIo } from "./runtime.ts"
 
 const LOCK_EX = 2
 const LOCK_NB = 4
+// fcntl(2): identical on Linux and macOS, and part of the ABI rather than a header detail.
+const F_SETFD = 2
+const FD_CLOEXEC = 1
 
 export interface NativeFlockRuntime {
   readonly io: FlockIo
@@ -23,7 +26,7 @@ export interface NativeFlockRuntime {
 }
 
 export function createNativeFlockRuntime(platform: NodeJS.Platform = process.platform): NativeFlockRuntime {
-  const callFlock = loadFlock(platform)
+  const { callFlock, callFcntl } = loadLibc(platform)
   return {
     wouldBlockErrnos: platform === "darwin" ? [35] : [11],
     interruptedErrno: 4,
@@ -44,6 +47,9 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
       flock(fd, mode) {
         return callFlock(fd, LOCK_EX | (mode === "try" ? LOCK_NB : 0))
       },
+      setCloexec(fd) {
+        return callFcntl(fd, F_SETFD, FD_CLOEXEC)
+      },
       truncate: (fd) => ftruncateSync(fd, 0),
       write: (fd, bytes, offset, length) => writeSync(fd, bytes, offset, length),
       fsync: fsyncSync,
@@ -54,36 +60,55 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
 
 type FlockResult = { readonly ok: true } | { readonly ok: false; readonly errno: number }
 type FlockCall = (fd: number, operation: number) => FlockResult
+type FcntlCall = (fd: number, command: number, argument: number) => FlockResult
 
 interface LinuxSymbols {
   flock(fd: number, operation: number): number
+  fcntl(fd: number, command: number, argument: number): number
   __errno_location(): Pointer
 }
 
 interface DarwinSymbols {
   flock(fd: number, operation: number): number
+  fcntl(fd: number, command: number, argument: number): number
   __error(): Pointer
 }
 
-function loadFlock(platform: NodeJS.Platform): FlockCall {
+/**
+ * `fcntl` is variadic in C, but every command this package issues takes one int, and the
+ * int form is what the ABI passes for `F_SETFD`. Declaring the three-int shape is the
+ * standard binding for it and is identical on both supported platforms.
+ */
+const LIBC_DEFINITION = {
+  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+} as const
+
+function loadLibc(platform: NodeJS.Platform): { readonly callFlock: FlockCall; readonly callFcntl: FcntlCall } {
   if (platform === "linux") {
     const library = openFirst<LinuxSymbols>(platform, {
-      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      ...LIBC_DEFINITION,
       __errno_location: { args: [], returns: FFIType.ptr },
     })
-    return (fd, operation) => {
-      const result = library.symbols.flock(fd, operation)
-      return result === 0 ? { ok: true } : { ok: false, errno: read.i32(library.symbols.__errno_location()) }
+    const errno = (): number => read.i32(library.symbols.__errno_location())
+    return {
+      callFlock: (fd, operation) =>
+        library.symbols.flock(fd, operation) === 0 ? { ok: true } : { ok: false, errno: errno() },
+      callFcntl: (fd, command, argument) =>
+        library.symbols.fcntl(fd, command, argument) === -1 ? { ok: false, errno: errno() } : { ok: true },
     }
   }
   if (platform === "darwin") {
     const library = openFirst<DarwinSymbols>(platform, {
-      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      ...LIBC_DEFINITION,
       __error: { args: [], returns: FFIType.ptr },
     })
-    return (fd, operation) => {
-      const result = library.symbols.flock(fd, operation)
-      return result === 0 ? { ok: true } : { ok: false, errno: read.i32(library.symbols.__error()) }
+    const errno = (): number => read.i32(library.symbols.__error())
+    return {
+      callFlock: (fd, operation) =>
+        library.symbols.flock(fd, operation) === 0 ? { ok: true } : { ok: false, errno: errno() },
+      callFcntl: (fd, command, argument) =>
+        library.symbols.fcntl(fd, command, argument) === -1 ? { ok: false, errno: errno() } : { ok: true },
     }
   }
   throw new Error(`@bearly/flock supports Bun on local macOS and Linux filesystems; unsupported platform: ${platform}`)
