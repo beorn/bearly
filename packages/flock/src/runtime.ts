@@ -104,9 +104,14 @@ export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): F
       // release the parent's lock too.
       const cloexec = io.setCloexec(fd)
       if (!cloexec.ok) {
+        // errno 0 is the readback disagreeing rather than a failed call: the
+        // syscall reported success and the flag is still clear. That is the
+        // shape this package was actually bitten by, so it gets its own words.
+        const cause =
+          cloexec.errno === 0 ? "the call reported success and the flag is still clear" : `errno ${cloexec.errno}`
         throw new Error(
           `cannot adopt flock fd ${fd} for ${path}: the descriptor could not be marked close-on-exec ` +
-            `(errno ${cloexec.errno}); an adopted lock that survives exec would outlive its holder`,
+            `(${cause}); an adopted lock that survives exec would outlive its holder`,
         )
       }
       const result = io.flock(fd, "try")
