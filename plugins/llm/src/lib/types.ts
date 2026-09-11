@@ -52,11 +52,17 @@ export type Provider = z.infer<typeof ProviderSchema>
  *  `reasoningParam`, the legacy SKU fields drive `providerOptions`. When both
  *  are set, `reasoningParam` wins. */
 export const ReasoningConfigSchema = z.object({
-  // Max total output tokens (reasoning + content). Used as a static ceiling.
+  // Max total output tokens (reasoning + content) the ENDPOINT will accept in
+  // one completion. For OpenRouter SKUs this is `top_provider
+  // .max_completion_tokens` from https://openrouter.ai/api/v1/models, read
+  // 2026-09-11; it is a property of the route, not of our preferences, so
+  // re-read it from there rather than estimating one.
   maxOutputTokens: z.number().optional(),
-  // Combined context window (input + output) in tokens. When set, queryModel
-  // computes max_tokens at call time as `contextWindow − estimatedInput −
-  // safetyMargin`, eliminating the static-cap tradeoff.
+  // COMBINED context window (input + output) in tokens. Bounds how much room
+  // is left for output after the prompt — never how large a completion the
+  // endpoint accepts. Those are different limits and `computeMaxOutputTokens`
+  // takes the MIN of both; setting only this one asks for the whole remaining
+  // window on every call, which is bead 22972.
   contextWindow: z.number().optional(),
   /** @deprecated Set `reasoningParam: { kind: "openai-effort", defaultLevel: ... }`
    *  on the ProviderEndpoint instead. Kept for back-compat — still honored when
@@ -726,7 +732,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.95,
     outputPricePerM: 4.0,
     typicalLatencyMs: 15000,
-    reasoning: { contextWindow: 262144 },
+    reasoning: { contextWindow: 262144, maxOutputTokens: 235929 },
   },
 
   // Kimi K3 (2026): 1M context reasoning model; supports reasoning_effort.
@@ -738,7 +744,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 3.0,
     outputPricePerM: 15.0,
     typicalLatencyMs: 20000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 943718 },
   },
 
   // DeepSeek R1 — reasoning frontier via OpenRouter. Strong at deliberate
@@ -752,7 +758,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.55,
     outputPricePerM: 2.19,
     typicalLatencyMs: 30000,
-    reasoning: { contextWindow: 163840 },
+    reasoning: { contextWindow: 163840, maxOutputTokens: 16000 },
   },
   // DeepSeek Chat V3 — general-purpose, fast, cheap. Pool member, not
   // mainstay. Use when reasoning isn't required.
@@ -780,7 +786,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.03,
     outputPricePerM: 0.13,
     typicalLatencyMs: 8000,
-    reasoning: { contextWindow: 1000000 },
+    reasoning: { contextWindow: 1000000, maxOutputTokens: 65536 },
   },
   {
     modelId: "google/gemini-3.6-flash",
@@ -790,7 +796,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 1.5,
     outputPricePerM: 7.5,
     typicalLatencyMs: 12000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 65536 },
   },
   {
     modelId: "google/gemini-3-flash-preview",
@@ -800,7 +806,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.5,
     outputPricePerM: 3.0,
     typicalLatencyMs: 8000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 65536 },
   },
   // Same weights as the google-direct "gemini-2.5-pro" SKU — this row is the
   // OpenRouter route for when the direct Google key is unavailable.
@@ -812,7 +818,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 1.25,
     outputPricePerM: 10.0,
     typicalLatencyMs: 15000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 65536 },
   },
   {
     modelId: "poolside/laguna-s-2.1",
@@ -822,7 +828,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.09,
     outputPricePerM: 0.18,
     typicalLatencyMs: 8000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 131072 },
   },
   {
     modelId: "meituan/longcat-2.0",
@@ -832,7 +838,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.3,
     outputPricePerM: 1.2,
     typicalLatencyMs: 8000,
-    reasoning: { contextWindow: 1048756 },
+    reasoning: { contextWindow: 1048756, maxOutputTokens: 262144 },
   },
   {
     modelId: "thinkingmachines/inkling",
@@ -842,7 +848,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 1.0,
     outputPricePerM: 4.05,
     typicalLatencyMs: 20000,
-    reasoning: { contextWindow: 1048576 },
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 32768 },
   },
   {
     modelId: "moonshotai/kimi-k2.7-code",
@@ -852,7 +858,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.73,
     outputPricePerM: 3.5,
     typicalLatencyMs: 15000,
-    reasoning: { contextWindow: 262144 },
+    reasoning: { contextWindow: 262144, maxOutputTokens: 235929 },
   },
 
   // Perplexity

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest"
-import { estimateTokens, computeMaxOutputTokens, parseContextLengthError } from "./research"
+import { estimateTokens, computeMaxOutputTokens, parseContextLengthError, MAX_USEFUL_OUTPUT_TOKENS } from "./research"
 import type { Model } from "./types"
 
 /**
@@ -82,12 +82,43 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     expect(totalRequest).toBeLessThanOrEqual(262144)
   })
 
-  test("Tiny query gets most of the output window", () => {
+  test("Tiny query is capped at the useful ceiling, not the whole window", () => {
+    // Until 2026-09-11 this asserted `> 250000` — the window minus the input,
+    // which is what the bug DID rather than what we want. `max_tokens` is a
+    // credit RESERVATION on metered routes, so requesting the whole window
+    // costs headroom on every call and 402s the expensive models outright
+    // (bead 22972). The intent underneath that assertion was "a short query
+    // must not be handed a stingy cap", and that intent is kept below.
     const messages = [{ role: "user", content: "Hello" }]
     const cap = computeMaxOutputTokens(k26Model, messages)
-    expect(cap).toBeDefined()
-    // 262144 - ~1 input - 4096 SAFETY ≈ 258047
-    expect(cap!).toBeGreaterThan(250000)
+    expect(cap).toBe(MAX_USEFUL_OUTPUT_TOKENS)
+    // The anti-stinginess guard, restated against measured reality: the
+    // largest completion in 38 real llm-meta records is 26472 tokens, so the
+    // cap must leave comfortable room above anything we have ever produced.
+    expect(cap!).toBeGreaterThan(26472 * 2)
+  })
+
+  test("Endpoint ceiling wins when it is smaller than the window's headroom", () => {
+    // The 22972 regression proper. Inkling advertises max_completion_tokens
+    // 32768 against a 1048576 combined window: before the fix we asked for
+    // ~1044000 — 32x the endpoint's own stated ceiling.
+    const inkling: Model = {
+      ...k26Model,
+      modelId: "thinkingmachines/inkling",
+      displayName: "Inkling",
+      reasoning: { contextWindow: 1048576, maxOutputTokens: 32768 },
+    }
+    const cap = computeMaxOutputTokens(inkling, [{ role: "user", content: "Hello" }])
+    expect(cap).toBe(32768)
+  })
+
+  test("Window headroom wins when the input is large enough to shrink it", () => {
+    // All three bounds are live; none may override another. A 700K-char
+    // prompt leaves less window headroom than either ceiling.
+    const roomy: Model = { ...k26Model, reasoning: { contextWindow: 262144, maxOutputTokens: 235929 } }
+    const cap = computeMaxOutputTokens(roomy, [{ role: "user", content: "x".repeat(700_000) }])
+    expect(cap).toBeLessThan(MAX_USEFUL_OUTPUT_TOKENS)
+    expect(cap).toBe(262144 - Math.ceil(700_000 / 3.5) - 4096)
   })
 
   test("Non-reasoning model — returns undefined (provider default)", () => {

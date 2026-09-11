@@ -5,7 +5,12 @@ const RETIRED_MODEL_REPLACEMENTS: Readonly<Record<string, string>> = Object.free
   "grok-4": "grok-4-1-fast-reasoning",
 })
 
-export type DispatchFailureKind = PersistedProviderRefusalKind | "model-unavailable" | "timeout" | "unknown"
+export type DispatchFailureKind =
+  | PersistedProviderRefusalKind
+  | "model-unavailable"
+  | "timeout"
+  | "output-budget"
+  | "unknown"
 
 export interface DispatchFailureDescription {
   kind: DispatchFailureKind
@@ -198,6 +203,35 @@ export function describeDispatchFailure(
       scope: "call",
       message: rendered,
       remedy: "retry with more time, or use a faster model",
+    }
+  }
+  // A 402 from a credit-metered route is a BUDGET refusal, not a credentials
+  // one. OpenRouter prices `max_tokens` as a RESERVATION, so an over-large
+  // output budget is refused once `requested × outputPrice` exceeds the
+  // balance. Until 2026-09-11 that fell through to the auth branch below and
+  // printed "check <PROVIDER>_API_KEY" for a key that was working in the same
+  // run — and two mainstays were retired as "dead models" on that message
+  // (DeepSeek R1 2026-08-19, Kimi K3 2026-09-11, the latter provably alive).
+  //
+  // Scope is "call", deliberately: the same credential and route serve every
+  // other model in the same dispatch, so this must never mark the PROVIDER
+  // refusing. It is a property of this request's parameters. Bead 22972.
+  if (responseStatus === 402 || /requires more credits|can only afford|fewer max_tokens/iu.test(blob)) {
+    const requested = /requested up to (\d+) tokens/iu.exec(blob)?.[1]
+    const affordable = /can only afford (\d+)/iu.exec(blob)?.[1]
+    const amounts =
+      requested && affordable ? ` It asked for ${requested} output tokens; the balance covers ${affordable}.` : ""
+    const who = target.modelId
+      ? `${providerDisplayName(target.provider)} (${target.modelId})`
+      : providerDisplayName(target.provider)
+    return {
+      kind: "output-budget",
+      scope: "call",
+      message:
+        `${who} refused this request's OUTPUT BUDGET (402) — this is NOT a credentials problem.${amounts} ` +
+        `Lower the max output tokens for this model: set \`reasoning.maxOutputTokens\` on its SKU to the ` +
+        `endpoint's advertised \`max_completion_tokens\`. Upstream said: ${message}`,
+      remedy: "lower this model's max output tokens to the endpoint's advertised ceiling",
     }
   }
   if (/insufficient[_ -]?(?:quota|credits)|billing hard limit|exceeded (?:your )?(?:current )?quota/iu.test(blob)) {

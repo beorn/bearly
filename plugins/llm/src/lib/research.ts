@@ -131,17 +131,54 @@ export function estimateTokens(text: string): number {
 /** Compute the output-token cap for a query. Returns `undefined` for
  * non-reasoning models (provider default applies).
  *
- * Dynamic path (`reasoning.contextWindow` set): cap =
- *   contextWindow − estimatedInputTokens − 2048 safety margin. Handles
- *   providers like Kimi K2.6 that enforce a combined input+output limit.
- *   Safety margin is generous enough to absorb tokenizer-estimation error
- *   without cutting into the output budget meaningfully.
+ * **The two bounds are not alternatives — the answer is the smaller.**
+ * `contextWindow` is the COMBINED input+output limit, so subtracting the
+ * input leaves the room still available in the window. That is an upper
+ * bound on what the window can hold, never a statement that the endpoint
+ * will accept a completion that large. `maxOutputTokens` is the separate
+ * per-completion ceiling the endpoint advertises. Until 2026-09-11 this
+ * function returned the dynamic value and ignored the static one whenever
+ * both were set, which asked every endpoint for its entire remaining
+ * window on every call — 16× over the real cap on Gemini 3 Flash, 32× on
+ * Inkling, 10× on DeepSeek R1. See bead 22972.
  *
- * Static path (`reasoning.maxOutputTokens` set): cap = that value.
+ * Why that stayed invisible for months: most providers silently clamp an
+ * over-large `max_tokens`, so the request succeeds and nothing reports the
+ * over-ask. OpenRouter instead prices it as a CREDIT RESERVATION, so the
+ * leg fails with a 402 once `requested × outputPrice` exceeds the account
+ * balance — which makes the same defect look like a per-model outage that
+ * moves around as the balance changes. Two mainstays were retired as "dead
+ * models" before the cause was read: DeepSeek R1 (2026-08-19) and Kimi K3
+ * (2026-09-11), the latter provably alive at the time it was removed.
+ *
+ * Dynamic bound (`reasoning.contextWindow` set):
+ *   contextWindow − estimatedInputTokens − 4096 safety margin.
+ * Static bound (`reasoning.maxOutputTokens` set): that value.
+ * Both set: the minimum. Neither: `undefined`, deferring to the provider.
  *
  * If dynamic math produces a non-positive value (input already exceeds
  * the window — impossible in practice but worth guarding), fall back to
  * the static ceiling if any, or `undefined` to defer to the provider. */
+/**
+ * The largest completion we will ask any endpoint to reserve.
+ *
+ * The third bound, and the one that makes the other two safe. `max_tokens` is
+ * a RESERVATION on credit-metered routes, not merely a stop-after-N ceiling,
+ * so asking for the biggest permitted number costs real headroom on every
+ * call even when the answer is two paragraphs.
+ *
+ * Measured 2026-09-11 over 38 real `llm-meta` records from produced output:
+ * median completion 10,254 tokens, p90 18,611, largest ever 26,472, and NOT
+ * ONE over 32,768. This ceiling is 2.5× the largest completion we have ever
+ * produced. It is also what several providers independently advertise as
+ * their own per-completion cap (Gemini 3 Flash and Qwen3.7 Flash both 65,536),
+ * which is a useful second opinion on what "a big answer" means.
+ *
+ * Raise it if a real completion ever gets truncated here — that is a fact
+ * about our workload and this comment should get the new number and its date.
+ */
+export const MAX_USEFUL_OUTPUT_TOKENS = 65_536
+
 // @internal — exported for testing only
 export function computeMaxOutputTokens(
   model: Model,
@@ -149,6 +186,8 @@ export function computeMaxOutputTokens(
 ): number | undefined {
   const reasoning = model.reasoning
   if (!reasoning) return undefined
+  const bounds: number[] = []
+  if (reasoning.maxOutputTokens !== undefined) bounds.push(reasoning.maxOutputTokens)
   if (reasoning.contextWindow) {
     // 4096-token safety margin (2× the old value). The prior 2048 margin
     // was overrun by ~45 tokens in a 2026-04-20 review when the estimator
@@ -172,9 +211,14 @@ export function computeMaxOutputTokens(
       .join("")
     const estimatedInput = estimateTokens(inputText)
     const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
-    if (dynamicCap > 0) return dynamicCap
+    // A non-positive value means the input alone fills the window; adding it
+    // as a bound would clamp every model to nonsense, so the static ceiling
+    // (if any) stands alone and the caller reports the overflow downstream.
+    if (dynamicCap > 0) bounds.push(dynamicCap)
   }
-  return reasoning.maxOutputTokens
+  if (bounds.length === 0) return undefined
+  // Every bound is real and independent — none may override another.
+  return Math.min(...bounds, MAX_USEFUL_OUTPUT_TOKENS)
 }
 
 export interface QueryResult {
@@ -319,12 +363,14 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   //      where a static cap always compromises between short-query headroom
   //      and long-review safety.
   //
-  //   2. `reasoning.maxOutputTokens` (static): fixed ceiling, regardless of
-  //      input size. Used when we just want to make sure reasoning has room
-  //      for a worst-case answer and the provider doesn't combine limits.
+  //   2. `reasoning.maxOutputTokens` (static): the endpoint's advertised
+  //      per-completion ceiling, regardless of input size.
   //
-  // contextWindow takes precedence when both are set. Non-reasoning chat
-  // models leave the block unset entirely (provider default applies).
+  // When both are set the SMALLER wins — they bound different things and
+  // neither implies the other. (Until 2026-09-11 the dynamic value won
+  // outright, which asked endpoints for their whole remaining window; see
+  // computeMaxOutputTokens and bead 22972.) Non-reasoning chat models leave
+  // the block unset entirely (provider default applies).
   const maxOutputTokens = computeMaxOutputTokens(model, messages)
 
   // Provider-specific reasoning knobs. Each provider exposes a
@@ -470,7 +516,14 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     const capInfo = parseContextLengthError(errorMsg)
     if (capInfo && model.reasoning?.contextWindow) {
       const SAFETY = 4096
-      const correctedCap = model.reasoning.contextWindow - capInfo.realInputTokens - SAFETY
+      // Same three bounds as computeMaxOutputTokens. Without the clamp this
+      // retry re-introduces the whole over-ask the first attempt was fixed
+      // for — a second site is exactly how a "one-line fix" ships incomplete.
+      const correctedCap = Math.min(
+        model.reasoning.contextWindow - capInfo.realInputTokens - SAFETY,
+        model.reasoning.maxOutputTokens ?? Number.POSITIVE_INFINITY,
+        MAX_USEFUL_OUTPUT_TOKENS,
+      )
       if (correctedCap > 1024) {
         console.error(
           `[retry] ${model.displayName} context-exceeded (estimated ${maxOutputTokens} cap, real input ${capInfo.realInputTokens}). Retrying with cap=${correctedCap}.`,
