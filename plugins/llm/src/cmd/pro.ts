@@ -36,16 +36,37 @@
 
 import { ask } from "../lib/research"
 import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
-import { estimateCost, formatCost, getModel, type Model, type ModelMode } from "../lib/types"
+import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMode } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
-import {
-  assertDispatchableModelIds,
-  formatLegDispatchError,
-  getLegTimeoutMs,
-  runWithTimeout,
-} from "../lib/dispatch-safety"
+import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
+import { describeDispatchFailure } from "../lib/dispatch-error"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
+
+/**
+ * 24533 defect 4. The estimate was a hardcoded tier band — `~$5-15` whenever
+ * fewer than two Pro-tier legs were selected, INCLUDING when none were. @chief
+ * measured a 2-leg run at $0.0015 against that printed $5-15: four orders of
+ * magnitude, on the very line that gates the spend confirmation. An estimate
+ * nobody can trust is one nobody reads, including when it matters.
+ *
+ * It is now derived from the registry prices of the models actually selected. A
+ * model the registry cannot price is NAMED rather than folded into an invented
+ * number, because "we do not know" and "about five dollars" are different facts.
+ */
+function estimateFleetCost(
+  models: readonly Model[],
+  inputTokens: number,
+  outputTokens: number,
+): { text: string; usd: number; unpriced: readonly string[] } {
+  const unpriced = models.filter((m) => skuRates(m) === null).map((m) => m.displayName)
+  const usd = models.reduce((sum, m) => sum + estimateCost(m, inputTokens, outputTokens), 0)
+  const text =
+    unpriced.length === 0
+      ? `~${formatCost(usd)}`
+      : `~${formatCost(usd)} for the priced legs, plus ${unpriced.length} the registry cannot price (${unpriced.join(", ")})`
+  return { text, usd, unpriced }
+}
 
 export async function runProDual(options: {
   question: string
@@ -214,12 +235,11 @@ export async function runProDual(options: {
     if (legCap >= 4 && slotDId) dryLegs.push({ id: "d", role: "split-test", modelId: slotDId, model: slotD })
     const knownLegs = dryLegs.filter((l): l is DryLeg & { model: Model } => Boolean(l.model))
     const dryProLegCount = knownLegs.filter((l) => l.model.costTier === "very-high").length
-    const dryCost =
-      dryProLegCount >= 2
-        ? `~$${5 * dryProLegCount}-${15 * dryProLegCount}`
-        : dryProLegCount === 1
-          ? "~$5-15"
-          : "registry-priced (no Pro-tier legs)"
+    const dryCost = estimateFleetCost(
+      knownLegs.map((l) => l.model),
+      Math.max(200, Math.ceil(question.length / 4)),
+      1_000,
+    ).text
     console.error("[dual-pro] Dry run - would query these models:")
     for (const leg of dryLegs) {
       const tag = leg.role === "split-test" ? " [split-test]" : ""
@@ -302,11 +322,19 @@ export async function runProDual(options: {
     .map((s) => `${s.model.displayName}${s.role === "split-test" ? " [split-test]" : ""}`)
     .join(" + ")
   console.error(`[dual-pro] Querying ${legSlots.length} legs in parallel: ${fleetLabel}...`)
-  // Cost estimate — mainstays drive most of the bill. Per-leg cap is
-  // ~$5-15 for Pro-tier; cheap baselines (kimi-k2.6) are $0.01-0.05.
+  // Cost estimate, derived from the models this call actually selected.
   const proLegCount = legSlots.filter((s) => s.model.costTier === "very-high").length
-  const totalEstStr = proLegCount >= 2 ? `~$${5 * proLegCount}-${15 * proLegCount}` : `~$5-15`
-  console.error(`  • Estimated cost: ${totalEstStr} (${proLegCount} Pro-tier legs of ${legSlots.length})`)
+  const estInputTokens = Math.max(200, Math.ceil((question.length + (context?.length ?? 0)) / 4))
+  const estOutputTokens = 1_000
+  const fleetEstimate = estimateFleetCost(
+    legSlots.map((s) => s.model),
+    estInputTokens,
+    estOutputTokens,
+  )
+  const totalEstStr = fleetEstimate.text
+  console.error(
+    `  • Estimated cost: ${totalEstStr} — registry prices for ${legSlots.length} legs at ~${estInputTokens} in / ${estOutputTokens} out tokens`,
+  )
   // Surface dynamic-thinking budgets for any leg that uses them.
   for (const s of legSlots) {
     if (s.model.reasoning?.contextWindow || s.model.reasoning?.maxOutputTokens) {
@@ -375,20 +403,67 @@ export async function runProDual(options: {
     response?: import("../lib/types").ModelResponse
     error?: string
     ok: boolean
+    /** Classifier verdict, kept so a credential-blaming message can be rewritten
+     * once the run knows that credential worked for another leg (24533 defect 2). */
+    failureKind?: import("../lib/dispatch-error").DispatchFailureKind
+    /** The provider's own text, before classification added a cure. */
+    rawError?: string
   }
   const legOutcomes: LegOutcome[] = legSlots.map((slot, i) => {
     const settled = settledResults[i]!
     const response = settled.status === "fulfilled" ? settled.value : undefined
-    const errRaw =
-      settled.status === "rejected"
-        ? formatLegDispatchError(slot.model, settled.reason)
-        : response?.error
-          ? formatLegDispatchError(slot.model, response.error)
-          : undefined
+    const raw: unknown = settled.status === "rejected" ? (settled.reason as unknown) : (response?.error ?? undefined)
+    const described = raw === undefined ? undefined : describeDispatchFailure(raw, slot.model)
+    // The upstream text, kept separately so the rewrite below can quote what
+    // failed. It is NOT the provider's raw words -- dispatchOne classifies before
+    // it rethrows -- so it still carries a "check <ENV>" cure, which the rewrite
+    // strips rather than smuggling the wrong cure into the corrected message.
+    const rawText = raw === undefined ? undefined : raw instanceof Error ? raw.message : String(raw)
+    const errRaw = described?.message
     const ok = !errRaw && !!response?.content && response.content.trim().length > 0
     const error = errRaw ?? (response && !ok ? "empty content" : undefined)
-    return { ...slot, response, error, ok }
+    return {
+      ...slot,
+      response,
+      error,
+      ok,
+      ...(described === undefined ? {} : { failureKind: described.kind }),
+      ...(rawText === undefined ? {} : { rawError: rawText }),
+    }
   })
+
+  /**
+   * 24533 defect 2. A per-error classifier cannot know that the credential it is
+   * about to blame worked three times in the same run — only the run knows that.
+   * So a credential-scoped verdict is REWRITTEN here when another leg reached the
+   * same provider successfully: the message names the model and the route that
+   * actually failed, and stops sending the reader to a key that is demonstrably
+   * fine. Measured specimen: kimi-k3 answered a direct probe with an unclassified
+   * provider error in 191 ms at zero tokens while three other models
+   * authenticated with the same OPENROUTER_API_KEY in the same dispatch.
+   */
+  /** Upstream text with the credential cure removed — the one thing it must not say. */
+  const withoutCredentialCure = (leg: LegOutcome): string => {
+    const envVar = getProviderEnvVar(leg.model.provider)
+    const text = leg.rawError ?? "nothing"
+    return envVar === undefined
+      ? text
+      : text
+          .replace(new RegExp(String.raw`\s*[\u2014-]?\s*check\s+${envVar}\.?`, "giu"), "")
+          .replace(/\s+/gu, " ")
+          .trim()
+  }
+  const provenProviders = new Set(legOutcomes.filter((l) => l.ok).map((l) => l.model.provider))
+  for (const leg of legOutcomes) {
+    const blamesCredential = leg.failureKind === "auth" || leg.failureKind === "quota"
+    if (!blamesCredential || leg.ok || !provenProviders.has(leg.model.provider)) continue
+    const proof = legOutcomes.find((l) => l.ok && l.model.provider === leg.model.provider)!
+    leg.error =
+      `${leg.model.displayName} (${leg.model.modelId}) failed on ${leg.model.provider}. ` +
+      `This is NOT a credentials problem: ${proof.model.displayName} reached ${proof.model.provider} ` +
+      `with the same credential in this run. The route or the model id is the suspect — ` +
+      `probe it with \`llm ask --model ${leg.model.modelId}\`. Upstream said: ${withoutCredentialCure(leg)}`
+  }
 
   for (const leg of legOutcomes) {
     const tag = leg.role === "split-test" ? " [split-test]" : ""
@@ -434,11 +509,31 @@ export async function runProDual(options: {
     ad?: import("../lib/dual-pro").PairwiseJudgeResult
   }
   const pairwise: PairwiseLog = {}
+  /**
+   * Pair results keyed by the CONTENDER's slot, so the score synthesis below is
+   * correct whichever leg anchored. `pairwise` above keeps the legacy ab/ac/ad
+   * keys and is populated ONLY when leg A anchored: those names assert "A vs X"
+   * and would misdescribe a reduced panel.
+   */
+  const pairByContender = new Map<"a" | "b" | "c" | "d", import("../lib/dual-pro").PairwiseJudgeResult>()
   let judgeError: string | undefined
   let judgeCost = 0
   let judgeModelId: string | undefined
-  const anyLegOk = legOutcomes.some((l) => l.ok)
-  if (!options.noJudge && anyLegOk && legA.ok) {
+  const okLegs = legOutcomes.filter((l) => l.ok)
+  /**
+   * 24533 defect 1. The judge used to be gated on leg A (`anyLegOk && legA.ok`),
+   * so one dead anchor model turned every dispatch into unjudged opinions that
+   * still read like a verdict — three specimens across three days, all the same
+   * dead model.
+   *
+   * A failed leg now REDUCES the panel instead of cancelling the verdict: the
+   * judge anchors on leg A when it returned, and otherwise on the first leg that
+   * did. The single case that genuinely cannot be judged is a panel of one,
+   * because there is nothing to compare it against; that is REPORTED rather than
+   * silently skipped.
+   */
+  const judgeAnchor: LegOutcome | undefined = legA.ok ? legA : okLegs[0]
+  if (!options.noJudge && okLegs.length >= 2 && judgeAnchor) {
     const judgeModel = getModel(cfg.judge)
     if (!judgeModel) {
       judgeError = `judge model "${cfg.judge}" not found in registry`
@@ -446,13 +541,23 @@ export async function runProDual(options: {
       judgeError = `judge unavailable: ${getProviderEnvVar(judgeModel.provider)} not set`
     } else {
       judgeModelId = judgeModel.modelId
-      const pairs: { id: "ab" | "ac" | "ad"; contender: LegOutcome }[] = []
-      if (legB.ok) pairs.push({ id: "ab", contender: legB })
-      if (legC?.ok) pairs.push({ id: "ac", contender: legC })
-      if (legD?.ok) pairs.push({ id: "ad", contender: legD })
-      console.error(`\n[dual-pro] Pairwise judging via ${judgeModel.displayName} (${pairs.length} pairs)...`)
+      // Every surviving leg that is not the anchor is a contender. The pair id
+      // names BOTH slots (`ab`, `bc`, …) so a reduced panel is self-describing;
+      // only the A-anchored ids coincide with the legacy ab/ac/ad keys.
+      const contenders = okLegs.filter((l) => l.id !== judgeAnchor.id)
+      const pairs: { id: string; contender: LegOutcome }[] = contenders.map((contender) => ({
+        id: `${judgeAnchor.id}${contender.id}`,
+        contender,
+      }))
+      const contenderSlotByPairId = new Map<string, "a" | "b" | "c" | "d">(
+        pairs.map((p) => [p.id, p.contender.id as "a" | "b" | "c" | "d"] as const),
+      )
+      const panelNote = judgeAnchor.id === "a" ? "" : ` (reduced panel — anchored on ${judgeAnchor.model.displayName})`
+      console.error(
+        `\n[dual-pro] Pairwise judging via ${judgeModel.displayName} (${pairs.length} pairs)${panelNote}...`,
+      )
       const judgeOnce = async (
-        pairId: "ab" | "ac" | "ad",
+        pairId: string,
         contender: LegOutcome,
       ): Promise<{
         id: typeof pairId
@@ -463,7 +568,7 @@ export async function runProDual(options: {
         const prompt = dualPro.buildPairwiseJudgePrompt({
           question,
           pair: {
-            a: { model: legA.model.displayName, content: legA.response!.content },
+            a: { model: judgeAnchor.model.displayName, content: judgeAnchor.response!.content },
             b: { model: contender.model.displayName, content: contender.response!.content },
           },
           rubric: cfg.rubric,
@@ -480,7 +585,13 @@ export async function runProDual(options: {
       const settled = await Promise.all(pairs.map((p) => judgeOnce(p.id, p.contender)))
       for (const r of settled) {
         judgeCost += r.cost
-        if (r.result) pairwise[r.id] = r.result
+        if (!r.result) continue
+        const contenderId = contenderSlotByPairId.get(r.id)
+        if (contenderId === undefined) continue
+        pairByContender.set(contenderId, r.result)
+        // Legacy ab/ac/ad keys mean "leg A vs X" and are written only when A
+        // actually anchored; on a reduced panel they would name the wrong pair.
+        if (judgeAnchor.id === "a" && (r.id === "ab" || r.id === "ac" || r.id === "ad")) pairwise[r.id] = r.result
       }
       const failures = settled.filter((r) => !r.result)
       if (failures.length === settled.length && settled.length > 0) {
@@ -490,26 +601,37 @@ export async function runProDual(options: {
       }
     }
     if (judgeError) console.error(`  ⚠ judge unavailable: ${judgeError}`)
-  } else if (!options.noJudge && !legA.ok) {
-    judgeError = "judge skipped — anchor leg A failed"
+  } else if (!options.noJudge && okLegs.length === 1) {
+    // The only honest skip: one opinion cannot be scored against anything. Name
+    // the leg that survived and the ones that did not, so the reason is legible
+    // without opening the status block.
+    const lost = legOutcomes.filter((l) => !l.ok).map((l) => l.model.displayName)
+    const survivor = okLegs[0]
+    judgeError =
+      `judge skipped — only 1 of ${legOutcomes.length} legs returned (${survivor?.model.displayName ?? "unknown"}); ` +
+      `a panel of one cannot be scored. Missing: ${lost.join(", ")}`
+    console.error(`  ⚠ ${judgeError}`)
   }
 
   // Synthesize an N-way `judge.{a,b,c,d,winner}` shape for v2 consumers
   // (leaderboard, judge-history, backtest). Pull leg-specific scores from
   // the AB/AC/AD pairs (each pair scored leg A on its own line — they should
   // agree but we average to reduce variance).
-  const aScoreSamples = (
-    [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(
-      Boolean,
-    ) as import("../lib/dual-pro").JudgeBreakdown[]
-  ).map((s) => s.total)
-  const aTotal = aScoreSamples.length > 0 ? aScoreSamples.reduce((s, x) => s + x, 0) / aScoreSamples.length : undefined
+  // Each pair scored the ANCHOR on its own line (`scoreA`) and its contender on
+  // the other (`scoreB`). Keyed by contender slot, this synthesis is correct
+  // whichever leg anchored — it no longer assumes that leg is A.
+  const anchorSamples = Array.from(pairByContender.values())
+    .map((p) => p.scoreA)
+    .filter(Boolean) as import("../lib/dual-pro").JudgeBreakdown[]
+  const anchorTotal =
+    anchorSamples.length > 0 ? anchorSamples.reduce((s, x) => s + x.total, 0) / anchorSamples.length : undefined
   const judgeTotals: Record<"a" | "b" | "c" | "d", number | undefined> = {
-    a: aTotal,
-    b: pairwise.ab?.scoreB?.total,
-    c: pairwise.ac?.scoreB?.total,
-    d: pairwise.ad?.scoreB?.total,
+    a: pairByContender.get("a")?.scoreB?.total,
+    b: pairByContender.get("b")?.scoreB?.total,
+    c: pairByContender.get("c")?.scoreB?.total,
+    d: pairByContender.get("d")?.scoreB?.total,
   }
+  if (judgeAnchor) judgeTotals[judgeAnchor.id as "a" | "b" | "c" | "d"] = anchorTotal
   const overallWinnerKey = (() => {
     const candidates: ("a" | "b" | "c" | "d")[] = ["a", "b", "c", "d"]
     const have = candidates.filter((k) => judgeTotals[k] != null)
@@ -522,14 +644,11 @@ export async function runProDual(options: {
     if ((judgeTotals[best] ?? 0) - second <= 1) return "tie" as const
     return best
   })()
-  // Average breakdown for leg A (used by the v2 reader synthesis).
-  const aScoreAvg: import("../lib/dual-pro").JudgeBreakdown | undefined = (() => {
-    const samples = [pairwise.ab?.scoreA, pairwise.ac?.scoreA, pairwise.ad?.scoreA].filter(
-      Boolean,
-    ) as import("../lib/dual-pro").JudgeBreakdown[]
-    if (samples.length === 0) return undefined
+  // Average breakdown for the ANCHOR leg (used by the v2 reader synthesis).
+  const anchorScoreAvg: import("../lib/dual-pro").JudgeBreakdown | undefined = (() => {
+    if (anchorSamples.length === 0 || anchorTotal === undefined) return undefined
     const avg = (k: keyof import("../lib/dual-pro").JudgeBreakdown["scores"]) =>
-      samples.reduce((s, x) => s + x.scores[k], 0) / samples.length
+      anchorSamples.reduce((s, x) => s + x.scores[k], 0) / anchorSamples.length
     return {
       scores: {
         specificity: avg("specificity"),
@@ -537,17 +656,20 @@ export async function runProDual(options: {
         correctness: avg("correctness"),
         depth: avg("depth"),
       },
-      total: aTotal!,
+      total: anchorTotal,
     }
   })()
+  /** Per-slot breakdown: the anchor's averaged score, each contender's own. */
+  const breakdownFor = (slot: "a" | "b" | "c" | "d"): import("../lib/dual-pro").JudgeBreakdown | null =>
+    judgeAnchor?.id === slot ? (anchorScoreAvg ?? null) : (pairByContender.get(slot)?.scoreB ?? null)
 
   const judgeResult: import("../lib/dual-pro").JudgeResult | undefined =
     overallWinnerKey != null
       ? {
-          a: aScoreAvg ?? null,
-          b: pairwise.ab?.scoreB ?? null,
-          c: pairwise.ac?.scoreB ?? null,
-          d: pairwise.ad?.scoreB ?? null,
+          a: breakdownFor("a"),
+          b: breakdownFor("b"),
+          c: breakdownFor("c"),
+          d: breakdownFor("d"),
           winner: overallWinnerKey,
           reasoning:
             overallWinnerKey === "tie"
@@ -560,7 +682,34 @@ export async function runProDual(options: {
   // headers labelled so the reader can diff. Non-fatal errors surface inline
   // so the reader sees which model failed without digging through logs.
   const parts: string[] = []
-  parts.push(`# Dual-Pro Response\n`)
+  /**
+   * 24533 acceptance row 2. The panel's state belongs on the line a reader
+   * reaches FIRST, not in a status block further down. Three specimens of the
+   * anchor defect survived three days precisely because "judge skipped" sat
+   * below the answers, so a degraded run read like a verdict to anyone who did
+   * not scroll. Line 1 now always says how many legs ran, how many were asked
+   * for, and which model judged — or, when nothing judged, why not.
+   */
+  const legsAsked = legOutcomes.length
+  const legsRan = okLegs.length
+  const judgedBy = judgeResult ? (judgeModelId ?? cfg.judge) : undefined
+  const judgeSummary = judgedBy
+    ? `judged by ${judgedBy}`
+    : options.noJudge
+      ? "NOT JUDGED (--no-judge)"
+      : `NOT JUDGED (${judgeError ?? "no judge result"})`
+  parts.push(`# Dual-Pro Response — ${legsRan}/${legsAsked} legs · ${judgeSummary}\n`)
+  const failedLegs = legOutcomes.filter((l) => !l.ok)
+  if (failedLegs.length > 0) {
+    parts.push(
+      `**Missing legs**: ${failedLegs.map((l) => `${l.model.displayName} (${l.error ?? "no content"})`).join("; ")}\n`,
+    )
+  }
+  // A reduced panel is named where the verdict is read, not inferred from which
+  // leg happens to be missing.
+  if (judgeResult && judgeAnchor && judgeAnchor.id !== "a") {
+    parts.push(`**Reduced panel**: leg A did not return; judged against ${judgeAnchor.model.displayName} as anchor\n`)
+  }
   parts.push(`**Question**: ${question}\n`)
   parts.push(`**Models**: ${legOutcomes.map((l) => l.model.displayName).join(" + ")}`)
   const costBreakdown = legOutcomes.map((l) => formatCost(legCosts.get(l.id) ?? 0)).join(" + ")
@@ -601,12 +750,15 @@ export async function runProDual(options: {
     parts.push("")
     // Surface the pairwise outcomes so the reader can see what each judge
     // call actually decided (not just the synthesized N-way winner).
-    if (pairwise.ab)
+    if (pairwise.ab) {
       parts.push(`- **AB**: ${pairwise.ab.winner}${pairwise.ab.reasoning ? ` — ${pairwise.ab.reasoning}` : ""}`)
-    if (pairwise.ac)
+    }
+    if (pairwise.ac) {
       parts.push(`- **AC**: ${pairwise.ac.winner}${pairwise.ac.reasoning ? ` — ${pairwise.ac.reasoning}` : ""}`)
-    if (pairwise.ad)
+    }
+    if (pairwise.ad) {
       parts.push(`- **AD**: ${pairwise.ad.winner}${pairwise.ad.reasoning ? ` — ${pairwise.ad.reasoning}` : ""}`)
+    }
     parts.push(
       `\n**Overall winner**: ${judgeResult.winner.toUpperCase()}${judgeResult.reasoning ? ` — ${judgeResult.reasoning}` : ""}`,
     )
@@ -668,7 +820,7 @@ export async function runProDual(options: {
     cost: formatCost(totalLegCost + judgeCost),
     costUsd: totalLegCost + judgeCost,
     durationMs: Math.max(0, ...legOutcomes.map((l) => l.response?.durationMs ?? 0)),
-    status: anyLegOk ? "completed" : "failed",
+    status: okLegs.length > 0 ? "completed" : "failed",
     a: aLeg,
     b: bLeg,
     c: cLegEnv,
@@ -707,14 +859,7 @@ export async function runProDual(options: {
       response: l.response,
       error: l.error,
       cost: legCosts.get(l.id) ?? 0,
-      score:
-        l.id === "a"
-          ? (aScoreAvg ?? null)
-          : l.id === "b"
-            ? (pairwise.ab?.scoreB ?? null)
-            : l.id === "c"
-              ? (pairwise.ac?.scoreB ?? null)
-              : (pairwise.ad?.scoreB ?? null),
+      score: breakdownFor(l.id as "a" | "b" | "c" | "d"),
     })),
     pairwise,
     judgeModel: judgeModelId,
@@ -746,7 +891,7 @@ export async function runProDual(options: {
   // get written — useful for post-mortem — but the caller knows it went
   // wrong. Keep the legacy "Both dual-pro legs failed" message for the
   // 2-leg case, since downstream scripts grep for it.
-  if (!anyLegOk) {
+  if (okLegs.length === 0) {
     const msg =
       legOutcomes.length === 2
         ? "\n⚠️  Both dual-pro legs failed — see report for details."
