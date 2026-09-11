@@ -54,7 +54,14 @@ export async function runDeep(options: {
   if (!deepModel.isDeepResearch && deepModel.costTier === "very-high") {
     console.error(`⚠️  ${deepModel.displayName} is not a dedicated deep research model — may take 10-15 minutes`)
   }
+  // 24577: ONE value, read by both the report and the gate. This printed a
+  // tier-aware estimate and then asked the user to consent to a DIFFERENT,
+  // hardcoded one — for a very-high model, ~$5-15 on screen and ~$2-5 in the
+  // prompt, seconds apart, with the consent attached to the number that had
+  // ignored the model. Keeping the gate's literal in sync by hand is the
+  // arrangement that failed, so the gate now reads what was computed.
   const costEstimate = deepModel.costTier === "very-high" ? "~$5-15" : "~$2-5"
+  const consentPrompt = `⚠️  This uses deep research models (${costEstimate}). Proceed? [Y/n] `
   console.error(`Estimated cost: ${costEstimate}\n`)
   if (context) {
     console.error(`📎 Context provided (${context.length} chars)\n`)
@@ -64,11 +71,15 @@ export async function runDeep(options: {
     console.error("🔍 Dry run - would call deep research API")
     console.error(`   Model: ${deepModel.modelId}`)
     console.error(`   Provider: ${deepModel.provider}`)
+    // The dry run returns BEFORE the gate, which is why the divergence
+    // survived: the only safe way to inspect this command never reached the
+    // line that was wrong. So it states the question it would have asked.
+    console.error(`   Would ask: ${consentPrompt.trim()}`)
     if (context) console.error(`   Context: ${context.slice(0, 100)}...`)
     return
   }
 
-  await confirmOrExit("⚠️  This uses deep research models (~$2-5). Proceed? [Y/n] ", skipConfirm)
+  await confirmOrExit(consentPrompt, skipConfirm)
 
   // SIGINT/SIGTERM aborts both the synchronous create (rare — it's a single
   // HTTP call) and any inline polling (Gemini deep path polls for up to 20m
