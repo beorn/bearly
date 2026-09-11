@@ -837,6 +837,32 @@ export interface AbProEntry {
   queryHash?: string
 }
 
+/**
+ * THE definition of "which legs did this entry record". Every consumer of
+ * ab-pro.jsonl must use this one — there were two, they disagreed, and both
+ * were wrong in a way that only showed up in aggregate (@i/1-instruments/24546).
+ *
+ * v2 and v3 write BOTH the legacy `gpt`/`kimi` keys AND the `a`/`b`/`c`/`d`
+ * keys, with gpt/kimi as exact duplicates of legs a/b. 708 of the 949 entries
+ * in the corpus on 2026-09-11 carry both shapes. `buildLeaderboard` guarded
+ * against that with `if (!e.a && !e.b)`; `buildDiagnostics` did not, so it
+ * counted three quarters of the fleet's calls twice — which halves the
+ * effective `calls >= 20` evidence bar — and it never read leg `d` at all, so
+ * the correlated re-test slot was invisible to the failure-rate rule.
+ *
+ * Prefer the modern keys whenever ANY of them is present; fall back to the v1
+ * pair only for entries that predate them.
+ */
+export function legsOf(entry: AbProEntry): readonly AbProLegEntry[] {
+  const modern: AbProLegEntry[] = []
+  for (const leg of [entry.a, entry.b, entry.c, entry.d]) if (leg) modern.push(leg)
+  if (modern.length > 0) return modern
+  const legacy: AbProLegEntry[] = []
+  if (entry.gpt) legacy.push(entry.gpt)
+  if (entry.kimi) legacy.push(entry.kimi)
+  return legacy
+}
+
 export interface LeaderboardRow {
   model: string
   calls: number
@@ -877,21 +903,10 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
     }
     stats.set(leg.model, s)
   }
-  for (const e of entries) {
-    // Normalize v1 (gpt/kimi) entries to a/b. They never have scores —
-    // ok/cost/duration only — so they still count toward failureRate but
-    // not avgScore. v2 emits BOTH gpt/kimi AND a/b — to avoid double-
-    // counting we only consume the v1 keys when no v2/v3 leg keys are
-    // present on the entry.
-    if (!e.a && !e.b) {
-      if (e.gpt) bumpLeg({ model: e.gpt.model, ok: e.gpt.ok, cost: e.gpt.cost, durationMs: e.gpt.durationMs })
-      if (e.kimi) bumpLeg({ model: e.kimi.model, ok: e.kimi.ok, cost: e.kimi.cost, durationMs: e.kimi.durationMs })
-    }
-    bumpLeg(e.a)
-    bumpLeg(e.b)
-    bumpLeg(e.c)
-    bumpLeg(e.d)
-  }
+  // v1 legs (gpt/kimi) never have scores — ok/cost/duration only — so they
+  // still count toward failureRate but not avgScore. `legsOf` owns the
+  // v1-vs-v2/v3 choice; this loop must not second-guess it.
+  for (const e of entries) for (const leg of legsOf(e)) bumpLeg(leg)
   const rows: LeaderboardRow[] = []
   for (const [model, s] of stats) {
     const avgScore = s.success > 0 ? s.scoreSum / s.success : 0

@@ -7,6 +7,9 @@
  * structured envelope on stdout (per output-mode contract).
  */
 
+import { legsOf } from "../lib/dual-pro"
+import type { FleetFailureReport } from "../lib/fleet-failure"
+import { FLEET_WARN_MIN_CALLS, FLEET_WARN_RATE, readFleetFailureReport } from "../lib/fleet-failure"
 import { emitJson, isJsonMode } from "../lib/output-mode"
 
 /** Per-model speed report row. Sourced from successful ab-pro.jsonl entries. */
@@ -41,6 +44,9 @@ export interface DiagnosticsCostRow {
 export interface DiagnosticsReport {
   status: "ok" | "empty"
   speed: DiagnosticsSpeedRow[]
+  /** THIS DIRECTORY'S log only. Kept for back-compat; it is the sliver that
+   *  hid two dead models. Read `fleetFailureRate` to answer "is a model
+   *  failing" — see @i/1-instruments/24546. */
   failureRate: DiagnosticsFailureRow[]
   costDist: DiagnosticsCostRow[]
 }
@@ -84,13 +90,11 @@ export function buildDiagnostics(entries: readonly import("../lib/dual-pro").AbP
     }
     stats.set(leg.model, s)
   }
-  for (const e of entries) {
-    if (e.gpt) bumpLeg({ model: e.gpt.model, ok: e.gpt.ok, cost: e.gpt.cost, durationMs: e.gpt.durationMs })
-    if (e.kimi) bumpLeg({ model: e.kimi.model, ok: e.kimi.ok, cost: e.kimi.cost, durationMs: e.kimi.durationMs })
-    bumpLeg(e.a)
-    bumpLeg(e.b)
-    bumpLeg(e.c)
-  }
+  // `legsOf` is the one definition of which legs an entry recorded. This loop
+  // used to inline its own, and got it wrong twice: it counted the duplicated
+  // v1 gpt/kimi keys ON TOP of a/b (three quarters of the corpus carries both),
+  // and it never read leg d. See legsOf's docstring (@i/1-instruments/24546).
+  for (const e of entries) for (const leg of legsOf(e)) bumpLeg(leg)
 
   const speed: DiagnosticsSpeedRow[] = []
   const failureRate: DiagnosticsFailureRow[] = []
@@ -135,12 +139,32 @@ export function buildDiagnostics(entries: readonly import("../lib/dual-pro").AbP
   return { status: "ok", speed, failureRate, costDist }
 }
 
+/** Name the population before any "no data" claim. */
+function populationLine(entries: number, fleet: FleetFailureReport): string {
+  return (
+    `${entries} runs in this directory's log; ${fleet.callsRead} calls across ` +
+    `${fleet.filesRead} of ${fleet.filesFound} fleet logs (last ${fleet.windowDays}d)`
+  )
+}
+
 export async function runDiagnostics(): Promise<void> {
   const dualPro = await import("../lib/dual-pro")
   const entries = await dualPro.readAbProLog()
-  if (entries.length === 0) {
-    console.error("No ab-pro.jsonl entries yet. Run `bun llm pro <question>` to start collecting data.")
-    if (isJsonMode()) emitJson({ status: "empty", speed: [], failureRate: [], costDist: [] })
+  // Speed and cost stay per-directory — they describe this machine's calls.
+  // The failure rate does NOT: a model is dead or alive fleet-wide, and reading
+  // one of 106 logs is what let two working models get retired (24546).
+  const fleet = readFleetFailureReport()
+
+  if (entries.length === 0 && fleet.callsRead === 0) {
+    // Say what was searched. "No entries" from a reader that looked in one
+    // place is the exact silence this bead exists to remove.
+    console.error(
+      `No ab-pro.jsonl entries found — ${populationLine(0, fleet)}. ` +
+        `Run \`bun llm pro <question>\` to start collecting data.`,
+    )
+    if (isJsonMode()) {
+      emitJson({ status: "empty", speed: [], failureRate: [], costDist: [], fleetFailureRate: [], population: fleet })
+    }
     return
   }
 
@@ -152,6 +176,8 @@ export async function runDiagnostics(): Promise<void> {
       speed: report.speed,
       failureRate: report.failureRate,
       costDist: report.costDist,
+      fleetFailureRate: fleet.rows,
+      population: fleet,
     })
     return
   }
@@ -160,12 +186,12 @@ export async function runDiagnostics(): Promise<void> {
   const fmtPct = (n: number) => `${(n * 100).toFixed(0)}%`
   const fmtCost = (n: number) => `$${n.toFixed(4)}`
 
-  console.error(`\nDiagnostics — ${entries.length} runs from ab-pro.jsonl\n`)
+  console.error(`\nDiagnostics — ${populationLine(entries.length, fleet)}\n`)
 
   // ---- Speed ----
-  console.error(`Speed (successful calls, ≥${SPEED_MIN_CALLS} per model)`)
+  console.error(`Speed (this directory, successful calls, \u2265${SPEED_MIN_CALLS} per model)`)
   if (report.speed.length === 0) {
-    console.error(`  (no models meet the ≥${SPEED_MIN_CALLS}-call threshold yet)`)
+    console.error(`  (no models meet the \u2265${SPEED_MIN_CALLS}-call threshold yet)`)
   } else {
     console.error(
       `  ${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Avg".padStart(8)} ${"P50".padStart(8)} ${"P95".padStart(8)}`,
@@ -179,24 +205,31 @@ export async function runDiagnostics(): Promise<void> {
   }
   console.error("")
 
-  // ---- Failure rate ----
-  console.error(`Failure rate (warn: >${(FAILURE_WARN_RATE * 100).toFixed(0)}% with ≥${FAILURE_WARN_MIN_CALLS} calls)`)
+  // ---- Failure rate, fleet-wide ----
   console.error(
-    `  ${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Success".padStart(8)} ${"FailRate".padStart(9)} ${"".padStart(4)}`,
+    `Failure rate, FLEET-WIDE (warn: >${(FLEET_WARN_RATE * 100).toFixed(0)}% of a model's ` +
+      `last ${fleet.recentCalls} calls, with \u2265${FLEET_WARN_MIN_CALLS} of them)`,
   )
-  console.error(`  ${"-".repeat(64)}`)
-  for (const r of report.failureRate) {
-    const flag = r.warn ? " ⚠" : ""
+  if (fleet.rows.length === 0) {
+    console.error(`  (no calls in the last ${fleet.windowDays} days across ${fleet.filesFound} logs)`)
+  } else {
     console.error(
-      `  ${r.model.padEnd(34)} ${String(r.calls).padStart(6)} ${String(r.successCalls).padStart(8)} ${fmtPct(r.failureRate).padStart(9)}${flag}`,
+      `  ${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Success".padStart(8)} ${"FailRate".padStart(9)} ${"".padStart(4)}`,
     )
+    console.error(`  ${"-".repeat(64)}`)
+    for (const r of fleet.rows) {
+      const flag = r.warn ? " \u26a0" : ""
+      console.error(
+        `  ${r.model.padEnd(34)} ${String(r.calls).padStart(6)} ${String(r.successCalls).padStart(8)} ${fmtPct(r.failureRate).padStart(9)}${flag}`,
+      )
+    }
   }
   console.error("")
 
   // ---- Cost distribution ----
-  console.error(`Cost distribution (successful calls, ≥${COST_MIN_CALLS} per model)`)
+  console.error(`Cost distribution (this directory, successful calls, \u2265${COST_MIN_CALLS} per model)`)
   if (report.costDist.length === 0) {
-    console.error(`  (no models meet the ≥${COST_MIN_CALLS}-call threshold yet)`)
+    console.error(`  (no models meet the \u2265${COST_MIN_CALLS}-call threshold yet)`)
   } else {
     console.error(
       `  ${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Avg".padStart(10)} ${"P50".padStart(10)} ${"P95".padStart(10)} ${"P99".padStart(10)}`,

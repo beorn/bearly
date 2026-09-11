@@ -212,9 +212,15 @@ describe("buildDiagnostics — pure aggregator", () => {
 })
 
 describe("bun llm pro --diagnostics — CLI", () => {
-  it("prints a friendly hint when ab-pro.jsonl is missing", async () => {
+  it("names the POPULATION it searched when there is no data", async () => {
     await runCli(["pro", "--diagnostics"])
-    expect(io.stderr.join("\n")).toMatch(/No ab-pro\.jsonl entries yet/)
+    const out = io.stderr.join("\n")
+    expect(out).toMatch(/No ab-pro\.jsonl entries found/)
+    // A bare "no entries" from a reader that opened one of 106 logs is what
+    // this bead exists to remove (@i/1-instruments/24546). The hint must say
+    // how many logs were searched, or it is the same silence in new words.
+    expect(out).toMatch(/0 of 0 fleet logs/)
+    expect(out).toMatch(/last 60d/)
   })
 
   it("emits an empty JSON envelope with --json when there's no data", async () => {

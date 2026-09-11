@@ -40,6 +40,7 @@ import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMod
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { describeDispatchFailure } from "../lib/dispatch-error"
+import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
 
@@ -344,6 +345,23 @@ export async function runProDual(options: {
       console.error(`  • ${s.model.displayName} output budget: ${cap}`)
     }
   }
+  // A mainstay that has been failing across the fleet must say so HERE, in the
+  // output every real run prints — `pro --diagnostics` is where this signal
+  // lived, and nobody runs it. Fleet-wide by construction: the per-directory
+  // read is what let two working models get retired as dead
+  // (@i/1-instruments/24546). Split-test legs are excluded on purpose; a
+  // challenger failing is the point of split-testing, not news.
+  try {
+    const fleet = readFleetFailureReport()
+    for (const row of failingMainstays(fleet, cfg.mainstays)) {
+      console.error(formatFleetWarning(row, fleet))
+    }
+  } catch (err) {
+    // Never let a diagnostic read break a dispatch — but never swallow it
+    // either. A reader that fails silently is the defect this warning is for.
+    console.error(`\u26a0\ufe0f  fleet failure-rate check skipped: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
   console.error("")
 
   // Cost confirmation — a multi-dollar call deserves a Y/n gate. Pre-existing
