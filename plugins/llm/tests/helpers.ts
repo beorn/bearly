@@ -53,6 +53,10 @@ export function makeTestEnv(): TestEnv {
   process.env.OPENROUTER_API_KEY = "sk-test-openrouter"
   // Prevent the auto-update-pricing post-run side-effect from firing.
   process.env.LLM_NO_AUTO_PRICING = "1"
+  // The keys above are FAKE, but the model-liveness preflight cannot know that
+  // and would fire a live catalog request at every provider on every pro test.
+  // Tests that mean to exercise it clear this and stub `fetch` themselves.
+  process.env.LLM_SKIP_MODEL_LIVENESS = "1"
   // Skip the default-mode "📚 Similar past queries" history scan — it hits the
   // real ~/.claude/session-index.db (20s+) and stalls the vitest worker even
   // when dispatch is mocked.

@@ -39,6 +39,7 @@ import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
 import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMode } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
+import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
 import { confirmOrExit } from "../ui/confirm"
@@ -318,6 +319,52 @@ export async function runProDual(options: {
   ]
   if (slotC && legCap >= 3) legSlots.push({ id: "c", role: "split-test", model: slotC })
   if (slotD && legCap >= 4) legSlots.push({ id: "d", role: "split-test", model: slotD })
+
+  /**
+   * 24533 acceptance row 4. ASK THE PROVIDER WHETHER EACH CONFIGURED MODEL IS
+   * STILL SERVED, before spending a dispatch finding out. The old preflight
+   * probed each PROVIDER, so a dead model passed on a working credential and
+   * failed at dispatch — three specimens over three days with the same anchor.
+   *
+   * A dead leg REDUCES the panel here, exactly as a failed leg reduces it
+   * after dispatch (row 1). Cancelling the run would trade one defect for a
+   * worse one. Only an empty panel is fatal, and it says why.
+   *
+   * `unverified` is never treated as dead: a catalog we could not read is not
+   * evidence about a model. Those are named on stderr and dispatched anyway,
+   * because a preflight that silently drops what it could not check is the
+   * same failure this row exists to close.
+   */
+  // TEST SEAM, and it announces itself so it can never be quietly on in a real
+  // run: the suite sets fake provider keys, so without this every `/pro` test
+  // would fire a live catalog request at OpenRouter and OpenAI. Found by
+  // checking whether the cache file appeared after a green run — it had not,
+  // which is also how I learned the wiring below was uncovered.
+  const skipLiveness = process.env.LLM_SKIP_MODEL_LIVENESS === "1"
+  if (skipLiveness) console.error("  • model-liveness preflight SKIPPED (LLM_SKIP_MODEL_LIVENESS=1)")
+  const liveness = skipLiveness ? [] : await checkModelLiveness(legSlots.map((s) => s.model))
+  for (const line of describeLiveness(liveness)) console.error(line)
+  const deadIds = new Set(liveness.filter((l) => l.verdict === "absent").map((l) => l.modelId))
+  if (deadIds.size > 0) {
+    const dropped = legSlots.filter((s) => deadIds.has(s.model.modelId))
+    const surviving = legSlots.filter((s) => !deadIds.has(s.model.modelId))
+    legSlots.length = 0
+    legSlots.push(...surviving)
+    console.error(
+      `  ⚠ ${dropped.length} leg(s) dropped before dispatch — not served by their provider: ` +
+        dropped.map((s) => s.model.displayName).join(", "),
+    )
+    if (legSlots.length === 0) {
+      throw new Error(
+        "Every configured /pro leg names a model its provider no longer serves: " +
+          liveness
+            .filter((l) => l.verdict === "absent")
+            .map((l) => `${l.modelId} (${l.wireId})`)
+            .join(", ") +
+          '. Run "bun llm pro --discover-models" and update dual-pro-config.json.',
+      )
+    }
+  }
 
   const fleetLabel = legSlots
     .map((s) => `${s.model.displayName}${s.role === "split-test" ? " [split-test]" : ""}`)

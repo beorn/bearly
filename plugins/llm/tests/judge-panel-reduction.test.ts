@@ -162,6 +162,64 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
   }, 20_000)
 })
 
+describe("24533 row 4 — a dead model is dropped BEFORE it is dispatched", () => {
+  /**
+   * THE ROW THIS PINS, and why the unit test for `checkModelLiveness` is not
+   * enough on its own: a liveness verdict nothing acts on is a report, not a
+   * preflight. So this arm asserts the CONSEQUENCE — the dead model's leg
+   * never reaches `generateText` at all — rather than that a function returned
+   * the word "absent".
+   *
+   * It also covers the seam. Every other test in this file sets
+   * LLM_SKIP_MODEL_LIVENESS=1 (fake keys must not fire real catalog requests),
+   * so this is the one place the wiring runs. I found the wiring uncovered by
+   * noticing the catalog cache file never appeared after a green run.
+   */
+  it("never dispatches a leg whose model the provider does not serve, and still returns", async () => {
+    const env = makeTestEnv()
+    delete process.env.LLM_SKIP_MODEL_LIVENESS
+    // The challenger must sit on a provider we CAN read a catalog for. The
+    // first draft of this arm used `gemini-3-pro-preview` — a google model,
+    // and google has no catalog reader, so it came back `unverified` and was
+    // correctly NOT dropped. The arm failed and was right to: an unverifiable
+    // model is not a dead one. `moonshotai/kimi-k3` is the real specimen and
+    // is routed through OpenRouter, which we can read.
+    vi.stubGlobal("fetch", async () => ({
+      // Both mainstays, by their WIRE ids (openai is sent `gpt-5-pro` for our
+      // `gpt-5.4-pro`), and deliberately not the challenger. A first draft
+      // served neither mainstay and tripped the empty-panel guard instead —
+      // which is that guard working, not this arm.
+      json: async () => ({ data: [{ id: "gpt-5-pro" }, { id: "moonshotai/kimi-k2.6" }] }),
+      ok: true,
+      status: 200,
+    }))
+    const dispatched: string[] = []
+    generateTextMock.mockImplementation(async (args: { model?: { modelId?: string } }) => {
+      dispatched.push(String((args.model as { modelId?: string } | undefined)?.modelId ?? "unknown"))
+      return { text: "an answer", usage: { totalTokens: 10 } }
+    })
+
+    vi.resetModules()
+    process.argv = ["node", "cli.ts", "pro", "-y", "--full-paths", "--challenger", "moonshotai/kimi-k3", "q?"]
+    const mod = await import("../src/cli")
+    try {
+      await mod.main()
+    } catch (e) {
+      if (!/^__exit_/.test((e as Error).message)) throw e
+    }
+
+    const stderr = env.stderr.join(" ")
+    expect(stderr, "the drop must be announced, never silent").toMatch(/dropped before dispatch/u)
+    expect(stderr).toMatch(/kimi-k3/u)
+    expect(
+      dispatched.some((id) => id.includes("kimi-k3")),
+      "a model the catalog does not serve must never reach a dispatch",
+    ).toBe(false)
+    expect(dispatched.length, "the surviving mainstays still run").toBeGreaterThan(0)
+    vi.unstubAllGlobals()
+  })
+})
+
 describe("24533 — a dispatch error never blames a credential that is working in the same run", () => {
   /**
    * DEFECT 2. The classifier is per-error: it sees one failure and cannot know
