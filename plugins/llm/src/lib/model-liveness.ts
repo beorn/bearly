@@ -132,9 +132,10 @@ function readCache(provider: Provider, now: number): string[] | undefined {
     if (now - parsed.fetchedAt >= CATALOG_TTL_MS) return undefined
     return parsed.ids.filter((id): id is string => typeof id === "string")
   } catch {
-    // A corrupt cache file is a cache miss, not an error worth surfacing: the
-    // next line re-fetches and overwrites it. This is the ONE silent catch in
-    // the module, and it swallows nothing a caller could act on.
+    // silent-fallback-allow: a corrupt cache file is a cache miss, not an error
+    // worth surfacing. The caller re-fetches and overwrites it on the next line,
+    // so nothing a caller could act on is swallowed and no liveness answer is
+    // lost — only the saved copy of one.
     return undefined
   }
 }
@@ -144,7 +145,9 @@ function writeCache(provider: Provider, ids: readonly string[], now: number): vo
     mkdirSync(CACHE_DIR, { recursive: true })
     writeFileSync(cachePath(provider), JSON.stringify({ fetchedAt: now, ids: [...ids] }), "utf-8")
   } catch {
-    // An unwritable cache costs a fetch next run. It must never cost the run.
+    // silent-fallback-allow: an unwritable cache costs one extra fetch next run
+    // and must never cost the run itself. The preflight's answer is already
+    // computed and returned; this is the write of a convenience copy.
   }
 }
 
