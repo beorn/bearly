@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Honor explicit `allowMissing` when a validated path disappears before removal,
+  consistently for synchronous and asynchronous removal. Strict calls still fail
+  on absence, and unexpected filesystem errors remain visible.
+
 ## 0.2.0
 
 - Move Yrd's async path-holder collector into Removely with an explicit
