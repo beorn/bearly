@@ -399,7 +399,72 @@ describe("safeRemove success path", () => {
   })
 })
 
+describe("24234 — absence after validated presence", () => {
+  test.each([
+    { synchronous: true, allowMissing: true },
+    { synchronous: false, allowMissing: true },
+    { synchronous: true, allowMissing: false },
+    { synchronous: false, allowMissing: false },
+    { synchronous: true, allowMissing: undefined },
+    { synchronous: false, allowMissing: undefined },
+  ])("sync=$synchronous, allowMissing=$allowMissing", async ({ synchronous, allowMissing }) => {
+    const base = await scratch()
+    const victim = join(base, "present-before-validation")
+    await mkdir(victim)
+    let removedAfterValidation = false
+    const options = {
+      within: base,
+      allowMissing,
+      // The existing retry option is read after containment validation and
+      // before removal. Disappear at that boundary without a timing race.
+      get retries() {
+        expect(existsSync(victim)).toBe(true)
+        safeRemoveSync(victim, { within: base })
+        removedAfterValidation = true
+        return 0
+      },
+    }
+    if (synchronous) {
+      if (allowMissing) expect(() => safeRemoveSync(victim, options)).not.toThrow()
+      else expect(() => safeRemoveSync(victim, options)).toThrow(/ENOENT/u)
+    } else if (allowMissing) {
+      await expect(safeRemove(victim, options)).resolves.toBeUndefined()
+    } else {
+      await expect(safeRemove(victim, options)).rejects.toThrow(/ENOENT/u)
+    }
+    expect(removedAfterValidation).toBe(true)
+    expect(existsSync(victim)).toBe(false)
+  })
+
+  test.each([true, false])("unexpected removal errors stay loud (sync=%s)", async (synchronous) => {
+    const base = await scratch()
+    const parent = join(base, "parent")
+    const victim = join(parent, "victim")
+    await mkdir(victim, { recursive: true })
+    const options = {
+      within: base,
+      allowMissing: true,
+      get retries() {
+        safeRemoveSync(parent, { within: base })
+        writeFileSync(parent, "a file cannot contain the target")
+        return 0
+      },
+    }
+    if (synchronous) expect(() => safeRemoveSync(victim, options)).toThrow(/ENOTDIR/u)
+    else await expect(safeRemove(victim, options)).rejects.toThrow(/ENOTDIR/u)
+    expect(existsSync(parent)).toBe(true)
+  })
+})
+
 describe("tempTree", () => {
+  test("fixture creation fails loudly when its parent is not a directory", async () => {
+    const base = await scratch()
+    const parent = join(base, "not-a-directory")
+    await writeFile(parent, "file")
+    await expect(tempTree("fixture-", { parent })).rejects.toMatchObject({ code: "ENOTDIR" })
+    expect(await readdir(base)).toEqual(["not-a-directory"])
+  })
+
   test("await using creates, exposes, and removes the fixture", async () => {
     let captured = ""
     {

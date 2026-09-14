@@ -357,6 +357,7 @@ export function safeRemoveSync(target: string, options: SafeRemoveOptions): void
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOENT" && options.allowMissing === true) break
       // EACCES/EPERM: a fixture wrote something read-only. Widen ONLY then, and
       // only under the already-verified containment root — never as a routine
       // pre-pass, which on a large tree is itself a multi-minute walk and
@@ -415,6 +416,7 @@ export async function safeRemove(target: string, options: SafeRemoveOptions): Pr
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOENT" && options.allowMissing === true) break
       if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 20 * (attempt + 1))
