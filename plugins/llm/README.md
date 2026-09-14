@@ -275,6 +275,15 @@ per-leg `a`, `b`, and (when `--challenger` enabled) `c` envelopes plus a
 `judge` block with rubric scores. Read the output file — streaming tokens go
 to stderr only in interactive terminals.
 
+When pairwise judging fails to parse, both returned opinions remain available
+without a ranking. Stderr names the pair, model/provider, parsing or schema
+cause, and a `<output-file>.judge-<pair>.json` artifact. The artifact retains
+the complete normalized judge response (including content and available usage,
+reasoning and response ID), the full parser cause, and explicit names of
+metadata unavailable from the adapter. It is not a capture of the provider's
+wire response. Empty content, missing JSON objects, malformed JSON and schema
+failures are distinguished. A failed artifact write is reported explicitly.
+
 ### `file` field — relativized by default
 
 The `file` field is relativized to avoid leaking absolute `/tmp` paths

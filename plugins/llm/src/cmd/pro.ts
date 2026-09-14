@@ -641,8 +641,40 @@ export async function runProDual(options: {
         try {
           const raw = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
           const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
-          const result = raw.content ? dualPro.parsePairwiseJudgeResponse(raw.content) : undefined
-          return { id: pairId, result, cost, error: result ? undefined : "unparseable" }
+          const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
+          if (parsed.ok) return { id: pairId, result: parsed.value, cost }
+          const artifactPath = `${outputFile}.judge-${pairId}.json`
+          // ModelResponse is the complete normalized response available here;
+          // the adapter does not expose wire bodies, finish reasons or request IDs.
+          const unavailableMetadata = ["finishReason", "requestId", "rawProviderResponse"]
+          if (raw.responseId === undefined) unavailableMetadata.push("responseId")
+          if (raw.usage === undefined) unavailableMetadata.push("usage")
+          const detail = parsed.message.replace(/\s+/g, " ")
+          const boundedDetail = detail.length <= 400 ? detail : `${detail.slice(0, 400)}… [cause shortened]`
+          const description = `pair ${pairId}, ${raw.model.provider}/${raw.model.modelId}: ${parsed.kind}: ${boundedDetail}`
+          const metadata = `responseId=${raw.responseId ?? "unavailable"}; finishReason=unavailable; requestId=unavailable`
+          let evidence: string
+          try {
+            await Bun.write(
+              artifactPath,
+              JSON.stringify(
+                {
+                  schema: "pairwise-judge-failure/v1",
+                  pair: pairId,
+                  requestedModel: judgeModel.modelId,
+                  failure: parsed,
+                  response: raw,
+                  unavailableMetadata,
+                },
+                null,
+                2,
+              ) + "\n",
+            )
+            evidence = `complete response and cause: ${artifactPath}`
+          } catch (error) {
+            evidence = `failed to preserve response at ${artifactPath}: ${error instanceof Error ? error.message : String(error)}`
+          }
+          return { id: pairId, cost, error: `${description}; ${metadata}; ${evidence}` }
         } catch (e) {
           return { id: pairId, cost: 0, error: e instanceof Error ? e.message : String(e) }
         }
@@ -662,7 +694,9 @@ export async function runProDual(options: {
       if (failures.length === settled.length && settled.length > 0) {
         judgeError = `all pairwise judges failed (${failures.map((f) => f.error).join("; ")})`
       } else if (failures.length > 0) {
-        console.error(`  ⚠ ${failures.length}/${settled.length} pairwise judges failed`)
+        console.error(
+          `  ⚠ ${failures.length}/${settled.length} pairwise judges failed: ${failures.map((f) => f.error).join("; ")}`,
+        )
       }
     }
     if (judgeError) console.error(`  ⚠ judge unavailable: ${judgeError}`)

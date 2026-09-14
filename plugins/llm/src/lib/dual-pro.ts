@@ -736,7 +736,16 @@ Output STRICT JSON, nothing else (no markdown fence, no prose):
  * `parseJudgeResponse`. Returns undefined on unparseable / schema-mismatched
  * output. */
 export function parsePairwiseJudgeResponse(raw: string): PairwiseJudgeResult | undefined {
-  if (!raw) return undefined
+  const parsed = parsePairwiseJudgeResponseDetailed(raw)
+  return parsed.ok ? parsed.value : undefined
+}
+
+/** Internal diagnostic result; the package's public exports are unchanged. */
+export function parsePairwiseJudgeResponseDetailed(
+  raw: string,
+):
+  | { ok: true; value: PairwiseJudgeResult }
+  | { ok: false; kind: "empty" | "no-json-object" | "malformed-json" | "schema"; message: string } {
   let text = raw.trim()
   if (text.startsWith("```")) {
     text = text
@@ -744,15 +753,29 @@ export function parsePairwiseJudgeResponse(raw: string): PairwiseJudgeResult | u
       .replace(/```$/, "")
       .trim()
   }
+  if (!text) return { ok: false, kind: "empty", message: "judge response is empty after removing whitespace/fences" }
   const start = text.indexOf("{")
+  if (start < 0) return { ok: false, kind: "no-json-object", message: "judge response contains no JSON object" }
   const end = text.lastIndexOf("}")
-  if (start < 0 || end <= start) return undefined
+  let object: unknown
   try {
-    const obj = JSON.parse(text.slice(start, end + 1))
-    return PairwiseJudgeResultSchema.parse(obj)
-  } catch {
-    return undefined
+    object = JSON.parse(end > start ? text.slice(start, end + 1) : text.slice(start))
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "malformed-json",
+      message: `malformed JSON: ${error instanceof Error ? error.message : String(error)}`,
+    }
   }
+  const parsed = PairwiseJudgeResultSchema.safeParse(object)
+  if (!parsed.success) {
+    return {
+      ok: false,
+      kind: "schema",
+      message: parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; "),
+    }
+  }
+  return { ok: true, value: parsed.data }
 }
 
 /**

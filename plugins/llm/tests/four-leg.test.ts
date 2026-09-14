@@ -1,4 +1,8 @@
 /**
+ * @failure Judge response failures lose their parsing/schema cause or alter valid scoring.
+ * @level l0-l3
+ * @consumer llm pro
+ *
  * Phase 3 — 2+2 fleet (4 legs in parallel) + pairwise judge tests.
  *
  * Covers:
@@ -26,6 +30,7 @@ import {
   pickSplitTestSlots,
   buildPairwiseJudgePrompt,
   parsePairwiseJudgeResponse,
+  parsePairwiseJudgeResponseDetailed,
   synthesizePairwiseFromV2,
   buildLeaderboard,
   type AbProEntry,
@@ -225,10 +230,19 @@ describe("parsePairwiseJudgeResponse", () => {
     expect(parsePairwiseJudgeResponse(raw)?.winner).toBe("tie")
   })
 
-  it("returns undefined on unparseable input", () => {
-    expect(parsePairwiseJudgeResponse("not json")).toBeUndefined()
-    expect(parsePairwiseJudgeResponse("")).toBeUndefined()
-    expect(parsePairwiseJudgeResponse('{"missing":"fields"}')).toBeUndefined()
+  // Keep the legacy parser contract while giving the CLI the actual failure.
+  it.each([
+    ["   ", "empty", "empty"],
+    ["not json", "no-json-object", "JSON object"],
+    ['{"winner":', "malformed-json", "JSON"],
+    ['{"winner":"C","scoreA":null,"scoreB":null}', "schema", "winner"],
+  ])("diagnoses %j without changing the legacy undefined result", (raw, kind, detail) => {
+    expect(parsePairwiseJudgeResponse(raw)).toBeUndefined()
+    const parsed = parsePairwiseJudgeResponseDetailed(raw)
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error("invalid judge response was accepted")
+    expect(parsed.kind).toBe(kind)
+    expect(parsed.message).toContain(detail)
   })
 })
 

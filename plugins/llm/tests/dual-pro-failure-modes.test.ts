@@ -1,4 +1,8 @@
 /**
+ * @failure Failed judge output loses its cause/content or suppresses surviving opinions.
+ * @level l3
+ * @consumer llm pro
+ *
  * Regression: dual-pro must normalize empty-content fulfilled promises as
  * failures, and must exit non-zero when both legs fail.
  *
@@ -17,9 +21,10 @@
  */
 
 import { describe, it, expect, vi } from "vitest"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { makeTestEnv } from "./helpers"
+import type { ModelResponse } from "../src/lib/types"
 
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
@@ -47,7 +52,7 @@ function abProLogPath(home: string): string {
   return join(home, ".claude/projects", encoded, "memory/ab-pro.jsonl")
 }
 
-async function runDualPro() {
+async function runDualPro(outputFile?: string) {
   vi.resetModules()
   // --no-challenger keeps these tests focused on the legacy 2-leg failure
   // modes. The 3-leg path (km-bearly.llm-dual-pro-shadow-test) has its own
@@ -55,7 +60,16 @@ async function runDualPro() {
   // --full-paths so envelope.file is the absolute path — tests below
   // readFileSync(envelope.file). Default mode (km-bearly.llm-path-leakage)
   // emits a basename only.
-  process.argv = ["node", "cli.ts", "pro", "-y", "--no-challenger", "--full-paths", "test question"]
+  process.argv = [
+    "node",
+    "cli.ts",
+    "pro",
+    "-y",
+    "--no-challenger",
+    "--full-paths",
+    ...(outputFile ? ["--output", outputFile] : []),
+    "test question",
+  ]
   const mod = await import("../src/cli")
   try {
     await mod.main()
@@ -112,6 +126,80 @@ describe("dual-pro failure modes", () => {
     expect(ab.gpt.ok).toBe(false)
     expect(ab.kimi.ok).toBe(true)
   }, 10_000)
+
+  // Failed scoring must preserve usable opinions and the exact judge response,
+  // not collapse a paid provider call into the old "unparseable" placeholder.
+  it.each([false, true])(
+    "retains failed-judge diagnostics and both opinions (artifact write fails: %s)",
+    async (writeFails) => {
+      const env = makeTestEnv()
+      process.env.LLM_JUDGE_MODEL = "gemini-3-flash-preview"
+      const outputFile = join(env.tmpDir, "review.txt")
+      const artifactPath = `${outputFile}.judge-ab.json`
+      if (writeFails) mkdirSync(artifactPath)
+      const content = JSON.stringify({ winner: "C", scoreA: null, scoreB: null, reasoning: "λ".repeat(5000) })
+      queryBackgroundMock.mockReset()
+      queryBackgroundMock.mockResolvedValueOnce({
+        model: { displayName: "GPT-5.4 Pro" },
+        content: "first unranked opinion",
+        responseId: "resp_opinion",
+        durationMs: 10,
+        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      })
+      generateTextMock.mockReset()
+      generateTextMock.mockResolvedValueOnce({
+        text: "second unranked opinion",
+        reasoning: [],
+        usage: { inputTokens: 10, outputTokens: 20 },
+      })
+      generateTextMock.mockResolvedValueOnce({
+        text: content,
+        reasoning: [],
+        usage: { inputTokens: 50, outputTokens: 60 },
+      })
+
+      await runDualPro(outputFile)
+
+      const diagnostic = env.stderr.join("\n")
+      expect(diagnostic).toContain("schema")
+      expect(diagnostic).toContain("winner")
+      expect(diagnostic).toContain(artifactPath)
+      expect(diagnostic.length).toBeLessThan(6000)
+      expect(diagnostic).not.toContain("λ".repeat(100))
+      if (writeFails) {
+        expect(diagnostic).toContain(`failed to preserve response at ${artifactPath}`)
+        expect(diagnostic).not.toContain("complete response and cause:")
+      } else {
+        const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+          response: ModelResponse
+          pair: string
+          failure: { kind: string }
+          unavailableMetadata: string[]
+        }
+        expect(Buffer.from(artifact.response.content)).toEqual(Buffer.from(content))
+        expect(artifact.pair).toBe("ab")
+        expect(artifact.failure.kind).toBe("schema")
+        expect(artifact.response.usage).toMatchObject({ promptTokens: 50, completionTokens: 60 })
+        expect(artifact.response.model.provider).toBe("openrouter")
+        expect(artifact.unavailableMetadata).toContain("responseId")
+        expect(artifact.unavailableMetadata).toContain("finishReason")
+      }
+      const report = readFileSync(outputFile, "utf8")
+      expect(report).toContain("first unranked opinion")
+      expect(report).toContain("second unranked opinion")
+      const ab = JSON.parse(readFileSync(abProLogPath(env.homeDir), "utf8").trim()) as {
+        judge: { error: string; winner?: string }
+        a: { content: string }
+        b: { content: string }
+      }
+      expect(ab.judge.error).toContain(artifactPath)
+      expect(ab.judge.winner).toBeUndefined()
+      expect(ab.a.content).toBe("first unranked opinion")
+      expect(ab.b.content).toBe("second unranked opinion")
+      expect(env.exitCodes).not.toContain(1)
+    },
+    10_000,
+  )
 
   it("both legs failing exits 1 with diagnostic stderr", async () => {
     const env = makeTestEnv()
