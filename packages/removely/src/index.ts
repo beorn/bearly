@@ -12,6 +12,22 @@ export {
   type ProcessCwdRow,
 } from "./process-census.ts"
 
+export {
+  inspectPathHolderCensus,
+  pathHolderRefusal,
+  type PathHolder,
+  type PathHolderScope,
+  type PathHolderCensusOptions,
+  type PathHolderCensus,
+  type PathHolderCoverage,
+  type LinuxPathHolderCoverage,
+  type DarwinPathHolderCoverage,
+  type PathHolderUnavailableCoverage,
+  type PathHolderSourceCoverage,
+  type PathHolderObservationIssue,
+  type UnreadableProcess,
+} from "./path-holders.ts"
+
 /**
  * Guarded recursive removal + scope-bound temp trees.
  *
