@@ -4,12 +4,12 @@
  * @consumer Removely inspectPathHolderCensus and Bucketeer guarded pruning
  */
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import * as fsPromises from "node:fs/promises"
 import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { inspectPathHolderCensus, pathHolderRefusal, type PathHolder } from "../src/index.ts"
+import { dirname, join } from "node:path"
+import { inspectPathHolderCensus, pathHolderRefusal, safeRemoveSync, type PathHolder } from "../src/index.ts"
 import { inspectPathHolderCensusInProc } from "../src/path-holders.ts"
 
 // Root setup imports Removely before this suite; reload it so the I/O controls
@@ -28,7 +28,7 @@ const actualPlatform = process.platform
 afterEach(() => {
   vi.restoreAllMocks()
   Object.defineProperty(process, "platform", { value: actualPlatform })
-  for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true })
+  for (const path of temporary.splice(0)) safeRemoveSync(path, { within: dirname(path), allowMissing: true })
 })
 
 describe("inspectPathHolderCensus", () => {
@@ -401,7 +401,7 @@ describe("explicit scope and source evidence", () => {
     async (source) => {
       const { ownedPath, procRoot, processRoot } = fixture()
       const resource = join(processRoot, source)
-      if (source === "fd") rmSync(resource, { recursive: true })
+      if (source === "fd") safeRemoveSync(resource, { within: processRoot })
       else unlinkSync(resource)
       const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
       expect(census.coverage).toMatchObject({
@@ -487,7 +487,7 @@ describe("explicit scope and source evidence", () => {
     const resource = join(processRoot, "maps")
     const readFile = fsPromises.readFile
     vi.spyOn(fsPromises, "readFile").mockImplementation(async (...args: Parameters<typeof fsPromises.readFile>) => {
-      if (String(args[0]) === resource) rmSync(processRoot, { recursive: true })
+      if (String(args[0]) === resource) safeRemoveSync(processRoot, { within: procRoot })
       return readFile(...args)
     })
     const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
