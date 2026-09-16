@@ -2,7 +2,7 @@
 name: why
 effort: max
 description: "Run 5 Whys plus /big reframing to trace a symptom to structural root cause before fixing."
-triggers: ["/why", "why", "root cause", "five whys", "reframe"]
+triggers: ["/why", "why", "root cause", "five whys"]
 argument-hint: [problem or symptom]
 benefits-from: [recall, tent]
 escalate-to:
