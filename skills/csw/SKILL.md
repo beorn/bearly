@@ -3,7 +3,7 @@ name: csw
 effort: max
 description: "Analyze a decision end-to-end: gather context, compare options, score tradeoffs, and present one clear recommendation."
 # prettier-ignore
-triggers: ["/csw", "csw", "complete staff work", "options", "analysis", "decision", "tradeoffs", "compare", "alternatives", "which approach", "how should we"]
+triggers: ["/csw", "csw", "complete staff work", "options", "analysis", "decision", "tradeoffs", "compare", "which approach", "how should we"]
 argument-hint: <topic or question to analyze>
 ---
 
