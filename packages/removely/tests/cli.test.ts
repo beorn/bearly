@@ -9,12 +9,17 @@
  * A shell caller that cannot tell those apart will paper over both.
  */
 
+import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterAll, describe, expect, test, vi } from "vitest"
 import { parseArgs, runCli } from "../src/cli.ts"
 import { safeRemoveSync } from "../src/index.ts"
+
+/** The real entry point, so an example is proved by running it rather than by matching its text. */
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url))
 
 const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "removely-cli-")))
 
@@ -54,7 +59,18 @@ describe("parseArgs", () => {
   })
 
   test("refuses an empty target — the unset-shell-variable shape", () => {
-    expect(() => parseArgs(["", "--within", "/tmp"])).toThrow(/missing target/u)
+    expect(() => parseArgs(["", "--within", "/tmp"])).toThrow(/no target argument given/u)
+  })
+
+  /**
+   * 24601, reader check: "missing target" reads as "the file is not there",
+   * which is the one condition --allow-missing exists for. A reader who took it
+   * that way would reach for that flag and silence a typo. The message has to
+   * say which of the two is missing, so assert the distinction, not the phrase.
+   */
+  test("an absent ARGUMENT says so, and says it is not the --allow-missing case", () => {
+    expect(() => parseArgs(["", "--within", "/tmp"])).toThrow(/ARGUMENT, not the file/u)
+    expect(() => parseArgs(["", "--within", "/tmp"])).toThrow(/--allow-missing covers/u)
   })
 
   test("refuses a flag value that is really the next flag", () => {
@@ -117,7 +133,64 @@ describe("runCli", () => {
     expect(text, "the three exit codes a caller branches on").toMatch(
       /0\s+removed[\s\S]*2\s+REFUSED[\s\S]*64\s+usage error/u,
     )
-    expect(text, "runnable examples").toMatch(/EXAMPLES[\s\S]*removely \/tmp\/build-2f9c --within \/tmp/u)
+    expect(text, "examples, and what they must not assume").toMatch(
+      /EXAMPLES[\s\S]*private per-user directory on macOS/u,
+    )
+  })
+
+  /**
+   * 24601: the example this replaced was asserted as a STRING and was wrong.
+   * It said `--within /tmp`, and the default allowed root is the system
+   * temporary directory — a private per-user path on macOS — so the one
+   * example a reader was most likely to copy would have exited 2 there. A
+   * string match cannot see that; running it can.
+   *
+   * The two project-relative examples run here against a real fixture. The
+   * third names an absolute /srv tree no test may create, so it is checked for
+   * shape only — said out loud, because an unstated exclusion is how the last
+   * one rotted.
+   */
+  test("the project-relative examples RUN, and remove exactly what they name", () => {
+    const { text } = captureHelp(["--help"])
+    // Scoped to the EXAMPLES section: the title line is also "removely — …",
+    // and a filter that swept the whole help would have counted it as a fourth.
+    const section = text.split("\nEXAMPLES\n")[1] ?? ""
+    expect(section, "the help has an EXAMPLES section to read").not.toBe("")
+    const examples = section
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("removely "))
+    expect(examples.length, "three examples, as written").toBe(3)
+
+    const runnable = examples.filter((line) => !/\s\//u.test(line))
+    expect(runnable.length, "two of the three name no absolute path, so they run anywhere").toBe(2)
+
+    for (const example of runnable) {
+      const workdir = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "removely-example-")))
+      // The child is given a DIFFERENT system temporary directory than the one
+      // holding the fixture. Otherwise the fixture sits inside the default
+      // allowed root by accident, `--allowed-root .` carries no weight, and an
+      // example that omitted it would pass here and be refused on macOS — the
+      // exact platform accident this test exists to catch.
+      const elsewhere = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "removely-not-here-")))
+      try {
+        const argv = example.split(/\s+/u).slice(1)
+        const target = argv[0] ?? ""
+        mkdirSync(join(workdir, target), { recursive: true })
+        writeFileSync(join(workdir, target, "f.txt"), "x")
+
+        const run = spawnSync(process.execPath, [CLI, ...argv], {
+          cwd: workdir,
+          env: { ...process.env, TMPDIR: elsewhere },
+          encoding: "utf8",
+        })
+        expect(run.status, `${example}\n${run.stderr}`).toBe(0)
+        expect(existsSync(join(workdir, target)), `${example} removed the target it names`).toBe(false)
+      } finally {
+        safeRemoveSync(workdir, { within: realpathSync(tmpdir()), allowMissing: true })
+        safeRemoveSync(elsewhere, { within: realpathSync(tmpdir()), allowMissing: true })
+      }
+    }
   })
 
   test("-h is the same help, and the text carries no ANSI so a pipe reads what a terminal reads", () => {
@@ -186,7 +259,7 @@ describe("runCli", () => {
     const captured = captureStderr()
     try {
       expect(runCli(["--within", root])).toBe(64)
-      expect(captured.messages.join("\n")).toMatch(/missing target/u)
+      expect(captured.messages.join("\n")).toMatch(/no target argument given/u)
     } finally {
       captured.restore()
     }

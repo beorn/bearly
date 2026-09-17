@@ -90,13 +90,18 @@ const HELP = [
   "  64  usage error: a missing, unknown or malformed argument. Nothing is removed.",
   "",
   "EXAMPLES",
-  "  # one scratch directory, contained by the system temp root",
-  "  removely /tmp/build-2f9c --within /tmp",
+  "  Every example names --allowed-root, and none of them spells the system temporary",
+  "  directory. That path is /tmp on Linux and a private per-user directory on macOS, so",
+  "  an example written as /tmp is a refusal on one of the two — help a reader cannot run",
+  "  is worse than no help. The first two are relative to the project you are standing in.",
   "",
-  "  # teardown that tolerates a fixture another step already removed",
-  '  removely "$fixture" --within "$TMPDIR" --allow-missing',
+  "  # a build directory inside the project you are standing in",
+  "  removely build/out --within build --allowed-root .",
   "",
-  "  # a tree outside the system temp: declare the root that may hold it",
+  "  # teardown that tolerates a fixture an earlier step already removed",
+  "  removely tmp/fixture-7 --within tmp --allowed-root . --allow-missing",
+  "",
+  "  # a tree elsewhere on the disk: name the root that may hold it",
   "  removely /srv/cache/run-7 --within /srv/cache --allowed-root /srv",
 ].join("\n")
 
@@ -139,7 +144,16 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   // An unset shell variable expands to the empty string, which is the exact
   // input that made 2026-07-31 possible. Refuse it here rather than let it
   // reach the predicate as a missing argument.
-  if (target === undefined || target.length === 0) throw new Error(`missing target. ${USAGE}`)
+  //
+  // It used to say "missing target", which reads as "the file is not there" —
+  // the ONE condition --allow-missing exists for, and the one thing this is
+  // not. A caller who reached for that flag would have silenced a typo instead
+  // of fixing it. Name which of the two is missing (24601, reader check).
+  if (target === undefined || target.length === 0) {
+    throw new Error(
+      `no target argument given. That is the ARGUMENT, not the file: a target that does not exist on disk is what --allow-missing covers. ${USAGE}`,
+    )
+  }
   if (within === undefined || within.length === 0) throw new Error(`missing --within. ${USAGE}`)
   return { target, within, allowMissing, allowedRoots }
 }
