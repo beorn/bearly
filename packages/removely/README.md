@@ -45,3 +45,20 @@ The CLI uses the same removal guard:
 ```sh
 removely /tmp/build/output --within /tmp/build
 ```
+
+`--within` is mandatory and has no default: the target must resolve to a path
+*strictly* inside it, so `--within` pointing at the target itself is refused,
+and so is a sibling that merely shares its prefix. A target that is itself a
+symlink is refused rather than followed. The root you name must in turn sit
+inside an allowed root — the system temporary directory by default, and
+`--allowed-root` (repeatable) **replaces** that default rather than adding to
+it. `--allow-missing` makes an absent target exit 0.
+
+```sh
+removely --help     # the whole contract: arguments, what is refused and why,
+                    # exit codes, and runnable examples
+```
+
+Exit codes are the shell contract: `0` removed (or absent under
+`--allow-missing`, and `--help` itself), `2` refused or the removal failed,
+`64` you called it wrong and nothing was removed.

@@ -66,18 +66,89 @@ describe("parseArgs", () => {
   })
 })
 
+/** Run the CLI with stdout captured, and hand back what a caller would read. */
+function captureHelp(argv: readonly string[]): { code: number; text: string } {
+  const output: string[] = []
+  const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    output.push(args.map(String).join(" "))
+  })
+  try {
+    return { code: runCli(argv), text: output.join("\n") }
+  } finally {
+    spy.mockRestore()
+  }
+}
+
 describe("runCli", () => {
   test("--help prints usage and exits successfully", () => {
-    const output: string[] = []
-    const spy = vi
-      .spyOn(console, "log")
-      .mockImplementation((...args: unknown[]) => output.push(args.map(String).join(" ")))
+    const { code, text } = captureHelp(["--help"])
+    expect(code).toBe(0)
+    expect(text).toMatch(/usage: removely/u)
+  })
+
+  /**
+   * 24601: the help is the only place a shell caller can read the contract —
+   * no docstring, no types. Each clause below is a question the operator asked
+   * of the one-line usage this replaced, so each is asserted by its own
+   * meaning rather than by a word count.
+   */
+  test("--help explains every argument, including which default --allowed-root replaces", () => {
+    const { code, text } = captureHelp(["--help"])
+    expect(code).toBe(0)
+
+    expect(text, "what the tool is for").toMatch(/only where it is provably inside a root you name/iu)
+    expect(text, "the target").toMatch(/<target>\s+the file, directory or symlink to remove/u)
+    expect(text, "--within is mandatory and has no default").toMatch(/--within <root>\s+MANDATORY/u)
+    expect(text, "--allow-missing").toMatch(/--allow-missing[\s\S]*Exit 0 when the target does not exist/u)
+    expect(text, "--allowed-root repeats").toMatch(/--allowed-root <path>\s+Repeatable/u)
+    expect(text, "the system temp default").toMatch(/Defaults to the system temporary directory/u)
+    expect(text, "supplied roots REPLACE that default").toMatch(/REPLACES that default; it never adds to it/u)
+  })
+
+  test("--help explains what is refused: strict containment, the symlink leaf, the root policy", () => {
+    const { text } = captureHelp(["--help"])
+
+    expect(text, "equality is not containment").toMatch(/equality is not inside/u)
+    expect(text, "a shared prefix is not containment").toMatch(/a shared prefix is not containment/u)
+    expect(text, "both sides are resolved").toMatch(/resolved with realpath first/u)
+    expect(text, "the symlink leaf is refused, not followed").toMatch(/Symlink leaf[\s\S]*refused rather than/u)
+    expect(text, "--within must itself sit in an allowed root").toMatch(/must itself be inside an allowed/u)
+    expect(text, "the honest scope").toMatch(/hygiene, not a security boundary/u)
+    expect(text, "the three exit codes a caller branches on").toMatch(
+      /0\s+removed[\s\S]*2\s+REFUSED[\s\S]*64\s+usage error/u,
+    )
+    expect(text, "runnable examples").toMatch(/EXAMPLES[\s\S]*removely \/tmp\/build-2f9c --within \/tmp/u)
+  })
+
+  test("-h is the same help, and the text carries no ANSI so a pipe reads what a terminal reads", () => {
+    const short = captureHelp(["-h"])
+    const long = captureHelp(["--help"])
+    expect(short.code).toBe(0)
+    expect(short.text).toBe(long.text)
+    // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes is the point
+    expect(short.text, "no escape sequences to strip under NO_COLOR or a pipe").not.toMatch(/\[/u)
+  })
+
+  test("--help beside a real target prints help and removes nothing", () => {
+    const survivor = makeDir("help-not-a-delete")
+    const { code, text } = captureHelp([survivor, "--within", root, "--help"])
+    expect(code).toBe(0)
+    expect(text).toMatch(/usage: removely/u)
+    expect(existsSync(survivor), "asking for the contract is never a delete").toBe(true)
+  })
+
+  test("a usage error explains the problem, points at the help, and removes nothing", () => {
+    const survivor = makeDir("usage-error-survivor")
+    const captured = captureStderr()
     try {
-      expect(runCli(["--help"])).toBe(0)
-      expect(output.join("\n")).toMatch(/usage: removely/u)
+      expect(runCli([survivor, "--within", root, "--recursive"])).toBe(64)
+      const text = captured.messages.join("\n")
+      expect(text, "the problem, named").toMatch(/unknown flag --recursive/u)
+      expect(text, "and where the contract is").toMatch(/removely --help/u)
     } finally {
-      spy.mockRestore()
+      captured.restore()
     }
+    expect(existsSync(survivor), "a call that never parsed cannot have deleted").toBe(true)
   })
 
   test("exit 0 removes a target inside the root", () => {
