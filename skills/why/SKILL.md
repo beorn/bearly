@@ -102,31 +102,6 @@ Run `/big` Phase 8 (Action Plan) on the fix levels:
 - Present Why 3-5 fixes with effort estimates
 - Recommend which level to fix at based on: how often this area breaks, how much effort, how many related problems it solves
 
-### Durable Record
-
-If the analysis changes routing, process, architecture, or follow-up work, add the record below to vault-relative [`hub/retro/why-log.md`](../../../pm/hub/retro/why-log.md) through [/commit's exact STATE request](../commit/SKILL.md#isolated-seat-state-request), selecting the vault content root. This skill owns the record; `/commit` alone owns the request mechanics. Set `owner` to the person accountable for the next action—never default it to `@chief`.
-
-Use this field shape so `tent sitrep` and `sitrep.html` keep the follow-up
-visible:
-
-```markdown
-## YYYY-MM-DD — short title
-
-status:: open
-owner:: @<accountable-owner>
-symptom:: <observable symptom>
-causal-chain:: <because-chain from the analysis>
-evidence:: <commands, files, or transcripts that support the chain>
-fix-levels:: PATCH: ...; GUARD: ...; SPEC: ...
-follow-up:: @<scope>/<bead-path>
-next-action:: <the next concrete action and owner>
-```
-
-When follow-through changes, run
-`@in -- bun tent why-log status <id> resolved|superseded|converted --note "<why>"`;
-`converted` also needs `--follow-up <bead>` so sitrep can show where the action
-moved.
-
 ### Bring in Outside Perspective
 
 If the root cause is architectural (Why 4-5), give the causal chain and evidence
