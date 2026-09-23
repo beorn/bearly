@@ -45,7 +45,7 @@ export interface WatchdogOptions {
   readonly checkEveryMs: number
   /** Integer facts the main thread publishes with `set`, readable as `{name}` in a line. */
   readonly fields?: readonly string[]
-  /** Names for a field's integer codes, readable as `{name:name}`; an index outside the table prints `unknown(n)`. */
+  /** Names for a field's integer codes, readable as `{name:name}`; a negative code prints `none`, an index past the table `unknown(n)`. */
   readonly tables?: Readonly<Record<string, readonly string[]>>
   readonly log?: WatchdogLogAction
   readonly kill?: WatchdogKillAction
@@ -71,8 +71,8 @@ export interface WatchdogLineInput {
 /**
  * Fill a line's placeholders: `{elapsed}` (ms), `{elapsedS}` (seconds, one
  * decimal), `{count}`, `{time}` (HH:MM:SS), `{field}` (its integer),
- * `{field:name}` (its table entry) and `{field:ageS}` (seconds since the epoch-ms
- * time it holds, or "none" for 0). It must reference nothing outside itself:
+ * `{field:name}` (its table entry; "none" for a negative code) and `{field:ageS}`
+ * (seconds since the epoch-ms time it holds, with its unit, or "none" for 0). It must reference nothing outside itself:
  * the worker runs its source text.
  */
 export function renderWatchdogLine(template: string, input: WatchdogLineInput): string {
@@ -84,10 +84,11 @@ export function renderWatchdogLine(template: string, input: WatchdogLineInput): 
     const index = input.fields.indexOf(key)
     if (index < 0) return whole
     const value = Math.trunc(input.values[index] ?? 0)
-    if (form === ":ageS") return value > 0 ? ((Date.now() - value) / 1000).toFixed(1) : "none"
+    if (form === ":ageS") return value > 0 ? `${((Date.now() - value) / 1000).toFixed(1)}s` : "none"
     if (form === undefined) return String(value)
     const table = input.tables[key]
-    const name = table !== undefined && value >= 0 && value < table.length ? table[value] : undefined
+    if (value < 0) return "none"
+    const name = table !== undefined && value < table.length ? table[value] : undefined
     return name ?? `unknown(${value})`
   })
 }

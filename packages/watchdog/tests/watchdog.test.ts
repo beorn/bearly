@@ -174,23 +174,23 @@ describe("armWatchdog: refusals, never a silent default", () => {
 })
 
 describe("renderWatchdogLine: the line names only what shared memory holds", () => {
-  test("fills elapsed, count, integer fields and table names, and names an index outside its table", () => {
+  test("fills elapsed, count, integer fields and table names, names an index past its table, and a negative code as none", () => {
     const line = renderWatchdogLine(
-      "{elapsed}ms {elapsedS}s n={count} state={state:name} raw={state} method={method:name}",
+      "{elapsed}ms {elapsedS}s n={count} state={state:name} raw={state} method={method:name} oldest={oldest:name}",
       {
         elapsedMs: 12_345,
         count: 2,
-        fields: ["state", "method"],
-        values: [1, 7],
-        tables: { state: ["idle", "busy"], method: ["km.ping"] },
+        fields: ["state", "method", "oldest"],
+        values: [1, 7, -1],
+        tables: { state: ["idle", "busy"], method: ["km.ping"], oldest: ["km.ping"] },
       },
     )
-    expect(line).toBe("12345ms 12.3s n=2 state=busy raw=1 method=unknown(7)")
+    expect(line).toBe("12345ms 12.3s n=2 state=busy raw=1 method=unknown(7) oldest=none")
   })
 
-  test("renders a published epoch-ms time as its age in seconds, and 0 as none", () => {
+  test("renders a published epoch-ms time as its age with its unit, and 0 as none", () => {
     const since = Date.now() - 4_000
-    const line = renderWatchdogLine("oldest {since:ageS}s, other {other:ageS}", {
+    const line = renderWatchdogLine("oldest {since:ageS}, other {other:ageS}", {
       elapsedMs: 0,
       count: 0,
       fields: ["since", "other"],

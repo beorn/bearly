@@ -27,4 +27,5 @@ dog.set("inFlight", 0)
 
 Lines are written with `writeSync` to stderr and are built only from shared
 memory: `{elapsed}`, `{elapsedS}`, `{count}`, `{time}`, integer fields as
-`{name}`, and table names as `{name:name}`.
+`{name}`, table names as `{name:name}` (publish a negative code for "none"),
+and an epoch-ms time as its age, `{name:ageS}` (`4.2s`, or `none` for 0).
