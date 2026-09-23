@@ -25,6 +25,9 @@ setInterval(() => dog.stamp(), 1_000).unref()
 dog.set("inFlight", 0)
 ```
 
+If the worker dies, the main thread writes `watchdog <label>: its worker failed, so this
+process is no longer watched: <reason>` to stderr; only `disarm()` ends the watch quietly.
+
 Lines are written with `writeSync` to stderr and are built only from shared
 memory: `{elapsed}`, `{elapsedS}`, `{count}`, `{time}`, integer fields as
 `{name}`, table names as `{name:name}` (publish a negative code for "none"),

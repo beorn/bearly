@@ -44,6 +44,37 @@ async function scenario(
 
 const SPIN = (ms: number): string => `{ const until = Date.now() + ${ms}; while (Date.now() < until) {} }`
 
+describe("armWatchdog: a watch that ends says so unless it was disarmed", () => {
+  test("a worker that dies is reported on stderr, naming the watchdog and why", async () => {
+    const { code, stderr } = await scenario(
+      [
+        // A message that is not a string throws inside the worker at its first stale read.
+        `armWatchdog({ label: "scenario", checkEveryMs: 20, log: { afterMs: 40, repeatEveryMs: 40, message: 42 as unknown as string, recovered: "" } })`,
+        `await new Promise((resolve) => setTimeout(resolve, 600))`,
+        `console.error("DONE")`,
+      ].join("\n"),
+    )
+    expect(code, stderr).toBe(0)
+    expect(stderr).toMatch(/watchdog scenario: its worker failed, so this process is no longer watched: .+/u)
+    expect(stderr).toMatch(/watchdog scenario: its worker exited \(code \d+\), so this process is no longer watched/u)
+  }, 60_000)
+
+  test("a disarmed watchdog ends quietly", async () => {
+    const { code, stderr } = await scenario(
+      [
+        `const dog = armWatchdog({ label: "scenario", checkEveryMs: 20, log: { afterMs: 5_000, repeatEveryMs: 5_000, message: "STALL\\n", recovered: "" } })`,
+        `await new Promise((resolve) => setTimeout(resolve, 100))`,
+        `dog.disarm()`,
+        `await new Promise((resolve) => setTimeout(resolve, 300))`,
+        `console.error("DONE")`,
+      ].join("\n"),
+    )
+    expect(code, stderr).toBe(0)
+    expect(stderr).toContain("DONE")
+    expect(stderr).not.toContain("no longer watched")
+  }, 60_000)
+})
+
 describe("armWatchdog: log with repeat and recovery", () => {
   test("a synchronous spin is logged from off the main thread, repeated with a count, and its end is logged", async () => {
     const { code, stderr } = await scenario(

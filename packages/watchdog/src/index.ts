@@ -20,6 +20,7 @@
  * what shared memory holds: the stamp's age, the stall count, and integer
  * fields the main thread publishes, with names only through static tables.
  */
+import { writeSync } from "node:fs"
 import { Worker } from "node:worker_threads"
 
 export interface WatchdogLogAction {
@@ -175,6 +176,16 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
     },
   })
   worker.unref()
+  // A worker that dies leaves the process unwatched, which is the state this package exists to rule out:
+  // say so on stderr. Only disarm() ends the watch quietly.
+  let disarmed = false
+  worker.on("error", (error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error)
+    writeSync(2, `watchdog ${label}: its worker failed, so this process is no longer watched: ${reason}\n`)
+  })
+  worker.on("exit", (code: number) => {
+    if (!disarmed) writeSync(2, `watchdog ${label}: its worker exited (code ${code}), so this process is no longer watched\n`)
+  })
   return {
     stamp() {
       stamp[0] = Date.now()
@@ -185,6 +196,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       values[index] = value
     },
     disarm() {
+      disarmed = true
       void worker.terminate()
     },
   }
