@@ -152,6 +152,16 @@
         "vitest": ">=4.0.0",
       },
     },
+    "packages/watchdog": {
+      "name": "@bearly/watchdog",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "^1.3.13",
+        "tsdown": "^0.22.5",
+        "typescript": "^5.9.3",
+        "vitest": "^4.1.10",
+      },
+    },
     "plugins/github": {
       "name": "@bearly/github",
       "version": "0.1.1",
@@ -205,6 +215,8 @@
     "@bearly/mux-protocol": ["@bearly/mux-protocol@workspace:packages/mux-protocol"],
 
     "@bearly/runtime-info": ["@bearly/runtime-info@workspace:packages/runtime-info"],
+
+    "@bearly/watchdog": ["@bearly/watchdog@workspace:packages/watchdog"],
 
     "@chenglou/pretext": ["@chenglou/pretext@0.0.8", "", {}, "sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA=="],
 
