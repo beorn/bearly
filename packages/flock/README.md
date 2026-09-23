@@ -18,6 +18,8 @@ intentionally retained after release and may describe the previous owner. Use
 
 ## Install
 
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+
 ```bash
 bun add @bearly/flock
 ```

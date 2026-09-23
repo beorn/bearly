@@ -19,6 +19,8 @@ They **compose**. A list of async-fetched trees of plain values uses all four to
 
 ## Install
 
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+
 ```bash
 npm install alien-resources alien-signals
 ```

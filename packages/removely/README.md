@@ -62,3 +62,5 @@ removely --help     # the whole contract: arguments, what is refused and why,
 Exit codes are the shell contract: `0` removed (or absent under
 `--allow-missing`, and `--help` itself), `2` refused or the removal failed,
 `64` you called it wrong and nothing was removed.
+
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.

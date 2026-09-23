@@ -7,3 +7,5 @@ and fsyncs the parent directory.
 The `@bearly/durable-file/verdict` subpath adds one strict, subject-bound verdict
 artifact shared by test and release harnesses. Artifact paths always come from
 the caller; the package creates no global store and infers nothing from cwd.
+
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.

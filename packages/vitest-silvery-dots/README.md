@@ -6,6 +6,8 @@ Renders test results as colored dots with a live progress bar, slow test breakdo
 
 ## Install
 
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+
 ```bash
 npm install vitest-silvery-dots
 ```

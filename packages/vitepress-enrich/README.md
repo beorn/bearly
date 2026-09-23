@@ -14,6 +14,8 @@ Used by [silvery.dev](https://silvery.dev), [termless.dev](https://termless.dev)
 
 ## Quick Start
 
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+
 ```bash
 bun add -d @bearly/vitepress-enrich
 ```
