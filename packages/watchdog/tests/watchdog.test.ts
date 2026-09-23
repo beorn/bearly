@@ -12,7 +12,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { armWatchdog, renderWatchdogLine, WATCHDOG_WORKER_SOURCE } from "../src/index.ts"
+import { armWatchdog } from "../src/index.ts"
+import { renderWatchdogLine, WATCHDOG_WORKER_SOURCE } from "../src/worker-source.ts"
 
 const MODULE = fileURLToPath(new URL("../src/index.ts", import.meta.url))
 const roots: string[] = []
@@ -250,6 +251,12 @@ describe("armWatchdog: refusals, never a silent default", () => {
     } finally {
       dog.disarm()
     }
+  })
+})
+
+describe("the package entry", () => {
+  test("exports armWatchdog and nothing else at runtime; the renderer and worker source stay internal", async () => {
+    expect(Object.keys(await import("../src/index.ts")).sort()).toEqual(["armWatchdog"])
   })
 })
 
