@@ -184,7 +184,8 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
     writeSync(2, `watchdog ${label}: its worker failed, so this process is no longer watched: ${reason}\n`)
   })
   worker.on("exit", (code: number) => {
-    if (!disarmed) writeSync(2, `watchdog ${label}: its worker exited (code ${code}), so this process is no longer watched\n`)
+    if (disarmed) return
+    writeSync(2, `watchdog ${label}: its worker exited (code ${code}), so this process is no longer watched\n`)
   })
   return {
     stamp() {
