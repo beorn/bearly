@@ -2,6 +2,8 @@
 
 A watchdog that a spinning main thread cannot starve.
 
+> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+
 The main thread stamps a `SharedArrayBuffer` to say it is alive. A worker
 thread checks the stamp's age with `Atomics.wait` and, when it goes stale,
 logs (repeating with a count, then noting recovery), kills with `SIGKILL`, or
