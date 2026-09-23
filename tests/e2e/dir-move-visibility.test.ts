@@ -4,6 +4,7 @@
  * or submodule. That used to surface as a bare "No files found under prefix", which reads
  * as "your path is wrong" and sent people looking for a file/directory limitation that
  * doesn't exist.
+ * @reach fs-walk <fixture-only: dir = mkdtempSync(tmpdir(),"dir-move-visibility-"); every git/refactor operation targets that tmp fixture repo, never the real checkout>
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest"
 import { spawnSync, execFileSync } from "child_process"

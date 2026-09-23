@@ -14,6 +14,7 @@
  *   - root outside allow  — `$HOME` is never a legal containment root
  *   - missing target      — absent is an error unless declared expected
  *   - survivor detection  — a cleanup that leaves the root behind must fail
+ * @reach fs-walk <fixture-only: scratch()/projectScratch() are mkdtemp-based; git repos and project-boundary fixtures are all created under those tmp roots, never the real checkout>
  */
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"

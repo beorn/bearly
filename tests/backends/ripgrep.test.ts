@@ -1,3 +1,6 @@
+/**
+ * @reach fs-walk <fixture-only: every tempDir = mkdtempSync(tmpdir(), "ripgrep-*-test-"); the tool spawns real rg but always scoped to that tmp fixture dir after process.chdir(tem...>
+ */
 import { describe, test, expect, beforeAll, afterAll } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs"
 import { join } from "path"

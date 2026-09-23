@@ -8,6 +8,7 @@
  *     <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json
  *
  * Lookup scans the directory for a filename starting with `<hash>,`.
+ * @reach fs-walk <fixture-only: cacheDir = mkdtempSync(tmpdir(),"bearly-cache-") in beforeEach, injected via _setCacheDirForTesting; every readdirSync call reads only that tmp dir>
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"

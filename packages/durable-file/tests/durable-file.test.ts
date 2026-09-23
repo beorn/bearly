@@ -1,3 +1,6 @@
+/**
+ * @reach fs-walk <fixture-only: scratch() = mkdtempSync(tmpdir(),"durable-file-test-"); every fs operation is scoped to that tmp root>
+ */
 import { afterEach, describe, expect, test } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

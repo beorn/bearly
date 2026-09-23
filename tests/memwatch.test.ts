@@ -12,6 +12,7 @@
  *       marker file).
  *
  * Tests must run under Bun because `tools/memwatch.ts` uses `Bun.spawn`.
+ * @reach fs-walk <fixture-only: every fs operation is scoped to mkTmp() = mkdtempSync(tmpdir(),...) dirs; the one readdirSync in the smoke test reads snapshotDir under workDir = m...>
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest"

@@ -3,6 +3,7 @@
  *
  * Full behavioral coverage: signals, some/count/reduce, includeSelf,
  * rebind, lifecycle, atomicity, re-entrancy, bootstrap.
+ * @reach fs-walk <fixture-only: no filesystem import or directory walk at all — pure reactive-signal/tree-store logic tests>
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
