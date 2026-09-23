@@ -76,6 +76,55 @@ describe("armWatchdog: a watch that ends says so unless it was disarmed", () => 
 })
 
 describe("armWatchdog: log with repeat and recovery", () => {
+  test("each stall keeps its own clock: repeats are spaced, recovery measures the stall, and a second stall starts over", async () => {
+    const { code, stderr } = await scenario(
+      [
+        `const dog = armWatchdog({`,
+        `  label: "scenario",`,
+        `  checkEveryMs: 25,`,
+        `  log: { afterMs: 300, repeatEveryMs: 300, message: "STALL {elapsed} n={count}\\n", recovered: "RECOVERED {elapsed}\\n" },`,
+        `})`,
+        `const beat = setInterval(() => dog.stamp(), 20)`,
+        `await new Promise((resolve) => setTimeout(resolve, 100))`,
+        SPIN(1_000),
+        `await new Promise((resolve) => setTimeout(resolve, 300))`,
+        SPIN(700),
+        `await new Promise((resolve) => setTimeout(resolve, 300))`,
+        `clearInterval(beat)`,
+        `dog.disarm()`,
+        `console.error("DONE")`,
+      ].join("\n"),
+    )
+    expect(code, stderr).toBe(0)
+    // Split the output at each recovery: one list of STALL lines per spin.
+    const spins = stderr
+      .split(/^RECOVERED .*$/mu)
+      .slice(0, 2)
+      .map((part) => [...part.matchAll(/^STALL (\d+) n=(\d+)$/gmu)].map((m) => ({ ms: Number(m[1]), n: Number(m[2]) })))
+    const recoveries = [...stderr.matchAll(/^RECOVERED (\d+)$/gmu)].map((m) => Number(m[1]))
+    expect(recoveries.length, stderr).toBe(2)
+    // 1000 ms of spin holds lines at 300, 600 and 900 ms; 700 ms holds two. A line per check would hold dozens.
+    expect(spins[0]?.length ?? 0, stderr).toBeGreaterThanOrEqual(2)
+    expect(spins[0]?.length ?? 0, stderr).toBeLessThanOrEqual(4)
+    expect(spins[1]?.length ?? 0, stderr).toBeGreaterThanOrEqual(1)
+    expect(spins[1]?.length ?? 0, stderr).toBeLessThanOrEqual(3)
+    for (const lines of spins) {
+      expect(
+        lines.map((line) => line.n),
+        stderr,
+      ).toEqual(lines.map((_, i) => i + 1))
+      expect(lines[0]?.ms ?? 0, stderr).toBeGreaterThanOrEqual(300)
+      for (let i = 1; i < lines.length; i++) {
+        expect((lines[i]?.ms ?? 0) - (lines[i - 1]?.ms ?? 0), stderr).toBeGreaterThanOrEqual(300 - 25)
+      }
+    }
+    // A recovery measures its own stall: at least the first line's age, and no longer than its spin plus a check.
+    expect(recoveries[0] ?? 0, stderr).toBeGreaterThanOrEqual(900)
+    expect(recoveries[0] ?? 0, stderr).toBeLessThan(1_000 + 400)
+    expect(recoveries[1] ?? 0, stderr).toBeGreaterThanOrEqual(600)
+    expect(recoveries[1] ?? 0, stderr).toBeLessThan(700 + 400)
+  }, 60_000)
+
   test("a synchronous spin is logged from off the main thread, repeated with a count, and its end is logged", async () => {
     const { code, stderr } = await scenario(
       [
