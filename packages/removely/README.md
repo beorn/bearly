@@ -47,7 +47,7 @@ removely /tmp/build/output --within /tmp/build
 ```
 
 `--within` is mandatory and has no default: the target must resolve to a path
-*strictly* inside it, so `--within` pointing at the target itself is refused,
+_strictly_ inside it, so `--within` pointing at the target itself is refused,
 and so is a sibling that merely shares its prefix. A target that is itself a
 symlink is refused rather than followed. The root you name must in turn sit
 inside an allowed root — the system temporary directory by default, and

@@ -18,7 +18,12 @@ const dog = armWatchdog({
   label: "my-server",
   checkEveryMs: 1_000,
   fields: ["inFlight"],
-  log: { afterMs: 10_000, repeatEveryMs: 10_000, message: "main thread silent {elapsedS}s, {inFlight} in flight (warning {count})\n", recovered: "main thread back after {elapsedS}s\n" },
+  log: {
+    afterMs: 10_000,
+    repeatEveryMs: 10_000,
+    message: "main thread silent {elapsedS}s, {inFlight} in flight (warning {count})\n",
+    recovered: "main thread back after {elapsedS}s\n",
+  },
   kill: { afterMs: 60_000, message: "main thread silent {elapsedS}s; killing\n" },
 })
 setInterval(() => dog.stamp(), 1_000).unref()

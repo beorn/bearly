@@ -4,17 +4,17 @@
   "description": "A watchdog on its own thread: it sees a main thread that spins, and logs or kills",
   "keywords": [
     "bun",
-    "watchdog",
     "event-loop",
-    "worker",
-    "hang"
+    "hang",
+    "watchdog",
+    "worker"
   ],
   "homepage": "https://github.com/beorn/bearly/tree/main/packages/watchdog",
   "bugs": {
     "url": "https://github.com/beorn/bearly/issues"
   },
   "license": "MIT",
-  "author": "Bj\u00f8rn Stabell <bjorn@stabell.org>",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git",
