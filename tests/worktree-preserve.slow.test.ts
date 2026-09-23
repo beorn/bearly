@@ -17,7 +17,7 @@
  *
  * Marked .slow because it shells out to git and does real filesystem work;
  * included in test:vendor / test:all but excluded from test:fast.
- * @reach fs-walk <fixture-only: sandbox = mkdtempSync(join(tmpdir(), "wt-preserve-")); every worktree operation runs inside this temp sandbox, never the real repo.>
+ * @reach fs-walk <fixture-only: sandbox=mkdtempSync(tmpdir()); worktree ops run inside it>
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"

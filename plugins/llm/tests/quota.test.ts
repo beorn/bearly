@@ -11,7 +11,7 @@
  *      on missing/corrupted cache file.
  *   3. JSON envelope shape — buildQuotaEnvelope (table/JSON form) and
  *      buildPerCallQuota (per-call --quota field).
- * @reach fs-walk <fixture-only: cacheDir = mkdtempSync(tmpdir(),"bearly-quota-") in beforeEach; the one readdirSync reads only that tmp dir>
+ * @reach fs-walk <fixture-only: cacheDir=mkdtempSync(tmpdir()) in beforeEach; reads scoped there>
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"

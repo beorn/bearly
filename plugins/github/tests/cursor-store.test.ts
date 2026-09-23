@@ -24,7 +24,7 @@
  * at the caller-supplied legacy path is adopted exactly once (and removed);
  * an empty legacy stub is removed without being adopted. No ancestor walk of
  * any kind remains — the caller passes one fixed legacy path, or none.
- * @reach fs-walk <fixture-only: fixture() builds every repo/state dir under mkdtempSync(tmpdir(),...); the one process.cwd()-relative check is a negative existsSync assertion, not...>
+ * @reach fs-walk <fixture-only: fixture() builds repo/state dirs under mkdtempSync(tmpdir())>
  */
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs"
