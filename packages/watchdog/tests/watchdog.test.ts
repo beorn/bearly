@@ -24,7 +24,9 @@ afterEach(() => {
  * Run a scenario in a REAL child process: the failure is a main thread that stops
  * servicing its own event loop, so it cannot be asserted from inside that thread.
  */
-async function scenario(body: string): Promise<{ code: number | null; signal: string | null; stderr: string; elapsedMs: number }> {
+async function scenario(
+  body: string,
+): Promise<{ code: number | null; signal: string | null; stderr: string; elapsedMs: number }> {
   const root = mkdtempSync(join(tmpdir(), "bearly-watchdog-"))
   roots.push(root)
   const script = join(root, "scenario.ts")
@@ -142,11 +144,19 @@ describe("armWatchdog: kill", () => {
 describe("armWatchdog: refusals, never a silent default", () => {
   test.each([
     ["checkEveryMs", { label: "x", checkEveryMs: 0, kill: { afterMs: 1, message: "" } }],
-    ["log.afterMs", { label: "x", checkEveryMs: 1, log: { afterMs: -1, repeatEveryMs: 1, message: "", recovered: "" } }],
-    ["log.repeatEveryMs", { label: "x", checkEveryMs: 1, log: { afterMs: 1, repeatEveryMs: Number.NaN, message: "", recovered: "" } }],
+    [
+      "log.afterMs",
+      { label: "x", checkEveryMs: 1, log: { afterMs: -1, repeatEveryMs: 1, message: "", recovered: "" } },
+    ],
+    [
+      "log.repeatEveryMs",
+      { label: "x", checkEveryMs: 1, log: { afterMs: 1, repeatEveryMs: Number.NaN, message: "", recovered: "" } },
+    ],
     ["kill.afterMs", { label: "x", checkEveryMs: 1, kill: { afterMs: Number.POSITIVE_INFINITY, message: "" } }],
   ])("a non-positive or non-finite %s is refused", (name, options) => {
-    expect(() => armWatchdog(options)).toThrow(new RegExp(`watchdog x: ${name.replace(".", "\\.")} must be a positive`, "u"))
+    expect(() => armWatchdog(options)).toThrow(
+      new RegExp(`watchdog x: ${name.replace(".", "\\.")} must be a positive`, "u"),
+    )
   })
 
   test("a watchdog with no action is refused", () => {
@@ -167,7 +177,13 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
   test("fills elapsed, count, integer fields and table names, and names an index outside its table", () => {
     const line = renderWatchdogLine(
       "{elapsed}ms {elapsedS}s n={count} state={state:name} raw={state} method={method:name}",
-      { elapsedMs: 12_345, count: 2, fields: ["state", "method"], values: [1, 7], tables: { state: ["idle", "busy"], method: ["km.ping"] } },
+      {
+        elapsedMs: 12_345,
+        count: 2,
+        fields: ["state", "method"],
+        values: [1, 7],
+        tables: { state: ["idle", "busy"], method: ["km.ping"] },
+      },
     )
     expect(line).toBe("12345ms 12.3s n=2 state=busy raw=1 method=unknown(7)")
   })
