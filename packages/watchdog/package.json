@@ -1,0 +1,62 @@
+{
+  "name": "@bearly/watchdog",
+  "version": "0.1.0",
+  "description": "A watchdog on its own thread: it sees a main thread that spins, and logs or kills",
+  "keywords": [
+    "bun",
+    "event-loop",
+    "hang",
+    "watchdog",
+    "worker"
+  ],
+  "homepage": "https://github.com/beorn/bearly/tree/main/packages/watchdog",
+  "bugs": {
+    "url": "https://github.com/beorn/bearly/issues"
+  },
+  "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beorn/bearly.git",
+    "directory": "packages/watchdog"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "bunx --bun vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "tsdown": "^0.22.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
+  },
+  "engines": {
+    "bun": ">=1.3.13"
+  }
+}
