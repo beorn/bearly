@@ -25,7 +25,8 @@ export function fullJitter(base: number, cap: number, attempt: number, random: R
   if (!Number.isInteger(attempt) || attempt < 0) {
     throw new RangeError(`fullJitter attempt must be a non-negative integer, got ${attempt}`)
   }
-  const ceiling = Math.min(cap, base * 2 ** attempt)
+  // A zero base is a zero delay: 0 * 2 ** 1024 would be 0 * Infinity, which is NaN.
+  const ceiling = base === 0 ? 0 : Math.min(cap, base * 2 ** attempt)
   return ceiling * random()
 }
 
@@ -68,6 +69,10 @@ export interface ReadinessOptions {
 /**
  * Readiness gate: calls probe until it resolves true or timeoutMs has passed since the gate's first now().
  *
+ * The probe must bound itself. The gate checks the timeout only between probes, so a probe that never settles holds
+ * the gate past its timeout, forever. Give every probe its own timeout (a call timeout on the socket, an
+ * AbortSignal.timeout on the fetch) that is shorter than timeoutMs.
+ *
  * - The first probe runs at once, with no sleep.
  * - Between probes it sleeps by decorrelated jitter from retryMs up to maxRetryMs, clipped so it never sleeps past
  *   the timeout; the last probe therefore runs at or before the timeout, after that clipped sleep.
@@ -78,10 +83,12 @@ export async function awaitReady(probe: () => Promise<boolean>, opts: ReadinessO
   const { timeoutMs, retryMs, now, sleep, random = Math.random } = opts
   const maxRetryMs = opts.maxRetryMs ?? retryMs * 8
   requireFinite("timeoutMs", timeoutMs)
+  requireFinite("retryMs", retryMs)
+  requireFinite("maxRetryMs", maxRetryMs)
   if (timeoutMs < 0) throw new RangeError(`awaitReady timeoutMs must be >= 0, got ${timeoutMs}`)
   if (retryMs <= 0) throw new RangeError(`awaitReady retryMs must be > 0, got ${retryMs}`)
   if (maxRetryMs < retryMs)
-    throw new RangeError(`awaitReady maxRetryMs (${maxRetryMs}) must be >= retryMs (${retryMs})`)
+    {throw new RangeError(`awaitReady maxRetryMs (${maxRetryMs}) must be >= retryMs (${retryMs})`)}
 
   const started = now()
   let attempts = 0

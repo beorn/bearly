@@ -41,11 +41,15 @@ if (!outcome.ready) console.warn(`daemon not ready after ${outcome.waitedMs} ms`
 timeout, and `ready: false` comes back only after it. A probe that throws counts as not ready, and its last error is
 returned.
 
+**The probe must bound itself.** The gate checks the timeout only between probes, so a probe that never settles holds
+the gate past its timeout, forever. Give every probe its own timeout, shorter than `timeoutMs`: a call timeout on the
+socket, or an `AbortSignal.timeout` on the fetch.
+
 Every function throws `RangeError` when its bounds name no delay (a negative base, a cap below base, a fractional
-attempt).
+attempt, a bound that is not a finite number).
 
 ## Guarantees
 
 - A delay never exceeds its cap, and decorrelated jitter never falls below its base.
-- The readiness gate never sleeps past its timeout.
+- The readiness gate never sleeps past its timeout. It returns at the timeout when every probe settles.
 - No I/O, timers or globals. `Math.random` is the default random source, and every function takes a replacement.

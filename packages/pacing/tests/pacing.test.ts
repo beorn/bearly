@@ -39,8 +39,9 @@ describe("fullJitter", () => {
 
   test("never exceeds its cap, at any attempt", () => {
     const random = seeded(2)
-    for (let attempt = 0; attempt < 64; attempt++)
+    for (let attempt = 0; attempt < 64; attempt++) {
       expect(fullJitter(250, 30_000, attempt, random)).toBeLessThanOrEqual(30_000)
+    }
   })
 
   test("refuses bounds that name no delay", () => {
@@ -48,6 +49,12 @@ describe("fullJitter", () => {
     expect(() => fullJitter(10, 5, 0)).toThrow(RangeError)
     expect(() => fullJitter(10, 20, -1)).toThrow(RangeError)
     expect(() => fullJitter(10, 20, 1.5)).toThrow(RangeError)
+    expect(() => fullJitter(Number.NaN, 20, 0)).toThrow(RangeError)
+    expect(() => fullJitter(10, Number.POSITIVE_INFINITY, 0)).toThrow(RangeError)
+  })
+
+  test("a zero base is a zero delay at every attempt, never NaN from 0 * 2 ** 1024", () => {
+    for (const attempt of [0, 1_023, 1_024, 5_000]) expect(fullJitter(0, 1_000, attempt, () => 0.5)).toBe(0)
   })
 })
 
@@ -134,5 +141,27 @@ describe("awaitReady", () => {
     const time = clock()
     await awaitReady(async () => true, { timeoutMs: 1_000, retryMs: 100, now: time.now, sleep: time.sleep })
     expect(time.sleeps).toEqual([])
+  })
+
+  test.each([
+    ["timeoutMs", { timeoutMs: -1 }, /timeoutMs must be >= 0/u],
+    ["timeoutMs", { timeoutMs: Number.NaN }, /timeoutMs must be a finite number/u],
+    ["retryMs", { retryMs: 0 }, /retryMs must be > 0/u],
+    ["retryMs", { retryMs: Number.NaN }, /retryMs must be a finite number/u],
+    ["maxRetryMs", { maxRetryMs: 50 }, /maxRetryMs \(50\) must be >= retryMs \(100\)/u],
+    ["maxRetryMs", { maxRetryMs: Number.POSITIVE_INFINITY }, /maxRetryMs must be a finite number/u],
+  ])("refuses a %s that names no delay before the first probe: %o", async (_name, bad, message) => {
+    const time = clock()
+    let probes = 0
+    const gate = awaitReady(
+      async () => {
+        probes++
+        return true
+      },
+      { timeoutMs: 1_000, retryMs: 100, now: time.now, sleep: time.sleep, ...bad },
+    )
+    await expect(gate).rejects.toThrow(RangeError)
+    await expect(gate).rejects.toThrow(message)
+    expect(probes).toBe(0)
   })
 })

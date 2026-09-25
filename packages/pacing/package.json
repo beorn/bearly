@@ -1,7 +1,7 @@
 {
   "name": "@bearly/pacing",
   "version": "0.1.0",
-  "description": "Pure pacing policy: full and decorrelated jitter, a readiness gate, a rolling max-unavailable budget",
+  "description": "Pure pacing policy: full and decorrelated jitter, and a readiness gate",
   "keywords": [
     "backoff",
     "jitter",
