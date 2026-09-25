@@ -80,6 +80,9 @@ describe("decorrelatedJitter", () => {
     expect(() => decorrelatedJitter(0, 10, 100)).toThrow(RangeError)
     expect(() => decorrelatedJitter(50, 10, 100)).toThrow(RangeError)
     expect(() => decorrelatedJitter(50, 100, 10)).toThrow(RangeError)
+    expect(() => decorrelatedJitter(Number.NaN, 10, 10)).toThrow(/base must be a finite number/u)
+    expect(() => decorrelatedJitter(5, Number.POSITIVE_INFINITY, 5)).toThrow(/cap must be a finite number/u)
+    expect(() => decorrelatedJitter(5, 10, Number.NaN)).toThrow(/previous must be a finite number/u)
   })
 })
 
