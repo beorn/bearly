@@ -87,8 +87,9 @@ export async function awaitReady(probe: () => Promise<boolean>, opts: ReadinessO
   requireFinite("maxRetryMs", maxRetryMs)
   if (timeoutMs < 0) throw new RangeError(`awaitReady timeoutMs must be >= 0, got ${timeoutMs}`)
   if (retryMs <= 0) throw new RangeError(`awaitReady retryMs must be > 0, got ${retryMs}`)
-  if (maxRetryMs < retryMs)
-    {throw new RangeError(`awaitReady maxRetryMs (${maxRetryMs}) must be >= retryMs (${retryMs})`)}
+  if (maxRetryMs < retryMs) {
+    throw new RangeError(`awaitReady maxRetryMs (${maxRetryMs}) must be >= retryMs (${retryMs})`)
+  }
 
   const started = now()
   let attempts = 0
