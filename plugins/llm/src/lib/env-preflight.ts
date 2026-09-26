@@ -18,9 +18,16 @@
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { gitEnvironmentWithoutRootOverrides } from "removely"
 
+/** Git answers for `cwd`, never for the repository a leaked GIT_DIR or GIT_WORK_TREE names (hh 26003). */
 function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: gitEnvironmentWithoutRootOverrides(),
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim()
 }
 
 /**

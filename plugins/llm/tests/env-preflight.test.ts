@@ -134,6 +134,26 @@ describe("missingApiKeyError", () => {
     expect(missingApiKeyError("OPENROUTER_API_KEY", insideSubmodule).message).toContain(join(superproject, ".env"))
   })
 
+  // hh 26003: a git hook runs with GIT_DIR and GIT_WORK_TREE set to the repository that fired it. The candidates
+  // must still come from cwd's checkout, not from the repository those variables name.
+  it("names cwd's checkout, not the repository a leaked GIT_DIR names", () => {
+    const mine = scratchRepo("mine")
+    const foreign = scratchRepo("foreign")
+    const leaked = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE }
+    process.env.GIT_DIR = join(foreign, ".git")
+    process.env.GIT_WORK_TREE = foreign
+    try {
+      const candidates = envFileCandidates(mine)
+      expect(candidates).toContain(join(mine, ".env"))
+      expect(candidates).not.toContain(join(foreign, ".env"))
+    } finally {
+      for (const [name, value] of Object.entries(leaked)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
   it("keeps the greppable `<VAR> not set` prefix in every branch", () => {
     const dir = mkdtempSync(join(tmpdir(), "env-preflight-prefix-"))
 
