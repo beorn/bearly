@@ -1,6 +1,6 @@
 {
   "name": "@bearly/flock",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Crash-safe fd-held flock ownership for Bun on local macOS and Linux filesystems",
   "keywords": [
     "advisory-lock",
