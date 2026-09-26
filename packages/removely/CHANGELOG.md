@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Export `GIT_REPOSITORY_LOCAL_ENV_VARS`, git's own `git rev-parse --local-env-vars`
+  list minus the config variables, and `gitEnvironmentWithoutRootOverrides(env)`,
+  which returns a copy of `env` without them. `findGitProjectRoot` now scrubs
+  exactly that list instead of every `GIT_*` variable, so a caller's
+  `GIT_SSH_COMMAND` and `-c` config (`GIT_CONFIG_*`) reach git while an inherited
+  `GIT_DIR` still cannot redirect it. One home for the scrub (hh 26003).
+
 - `removely --help` (and `-h`) now states the whole contract a shell caller
   cannot read off types: every argument, that `--allowed-root` REPLACES the
   system-temp default rather than adding to it, what is refused and why (strict

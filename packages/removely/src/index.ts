@@ -147,6 +147,36 @@ export function findAncestorWithin(
 }
 
 /**
+ * Git's repository-local environment: `git rev-parse --local-env-vars` minus config, which carries caller intent.
+ *
+ * Git clears exactly these when it enters another repository (a submodule, say), so a child git that must answer
+ * about the directory it is handed, not whichever repository an inherited GIT_DIR names, runs without them. The
+ * config variables (GIT_CONFIG, GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT) stay: they carry a caller's `-c`
+ * settings, which a runner that fetches and pushes needs. A row pins this list to git's own output.
+ */
+export const GIT_REPOSITORY_LOCAL_ENV_VARS = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_GRAFT_FILE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_PREFIX",
+  "GIT_SHALLOW_FILE",
+  "GIT_COMMON_DIR",
+] as const
+
+/** A copy of `source` without git's repository-local variables (GIT_REPOSITORY_LOCAL_ENV_VARS); `source` is unchanged. */
+export function gitEnvironmentWithoutRootOverrides(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source }
+  for (const key of GIT_REPOSITORY_LOCAL_ENV_VARS) delete env[key]
+  return env
+}
+
+/**
  * Resolve the enclosing Git/superproject island. Prospective paths inherit the
  * boundary of their nearest existing ancestor. Returns null when that ancestor
  * is valid but outside Git; execution and repository errors throw.
@@ -159,7 +189,7 @@ export function findGitProjectRoot(cwd: string): string | null {
   const args = ["-C", probeCwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
   const result = spawnSync("git", args, {
     encoding: "utf8",
-    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+    env: gitEnvironmentWithoutRootOverrides(),
     stdio: ["ignore", "pipe", "pipe"],
   })
   if (result.error) {

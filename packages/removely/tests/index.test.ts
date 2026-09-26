@@ -26,6 +26,8 @@ import {
   findAncestorWithin,
   findGitProjectRoot,
   findProjectAncestor,
+  GIT_REPOSITORY_LOCAL_ENV_VARS,
+  gitEnvironmentWithoutRootOverrides,
   isStrictlyInside,
   resolveContainedPath,
   safeRemove,
@@ -556,5 +558,56 @@ describe("safeRemoveSync — same predicate, no await", () => {
     chmodSync(join(victim, "inner"), 0o500)
     safeRemoveSync(victim, { within: base })
     expect(await readdir(base)).toEqual([])
+  })
+})
+
+describe("git's repository-local environment (hh 26003)", () => {
+  test("is git's own --local-env-vars list minus config, so a git that adds one fails here", () => {
+    const listed = execFileSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" })
+      .split("\n")
+      .filter((name) => name.length > 0 && !name.startsWith("GIT_CONFIG"))
+    expect([...GIT_REPOSITORY_LOCAL_ENV_VARS].sort()).toEqual(listed.sort())
+  })
+
+  test("the scrub drops only those, keeps config and transport, and leaves its source alone", () => {
+    const source: NodeJS.ProcessEnv = {
+      PATH: "/bin",
+      GIT_DIR: "/foreign/.git",
+      GIT_WORK_TREE: "/foreign",
+      GIT_COMMON_DIR: "/foreign/.git",
+      GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: "/dev/null",
+    }
+    expect(gitEnvironmentWithoutRootOverrides(source)).toEqual({
+      PATH: "/bin",
+      GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: "/dev/null",
+    })
+    expect(source.GIT_DIR).toBe("/foreign/.git")
+  })
+
+  test("findGitProjectRoot answers its own directory under a leaked GIT_DIR naming another repository", async () => {
+    const base = await scratch()
+    const mine = join(base, "mine")
+    const foreign = join(base, "foreign")
+    await mkdir(mine)
+    await mkdir(foreign)
+    execFileSync("git", ["init", "--quiet", mine])
+    execFileSync("git", ["init", "--quiet", foreign])
+    const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE }
+    process.env.GIT_DIR = join(foreign, ".git")
+    process.env.GIT_WORK_TREE = foreign
+    try {
+      expect(findGitProjectRoot(mine)).toBe(mine)
+    } finally {
+      if (saved.dir === undefined) delete process.env.GIT_DIR
+      else process.env.GIT_DIR = saved.dir
+      if (saved.tree === undefined) delete process.env.GIT_WORK_TREE
+      else process.env.GIT_WORK_TREE = saved.tree
+    }
   })
 })
