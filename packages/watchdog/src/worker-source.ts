@@ -9,18 +9,26 @@ export interface WatchdogLineInput {
   readonly fields: readonly string[]
   readonly values: ArrayLike<number>
   readonly tables: Readonly<Record<string, readonly string[]>>
+  /** The published texts, by name. */
+  readonly texts?: Readonly<Record<string, string>>
 }
 
 /**
  * Fill a line's placeholders: `{elapsed}` (ms), `{elapsedS}` (seconds, one
  * decimal), `{count}`, `{time}` (HH:MM:SS), `{field}` (its integer),
  * `{field:name}` (its table entry; "none" for a negative code) and `{field:ageS}`
- * (seconds since the epoch-ms time it holds, with its unit, or "none" for 0). It must reference nothing outside itself:
- * the worker runs its source text.
+ * (seconds since the epoch-ms time it holds, with its unit, or "none" for 0) and `{text:text}` (a published text, or
+ * "none" when empty). It must reference nothing outside itself: the worker runs its source text.
  */
 export function renderWatchdogLine(template: string, input: WatchdogLineInput): string {
-  return template.replace(/\{(\w+)(:name|:ageS)?\}/gu, (whole: string, key: string, form: string | undefined) => {
+  return template.replace(/\{(\w+)(:name|:ageS|:text)?\}/gu, (whole: string, key: string, form: string | undefined) => {
     if (key === "elapsed") return String(Math.round(input.elapsedMs))
+    if (form === ":text") {
+      const texts = input.texts ?? {}
+      if (!Object.prototype.hasOwnProperty.call(texts, key)) return whole
+      const text = texts[key] ?? ""
+      return text === "" ? "none" : text
+    }
     if (key === "elapsedS") return (input.elapsedMs / 1000).toFixed(1)
     if (key === "count") return String(input.count)
     if (key === "time") return new Date().toTimeString().slice(0, 8)
@@ -41,9 +49,19 @@ export const WATCHDOG_WORKER_SOURCE = `
 const { writeSync } = require("node:fs")
 const { workerData } = require("node:worker_threads")
 ${renderWatchdogLine.toString()}
-const { stamps, slots, checkEveryMs, fields, tables, log, kill } = workerData
+const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill } = workerData
 const stamp = new Float64Array(stamps)
 const values = new Float64Array(slots)
+const decoder = new TextDecoder()
+// Read each published text as it stands now: the length first, then that many bytes, copied out of shared memory.
+const readTexts = () => {
+  const out = {}
+  for (const { name, buffer } of textSlots) {
+    const length = Atomics.load(new Int32Array(buffer, 0, 1), 0)
+    out[name] = decoder.decode(new Uint8Array(buffer, 4, length).slice())
+  }
+  return out
+}
 const sleeper = new Int32Array(new SharedArrayBuffer(4))
 let stallStamp = -1
 let count = 0
@@ -53,7 +71,7 @@ for (;;) {
   const last = stamp[0]
   const age = Date.now() - last
   if (kill && age >= kill.afterMs) {
-    writeSync(2, renderWatchdogLine(kill.message, { elapsedMs: age, count, fields, values, tables }))
+    writeSync(2, renderWatchdogLine(kill.message, { elapsedMs: age, count, fields, values, tables, texts: readTexts() }))
     process.kill(process.pid, "SIGKILL")
   }
   if (!log) continue
@@ -65,11 +83,11 @@ for (;;) {
     }
     if (age >= nextLineAt) {
       count += 1
-      writeSync(2, renderWatchdogLine(log.message, { elapsedMs: age, count, fields, values, tables }))
+      writeSync(2, renderWatchdogLine(log.message, { elapsedMs: age, count, fields, values, tables, texts: readTexts() }))
       nextLineAt += log.repeatEveryMs
     }
   } else if (count > 0) {
-    writeSync(2, renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, fields, values, tables }))
+    writeSync(2, renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, fields, values, tables, texts: readTexts() }))
     count = 0
     stallStamp = -1
   }
