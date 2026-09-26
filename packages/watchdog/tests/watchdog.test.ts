@@ -8,12 +8,12 @@
 import { afterEach, describe, expect, test } from "vitest"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { armWatchdog } from "../src/index.ts"
-import { renderWatchdogLine, WATCHDOG_WORKER_SOURCE } from "../src/worker-source.ts"
+import { describeProcess, renderWatchdogLine, WATCHDOG_WORKER_SOURCE } from "../src/worker-source.ts"
 
 const MODULE = fileURLToPath(new URL("../src/index.ts", import.meta.url))
 const roots: string[] = []
@@ -218,6 +218,38 @@ describe("armWatchdog: kill", () => {
     )
   }, 60_000)
 
+  test.skipIf(!existsSync("/proc/self/stat"))(
+    "a main thread blocked on a synchronous child is named with the child's command line (km 25947)",
+    async () => {
+      const { signal, code, stderr } = await scenario(
+        [
+          `const { spawnSync } = await import("node:child_process")`,
+          `armWatchdog({ label: "scenario", checkEveryMs: 25, kill: { afterMs: 600, message: "KILLED {process}\\n" } })`,
+          `spawnSync("sleep", ["30"])`,
+          `console.error("SLEEP COMPLETED")`,
+        ].join("\n"),
+      )
+      expect(stderr).not.toContain("SLEEP COMPLETED")
+      expect(signal ?? code).not.toBe(0)
+      expect(stderr).toMatch(/KILLED main thread [RS] wchan \S+ cpu \d+\.\ds; children: \d+ S \d+\.\ds "sleep 30"/u)
+    },
+    60_000,
+  )
+
+  test.skipIf(!existsSync("/proc/self/stat"))(
+    "a main thread that spins reads as running, with no child to blame",
+    async () => {
+      const { stderr } = await scenario(
+        [
+          `armWatchdog({ label: "scenario", checkEveryMs: 25, kill: { afterMs: 600, message: "KILLED {process}\\n" } })`,
+          SPIN(30_000),
+        ].join("\n"),
+      )
+      expect(stderr).toMatch(/KILLED main thread R wchan \S+ cpu \d+\.\ds; children: none/u)
+    },
+    60_000,
+  )
+
   test("a deadline is a watchdog never stamped: it kills at the bound", async () => {
     const { signal, code, stderr, elapsedMs } = await scenario(
       [
@@ -325,6 +357,35 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
       tables: {},
     })
     expect(line).toMatch(/^oldest 4\.\ds, other none$/u)
+  })
+
+  test("describeProcess reads the main thread and its children from procfs, and says so when there is none", () => {
+    const files: Record<string, string> = {
+      "/proc/uptime": "1000.00 5000.00\n",
+      "/proc/7/task/7/stat": "7 (km daemon (x)) S 1 7 7 0 -1 0 0 0 0 0 4200 300 0 0 20 0 9 0 50000 0 0\n",
+      "/proc/7/task/7/wchan": "do_wait",
+      "/proc/7/task/7/children": "40 ",
+      "/proc/7/task/8/children": "",
+      "/proc/40/stat": "40 (sh) S 7 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 95000 0 0\n",
+      "/proc/40/cmdline": "sh\0-c\0git fetch\0",
+      "/proc/40/task/40/children": "41",
+      "/proc/41/stat": "41 (git) S 40 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 96000 0 0\n",
+      "/proc/41/cmdline": `git\0-C\0/hh\0fetch\0-q\0origin\0${"x".repeat(200)}\0`,
+    }
+    const dirs: Record<string, string[]> = {
+      "/proc/7/task": ["7", "8"],
+      "/proc/40/task": ["40"],
+      "/proc/41/task": ["41"],
+    }
+    const proc = { read: (path: string) => files[path] ?? null, list: (path: string) => dirs[path] ?? null }
+    const line = describeProcess(7, proc)
+    const INPUT = { elapsedMs: 0, count: 0, fields: [], values: [], tables: {} }
+    expect(line).toMatch(
+      /^main thread S wchan do_wait cpu 45\.0s; children: 40 S 50\.0s "sh -c git fetch", 41 S 40\.0s "git -C \/hh fetch -q origin x+…"$/u,
+    )
+    expect(describeProcess(7, { read: () => null, list: () => null })).toBe("process facts unavailable (no /proc)")
+    expect(renderWatchdogLine("stuck: {process}", { ...INPUT, process: line })).toBe(`stuck: ${line}`)
+    expect(renderWatchdogLine("stuck: {process}", INPUT)).toBe("stuck: {process}")
   })
 
   test("renders a published text, and an empty one as none", () => {
