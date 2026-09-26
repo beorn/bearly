@@ -12,7 +12,7 @@
  * 2026-09-11). A second call site is how a one-line fix ships half-done.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Model } from "../src/lib/types"
 
 const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
@@ -46,9 +46,21 @@ function contextExceeded(): Error {
 }
 
 describe("22972 — the context-exceeded retry clamps like the first attempt", () => {
+  // The retry announces itself on stderr; capture it so the row can read the
+  // announced cap and the strict no-console-output setup stays quiet.
+  let stderr: string[] = []
+
   beforeEach(() => {
     generateTextMock.mockReset()
     process.env.OPENROUTER_API_KEY ??= "test-key-for-retry-clamp"
+    stderr = []
+    vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      stderr.push(parts.map(String).join(" "))
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it("retries with the endpoint ceiling, not the whole remaining window", async () => {
@@ -59,6 +71,9 @@ describe("22972 — the context-exceeded retry clamps like the first attempt", (
     await ask("say ok", "standard", { modelObject: model, stream: false })
 
     expect(generateTextMock).toHaveBeenCalledTimes(2)
+    expect(stderr.filter((line) => line.includes("Retrying with cap="))).toEqual([
+      expect.stringContaining("Retrying with cap=32768."),
+    ])
     const retryCap = generateTextMock.mock.calls[1]?.[0]?.maxOutputTokens
 
     // Unclamped this would be 1048576 − 1000 − 4096 = 1043480: the same
