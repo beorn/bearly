@@ -224,14 +224,51 @@ describe("armWatchdog: kill", () => {
       const { signal, code, stderr } = await scenario(
         [
           `const { spawnSync } = await import("node:child_process")`,
-          `armWatchdog({ label: "scenario", checkEveryMs: 25, kill: { afterMs: 600, message: "KILLED {process}\\n" } })`,
+          `armWatchdog({ label: "scenario", checkEveryMs: 25, log: { afterMs: 200, repeatEveryMs: 200, message: "STALL {process}\\n", recovered: "BACK\\n" }, kill: { afterMs: 900, message: "KILLED {process}\\n" } })`,
           `spawnSync("sleep", ["30"])`,
           `console.error("SLEEP COMPLETED")`,
         ].join("\n"),
       )
       expect(stderr).not.toContain("SLEEP COMPLETED")
       expect(signal ?? code).not.toBe(0)
+      expect(stderr).toMatch(/STALL main thread [RS] wchan \S+ cpu \d+\.\ds; children: \d+ S \d+\.\ds "sleep 30"/u)
+      // The kill asks the sampler nothing: it prints the last sample a warning took.
       expect(stderr).toMatch(/KILLED main thread [RS] wchan \S+ cpu \d+\.\ds; children: \d+ S \d+\.\ds "sleep 30"/u)
+    },
+    60_000,
+  )
+
+  test.skipIf(!existsSync("/proc/self/stat"))(
+    "a procfs read that never returns holds only the sampler: warnings go on and the kill fires at its bound (km 25947)",
+    async () => {
+      // A fixture procfs whose one child's cmdline is a FIFO with no writer: reading it blocks for good, as reading a
+      // D-state child's cmdline does while it holds its memory lock.
+      const { signal, code, stderr, elapsedMs } = await scenario(
+        [
+          `const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs")`,
+          `const { spawnSync } = await import("node:child_process")`,
+          `const { tmpdir } = await import("node:os")`,
+          `const root = mkdtempSync(tmpdir() + "/watchdog-proc-")`,
+          `const pid = String(process.pid)`,
+          `mkdirSync(root + "/" + pid + "/task/" + pid, { recursive: true })`,
+          `mkdirSync(root + "/77777/task/77777", { recursive: true })`,
+          `writeFileSync(root + "/uptime", "1000.00 1.00\\n")`,
+          `writeFileSync(root + "/" + pid + "/task/" + pid + "/stat", pid + " (bun) R 1 0 0 0 -1 0 0 0 0 0 100 0 0 0 20 0 1 0 1000 0 0\\n")`,
+          `writeFileSync(root + "/" + pid + "/task/" + pid + "/children", "77777")`,
+          `writeFileSync(root + "/77777/stat", "77777 (git) D 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1000 0 0\\n")`,
+          `writeFileSync(root + "/77777/task/77777/children", "")`,
+          `if (spawnSync("mkfifo", [root + "/77777/cmdline"]).status !== 0) throw new Error("mkfifo failed")`,
+          `armWatchdog({ label: "scenario", checkEveryMs: 25, procRoot: root, log: { afterMs: 200, repeatEveryMs: 200, message: "STALL n={count} {process}\\n", recovered: "BACK\\n" }, kill: { afterMs: 1200, message: "KILLED {process}\\n" } })`,
+          SPIN(30_000),
+          `console.error("SPIN COMPLETED")`,
+        ].join("\n"),
+      )
+      expect(stderr).not.toContain("SPIN COMPLETED")
+      expect(signal ?? code).not.toBe(0)
+      expect(elapsedMs).toBeLessThan(10_000)
+      expect(stderr).toMatch(/STALL n=1 process facts not sampled yet \(sampler busy \d+\.\ds\)/u)
+      expect(stderr).toMatch(/STALL n=3 process facts not sampled yet \(sampler busy \d+\.\ds\)/u)
+      expect(stderr).toMatch(/KILLED process facts not sampled yet \(sampler busy \d+\.\ds\)/u)
     },
     60_000,
   )
@@ -241,10 +278,11 @@ describe("armWatchdog: kill", () => {
     async () => {
       const { stderr } = await scenario(
         [
-          `armWatchdog({ label: "scenario", checkEveryMs: 25, kill: { afterMs: 600, message: "KILLED {process}\\n" } })`,
+          `armWatchdog({ label: "scenario", checkEveryMs: 25, log: { afterMs: 200, repeatEveryMs: 200, message: "STALL {process}\\n", recovered: "BACK\\n" }, kill: { afterMs: 900, message: "KILLED {process}\\n" } })`,
           SPIN(30_000),
         ].join("\n"),
       )
+      expect(stderr).toMatch(/STALL main thread R wchan \S+ cpu \d+\.\ds; children: none/u)
       expect(stderr).toMatch(/KILLED main thread R wchan \S+ cpu \d+\.\ds; children: none/u)
     },
     60_000,
@@ -383,9 +421,42 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
     expect(line).toMatch(
       /^main thread S wchan do_wait cpu 45\.0s; children: 40 S 50\.0s "sh -c git fetch", 41 S 40\.0s "git -C \/hh fetch -q origin x+…"$/u,
     )
-    expect(describeProcess(7, { read: () => null, list: () => null })).toBe("process facts unavailable (no /proc)")
+    expect(describeProcess(7, { read: () => null, list: () => null })).toBe(
+      "process facts unavailable (/proc/7/task/7/stat unreadable)",
+    )
     expect(renderWatchdogLine("stuck: {process}", { ...INPUT, process: line })).toBe(`stuck: ${line}`)
     expect(renderWatchdogLine("stuck: {process}", INPUT)).toBe("stuck: {process}")
+  })
+
+  test("describeProcess says what it could not read, never none, and how many children it left out", () => {
+    const main = "7 (bun) R 1 7 7 0 -1 0 0 0 0 0 100 0 0 0 20 0 9 0 50000 0 0\n"
+    const child = (pid: number) => `${pid} (git) S 7 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 95000 0 0\n`
+    // Eight children: 40 exited between the listing and the read, 41's command line is unreadable, 42..47 are fine.
+    const files: Record<string, string> = {
+      "/proc/7/task/7/stat": main,
+      "/proc/7/task/7/children": "40 41 42 43 44 45 46 47",
+      "/proc/41/stat": child(41),
+    }
+    const dirs: Record<string, string[]> = { "/proc/7/task": ["7", "9"] }
+    for (let pid = 42; pid <= 47; pid++) {
+      files[`/proc/${pid}/stat`] = child(pid)
+      files[`/proc/${pid}/cmdline`] = "git\0status\0"
+      dirs[`/proc/${pid}/task`] = [String(pid)]
+      files[`/proc/${pid}/task/${pid}/children`] = ""
+    }
+    dirs["/proc/41/task"] = ["41"]
+    files["/proc/41/task/41/children"] = ""
+    const line = describeProcess(7, { read: (path) => files[path] ?? null, list: (path) => dirs[path] ?? null })
+    // No /proc/uptime: ages are unknown, never negative. No wchan: unreadable. Thread 9's children file: unreadable.
+    expect(line).toBe(
+      "main thread R wchan unreadable cpu 1.0s; children: 40 unreadable (exited or no access), " +
+        '41 S age unknown "(command line unreadable)", 42 S age unknown "git status", 43 S age unknown "git status", ' +
+        '44 S age unknown "git status", 45 S age unknown "git status" (+2 more); unreadable: 7/task/9/children, ' +
+        "40's task list",
+    )
+    expect(describeProcess(7, { read: (path) => (path.endsWith("/stat") ? main : null), list: () => null })).toBe(
+      "main thread R wchan unreadable cpu 1.0s; children: none; unreadable: 7's task list",
+    )
   })
 
   test("renders a published text, and an empty one as none", () => {

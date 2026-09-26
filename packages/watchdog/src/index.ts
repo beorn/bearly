@@ -23,7 +23,7 @@
  */
 import { writeSync } from "node:fs"
 import { Worker } from "node:worker_threads"
-import { WATCHDOG_WORKER_SOURCE } from "./worker-source.ts"
+import { PROCFS_SAMPLER_SOURCE, WATCHDOG_WORKER_SOURCE } from "./worker-source.ts"
 
 export interface WatchdogLogAction {
   /** A stamp older than this starts a stall, and the first line. */
@@ -57,6 +57,12 @@ export interface WatchdogOptions {
   readonly texts?: Readonly<Record<string, number>>
   readonly log?: WatchdogLogAction
   readonly kill?: WatchdogKillAction
+  /**
+   * Where procfs is mounted, for `{process}` lines; `/proc` by default. A line naming `{process}` starts a second
+   * worker that reads it, because a child's command line can block the reader: the watchdog prints that worker's
+   * last finished sample and never reads procfs itself.
+   */
+  readonly procRoot?: string
 }
 
 export interface Watchdog {
@@ -108,6 +114,26 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
   stamp[0] = Date.now()
   const slots = new SharedArrayBuffer(Float64Array.BYTES_PER_ELEMENT * Math.max(1, fields.length))
   const values = new Float64Array(slots)
+  const wantsProcess = [options.log?.message, options.log?.recovered, options.kill?.message].some(
+    // A template that is not a string is the worker's to report when it renders it, not a throw here.
+    (template: unknown) => typeof template === "string" && template.includes("{process}"),
+  )
+  // Control [requested, completed, writing, length], times [requestedAt, completedAt], and the line's bytes.
+  const sampling = wantsProcess
+    ? {
+        control: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 4),
+        times: new SharedArrayBuffer(Float64Array.BYTES_PER_ELEMENT * 2),
+        text: new SharedArrayBuffer(2048),
+      }
+    : null
+  const sampler =
+    sampling === null
+      ? null
+      : new Worker(PROCFS_SAMPLER_SOURCE, {
+          eval: true,
+          workerData: { ...sampling, root: options.procRoot ?? "/proc" },
+        })
+  sampler?.unref()
   const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
     eval: true,
     workerData: {
@@ -119,6 +145,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       texts: texts.map(({ name, buffer }) => ({ name, buffer })),
       log: options.log ?? null,
       kill: options.kill ?? null,
+      sampler: sampling,
     },
   })
   worker.unref()
@@ -132,6 +159,11 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
   worker.on("exit", (code: number) => {
     if (disarmed) return
     writeSync(2, `watchdog ${label}: its worker exited (code ${code}), so this process is no longer watched\n`)
+  })
+  // A dead sampler leaves the watch intact; its lines then print its last sample and how long it has been busy.
+  sampler?.on("error", (error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error)
+    writeSync(2, `watchdog ${label}: its procfs sampler failed, so {process} stops updating: ${reason}\n`)
   })
   return {
     stamp() {
@@ -158,6 +190,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
     disarm() {
       disarmed = true
       void worker.terminate()
+      void sampler?.terminate()
     },
   }
 }

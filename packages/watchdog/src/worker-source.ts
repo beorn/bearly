@@ -27,11 +27,14 @@ export interface ProcReader {
  * One line of what the kernel says the process is doing, for a stall line (`{process}`): the main thread's scheduler
  * state (R running, S sleeping, D uninterruptible), its wait channel and its CPU seconds, then every child and
  * grandchild with its state, age and command line. A main thread that spins shows R and CPU rising line to line; one
- * blocked on a synchronous child shows S and names the child. Linux only: without procfs it says so.
+ * blocked on a synchronous child shows S and names the child. Linux only: without procfs it says so. Anything it
+ * cannot read is said to be unreadable, never left out, so "children: none" means the kernel listed none. A child's
+ * command line can block (reading it takes that child's memory lock), so the watchdog never calls this itself: its
+ * sampler worker does, and the watchdog prints the last sample it finished.
  * It must reference nothing outside itself: the worker runs its source text.
  */
-export function describeProcess(pid: number, proc: ProcReader): string {
-  // /proc/<pid>/stat is "pid (comm) state ppid ..."; comm may hold spaces and parentheses, so split after the last ")".
+export function describeProcess(pid: number, proc: ProcReader, root = "/proc"): string {
+  // <root>/<pid>/stat is "pid (comm) state ppid ..."; comm may hold spaces and parentheses, so split after the last ")".
   // Clock ticks are USER_HZ, 100 on every Linux the fleet runs.
   const statOf = (path: string) => {
     const text = proc.read(path)
@@ -43,32 +46,66 @@ export function describeProcess(pid: number, proc: ProcReader): string {
       startS: Number(rest[19] ?? 0) / 100,
     }
   }
-  const main = statOf(`/proc/${pid}/task/${pid}/stat`)
-  if (main === null) return "process facts unavailable (no /proc)"
-  const wchan = (proc.read(`/proc/${pid}/task/${pid}/wchan`) ?? "?").trim() || "0"
-  const uptimeS = Number((proc.read("/proc/uptime") ?? "0").split(" ")[0])
+  const main = statOf(`${root}/${pid}/task/${pid}/stat`)
+  if (main === null) return `process facts unavailable (${root}/${pid}/task/${pid}/stat unreadable)`
+  const wchanText = proc.read(`${root}/${pid}/task/${pid}/wchan`)
+  const wchan = wchanText === null ? "unreadable" : wchanText.trim() || "0"
+  const uptimeText = proc.read(`${root}/uptime`)
+  const uptimeS = uptimeText === null ? null : Number(uptimeText.split(" ")[0])
+  const unreadable: string[] = []
   const childrenOf = (of: number) => {
     const out: number[] = []
-    for (const task of proc.list(`/proc/${of}/task`) ?? []) {
-      for (const child of (proc.read(`/proc/${of}/task/${task}/children`) ?? "").split(" ")) {
-        if (child.trim() !== "") out.push(Number(child))
+    const tasks = proc.list(`${root}/${of}/task`)
+    if (tasks === null) {
+      unreadable.push(`${of}'s task list`)
+      return out
+    }
+    for (const task of tasks) {
+      const listed = proc.read(`${root}/${of}/task/${task}/children`)
+      if (listed === null) {
+        unreadable.push(`${of}/task/${task}/children`)
+        continue
       }
+      for (const child of listed.split(" ")) if (child.trim() !== "") out.push(Number(child))
     }
     return out
   }
-  const lines: string[] = []
-  const describe = (child: number, depth: number) => {
-    if (lines.length >= 6) return
-    const stat = statOf(`/proc/${child}/stat`)
-    if (stat === null) return
-    const argv = (proc.read(`/proc/${child}/cmdline`) ?? "").split("\0").join(" ").trim()
-    const shown = argv.length > 160 ? `${argv.slice(0, 159)}…` : argv === "" ? "(no command line)" : argv
-    lines.push(`${child} ${stat.state} ${(uptimeS - stat.startS).toFixed(1)}s "${shown}"`)
-    if (depth < 2) for (const grandchild of childrenOf(child)) describe(grandchild, depth + 1)
+  // Every child and grandchild, capped so a fork storm cannot make the sample itself slow.
+  const found: { pid: number }[] = []
+  const collect = (of: number, depth: number) => {
+    for (const child of childrenOf(of)) {
+      if (found.length >= 64) return
+      found.push({ pid: child })
+      if (depth < 2) collect(child, depth + 1)
+    }
   }
-  for (const child of childrenOf(pid)) describe(child, 1)
-  const children = lines.length === 0 ? "none" : lines.join(", ")
-  return `main thread ${main.state} wchan ${wchan} cpu ${main.cpuS.toFixed(1)}s; children: ${children}`
+  collect(pid, 1)
+  const shownCap = 6
+  const lines = found.slice(0, shownCap).map(({ pid: child }) => {
+    const stat = statOf(`${root}/${child}/stat`)
+    if (stat === null) return `${child} unreadable (exited or no access)`
+    const cmdline = proc.read(`${root}/${child}/cmdline`)
+    const argv = cmdline === null ? null : cmdline.split("\0").join(" ").trim()
+    const shown =
+      argv === null
+        ? "(command line unreadable)"
+        : argv.length > 160
+          ? `${argv.slice(0, 159)}…`
+          : argv === ""
+            ? "(no command line)"
+            : argv
+    const age = uptimeS === null ? "age unknown" : `${(uptimeS - stat.startS).toFixed(1)}s`
+    return `${child} ${stat.state} ${age} "${shown}"`
+  })
+  const more =
+    found.length >= 64
+      ? ` (${found.length - shownCap} or more not shown)`
+      : found.length > shownCap
+        ? ` (+${found.length - shownCap} more)`
+        : ""
+  const listed = lines.length === 0 ? "none" : `${lines.join(", ")}${more}`
+  const gaps = unreadable.length === 0 ? "" : `; unreadable: ${unreadable.join(", ")}`
+  return `main thread ${main.state} wchan ${wchan} cpu ${main.cpuS.toFixed(1)}s; children: ${listed}${gaps}`
 }
 
 /**
@@ -103,13 +140,18 @@ export function renderWatchdogLine(template: string, input: WatchdogLineInput): 
   })
 }
 
-/** The worker, as source: it runs via `eval`, so it loads nothing and starts fast when the machine is struggling. */
+/**
+ * The watchdog worker, as source: it runs via `eval`, so it loads nothing and starts fast when the machine is
+ * struggling. It never reads procfs: a `{process}` line asks the sampler for a fresh sample, waits at most 250 ms,
+ * and prints the last one the sampler finished, with its age when it is old and how long the sampler has been busy
+ * when it is. The kill line asks nothing and waits for nothing, so a sampler stuck on a child's memory lock can never
+ * hold back the kill.
+ */
 export const WATCHDOG_WORKER_SOURCE = `
-const { readFileSync, readdirSync, writeSync } = require("node:fs")
+const { writeSync } = require("node:fs")
 const { workerData } = require("node:worker_threads")
 ${renderWatchdogLine.toString()}
-${describeProcess.toString()}
-const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill } = workerData
+const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler } = workerData
 const stamp = new Float64Array(stamps)
 const values = new Float64Array(slots)
 const decoder = new TextDecoder()
@@ -122,7 +164,88 @@ const readTexts = () => {
   }
   return out
 }
-const procReader = {
+// The sampler's slots: control [requested, completed, writing, length], times [requestedAt, completedAt], text bytes.
+const control = sampler === null ? null : new Int32Array(sampler.control)
+const times = sampler === null ? null : new Float64Array(sampler.times)
+let sample = null
+// Copy the newest finished sample, unless the sampler is writing one or finished another during the copy.
+const takeSample = () => {
+  const done = Atomics.load(control, 1)
+  if (done === 0 || (sample !== null && sample.seq === done) || Atomics.load(control, 2) === 1) return
+  const length = Atomics.load(control, 3)
+  const text = decoder.decode(new Uint8Array(sampler.text, 0, length).slice())
+  const at = times[1]
+  if (Atomics.load(control, 2) === 1 || Atomics.load(control, 1) !== done) return
+  sample = { seq: done, text, at }
+}
+const seconds = (ms) => (ms / 1000).toFixed(1) + "s"
+const processFacts = (ask) => {
+  const requested = Atomics.load(control, 0)
+  if (ask && requested === Atomics.load(control, 1)) {
+    times[0] = Date.now()
+    Atomics.store(control, 0, requested + 1)
+    Atomics.notify(control, 0)
+    Atomics.wait(control, 1, requested, 250)
+  }
+  takeSample()
+  const now = Date.now()
+  const busy = Atomics.load(control, 0) !== Atomics.load(control, 1) ? " (sampler busy " + seconds(now - times[0]) + ")" : ""
+  if (sample === null) return "process facts not sampled yet" + busy
+  const stale = now - sample.at > 1000 ? " (sampled " + seconds(now - sample.at) + " ago)" : ""
+  return sample.text + stale + busy
+}
+const facts = (template, ask) => ({
+  fields,
+  values,
+  tables,
+  texts: readTexts(),
+  ...(control !== null && template.includes("{process}") ? { process: processFacts(ask) } : {}),
+})
+const sleeper = new Int32Array(new SharedArrayBuffer(4))
+let stallStamp = -1
+let count = 0
+let nextLineAt = 0
+for (;;) {
+  Atomics.wait(sleeper, 0, 0, checkEveryMs)
+  const last = stamp[0]
+  const age = Date.now() - last
+  if (kill && age >= kill.afterMs) {
+    writeSync(2, renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message, false) }))
+    process.kill(process.pid, "SIGKILL")
+  }
+  if (!log) continue
+  if (age >= log.afterMs) {
+    if (last !== stallStamp) {
+      stallStamp = last
+      count = 0
+      nextLineAt = log.afterMs
+    }
+    if (age >= nextLineAt) {
+      count += 1
+      writeSync(2, renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message, true) }))
+      nextLineAt += log.repeatEveryMs
+    }
+  } else if (count > 0) {
+    writeSync(2, renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered, false) }))
+    count = 0
+    stallStamp = -1
+  }
+}
+`
+
+/**
+ * The procfs sampler, as source: a second worker that sleeps until the watchdog asks, runs describeProcess, and
+ * publishes the line (cut at a character boundary to its slot). A read that blocks holds only this worker.
+ */
+export const PROCFS_SAMPLER_SOURCE = `
+const { readFileSync, readdirSync } = require("node:fs")
+const { workerData } = require("node:worker_threads")
+${describeProcess.toString()}
+const control = new Int32Array(workerData.control)
+const times = new Float64Array(workerData.times)
+const bytes = new Uint8Array(workerData.text)
+const encoder = new TextEncoder()
+const reader = {
   read: (path) => {
     try {
       return readFileSync(path, "utf8")
@@ -138,42 +261,23 @@ const procReader = {
     }
   },
 }
-// Read procfs only for a template that names {process}: a line that does not print it costs nothing.
-const facts = (template) => ({
-  fields,
-  values,
-  tables,
-  texts: readTexts(),
-  ...(template.includes("{process}") ? { process: describeProcess(process.pid, procReader) } : {}),
-})
-const sleeper = new Int32Array(new SharedArrayBuffer(4))
-let stallStamp = -1
-let count = 0
-let nextLineAt = 0
 for (;;) {
-  Atomics.wait(sleeper, 0, 0, checkEveryMs)
-  const last = stamp[0]
-  const age = Date.now() - last
-  if (kill && age >= kill.afterMs) {
-    writeSync(2, renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message) }))
-    process.kill(process.pid, "SIGKILL")
+  const done = Atomics.load(control, 1)
+  Atomics.wait(control, 0, done)
+  const requested = Atomics.load(control, 0)
+  if (requested === done) continue
+  let encoded = encoder.encode(describeProcess(process.pid, reader, workerData.root))
+  if (encoded.length > bytes.length) {
+    let end = bytes.length
+    while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--
+    encoded = encoded.subarray(0, end)
   }
-  if (!log) continue
-  if (age >= log.afterMs) {
-    if (last !== stallStamp) {
-      stallStamp = last
-      count = 0
-      nextLineAt = log.afterMs
-    }
-    if (age >= nextLineAt) {
-      count += 1
-      writeSync(2, renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message) }))
-      nextLineAt += log.repeatEveryMs
-    }
-  } else if (count > 0) {
-    writeSync(2, renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered) }))
-    count = 0
-    stallStamp = -1
-  }
+  Atomics.store(control, 2, 1)
+  bytes.set(encoded)
+  Atomics.store(control, 3, encoded.length)
+  times[1] = Date.now()
+  Atomics.store(control, 2, 0)
+  Atomics.store(control, 1, requested)
+  Atomics.notify(control, 1)
 }
 `
