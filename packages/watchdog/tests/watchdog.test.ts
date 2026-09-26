@@ -195,6 +195,29 @@ describe("armWatchdog: kill", () => {
     expect(Number(/KILLED after (\d+)ms/u.exec(stderr)?.[1])).toBeGreaterThanOrEqual(700)
   }, 60_000)
 
+  test("a text the main thread published before it blocked is printed in the kill line (km 25947)", async () => {
+    const { signal, code, stderr } = await scenario(
+      [
+        `const dog = armWatchdog({`,
+        `  label: "scenario",`,
+        `  checkEveryMs: 25,`,
+        `  texts: { oldest: 64, short: 16 },`,
+        `  kill: { afterMs: 400, message: "KILLED oldest=[{oldest:text}] short=[{short:text}] none=[{never:text}]\\n" },`,
+        `})`,
+        `dog.setText("oldest", "km.update state.mutation set-status @km/p/0001 op=abc")`,
+        // 20 two-byte characters into a 16-byte slot: cut at a character boundary, never mid-character.
+        `dog.setText("short", "é".repeat(20))`,
+        SPIN(30_000),
+        `console.error("SPIN COMPLETED")`,
+      ].join("\n"),
+    )
+    expect(stderr).not.toContain("SPIN COMPLETED")
+    expect(signal ?? code).not.toBe(0)
+    expect(stderr).toContain(
+      `KILLED oldest=[km.update state.mutation set-status @km/p/0001 op=abc] short=[${"é".repeat(8)}] none=[{never:text}]`,
+    )
+  }, 60_000)
+
   test("a deadline is a watchdog never stamped: it kills at the bound", async () => {
     const { signal, code, stderr, elapsedMs } = await scenario(
       [
@@ -244,6 +267,18 @@ describe("armWatchdog: refusals, never a silent default", () => {
     expect(() => armWatchdog({ label: "x", checkEveryMs: 10 })).toThrow(/watchdog x: needs a log or a kill action/u)
   })
 
+  test("a text that was not declared is refused when set, and a text slot must have a positive whole size", () => {
+    const dog = armWatchdog({ label: "x", checkEveryMs: 60_000, texts: { a: 8 }, kill: { afterMs: 60_000, message: "" } })
+    try {
+      expect(() => dog.setText("b", "v")).toThrow(/watchdog x: text "b" was not declared/u)
+    } finally {
+      dog.disarm()
+    }
+    expect(() =>
+      armWatchdog({ label: "x", checkEveryMs: 1, texts: { a: 0 }, kill: { afterMs: 1, message: "" } }),
+    ).toThrow(/watchdog x: text "a" must hold a positive whole number of bytes, got 0/u)
+  })
+
   test("a field that was not declared is refused when set", () => {
     const dog = armWatchdog({ label: "x", checkEveryMs: 60_000, fields: ["a"], kill: { afterMs: 60_000, message: "" } })
     try {
@@ -285,6 +320,18 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
       tables: {},
     })
     expect(line).toMatch(/^oldest 4\.\ds, other none$/u)
+  })
+
+  test("renders a published text, and an empty one as none", () => {
+    const line = renderWatchdogLine("op {op:text}; other {other:text}", {
+      elapsedMs: 0,
+      count: 0,
+      fields: [],
+      values: [],
+      tables: {},
+      texts: { op: "km.update state.mutation", other: "" },
+    })
+    expect(line).toBe("op km.update state.mutation; other none")
   })
 
   test("the worker source is import-free and renders with the same function", () => {

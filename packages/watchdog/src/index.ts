@@ -17,8 +17,9 @@
  * The worker prints with `writeSync` to stderr, because a buffered write can be
  * lost to the kill that follows it, and kills with SIGKILL, because a signal
  * handler would be queued on the frozen loop. Its lines are built only from
- * what shared memory holds: the stamp's age, the stall count, and integer
- * fields the main thread publishes, with names only through static tables.
+ * what shared memory holds: the stamp's age, the stall count, integer fields
+ * the main thread publishes, with names only through static tables, and short
+ * texts it publishes into fixed byte slots (what it was doing when it stopped).
  */
 import { writeSync } from "node:fs"
 import { Worker } from "node:worker_threads"
@@ -49,6 +50,11 @@ export interface WatchdogOptions {
   readonly fields?: readonly string[]
   /** Names for a field's integer codes, readable as `{name:name}`; a negative code prints `none`, an index past the table `unknown(n)`. */
   readonly tables?: Readonly<Record<string, readonly string[]>>
+  /**
+   * Short texts the main thread publishes with `setText`, readable as `{name:text}`, each with its slot's size in
+   * UTF-8 bytes; a longer value is cut at a character boundary, and an empty one prints `none`.
+   */
+  readonly texts?: Readonly<Record<string, number>>
   readonly log?: WatchdogLogAction
   readonly kill?: WatchdogKillAction
 }
@@ -58,6 +64,8 @@ export interface Watchdog {
   stamp(): void
   /** Publish an integer fact for the worker's lines. */
   set(field: string, value: number): void
+  /** Publish a text for the worker's lines, cut to its slot at a character boundary. */
+  setText(name: string, value: string): void
   /** Stop the worker. */
   disarm(): void
 }
@@ -85,6 +93,13 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
   }
   if (options.kill !== undefined) positive("kill.afterMs", options.kill.afterMs)
 
+  const texts = Object.entries(options.texts ?? {}).map(([name, bytes]) => {
+    if (!Number.isInteger(bytes) || bytes <= 0) {
+      throw new Error(`watchdog ${label}: text "${name}" must hold a positive whole number of bytes, got ${String(bytes)}`)
+    }
+    // Four bytes of length, then the UTF-8 bytes: the worker reads the length with Atomics and decodes that many.
+    return { name, bytes, buffer: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT + bytes) }
+  })
   const fields = [...(options.fields ?? [])]
   const stamps = new SharedArrayBuffer(Float64Array.BYTES_PER_ELEMENT)
   const stamp = new Float64Array(stamps)
@@ -99,6 +114,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       checkEveryMs: options.checkEveryMs,
       fields,
       tables: options.tables ?? {},
+      texts: texts.map(({ name, buffer }) => ({ name, buffer })),
       log: options.log ?? null,
       kill: options.kill ?? null,
     },
@@ -123,6 +139,19 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       const index = fields.indexOf(field)
       if (index < 0) throw new Error(`watchdog ${label}: field "${field}" was not declared`)
       values[index] = value
+    },
+    setText(name, value) {
+      const slot = texts.find((text) => text.name === name)
+      if (slot === undefined) throw new Error(`watchdog ${label}: text "${name}" was not declared`)
+      let bytes = new TextEncoder().encode(value)
+      if (bytes.length > slot.bytes) {
+        let end = slot.bytes
+        // Back off to the start of a character: a UTF-8 continuation byte is 10xxxxxx.
+        while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
+        bytes = bytes.subarray(0, end)
+      }
+      new Uint8Array(slot.buffer, Int32Array.BYTES_PER_ELEMENT, slot.bytes).set(bytes)
+      Atomics.store(new Int32Array(slot.buffer, 0, 1), 0, bytes.length)
     },
     disarm() {
       disarmed = true
