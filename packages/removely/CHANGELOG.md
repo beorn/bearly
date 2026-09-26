@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0
+
 - Export `GIT_REPOSITORY_LOCAL_ENV_VARS`, git's own `git rev-parse --local-env-vars`
   list minus the config variables, and `gitEnvironmentWithoutRootOverrides(env)`,
   which returns a copy of `env` without them. `findGitProjectRoot` now scrubs
@@ -19,6 +21,8 @@
   anything, and usage errors now point at `removely --help` instead of only
   repeating the usage line. Parser, flags, removal behavior and exit codes are
   unchanged.
+
+## 0.2.1
 
 - Honor explicit `allowMissing` when a validated path disappears before removal,
   consistently for synchronous and asynchronous removal. Strict calls still fail
