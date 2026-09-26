@@ -13,7 +13,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { armWatchdog } from "../src/index.ts"
-import { describeProcess, renderWatchdogLine, WATCHDOG_WORKER_SOURCE } from "../src/worker-source.ts"
+import {
+  describeProcess,
+  readFinishedSample,
+  renderWatchdogLine,
+  WATCHDOG_WORKER_SOURCE,
+} from "../src/worker-source.ts"
 
 const MODULE = fileURLToPath(new URL("../src/index.ts", import.meta.url))
 const roots: string[] = []
@@ -469,6 +474,45 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
       texts: { op: "km.update state.mutation", other: "" },
     })
     expect(line).toBe("op km.update state.mutation; other none")
+  })
+
+  // A copy that overlaps a sampler write must never be printed as a sample: the old writing flag cleared before the
+  // completed seq moved, so a copy spanning that gap passed both checks with half of one line and half of the next.
+  test("a sample is copied only while the sampler's version stays the same even number", () => {
+    const encoder = new TextEncoder()
+    const control = new Int32Array(new SharedArrayBuffer(16))
+    const times = new Float64Array(new SharedArrayBuffer(16))
+    const bytes = new Uint8Array(new SharedArrayBuffer(64))
+    const write = (seq: number, text: string): void => {
+      const encoded = encoder.encode(text)
+      Atomics.add(control, 2, 1)
+      bytes.set(encoded)
+      Atomics.store(control, 3, encoded.length)
+      times[1] = 1000 + seq
+      Atomics.store(control, 1, seq)
+      Atomics.add(control, 2, 1)
+    }
+    const decode = (b: Uint8Array): string => new TextDecoder().decode(b)
+
+    expect(readFinishedSample(control, times, bytes, 0, decode)).toBeNull()
+    write(1, "main thread R wchan 0 cpu 1.0s")
+    expect(readFinishedSample(control, times, bytes, 0, decode)).toEqual({
+      seq: 1,
+      text: "main thread R wchan 0 cpu 1.0s",
+      at: 1001,
+    })
+    expect(readFinishedSample(control, times, bytes, 1, decode)).toBeNull()
+
+    Atomics.add(control, 2, 1)
+    expect(readFinishedSample(control, times, bytes, 0, decode)).toBeNull()
+    Atomics.add(control, 2, 1)
+
+    const overlapped = (b: Uint8Array): string => {
+      const first = decode(b)
+      Atomics.add(control, 2, 2)
+      return first
+    }
+    expect(readFinishedSample(control, times, bytes, 0, overlapped)).toBeNull()
   })
 
   test("the worker source is import-free and renders with the same function", () => {

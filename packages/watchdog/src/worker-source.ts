@@ -140,6 +140,35 @@ export function renderWatchdogLine(template: string, input: WatchdogLineInput): 
   })
 }
 
+/** A finished procfs sample: which request it answered, its text, and when it was taken (epoch ms). */
+export interface ProcessSample {
+  seq: number
+  text: string
+  at: number
+}
+
+/**
+ * Copy the sampler's newest finished sample, or null when there is none newer than `lastSeq` or the copy may be torn.
+ * `control` is [requested, completed, version, length]: the sampler makes `version` odd before it writes the text,
+ * length, time and completed seq, and even after, so a copy made while `version` stayed the same even number is one
+ * whole sample. It must reference nothing outside itself: the worker runs its source text.
+ */
+export function readFinishedSample(
+  control: Int32Array,
+  times: Float64Array,
+  bytes: Uint8Array,
+  lastSeq: number,
+  decode: (bytes: Uint8Array) => string,
+): ProcessSample | null {
+  const version = Atomics.load(control, 2)
+  if (version % 2 === 1) return null
+  const seq = Atomics.load(control, 1)
+  if (seq === 0 || seq === lastSeq) return null
+  const text = decode(bytes.slice(0, Atomics.load(control, 3)))
+  const at = times[1] ?? 0
+  return Atomics.load(control, 2) === version ? { seq, text, at } : null
+}
+
 /**
  * The watchdog worker, as source: it runs via `eval`, so it loads nothing and starts fast when the machine is
  * struggling. It never reads procfs: a `{process}` line asks the sampler for a fresh sample, waits at most 250 ms,
@@ -151,6 +180,7 @@ export const WATCHDOG_WORKER_SOURCE = `
 const { writeSync } = require("node:fs")
 const { workerData } = require("node:worker_threads")
 ${renderWatchdogLine.toString()}
+${readFinishedSample.toString()}
 const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler } = workerData
 const stamp = new Float64Array(stamps)
 const values = new Float64Array(slots)
@@ -164,19 +194,14 @@ const readTexts = () => {
   }
   return out
 }
-// The sampler's slots: control [requested, completed, writing, length], times [requestedAt, completedAt], text bytes.
+// The sampler's slots: control [requested, completed, version, length], times [requestedAt, completedAt], text bytes.
 const control = sampler === null ? null : new Int32Array(sampler.control)
 const times = sampler === null ? null : new Float64Array(sampler.times)
+const sampleBytes = sampler === null ? null : new Uint8Array(sampler.text)
 let sample = null
-// Copy the newest finished sample, unless the sampler is writing one or finished another during the copy.
 const takeSample = () => {
-  const done = Atomics.load(control, 1)
-  if (done === 0 || (sample !== null && sample.seq === done) || Atomics.load(control, 2) === 1) return
-  const length = Atomics.load(control, 3)
-  const text = decoder.decode(new Uint8Array(sampler.text, 0, length).slice())
-  const at = times[1]
-  if (Atomics.load(control, 2) === 1 || Atomics.load(control, 1) !== done) return
-  sample = { seq: done, text, at }
+  const taken = readFinishedSample(control, times, sampleBytes, sample === null ? 0 : sample.seq, (b) => decoder.decode(b))
+  if (taken !== null) sample = taken
 }
 const seconds = (ms) => (ms / 1000).toFixed(1) + "s"
 const processFacts = (ask) => {
@@ -272,12 +297,13 @@ for (;;) {
     while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--
     encoded = encoded.subarray(0, end)
   }
-  Atomics.store(control, 2, 1)
+  // Odd version while the sample is half-written, even once it is whole: see readFinishedSample.
+  Atomics.add(control, 2, 1)
   bytes.set(encoded)
   Atomics.store(control, 3, encoded.length)
   times[1] = Date.now()
-  Atomics.store(control, 2, 0)
   Atomics.store(control, 1, requested)
+  Atomics.add(control, 2, 1)
   Atomics.notify(control, 1)
 }
 `

@@ -118,7 +118,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
     // A template that is not a string is the worker's to report when it renders it, not a throw here.
     (template: unknown) => typeof template === "string" && template.includes("{process}"),
   )
-  // Control [requested, completed, writing, length], times [requestedAt, completedAt], and the line's bytes.
+  // Control [requested, completed, version (odd while the sampler writes), length], times [requestedAt, completedAt], and the line's bytes.
   const sampling = wantsProcess
     ? {
         control: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 4),
