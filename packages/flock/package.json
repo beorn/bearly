@@ -64,7 +64,10 @@
       ]
     },
     "dts": true,
-    "entry": ["src/index.ts", "src/holders.ts"],
+    "entry": [
+      "src/index.ts",
+      "src/holders.ts"
+    ],
     "format": "esm"
   },
   "engines": {

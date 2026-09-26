@@ -150,7 +150,16 @@ describe("readLockHolders reads every lock on each file, by device and inode", (
 })
 
 describe("fileLockHolders reads the running kernel", () => {
-  test("names this process as the holder of a flock it took", () => {
+  test.skipIf(process.platform === "linux")(
+    "a host without /proc/locks answers unknown with the reason, never nobody",
+    () => {
+      const report = fileLockHolders([import.meta.path], { self: process.pid })
+      expect(report.kind).toBe("unknown")
+      expect(report.kind === "unknown" ? report.reason : "").toMatch(/^cannot read \/proc\/locks: /u)
+    },
+  )
+
+  test.runIf(process.platform === "linux")("names this process as the holder of a flock it took", () => {
     const root = mkdtempSync(join(tmpdir(), "bearly-holders-"))
     roots.push(root)
     const path = join(root, "session.lock")
