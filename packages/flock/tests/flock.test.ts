@@ -101,6 +101,17 @@ describe("@bearly/flock", () => {
     expect(fake.closed).toEqual([42])
   })
 
+  test("refuses to adopt a descriptor open on another file, and touches nothing", () => {
+    const fake = fakeIo({ pathIdentity: () => "9:9" })
+    const runtime = createFlockRuntime(fake.io, { wouldBlockErrnos: [11, 35], interruptedErrno: 4 })
+
+    expect(() => runtime.adopt("/lock", 42)).toThrow(
+      "cannot adopt flock fd 42 for /lock: descriptor identity 1:2 does not match path identity 9:9",
+    )
+    expect(fake.flockedFds).toEqual([])
+    expect(fake.closed).toEqual([])
+  })
+
   test("an adopted child closes its copy without releasing the parent owner", async () => {
     const root = tempRoot()
     const lockPath = join(root, "writer.lock")
