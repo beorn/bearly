@@ -63,6 +63,12 @@ export interface WatchdogOptions {
    * last finished sample and never reads procfs itself.
    */
   readonly procRoot?: string
+  /**
+   * Files whose locks a `{process}` line names: each lock /proc/locks holds on them, with its holder's pid, type,
+   * byte range and command line. A thread asleep on a file lock has no child to blame; this names the process that
+   * holds it. A file that does not exist is said to be absent.
+   */
+  readonly lockFiles?: readonly string[]
 }
 
 export interface Watchdog {
@@ -123,7 +129,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
     ? {
         control: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 4),
         times: new SharedArrayBuffer(Float64Array.BYTES_PER_ELEMENT * 2),
-        text: new SharedArrayBuffer(2048),
+        text: new SharedArrayBuffer(4096),
       }
     : null
   const sampler =
@@ -131,7 +137,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       ? null
       : new Worker(PROCFS_SAMPLER_SOURCE, {
           eval: true,
-          workerData: { ...sampling, root: options.procRoot ?? "/proc" },
+          workerData: { ...sampling, root: options.procRoot ?? "/proc", lockFiles: options.lockFiles ?? [] },
         })
   sampler?.unref()
   const worker = new Worker(WATCHDOG_WORKER_SOURCE, {

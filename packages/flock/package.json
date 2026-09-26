@@ -28,7 +28,8 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./holders": "./src/holders.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -36,6 +37,10 @@
       ".": {
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs"
+      },
+      "./holders": {
+        "types": "./dist/holders.d.mts",
+        "import": "./dist/holders.mjs"
       }
     }
   },
@@ -59,7 +64,7 @@
       ]
     },
     "dts": true,
-    "entry": "src/index.ts",
+    "entry": ["src/index.ts", "src/holders.ts"],
     "format": "esm"
   },
   "engines": {

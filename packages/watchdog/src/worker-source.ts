@@ -1,3 +1,5 @@
+import { formatLockHolders, procLocksDeviceId, readLockHolders } from "@bearly/flock/holders"
+
 /**
  * The worker's source and the line renderer it embeds. Internal: the package
  * entry (index.ts) does not re-export this module, so its public surface is
@@ -33,7 +35,12 @@ export interface ProcReader {
  * sampler worker does, and the watchdog prints the last sample it finished.
  * It must reference nothing outside itself: the worker runs its source text.
  */
-export function describeProcess(pid: number, proc: ProcReader, root = "/proc"): string {
+export function describeProcess(
+  pid: number,
+  proc: ProcReader,
+  root = "/proc",
+  prior: { majflt: number | null } = { majflt: null },
+): string {
   // <root>/<pid>/stat is "pid (comm) state ppid ..."; comm may hold spaces and parentheses, so split after the last ")".
   // Clock ticks are USER_HZ, 100 on every Linux the fleet runs.
   const statOf = (path: string) => {
@@ -105,7 +112,18 @@ export function describeProcess(pid: number, proc: ProcReader, root = "/proc"): 
         : ""
   const listed = lines.length === 0 ? "none" : `${lines.join(", ")}${more}`
   const gaps = unreadable.length === 0 ? "" : `; unreadable: ${unreadable.join(", ")}`
-  return `main thread ${main.state} wchan ${wchan} cpu ${main.cpuS.toFixed(1)}s; children: ${listed}${gaps}`
+  // Major faults are pages read back from disk or swap: a thread asleep with its count rising is paging, not waiting
+  // on a lock. `prior` carries the previous sample's count, so each line says how many since the one before.
+  const processStat = proc.read(`${root}/${pid}/stat`)
+  const majflt = processStat === null ? null : Number(processStat.slice(processStat.lastIndexOf(")") + 2).split(" ")[9])
+  const faults =
+    majflt === null || !Number.isFinite(majflt)
+      ? `majflt unreadable (${root}/${pid}/stat)`
+      : prior.majflt === null
+        ? `majflt ${majflt} (first sample)`
+        : `majflt +${majflt - prior.majflt} since the previous sample`
+  if (majflt !== null && Number.isFinite(majflt)) prior.majflt = majflt
+  return `main thread ${main.state} wchan ${wchan} cpu ${main.cpuS.toFixed(1)}s; children: ${listed}${gaps}; ${faults}`
 }
 
 /**
@@ -259,13 +277,16 @@ for (;;) {
 `
 
 /**
- * The procfs sampler, as source: a second worker that sleeps until the watchdog asks, runs describeProcess, and
- * publishes the line (cut at a character boundary to its slot). A read that blocks holds only this worker.
+ * The procfs sampler, as source: a second worker that sleeps until the watchdog asks, runs describeProcess (and, with
+ * `lockFiles`, @bearly/flock's lock reader), and publishes the line (cut at a character boundary to its slot). A read that blocks holds only this worker.
  */
 export const PROCFS_SAMPLER_SOURCE = `
-const { readFileSync, readdirSync } = require("node:fs")
+const { readFileSync, readdirSync, statSync } = require("node:fs")
 const { workerData } = require("node:worker_threads")
 ${describeProcess.toString()}
+${procLocksDeviceId.toString()}
+${readLockHolders.toString()}
+${formatLockHolders.toString()}
 const control = new Int32Array(workerData.control)
 const times = new Float64Array(workerData.times)
 const bytes = new Uint8Array(workerData.text)
@@ -286,12 +307,30 @@ const reader = {
     }
   },
 }
+// The reader of /proc/locks is @bearly/flock's, embedded above: it throws a read's reason, and stat is null only for
+// a file that does not exist.
+const lockIo = {
+  read: (path) => readFileSync(path, "utf8"),
+  stat: (path) => {
+    try {
+      const { dev, ino } = statSync(path)
+      return { dev, ino }
+    } catch (error) {
+      if (error && error.code === "ENOENT") return null
+      throw error
+    }
+  },
+}
+// The previous sample's major-fault count, so each line says how many pages were faulted in since.
+const prior = { majflt: null }
 for (;;) {
   const done = Atomics.load(control, 1)
   Atomics.wait(control, 0, done)
   const requested = Atomics.load(control, 0)
   if (requested === done) continue
-  let encoded = encoder.encode(describeProcess(process.pid, reader, workerData.root))
+  let line = describeProcess(process.pid, reader, workerData.root, prior)
+  if (workerData.lockFiles.length > 0) line += "; " + formatLockHolders(readLockHolders(workerData.lockFiles, { self: process.pid, io: lockIo, root: workerData.root }))
+  let encoded = encoder.encode(line)
   if (encoded.length > bytes.length) {
     let end = bytes.length
     while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--

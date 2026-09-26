@@ -424,13 +424,36 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
     const line = describeProcess(7, proc)
     const INPUT = { elapsedMs: 0, count: 0, fields: [], values: [], tables: {} }
     expect(line).toMatch(
-      /^main thread S wchan do_wait cpu 45\.0s; children: 40 S 50\.0s "sh -c git fetch", 41 S 40\.0s "git -C \/hh fetch -q origin x+…"$/u,
+      /^main thread S wchan do_wait cpu 45\.0s; children: 40 S 50\.0s "sh -c git fetch", 41 S 40\.0s "git -C \/hh fetch -q origin x+…"; majflt unreadable \(\/proc\/7\/stat\)$/u,
     )
     expect(describeProcess(7, { read: () => null, list: () => null })).toBe(
       "process facts unavailable (/proc/7/task/7/stat unreadable)",
     )
     expect(renderWatchdogLine("stuck: {process}", { ...INPUT, process: line })).toBe(`stuck: ${line}`)
     expect(renderWatchdogLine("stuck: {process}", INPUT)).toBe("stuck: {process}")
+  })
+
+  test("describeProcess counts the major faults since the previous sample, so a stall that is paging says so", () => {
+    // The idle-lane stalls fell in a window with swap full: a main thread asleep while its faults climb is paging in.
+    const stat = (majflt: number) => `7 (bun) S 1 7 7 0 -1 0 10 0 ${majflt} 0 100 0 0 0 20 0 9 0 50000 0 0\n`
+    const files: Record<string, string> = {
+      "/proc/7/task/7/stat": "7 (bun) S 1 7 7 0 -1 0 0 0 0 0 100 0 0 0 20 0 9 0 50000 0 0\n",
+      "/proc/7/task/7/wchan": "hrtimer_nanosleep",
+      "/proc/7/task/7/children": "",
+      "/proc/7/stat": stat(1200),
+    }
+    const proc = {
+      read: (path: string) => files[path] ?? null,
+      list: (path: string) => (path === "/proc/7/task" ? ["7"] : null),
+    }
+    const prior = { majflt: null as number | null }
+    expect(describeProcess(7, proc, "/proc", prior)).toBe(
+      "main thread S wchan hrtimer_nanosleep cpu 1.0s; children: none; majflt 1200 (first sample)",
+    )
+    files["/proc/7/stat"] = stat(1535)
+    expect(describeProcess(7, proc, "/proc", prior)).toMatch(/; majflt \+335 since the previous sample$/u)
+    delete files["/proc/7/stat"]
+    expect(describeProcess(7, proc, "/proc", prior)).toMatch(/; majflt unreadable \(\/proc\/7\/stat\)$/u)
   })
 
   test("describeProcess says what it could not read, never none, and how many children it left out", () => {
@@ -457,10 +480,10 @@ describe("renderWatchdogLine: the line names only what shared memory holds", () 
       "main thread R wchan unreadable cpu 1.0s; children: 40 unreadable (exited or no access), " +
         '41 S age unknown "(command line unreadable)", 42 S age unknown "git status", 43 S age unknown "git status", ' +
         '44 S age unknown "git status", 45 S age unknown "git status" (+2 more); unreadable: 7/task/9/children, ' +
-        "40's task list",
+        "40's task list; majflt unreadable (/proc/7/stat)",
     )
     expect(describeProcess(7, { read: (path) => (path.endsWith("/stat") ? main : null), list: () => null })).toBe(
-      "main thread R wchan unreadable cpu 1.0s; children: none; unreadable: 7's task list",
+      "main thread R wchan unreadable cpu 1.0s; children: none; unreadable: 7's task list; majflt 0 (first sample)",
     )
   })
 
