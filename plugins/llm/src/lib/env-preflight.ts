@@ -33,12 +33,13 @@ function git(args: string[], cwd: string): string {
 /**
  * Resolve current seat identity for loud error reporting.
  *
- * Takes identity from explicit launch environment (SEAT or TENT_SEAT).
+ * Takes identity from explicit launch environment (SEAT, TENT_SEAT, or TRIBE_NAME).
  * Identity is never inferred from cwd, worktree path, or decoded tokens.
  */
 export function currentSeat(): string {
   if (process.env.SEAT) return process.env.SEAT
   if (process.env.TENT_SEAT) return process.env.TENT_SEAT
+  if (process.env.TRIBE_NAME) return process.env.TRIBE_NAME
   return "seat: none declared"
 }
 

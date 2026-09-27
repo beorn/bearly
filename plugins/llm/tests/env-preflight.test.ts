@@ -199,9 +199,10 @@ QUOTED_HASH="value with # hash inside quotes"
     expect(parsed.QUOTED_HASH).toBe("value with # hash inside quotes")
   })
 
-  it("resolves current seat from SEAT, TENT_SEAT, or returns none declared", () => {
+  it("resolves current seat from SEAT, TENT_SEAT, TRIBE_NAME, or returns none declared", () => {
     const savedSeat = process.env.SEAT
     const savedTentSeat = process.env.TENT_SEAT
+    const savedTribeName = process.env.TRIBE_NAME
     try {
       process.env.SEAT = "@dev/9"
       expect(currentSeat()).toBe("@dev/9")
@@ -211,12 +212,18 @@ QUOTED_HASH="value with # hash inside quotes"
       expect(currentSeat()).toBe("@dev/5")
 
       delete process.env.TENT_SEAT
+      process.env.TRIBE_NAME = "@dev/review-adhoc5"
+      expect(currentSeat()).toBe("@dev/review-adhoc5")
+
+      delete process.env.TRIBE_NAME
       expect(currentSeat()).toBe("seat: none declared")
     } finally {
       if (savedSeat !== undefined) process.env.SEAT = savedSeat
       else delete process.env.SEAT
       if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
       else delete process.env.TENT_SEAT
+      if (savedTribeName !== undefined) process.env.TRIBE_NAME = savedTribeName
+      else delete process.env.TRIBE_NAME
     }
   })
 
