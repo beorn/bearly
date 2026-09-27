@@ -17,6 +17,7 @@ import { afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, readdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { resetProviderKeysLoadedState } from "../src/lib/env-preflight"
 
 export interface TestEnv {
   /** Isolated /tmp substitute for this test — LLM output files end up here. */
@@ -66,6 +67,8 @@ export function makeTestEnv(): TestEnv {
   // happens to hash to a key matching an existing entry from prior CLI runs)
   // and zero-out the dispatch mock counts.
   process.env.LLM_NO_CACHE = "1"
+  // Disable auto-loading keys from habitat .env so unit tests that test key absence aren't polluted
+  process.env.LLM_NO_ENV_AUTOLOAD = "1"
 
   const exitCodes: number[] = []
   const stderr: string[] = []
@@ -100,6 +103,8 @@ export function makeTestEnv(): TestEnv {
       rmSync(tmpDir, { recursive: true, force: true })
       rmSync(homeDir, { recursive: true, force: true })
     } catch {}
+    delete process.env.LLM_NO_ENV_AUTOLOAD
+    resetProviderKeysLoadedState()
     vi.restoreAllMocks()
     vi.resetModules()
   })

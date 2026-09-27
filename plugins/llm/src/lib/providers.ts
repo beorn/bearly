@@ -18,7 +18,7 @@ import { createPerplexity } from "@ai-sdk/perplexity"
 import type { LanguageModel } from "ai"
 import type { Provider, Model } from "./types"
 import { getEndpoint } from "./types"
-import { missingApiKeyError } from "./env-preflight"
+import { missingApiKeyError, ensureProviderKeysLoaded } from "./env-preflight"
 
 // Provider instances (lazy-initialized)
 let openaiProvider: ReturnType<typeof createOpenAI> | undefined
@@ -29,6 +29,7 @@ let perplexityProvider: ReturnType<typeof createPerplexity> | undefined
 let openrouterProvider: ReturnType<typeof createOpenAI> | undefined
 
 function getOpenAI() {
+  ensureProviderKeysLoaded()
   if (!openaiProvider) {
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) throw missingApiKeyError("OPENAI_API_KEY")
@@ -38,6 +39,7 @@ function getOpenAI() {
 }
 
 function getAnthropic() {
+  ensureProviderKeysLoaded()
   if (!anthropicProvider) {
     const apiKey = process.env.ANTHROPIC_API_KEY
     if (!apiKey) throw missingApiKeyError("ANTHROPIC_API_KEY")
@@ -47,6 +49,7 @@ function getAnthropic() {
 }
 
 function getGoogle() {
+  ensureProviderKeysLoaded()
   if (!googleProvider) {
     const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
     if (!apiKey) throw missingApiKeyError("GOOGLE_GENERATIVE_AI_API_KEY")
@@ -56,6 +59,7 @@ function getGoogle() {
 }
 
 function getXai() {
+  ensureProviderKeysLoaded()
   if (!xaiProvider) {
     const apiKey = process.env.XAI_API_KEY
     if (!apiKey) throw missingApiKeyError("XAI_API_KEY")
@@ -65,6 +69,7 @@ function getXai() {
 }
 
 function getPerplexity() {
+  ensureProviderKeysLoaded()
   if (!perplexityProvider) {
     const apiKey = process.env.PERPLEXITY_API_KEY
     if (!apiKey) throw missingApiKeyError("PERPLEXITY_API_KEY")
@@ -77,6 +82,7 @@ function getPerplexity() {
 // with a baseURL override. HTTP-Referer and X-Title are optional but recommended
 // for app attribution in OpenRouter's dashboard.
 function getOpenRouter() {
+  ensureProviderKeysLoaded()
   if (!openrouterProvider) {
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) throw missingApiKeyError("OPENROUTER_API_KEY")
@@ -131,6 +137,7 @@ export function getLanguageModel(model: Model): LanguageModel {
  * health. New selection must use ProviderAvailabilityFact with selectModels().
  */
 export function isProviderAvailable(provider: Provider): boolean {
+  ensureProviderKeysLoaded()
   switch (provider) {
     case "openai":
       return !!process.env.OPENAI_API_KEY
@@ -157,6 +164,7 @@ export function isProviderAvailable(provider: Provider): boolean {
  * Get list of available providers (those with API keys set)
  */
 export function getAvailableProviders(): Provider[] {
+  ensureProviderKeysLoaded()
   // Ollama excluded — it's checked asynchronously via isOllamaAvailable()
   const providers: Provider[] = ["openai", "anthropic", "google", "xai", "perplexity", "openrouter"]
   return providers.filter(isProviderAvailable)

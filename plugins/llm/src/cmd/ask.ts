@@ -9,6 +9,7 @@ import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse }
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { formatLegDispatchError, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
+import { currentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
 
 /** Shared single-model ask: select model, stream, finalize */
 export async function askAndFinish(options: {
@@ -49,10 +50,15 @@ export async function askAndFinish(options: {
   } else {
     const result = getBestAvailableModel(modelMode, isProviderAvailable)
     if (!result.model) {
+      const seat = currentSeat()
+      const envFile = declaredHabitatEnvFile()
+      const msg =
+        `No model available for ${modelMode} for seat ${seat}: provider keys not found in declared env file (${envFile}) or launch environment. ${result.warning || ""}`.trim()
       // Error envelope on stdout (JSON mode honours the contract; legacy
       // mode also benefits — scripts that wrap llm consistently parse JSON
       // from stdout regardless of whether --json was passed).
-      emitJson({ error: `No model available for ${modelMode}. ${result.warning || ""}`, status: "failed" })
+      emitJson({ error: msg, status: "failed" })
+      console.error(`error: ${msg}`)
       process.exit(1)
     }
     if (result.warning) console.error(`⚠️  ${result.warning}\n`)

@@ -11,6 +11,7 @@ import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
 import { checkAndRecoverPartials } from "./recover"
+import { currentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
 
 const log = createLogger("bearly:llm")
 
@@ -42,7 +43,12 @@ export async function runDeep(options: {
   } else {
     const result = getBestAvailableModel("deep", isProviderAvailable)
     if (!result.model) {
-      emitJson({ error: "No deep research model available. " + (result.warning || ""), status: "failed" })
+      const seat = currentSeat()
+      const envFile = declaredHabitatEnvFile()
+      const msg =
+        `No deep research model available for seat ${seat}: provider keys not found in declared env file (${envFile}) or launch environment. ${result.warning || ""}`.trim()
+      emitJson({ error: msg, status: "failed" })
+      console.error(`error: ${msg}`)
       process.exit(1)
     }
     if (result.warning) console.error(`⚠️  ${result.warning}\n`)

@@ -42,6 +42,8 @@ import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
+import { currentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
+import { emitJson } from "../lib/output-mode"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
 
@@ -284,6 +286,14 @@ export async function runProDual(options: {
 
   // Fall back to single-model mode if we can't run both mainstays.
   if (!m0Available || !m1Available) {
+    const seat = currentSeat()
+    const envFile = declaredHabitatEnvFile()
+    if (!m0Available && !m1Available) {
+      const err = `Dual-pro failed for seat ${seat}: provider keys for neither mainstay could be loaded from declared env file (${envFile}) or launch environment.`
+      emitJson({ error: err, status: "failed" })
+      console.error(`error: ${err}`)
+      process.exit(1)
+    }
     const missing = !m0Available
       ? !mainstay0
         ? `unknown model "${mainstay0Id}"`
@@ -291,7 +301,9 @@ export async function runProDual(options: {
       : !mainstay1
         ? `unknown model "${mainstay1Id}"`
         : `provider key for ${mainstay1.provider}`
-    console.error(`⚠️  Dual-pro unavailable (${missing}) — falling back to single model\n`)
+    console.error(
+      `⚠️  Dual-pro unavailable (${missing}) for seat ${seat} (declared env file: ${envFile}) — falling back to single model\n`,
+    )
     await askAndFinish({
       question,
       modelMode: "pro" as ModelMode,

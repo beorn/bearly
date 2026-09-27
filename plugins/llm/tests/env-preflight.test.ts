@@ -18,7 +18,15 @@ import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
-import { envFileCandidates, missingApiKeyError } from "../src/lib/env-preflight"
+import {
+  currentSeat,
+  declaredHabitatEnvFile,
+  ensureProviderKeysLoaded,
+  envFileCandidates,
+  missingApiKeyError,
+  parseEnvFile,
+  resetProviderKeysLoadedState,
+} from "../src/lib/env-preflight"
 
 function git(args: string[], cwd: string): string {
   return execFileSync(
@@ -161,5 +169,98 @@ describe("missingApiKeyError", () => {
 
     process.env.OPENAI_API_KEY = "sk-test-openai"
     expect(missingApiKeyError("XAI_API_KEY", dir).message.startsWith("XAI_API_KEY not set")).toBe(true)
+  })
+
+  it("names the current seat and declared env file in missingApiKeyError", () => {
+    const dir = mkdtempSync(join(tmpdir(), "env-preflight-seat-"))
+    process.env.SEAT = "@dev/4"
+    try {
+      const message = missingApiKeyError("OPENROUTER_API_KEY", dir).message
+      expect(message).toContain("for seat @dev/4")
+      expect(message).toContain(join(dir, ".env"))
+    } finally {
+      delete process.env.SEAT
+    }
+  })
+
+  it("parses .env content accurately", () => {
+    const content = `
+# Comment line
+OPENROUTER_API_KEY=sk-or-v1-test
+export OPENAI_API_KEY="sk-proj-test"
+XAI_API_KEY='xai-test' # inline comment
+UNQUOTED=val # trailing comment
+`
+    const parsed = parseEnvFile(content)
+    expect(parsed.OPENROUTER_API_KEY).toBe("sk-or-v1-test")
+    expect(parsed.OPENAI_API_KEY).toBe("sk-proj-test")
+    expect(parsed.XAI_API_KEY).toBe("xai-test")
+    expect(parsed.UNQUOTED).toBe("val")
+  })
+
+  it("resolves current seat from HAB_ID_TOKEN or INHAB_SESSION_DIR", () => {
+    const savedHab = process.env.HAB_ID_TOKEN
+    const savedInhab = process.env.INHAB_SESSION_DIR
+    try {
+      // Valid dummy JWT with payload { act: { sub: "@dev/9" } }
+      const payload = Buffer.from(JSON.stringify({ act: { sub: "@dev/9" } })).toString("base64url")
+      process.env.HAB_ID_TOKEN = `header.${payload}.sig`
+      expect(currentSeat()).toBe("@dev/9")
+
+      delete process.env.HAB_ID_TOKEN
+      process.env.INHAB_SESSION_DIR = "/home/hh/.local/state/inhab/@dev.5"
+      expect(currentSeat()).toBe("@dev/5")
+    } finally {
+      if (savedHab !== undefined) process.env.HAB_ID_TOKEN = savedHab
+      else delete process.env.HAB_ID_TOKEN
+      if (savedInhab !== undefined) process.env.INHAB_SESSION_DIR = savedInhab
+      else delete process.env.INHAB_SESSION_DIR
+    }
+  })
+
+  it("loads unset provider keys from declared habitat .env file into process.env", () => {
+    resetProviderKeysLoadedState()
+    const habDir = mkdtempSync(join(tmpdir(), "env-preflight-hab-"))
+    const envPath = join(habDir, ".env")
+    writeFileSync(envPath, "OPENROUTER_API_KEY=sk-loaded-test\nGEMINI_API_KEY=gem-test\n")
+    const savedHabEnv = process.env.HAB_ENV_FILE
+    process.env.HAB_ENV_FILE = envPath
+    try {
+      expect(process.env.OPENROUTER_API_KEY).toBeUndefined()
+      expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBeUndefined()
+
+      const loaded = ensureProviderKeysLoaded(habDir)
+      expect(loaded).toBe(true)
+      expect(process.env.OPENROUTER_API_KEY).toBe("sk-loaded-test")
+      // GEMINI_API_KEY aliases to GOOGLE_GENERATIVE_AI_API_KEY
+      expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("gem-test")
+    } finally {
+      resetProviderKeysLoadedState()
+      delete process.env.OPENROUTER_API_KEY
+      delete process.env.GEMINI_API_KEY
+      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY
+      if (savedHabEnv !== undefined) process.env.HAB_ENV_FILE = savedHabEnv
+      else delete process.env.HAB_ENV_FILE
+    }
+  })
+
+  it("climbs out of worktree to find enclosing habitat root .env", () => {
+    const habRoot = mkdtempSync(join(tmpdir(), "habitat-root-"))
+    writeFileSync(join(habRoot, ".env"), "OPENAI_API_KEY=sk-hab-root\n")
+    writeFileSync(join(habRoot, "main.hab"), "// habitat marker\n")
+
+    const codeRepo = join(habRoot, "dev")
+    mkdirSync(codeRepo, { recursive: true })
+    git(["init", "-q", "."], codeRepo)
+    writeFileSync(join(codeRepo, "seed.txt"), "seed\n")
+    git(["add", "."], codeRepo)
+    git(["commit", "-qm", "init"], codeRepo)
+
+    const worktree = join(habRoot, "dev-wt8")
+    git(["worktree", "add", "-q", "--detach", worktree], codeRepo)
+
+    const candidates = envFileCandidates(worktree)
+    expect(candidates).toContain(join(habRoot, ".env"))
+    expect(declaredHabitatEnvFile(worktree)).toBe(join(habRoot, ".env"))
   })
 })

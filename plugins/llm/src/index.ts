@@ -31,6 +31,13 @@ export type {
 } from "./lib/types.ts"
 export { isProviderAvailable, getAvailableProviders } from "./lib/providers.ts"
 export {
+  ensureProviderKeysLoaded,
+  resetProviderKeysLoadedState,
+  currentSeat,
+  declaredHabitatEnvFile,
+  missingApiKeyError,
+} from "./lib/env-preflight.ts"
+export {
   createProviderObservationStore,
   readProviderAvailability,
   recordProviderObservation,

@@ -26,6 +26,7 @@ import { getAvailableProviders } from "./lib/providers"
 import { getModel, MODELS, type Model, type Provider } from "./lib/types"
 import { initializePricing, getStaleWarning } from "./lib/pricing"
 import { loadRecall } from "./lib/recall-optional"
+import { ensureProviderKeysLoaded } from "./lib/env-preflight"
 import {
   performPricingUpdate,
   maybeAutoUpdatePricing,
@@ -52,6 +53,7 @@ import { readdirSync, statSync, unlinkSync } from "fs"
 // via setOutputSlug; it now lives as a local inside main(), resolved per
 // dispatch branch via the pure resolveOutputFile helper below.
 function initCli(): void {
+  ensureProviderKeysLoaded()
   initializePricing()
 
   // Clean up stale output files (>7 days old).
@@ -778,15 +780,17 @@ export async function main(): Promise<string | undefined> {
         if (a === "--exclude" && i + 1 < args.length) {
           for (const id of args[i + 1]!.split(",")
             .map((s) => s.trim())
-            .filter(Boolean))
+            .filter(Boolean)) {
             excludeArgs.push(id)
+          }
         } else if (a.startsWith("--exclude=")) {
           for (const id of a
             .slice("--exclude=".length)
             .split(",")
             .map((s) => s.trim())
-            .filter(Boolean))
+            .filter(Boolean)) {
             excludeArgs.push(id)
+          }
         }
       }
       // --legs N caps the leg count (2 = mainstays only, 3 = +slot C, 4 = full

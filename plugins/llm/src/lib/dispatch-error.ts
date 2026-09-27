@@ -268,6 +268,10 @@ export function describeDispatchFailure(
       remedy: replacement ? `replace it with ${replacement}` : "discover current model ids and update the registry",
     }
   }
+  if (/\b(?:not set|loaded no env file|did not reach this process)\b/iu.test(blob)) {
+    const rendered = oneLineError(error)
+    return refusing("auth", target, rendered, `load ${envVar}`)
+  }
   if (
     /invalid[_ ]?api[_ ]?key|unauthorized|permission|auth failed|organization not verified/iu.test(blob) ||
     responseStatus === 401 ||

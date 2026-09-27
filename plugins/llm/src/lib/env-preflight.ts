@@ -16,8 +16,8 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { basename, dirname, join, resolve } from "node:path"
 import { gitEnvironmentWithoutRootOverrides } from "removely"
 
 /** Git answers for `cwd`, never for the repository a leaked GIT_DIR or GIT_WORK_TREE names (hh 26003). */
@@ -31,8 +31,72 @@ function git(args: string[], cwd: string): string {
 }
 
 /**
- * The `.env` paths a direnv-managed checkout would load, most local first:
- * the cwd, the enclosing working tree, and the main checkout it belongs to.
+ * Resolve current seat identity for loud error reporting.
+ *
+ * Checks in order:
+ * 1. Explicit SEAT or TENT_SEAT environment variable
+ * 2. HAB_ID_TOKEN payload (act.sub or sub)
+ * 3. INHAB_SESSION_DIR (@dev.8 -> @dev/8)
+ * 4. dev-wtN pattern in cwd (@dev/N)
+ * 5. USER or "unknown-seat"
+ */
+export function currentSeat(): string {
+  if (process.env.SEAT) return process.env.SEAT
+  if (process.env.TENT_SEAT) return process.env.TENT_SEAT
+  if (process.env.HAB_ID_TOKEN) {
+    try {
+      const parts = process.env.HAB_ID_TOKEN.split(".")
+      if (parts[1]) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+          act?: { sub?: unknown }
+          sub?: unknown
+        }
+        const seat = payload?.act?.sub ?? payload?.sub
+        if (typeof seat === "string" && seat.length > 0) return seat
+      }
+    } catch {}
+  }
+  if (process.env.INHAB_SESSION_DIR) {
+    const base = basename(process.env.INHAB_SESSION_DIR)
+    if (base.startsWith("@dev.")) return `@dev/${base.slice(5)}`
+    if (base.startsWith("@")) return base
+  }
+  const match = process.cwd().match(/dev-wt(\d+)/)
+  if (match?.[1]) return `@dev/${match[1]}`
+  return process.env.USER ?? "unknown-seat"
+}
+
+/**
+ * Parse standard KEY=VALUE lines from an .env file without external dependencies.
+ */
+export function parseEnvFile(content: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const rawLine of content.split("\n")) {
+    const trimmed = rawLine.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+    if (!match) continue
+    const key = match[1]!
+    let val = match[2]!.trim()
+    const commentIdx = val.indexOf(" #")
+    if (commentIdx !== -1) {
+      val = val.slice(0, commentIdx).trim()
+    }
+    if (
+      (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+      (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+    ) {
+      val = val.slice(1, -1)
+    }
+    result[key] = val
+  }
+  return result
+}
+
+/**
+ * The `.env` paths a direnv-managed checkout or habitat would load, most local first:
+ * the cwd, the enclosing working tree, the main checkout it belongs to, and
+ * any enclosing habitat container root.
  *
  * Two rev-parse traps, both hit for real while building this:
  *
@@ -44,6 +108,9 @@ function git(args: string[], cwd: string): string {
  *   occupies. Climb out via `--show-superproject-working-tree` first.
  */
 export function envFileCandidates(cwd: string = process.cwd()): string[] {
+  if (process.env.HAB_ENV_FILE) {
+    return [process.env.HAB_ENV_FILE]
+  }
   const candidates = [join(cwd, ".env")]
   const add = (dir: string) => {
     const path = join(dir, ".env")
@@ -58,14 +125,132 @@ export function envFileCandidates(cwd: string = process.cwd()): string[] {
       if (!superproject) break
       root = superproject
     }
-    add(git(["rev-parse", "--show-toplevel"], root))
-    add(dirname(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)))
+    const toplevel = git(["rev-parse", "--show-toplevel"], root)
+    add(toplevel)
+    const commonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    const commonParent = dirname(commonDir)
+    add(commonParent)
+
+    // In habitat layouts (e.g. /hh with /hh/dev as CODE checkout and /hh/dev-wt* as seat worktrees):
+    // The superproject rev-parse cannot see /hh because dev is gitignored in the /hh state repo.
+    // Climb up from root, toplevel, and commonParent to find the enclosing habitat container root.
+    const searchRoots = [root, toplevel, commonParent]
+    for (const start of searchRoots) {
+      let cur = dirname(resolve(start))
+      while (cur && cur !== dirname(cur)) {
+        if (
+          existsSync(join(cur, ".env")) ||
+          existsSync(join(cur, "main.hab")) ||
+          existsSync(join(cur, "hh.hab.tsx")) ||
+          existsSync(join(cur, "pm"))
+        ) {
+          add(cur)
+          break
+        }
+        cur = dirname(cur)
+      }
+    }
+
+    if (process.env.HH_CONTAINER_ROOT) {
+      const container = resolve(process.env.HH_CONTAINER_ROOT)
+      const resolvedCwd = resolve(cwd)
+      const resolvedRoot = resolve(root)
+      if (resolvedCwd.startsWith(container) || resolvedRoot.startsWith(container)) {
+        add(container)
+      }
+    }
   } catch {
     // No git on PATH, or not a repo. cwd is then the only path we can honestly
     // name, and we still name it. Non-fatal by construction: this runs only
     // while building an error that is about to be thrown anyway.
   }
   return candidates
+}
+
+/**
+ * Return the primary declared habitat .env file path (found or expected).
+ */
+export function declaredHabitatEnvFile(cwd: string = process.cwd()): string {
+  if (process.env.HAB_ENV_FILE) return process.env.HAB_ENV_FILE
+  const candidates = envFileCandidates(cwd)
+  const existing = candidates.find((p) => existsSync(p))
+  if (existing) return existing
+  if (process.env.HH_CONTAINER_ROOT) return join(process.env.HH_CONTAINER_ROOT, ".env")
+  return candidates[candidates.length - 1] ?? join(cwd, ".env")
+}
+
+let envLoaded = false
+let loadedEnvFilePath: string | null = null
+
+export function getLoadedEnvFile(): string | null {
+  return loadedEnvFilePath
+}
+
+export function resetProviderKeysLoadedState(): void {
+  envLoaded = false
+  loadedEnvFilePath = null
+}
+
+/**
+ * Ensure provider credentials from the declared habitat env file are loaded
+ * into process.env if they were not already present in the launch environment.
+ */
+export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
+  if (envLoaded) return loadedEnvFilePath !== null
+  if (process.env.LLM_NO_ENV_AUTOLOAD === "1" && !process.env.HAB_ENV_FILE) return false
+
+  if (process.env.HAB_ENV_FILE) {
+    if (existsSync(process.env.HAB_ENV_FILE)) {
+      try {
+        const content = readFileSync(process.env.HAB_ENV_FILE, "utf8")
+        const vars = parseEnvFile(content)
+        for (const [key, val] of Object.entries(vars)) {
+          if (process.env[key] === undefined || process.env[key] === "") {
+            process.env[key] = val
+          }
+        }
+        if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+          process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY
+        }
+        loadedEnvFilePath = process.env.HAB_ENV_FILE
+        envLoaded = true
+        return true
+      } catch {
+        envLoaded = true
+        return false
+      }
+    } else {
+      envLoaded = true
+      return false
+    }
+  }
+
+  const candidates = envFileCandidates(cwd)
+  const target = candidates.find((p) => existsSync(p))
+  if (!target) {
+    envLoaded = true
+    return false
+  }
+
+  try {
+    const content = readFileSync(target, "utf8")
+    const vars = parseEnvFile(content)
+    for (const [key, val] of Object.entries(vars)) {
+      if (process.env[key] === undefined || process.env[key] === "") {
+        process.env[key] = val
+      }
+    }
+    // Also alias GEMINI_API_KEY -> GOOGLE_GENERATIVE_AI_API_KEY if unset
+    if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY
+    }
+    loadedEnvFilePath = target
+    envLoaded = true
+    return true
+  } catch {
+    envLoaded = true
+    return false
+  }
 }
 
 /** True when any provider credential at all reached this process. */
@@ -77,25 +262,29 @@ function anyProviderKeySet(): boolean {
  * Build the error thrown when a provider's key is absent.
  *
  * Keeps the `<VAR> not set` prefix every existing caller, log and doc greps
- * for, and appends the cause the reader actually needs. `cwd` is injectable so
- * both branches are testable without `process.chdir`, which throws under
- * Vitest's worker-thread pool.
+ * for, and appends the cause the reader actually needs. Fails loud naming the
+ * declared env file and the seat.
  */
 export function missingApiKeyError(envVar: string, cwd: string = process.cwd()): Error {
+  const seat = currentSeat()
+  const declaredFile = getLoadedEnvFile() ?? declaredHabitatEnvFile(cwd)
+
   if (anyProviderKeySet()) {
     return new Error(
-      `${envVar} not set. Other *_API_KEY variables are set, so an env file did load — ` +
-        `this key is missing from it or misspelled.`,
+      `${envVar} not set for seat ${seat}. Other *_API_KEY variables are set, so an env file did load ` +
+        `(from ${declaredFile} or launch environment) — this key is missing from it or misspelled.`,
     )
   }
 
   const candidates = envFileCandidates(cwd)
   const present = candidates.filter((path) => existsSync(path))
   const remedy = present.length
-    ? `${present.join(" and ")} exists but did not reach this process — run \`direnv allow\` here ` +
+    ? `${present.join(" and ")} exists for seat ${seat} but did not reach this process — run \`direnv allow\` here ` +
       `(a freshly created git worktree is never allowed yet), then \`direnv reload\`.`
-    : `no env file exists at ${candidates.join(" or ")} — create one in the main checkout; ` +
+    : `no env file exists at ${candidates.join(" or ")} for seat ${seat} — create one in the main checkout; ` +
       `worktrees inherit it through .envrc rather than getting their own copy.`
 
-  return new Error(`${envVar} not set — and no *_API_KEY is set at all, so this process loaded no env file. ${remedy}`)
+  return new Error(
+    `${envVar} not set for seat ${seat} — and no *_API_KEY is set at all, so this process loaded no env file. ${remedy}`,
+  )
 }

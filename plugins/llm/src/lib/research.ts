@@ -11,8 +11,9 @@ import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
 import type { Model, ModelResponse, Provider, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, getEndpoint, MODELS } from "./types"
+import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
 import { describeDispatchFailure, type DispatchFailureDescription } from "./dispatch-error"
+import { missingApiKeyError } from "./env-preflight"
 import {
   createProviderObservationStore,
   recordProviderObservation,
@@ -281,12 +282,16 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   // Check provider availability
   if (!isProviderAvailable(model.provider)) {
+    const envVar = getProviderEnvVar(model.provider)
+    const error = envVar
+      ? missingApiKeyError(envVar).message
+      : `Provider ${model.provider} not available (API key not set)`
     return {
       response: {
         model,
         content: "",
         durationMs: Date.now() - startTime,
-        error: `Provider ${model.provider} not available (API key not set)`,
+        error,
       },
     }
   }
