@@ -33,38 +33,28 @@ function git(args: string[], cwd: string): string {
 /**
  * Resolve current seat identity for loud error reporting.
  *
- * Checks in order:
- * 1. Explicit SEAT or TENT_SEAT environment variable
- * 2. HAB_ID_TOKEN payload (act.sub or sub)
- * 3. INHAB_SESSION_DIR (@dev.8 -> @dev/8)
- * 4. dev-wtN pattern in cwd (@dev/N)
- * 5. USER or "unknown-seat"
+ * Takes identity from explicit launch environment (SEAT or TENT_SEAT).
+ * Identity is never inferred from cwd, worktree path, or decoded tokens.
  */
 export function currentSeat(): string {
   if (process.env.SEAT) return process.env.SEAT
   if (process.env.TENT_SEAT) return process.env.TENT_SEAT
-  if (process.env.HAB_ID_TOKEN) {
-    try {
-      const parts = process.env.HAB_ID_TOKEN.split(".")
-      if (parts[1]) {
-        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
-          act?: { sub?: unknown }
-          sub?: unknown
-        }
-        const seat = payload?.act?.sub ?? payload?.sub
-        if (typeof seat === "string" && seat.length > 0) return seat
-      }
-    } catch {}
-  }
-  if (process.env.INHAB_SESSION_DIR) {
-    const base = basename(process.env.INHAB_SESSION_DIR)
-    if (base.startsWith("@dev.")) return `@dev/${base.slice(5)}`
-    if (base.startsWith("@")) return base
-  }
-  const match = process.cwd().match(/dev-wt(\d+)/)
-  if (match?.[1]) return `@dev/${match[1]}`
-  return process.env.USER ?? "unknown-seat"
+  return "seat: none declared"
 }
+
+/**
+ * Provider credentials managed by @bearly/llm.
+ * Only these keys are loaded from declared env files into process.env.
+ */
+export const PROVIDER_KEY_NAMES: ReadonlySet<string> = new Set([
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "GEMINI_API_KEY",
+  "XAI_API_KEY",
+  "PERPLEXITY_API_KEY",
+  "OPENROUTER_API_KEY",
+])
 
 /**
  * Parse standard KEY=VALUE lines from an .env file without external dependencies.
@@ -78,15 +68,17 @@ export function parseEnvFile(content: string): Record<string, string> {
     if (!match) continue
     const key = match[1]!
     let val = match[2]!.trim()
-    const commentIdx = val.indexOf(" #")
-    if (commentIdx !== -1) {
-      val = val.slice(0, commentIdx).trim()
-    }
-    if (
-      (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
-      (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
-    ) {
-      val = val.slice(1, -1)
+    const doubleQuoted = val.match(/^"((?:\\.|[^"\\])*)"(?:\s+#.*)?$/)
+    const singleQuoted = val.match(/^'([^']*)'(?:\s+#.*)?$/)
+    if (doubleQuoted) {
+      val = doubleQuoted[1]!.replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+    } else if (singleQuoted) {
+      val = singleQuoted[1]!
+    } else {
+      const commentIdx = val.indexOf(" #")
+      if (commentIdx !== -1) {
+        val = val.slice(0, commentIdx).trim()
+      }
     }
     result[key] = val
   }
@@ -138,12 +130,7 @@ export function envFileCandidates(cwd: string = process.cwd()): string[] {
     for (const start of searchRoots) {
       let cur = dirname(resolve(start))
       while (cur && cur !== dirname(cur)) {
-        if (
-          existsSync(join(cur, ".env")) ||
-          existsSync(join(cur, "main.hab")) ||
-          existsSync(join(cur, "hh.hab.tsx")) ||
-          existsSync(join(cur, "pm"))
-        ) {
+        if (existsSync(join(cur, ".env")) || existsSync(join(cur, "main.hab")) || existsSync(join(cur, "hh.hab.tsx"))) {
           add(cur)
           break
         }
@@ -181,21 +168,30 @@ export function declaredHabitatEnvFile(cwd: string = process.cwd()): string {
 
 let envLoaded = false
 let loadedEnvFilePath: string | null = null
+let envLoadFailure: { path: string; error: string } | null = null
 
 export function getLoadedEnvFile(): string | null {
   return loadedEnvFilePath
 }
 
-export function resetProviderKeysLoadedState(): void {
-  envLoaded = false
-  loadedEnvFilePath = null
+export function getEnvLoadFailure(): { path: string; error: string } | null {
+  return envLoadFailure
 }
 
 /**
  * Ensure provider credentials from the declared habitat env file are loaded
  * into process.env if they were not already present in the launch environment.
  */
-export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
+export function ensureProviderKeysLoaded(
+  cwd: string = process.cwd(),
+  options?: { reload?: boolean; reset?: boolean },
+): boolean {
+  if (options?.reload || options?.reset) {
+    envLoaded = false
+    loadedEnvFilePath = null
+    envLoadFailure = null
+    if (options?.reset) return false
+  }
   if (envLoaded) return loadedEnvFilePath !== null
   if (process.env.LLM_NO_ENV_AUTOLOAD === "1" && !process.env.HAB_ENV_FILE) return false
 
@@ -205,7 +201,7 @@ export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
         const content = readFileSync(process.env.HAB_ENV_FILE, "utf8")
         const vars = parseEnvFile(content)
         for (const [key, val] of Object.entries(vars)) {
-          if (process.env[key] === undefined || process.env[key] === "") {
+          if (PROVIDER_KEY_NAMES.has(key) && (process.env[key] === undefined || process.env[key] === "")) {
             process.env[key] = val
           }
         }
@@ -215,11 +211,19 @@ export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
         loadedEnvFilePath = process.env.HAB_ENV_FILE
         envLoaded = true
         return true
-      } catch {
+      } catch (err) {
+        envLoadFailure = {
+          path: process.env.HAB_ENV_FILE,
+          error: err instanceof Error ? err.message : String(err),
+        }
         envLoaded = true
         return false
       }
     } else {
+      envLoadFailure = {
+        path: process.env.HAB_ENV_FILE,
+        error: "file does not exist",
+      }
       envLoaded = true
       return false
     }
@@ -228,6 +232,10 @@ export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
   const candidates = envFileCandidates(cwd)
   const target = candidates.find((p) => existsSync(p))
   if (!target) {
+    envLoadFailure = {
+      path: declaredHabitatEnvFile(cwd),
+      error: "no env file found",
+    }
     envLoaded = true
     return false
   }
@@ -236,7 +244,7 @@ export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
     const content = readFileSync(target, "utf8")
     const vars = parseEnvFile(content)
     for (const [key, val] of Object.entries(vars)) {
-      if (process.env[key] === undefined || process.env[key] === "") {
+      if (PROVIDER_KEY_NAMES.has(key) && (process.env[key] === undefined || process.env[key] === "")) {
         process.env[key] = val
       }
     }
@@ -247,7 +255,11 @@ export function ensureProviderKeysLoaded(cwd: string = process.cwd()): boolean {
     loadedEnvFilePath = target
     envLoaded = true
     return true
-  } catch {
+  } catch (err) {
+    envLoadFailure = {
+      path: target,
+      error: err instanceof Error ? err.message : String(err),
+    }
     envLoaded = true
     return false
   }
@@ -267,11 +279,18 @@ function anyProviderKeySet(): boolean {
  */
 export function missingApiKeyError(envVar: string, cwd: string = process.cwd()): Error {
   const seat = currentSeat()
+  const seatDesc = seat.startsWith("seat:") ? seat : `seat ${seat}`
   const declaredFile = getLoadedEnvFile() ?? declaredHabitatEnvFile(cwd)
+
+  if (envLoadFailure && envLoadFailure.error !== "no env file found") {
+    return new Error(
+      `${envVar} not set for ${seatDesc} — attempted to load declared env file (${envLoadFailure.path}) but failed: ${envLoadFailure.error}.`,
+    )
+  }
 
   if (anyProviderKeySet()) {
     return new Error(
-      `${envVar} not set for seat ${seat}. Other *_API_KEY variables are set, so an env file did load ` +
+      `${envVar} not set for ${seatDesc}. Other *_API_KEY variables are set, so an env file did load ` +
         `(from ${declaredFile} or launch environment) — this key is missing from it or misspelled.`,
     )
   }
@@ -279,12 +298,12 @@ export function missingApiKeyError(envVar: string, cwd: string = process.cwd()):
   const candidates = envFileCandidates(cwd)
   const present = candidates.filter((path) => existsSync(path))
   const remedy = present.length
-    ? `${present.join(" and ")} exists for seat ${seat} but did not reach this process — run \`direnv allow\` here ` +
+    ? `${present.join(" and ")} exists for ${seatDesc} but did not reach this process — run \`direnv allow\` here ` +
       `(a freshly created git worktree is never allowed yet), then \`direnv reload\`.`
-    : `no env file exists at ${candidates.join(" or ")} for seat ${seat} — create one in the main checkout; ` +
+    : `no env file exists at ${candidates.join(" or ")} for ${seatDesc} — create one in the main checkout; ` +
       `worktrees inherit it through .envrc rather than getting their own copy.`
 
   return new Error(
-    `${envVar} not set for seat ${seat} — and no *_API_KEY is set at all, so this process loaded no env file. ${remedy}`,
+    `${envVar} not set for ${seatDesc} — and no *_API_KEY is set at all, so this process loaded no env file. ${remedy}`,
   )
 }

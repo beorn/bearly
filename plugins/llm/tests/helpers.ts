@@ -17,7 +17,7 @@ import { afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, readdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { resetProviderKeysLoadedState } from "../src/lib/env-preflight"
+import { ensureProviderKeysLoaded } from "../src/lib/env-preflight"
 
 export interface TestEnv {
   /** Isolated /tmp substitute for this test — LLM output files end up here. */
@@ -104,7 +104,7 @@ export function makeTestEnv(): TestEnv {
       rmSync(homeDir, { recursive: true, force: true })
     } catch {}
     delete process.env.LLM_NO_ENV_AUTOLOAD
-    resetProviderKeysLoadedState()
+    ensureProviderKeysLoaded(process.cwd(), { reload: true })
     vi.restoreAllMocks()
     vi.resetModules()
   })

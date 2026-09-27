@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import {
@@ -25,7 +25,6 @@ import {
   envFileCandidates,
   missingApiKeyError,
   parseEnvFile,
-  resetProviderKeysLoadedState,
 } from "../src/lib/env-preflight"
 
 function git(args: string[], cwd: string): string {
@@ -190,57 +189,90 @@ OPENROUTER_API_KEY=sk-or-v1-test
 export OPENAI_API_KEY="sk-proj-test"
 XAI_API_KEY='xai-test' # inline comment
 UNQUOTED=val # trailing comment
+QUOTED_HASH="value with # hash inside quotes"
 `
     const parsed = parseEnvFile(content)
     expect(parsed.OPENROUTER_API_KEY).toBe("sk-or-v1-test")
     expect(parsed.OPENAI_API_KEY).toBe("sk-proj-test")
     expect(parsed.XAI_API_KEY).toBe("xai-test")
     expect(parsed.UNQUOTED).toBe("val")
+    expect(parsed.QUOTED_HASH).toBe("value with # hash inside quotes")
   })
 
-  it("resolves current seat from HAB_ID_TOKEN or INHAB_SESSION_DIR", () => {
-    const savedHab = process.env.HAB_ID_TOKEN
-    const savedInhab = process.env.INHAB_SESSION_DIR
+  it("resolves current seat from SEAT, TENT_SEAT, or returns none declared", () => {
+    const savedSeat = process.env.SEAT
+    const savedTentSeat = process.env.TENT_SEAT
     try {
-      // Valid dummy JWT with payload { act: { sub: "@dev/9" } }
-      const payload = Buffer.from(JSON.stringify({ act: { sub: "@dev/9" } })).toString("base64url")
-      process.env.HAB_ID_TOKEN = `header.${payload}.sig`
+      process.env.SEAT = "@dev/9"
       expect(currentSeat()).toBe("@dev/9")
 
-      delete process.env.HAB_ID_TOKEN
-      process.env.INHAB_SESSION_DIR = "/home/hh/.local/state/inhab/@dev.5"
+      delete process.env.SEAT
+      process.env.TENT_SEAT = "@dev/5"
       expect(currentSeat()).toBe("@dev/5")
+
+      delete process.env.TENT_SEAT
+      expect(currentSeat()).toBe("seat: none declared")
     } finally {
-      if (savedHab !== undefined) process.env.HAB_ID_TOKEN = savedHab
-      else delete process.env.HAB_ID_TOKEN
-      if (savedInhab !== undefined) process.env.INHAB_SESSION_DIR = savedInhab
-      else delete process.env.INHAB_SESSION_DIR
+      if (savedSeat !== undefined) process.env.SEAT = savedSeat
+      else delete process.env.SEAT
+      if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
+      else delete process.env.TENT_SEAT
     }
   })
 
-  it("loads unset provider keys from declared habitat .env file into process.env", () => {
-    resetProviderKeysLoadedState()
+  it("loads unset provider keys from declared habitat .env file into process.env, ignoring non-provider keys", () => {
+    ensureProviderKeysLoaded(process.cwd(), { reset: true })
+    delete process.env.OPENROUTER_API_KEY
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY
+    delete process.env.DATABASE_URL
     const habDir = mkdtempSync(join(tmpdir(), "env-preflight-hab-"))
     const envPath = join(habDir, ".env")
-    writeFileSync(envPath, "OPENROUTER_API_KEY=sk-loaded-test\nGEMINI_API_KEY=gem-test\n")
+    writeFileSync(
+      envPath,
+      "OPENROUTER_API_KEY=sk-loaded-test\nGEMINI_API_KEY=gem-test\nDATABASE_URL=postgres://secret\n",
+    )
     const savedHabEnv = process.env.HAB_ENV_FILE
     process.env.HAB_ENV_FILE = envPath
     try {
       expect(process.env.OPENROUTER_API_KEY).toBeUndefined()
       expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBeUndefined()
+      expect(process.env.DATABASE_URL).toBeUndefined()
 
       const loaded = ensureProviderKeysLoaded(habDir)
       expect(loaded).toBe(true)
       expect(process.env.OPENROUTER_API_KEY).toBe("sk-loaded-test")
       // GEMINI_API_KEY aliases to GOOGLE_GENERATIVE_AI_API_KEY
       expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("gem-test")
+      // Non-provider keys must NOT be loaded into process.env
+      expect(process.env.DATABASE_URL).toBeUndefined()
     } finally {
-      resetProviderKeysLoadedState()
+      ensureProviderKeysLoaded(process.cwd(), { reset: true })
       delete process.env.OPENROUTER_API_KEY
       delete process.env.GEMINI_API_KEY
       delete process.env.GOOGLE_GENERATIVE_AI_API_KEY
       if (savedHabEnv !== undefined) process.env.HAB_ENV_FILE = savedHabEnv
       else delete process.env.HAB_ENV_FILE
+    }
+  })
+
+  it("reports failure when declared env file is unreadable", () => {
+    ensureProviderKeysLoaded(process.cwd(), { reset: true })
+    const unreadableDir = mkdtempSync(join(tmpdir(), "env-preflight-unreadable-"))
+    const envPath = join(unreadableDir, ".env")
+    writeFileSync(envPath, "OPENROUTER_API_KEY=test\n")
+    // Make file unreadable
+    chmodSync(envPath, 0)
+    process.env.HAB_ENV_FILE = envPath
+    try {
+      const loaded = ensureProviderKeysLoaded(unreadableDir, { reload: true })
+      expect(loaded).toBe(false)
+      const err = missingApiKeyError("OPENROUTER_API_KEY", unreadableDir)
+      expect(err.message).toContain("attempted to load declared env file")
+      expect(err.message).toContain(envPath)
+    } finally {
+      chmodSync(envPath, 0o644)
+      delete process.env.HAB_ENV_FILE
+      ensureProviderKeysLoaded(process.cwd(), { reset: true })
     }
   })
 

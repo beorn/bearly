@@ -32,7 +32,7 @@ export type {
 export { isProviderAvailable, getAvailableProviders } from "./lib/providers.ts"
 export {
   ensureProviderKeysLoaded,
-  resetProviderKeysLoadedState,
+  getEnvLoadFailure,
   currentSeat,
   declaredHabitatEnvFile,
   missingApiKeyError,

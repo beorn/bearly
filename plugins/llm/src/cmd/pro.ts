@@ -42,7 +42,7 @@ import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
-import { currentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
+import { currentSeat, declaredHabitatEnvFile, getEnvLoadFailure } from "../lib/env-preflight"
 import { emitJson } from "../lib/output-mode"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
@@ -288,8 +288,13 @@ export async function runProDual(options: {
   if (!m0Available || !m1Available) {
     const seat = currentSeat()
     const envFile = declaredHabitatEnvFile()
+    const loadFailure = getEnvLoadFailure()
+    const failureDetail =
+      loadFailure && loadFailure.error !== "no env file found"
+        ? ` (failed to read declared env file: ${loadFailure.error})`
+        : ""
     if (!m0Available && !m1Available) {
-      const err = `Dual-pro failed for seat ${seat}: provider keys for neither mainstay could be loaded from declared env file (${envFile}) or launch environment.`
+      const err = `Dual-pro failed for seat ${seat}: provider keys for neither mainstay could be loaded from declared env file (${envFile})${failureDetail} or launch environment.`
       emitJson({ error: err, status: "failed" })
       console.error(`error: ${err}`)
       process.exit(1)
