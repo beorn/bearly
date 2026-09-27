@@ -17,6 +17,7 @@
  *
  * Marked .slow because it shells out to git and does real filesystem work;
  * included in test:vendor / test:all but excluded from test:fast.
+ * @reach fs-walk <fixture-only: buildMain and worktrees use the mkdtempSync sandbox>
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"

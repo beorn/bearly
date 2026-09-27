@@ -14,6 +14,7 @@
  *   - root outside allow  — `$HOME` is never a legal containment root
  *   - missing target      — absent is an error unless declared expected
  *   - survivor detection  — a cleanup that leaves the root behind must fail
+ * @reach fs-walk <fixture-only: scratch and projectScratch create tmpdir fixtures>
  */
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"

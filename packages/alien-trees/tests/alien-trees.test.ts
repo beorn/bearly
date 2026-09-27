@@ -3,6 +3,7 @@
  *
  * Full behavioral coverage: signals, some/count/reduce, includeSelf,
  * rebind, lifecycle, atomicity, re-entrancy, bootstrap.
+ * @reach fs-walk <fixture-only: tree walks use the in-memory simpleTree traversal>
  */
 
 import { describe, it, expect, beforeEach } from "vitest"

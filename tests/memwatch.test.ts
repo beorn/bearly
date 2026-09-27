@@ -12,6 +12,7 @@
  *       marker file).
  *
  * Tests must run under Bun because `tools/memwatch.ts` uses `Bun.spawn`.
+ * @reach fs-walk <fixture-only: snapshotDir uses mkTmp under tmpdir; the spawned child is a fixture>
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest"

@@ -1,3 +1,6 @@
+/**
+ * @reach fs-walk <fixture-only: ripgrep backend scans mkdtempSync test directories>
+ */
 import { describe, test, expect, beforeAll, afterAll } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs"
 import { join } from "path"

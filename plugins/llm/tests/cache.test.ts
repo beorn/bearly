@@ -11,6 +11,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
+/**
+ * @reach fs-walk <fixture-only: cacheDir is a mkdtempSync directory under tmpdir>
+ */
 import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"

@@ -1,4 +1,5 @@
 /**
+ * @reach fs-walk vendor/bearly/packages/**
  * @failure A bearly package that reaches another package's files by a relative
  *          path works inside this monorepo and breaks in a standalone install;
  *          package.json checks never see it, because the edge lives in source.

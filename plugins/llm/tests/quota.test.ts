@@ -14,7 +14,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs"
+/**
+ * @reach fs-walk <fixture-only: cacheDir is a mkdtempSync directory under tmpdir>
+ */
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -232,9 +235,7 @@ describe("cache I/O (atomic write)", () => {
     const entries = readFileSync(join(cacheDir, "last-quota.json"), "utf-8")
     expect(entries).toContain("openai")
     // No `.last-quota-*.tmp` files left behind.
-    const tmpFiles = require("node:fs")
-      .readdirSync(cacheDir)
-      .filter((f: string) => f.includes(".tmp"))
+    const tmpFiles = readdirSync(cacheDir).filter((f) => f.includes(".tmp"))
     expect(tmpFiles).toEqual([])
   })
 })
