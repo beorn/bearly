@@ -22,6 +22,9 @@ on:
 
 jobs:
   publish:
+    # Updating an existing tag corrects its source ref; it must not republish npm bytes.
+    # Deleting and recreating a tag is a new ref and still runs this job.
+    if: github.event.created == true
     runs-on: ubuntu-latest
     permissions:
       contents: write # create GitHub release
