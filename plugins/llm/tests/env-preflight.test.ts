@@ -227,6 +227,48 @@ QUOTED_HASH="value with # hash inside quotes"
     }
   })
 
+  it("refuses by name when declared seat sources disagree", () => {
+    const savedSeat = process.env.SEAT
+    const savedTentSeat = process.env.TENT_SEAT
+    const savedTribeName = process.env.TRIBE_NAME
+    try {
+      process.env.SEAT = "@dev/9"
+      process.env.TENT_SEAT = "@dev/5"
+      expect(() => currentSeat()).toThrow('declared seat sources disagree: SEAT="@dev/9", TENT_SEAT="@dev/5"')
+
+      process.env.TRIBE_NAME = "@dev/review-adhoc5"
+      expect(() => currentSeat()).toThrow(
+        'declared seat sources disagree: SEAT="@dev/9", TENT_SEAT="@dev/5", TRIBE_NAME="@dev/review-adhoc5"',
+      )
+    } finally {
+      if (savedSeat !== undefined) process.env.SEAT = savedSeat
+      else delete process.env.SEAT
+      if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
+      else delete process.env.TENT_SEAT
+      if (savedTribeName !== undefined) process.env.TRIBE_NAME = savedTribeName
+      else delete process.env.TRIBE_NAME
+    }
+  })
+
+  it("accepts multiple declared seat sources when they agree", () => {
+    const savedSeat = process.env.SEAT
+    const savedTentSeat = process.env.TENT_SEAT
+    const savedTribeName = process.env.TRIBE_NAME
+    try {
+      process.env.SEAT = "@dev/8"
+      process.env.TENT_SEAT = "@dev/8"
+      process.env.TRIBE_NAME = "@dev/8"
+      expect(currentSeat()).toBe("@dev/8")
+    } finally {
+      if (savedSeat !== undefined) process.env.SEAT = savedSeat
+      else delete process.env.SEAT
+      if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
+      else delete process.env.TENT_SEAT
+      if (savedTribeName !== undefined) process.env.TRIBE_NAME = savedTribeName
+      else delete process.env.TRIBE_NAME
+    }
+  })
+
   it("loads unset provider keys from declared habitat .env file into process.env, ignoring non-provider keys", () => {
     ensureProviderKeysLoaded(process.cwd(), { reset: true })
     delete process.env.OPENROUTER_API_KEY

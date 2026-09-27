@@ -17,7 +17,7 @@
 
 import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
-import { basename, dirname, join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { gitEnvironmentWithoutRootOverrides } from "removely"
 
 /** Git answers for `cwd`, never for the repository a leaked GIT_DIR or GIT_WORK_TREE names (hh 26003). */
@@ -37,10 +37,22 @@ function git(args: string[], cwd: string): string {
  * Identity is never inferred from cwd, worktree path, or decoded tokens.
  */
 export function currentSeat(): string {
-  if (process.env.SEAT) return process.env.SEAT
-  if (process.env.TENT_SEAT) return process.env.TENT_SEAT
-  if (process.env.TRIBE_NAME) return process.env.TRIBE_NAME
-  return "seat: none declared"
+  const declared: Array<{ name: string; value: string }> = []
+  if (process.env.SEAT) declared.push({ name: "SEAT", value: process.env.SEAT })
+  if (process.env.TENT_SEAT) declared.push({ name: "TENT_SEAT", value: process.env.TENT_SEAT })
+  if (process.env.TRIBE_NAME) declared.push({ name: "TRIBE_NAME", value: process.env.TRIBE_NAME })
+
+  if (declared.length === 0) return "seat: none declared"
+
+  const first = declared[0]
+  if (!first) return "seat: none declared"
+  const disagreement = declared.find((d) => d.value !== first.value)
+  if (disagreement !== undefined) {
+    const details = declared.map((d) => `${d.name}="${d.value}"`).join(", ")
+    throw new Error(`declared seat sources disagree: ${details}`)
+  }
+
+  return first.value
 }
 
 /**
@@ -66,15 +78,15 @@ export function parseEnvFile(content: string): Record<string, string> {
     const trimmed = rawLine.trim()
     if (!trimmed || trimmed.startsWith("#")) continue
     const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
-    if (!match) continue
-    const key = match[1]!
-    let val = match[2]!.trim()
+    if (!match || !match[1] || match[2] === undefined) continue
+    const key = match[1]
+    let val = match[2].trim()
     const doubleQuoted = val.match(/^"((?:\\.|[^"\\])*)"(?:\s+#.*)?$/)
     const singleQuoted = val.match(/^'([^']*)'(?:\s+#.*)?$/)
-    if (doubleQuoted) {
-      val = doubleQuoted[1]!.replace(/\\"/g, '"').replace(/\\\\/g, "\\")
-    } else if (singleQuoted) {
-      val = singleQuoted[1]!
+    if (doubleQuoted && doubleQuoted[1] !== undefined) {
+      val = doubleQuoted[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+    } else if (singleQuoted && singleQuoted[1] !== undefined) {
+      val = singleQuoted[1]
     } else {
       const commentIdx = val.indexOf(" #")
       if (commentIdx !== -1) {
