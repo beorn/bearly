@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { awaitReady, decorrelatedJitter, fullJitter, type RandomUnit } from "../src/index.ts"
+import { additiveJitter, awaitReady, decorrelatedJitter, fullJitter, type RandomUnit } from "../src/index.ts"
 
 /** Deterministic uniform numbers in [0, 1): a mulberry32 stream. */
 function seeded(seed: number): RandomUnit {
@@ -55,6 +55,47 @@ describe("fullJitter", () => {
 
   test("a zero base is a zero delay at every attempt, never NaN from 0 * 2 ** 1024", () => {
     for (const attempt of [0, 1_023, 1_024, 5_000]) expect(fullJitter(0, 1_000, attempt, () => 0.5)).toBe(0)
+  })
+})
+
+describe("additiveJitter", () => {
+  test("keeps the exponential floor and spreads only up to the capped ratio", () => {
+    expect(additiveJitter(100, 10_000, 0, 0.25, () => 0)).toBe(100)
+    expect(additiveJitter(100, 10_000, 0, 0.25, () => 0.5)).toBe(112.5)
+    expect(additiveJitter(100, 10_000, 2, 0.25, () => 0.5)).toBe(450)
+    expect(additiveJitter(100, 450, 2, 0.25, () => 0.5)).toBe(425)
+    expect(additiveJitter(100, 400, 2, 0.25, () => 0.5)).toBe(400)
+  })
+
+  test("never falls below its floor or exceeds its cap across attempts and seeds", () => {
+    for (let seed = 0; seed < 50; seed++) {
+      const random = seeded(seed)
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const floor = Math.min(30_000, 250 * 2 ** attempt)
+        const delay = additiveJitter(250, 30_000, attempt, 0.25, random)
+        expect(delay).toBeGreaterThanOrEqual(floor)
+        expect(delay).toBeLessThanOrEqual(30_000)
+      }
+    }
+  })
+
+  test("refuses invalid bounds before using random", () => {
+    const random = () => {
+      throw new Error("random called")
+    }
+    expect(() => additiveJitter(-1, 10, 0, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 5, 0, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 20, -1, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 20, 1.5, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 20, 0, -0.1, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 20, 0, 1.1, random)).toThrow(RangeError)
+    expect(() => additiveJitter(Number.NaN, 20, 0, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, Number.POSITIVE_INFINITY, 0, 0.25, random)).toThrow(RangeError)
+    expect(() => additiveJitter(10, 20, 0, Number.NaN, random)).toThrow(RangeError)
+  })
+
+  test("zero base stays zero even when the exponential overflows", () => {
+    expect(additiveJitter(0, 1_000, 1_024, 0.25, () => 0.5)).toBe(0)
   })
 })
 

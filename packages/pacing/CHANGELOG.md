@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Add `additiveJitter(base, cap, attempt, ratio, random?)` for retries that must keep their capped exponential delay
+  as a floor while spreading up to a bounded ratio above it.
+- Reject invalid ratios and preserve a zero delay when the base is zero, even at large attempts.
+
 ## 0.1.0
 
 - `fullJitter(base, cap, attempt, random?)`, `decorrelatedJitter(base, cap, previous, random?)` and

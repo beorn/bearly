@@ -3,7 +3,7 @@
  *
  * Pure policy. Nothing here owns a clock, a timer, a socket or a process: the caller passes `now`, `sleep`, its probe
  * and, for tests, its random source. That keeps every reconnect and restart loop on one set of well-known patterns
- * (full jitter, decorrelated jitter, readiness gating) without moving anyone's I/O.
+ * (full jitter, additive jitter, decorrelated jitter, readiness gating) without moving anyone's I/O.
  */
 
 /** A source of uniform numbers in [0, 1). Defaults to Math.random; tests pass a seeded one. */
@@ -28,6 +28,31 @@ export function fullJitter(base: number, cap: number, attempt: number, random: R
   // A zero base is a zero delay: 0 * 2 ** 1024 would be 0 * Infinity, which is NaN.
   const ceiling = base === 0 ? 0 : Math.min(cap, base * 2 ** attempt)
   return ceiling * random()
+}
+
+/**
+ * Additive jitter: uniform in [e, min(cap, e * (1 + ratio))], where e is the capped exponential delay.
+ * attempt 0 is the first retry. The exponential delay is a floor, so retries never arrive early.
+ */
+export function additiveJitter(
+  base: number,
+  cap: number,
+  attempt: number,
+  ratio: number,
+  random: RandomUnit = Math.random,
+): number {
+  requireFinite("base", base)
+  requireFinite("cap", cap)
+  requireFinite("ratio", ratio)
+  if (base < 0) throw new RangeError(`additiveJitter base must be >= 0, got ${base}`)
+  if (cap < base) throw new RangeError(`additiveJitter cap (${cap}) must be >= base (${base})`)
+  if (!Number.isInteger(attempt) || attempt < 0) {
+    throw new RangeError(`additiveJitter attempt must be a non-negative integer, got ${attempt}`)
+  }
+  if (ratio < 0 || ratio > 1) throw new RangeError(`additiveJitter ratio must be in [0, 1], got ${ratio}`)
+  const floor = base === 0 ? 0 : Math.min(cap, base * 2 ** attempt)
+  const ceiling = Math.min(cap, floor * (1 + ratio))
+  return floor + (ceiling - floor) * random()
 }
 
 /**
