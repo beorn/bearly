@@ -34,6 +34,7 @@ export {
   ensureProviderKeysLoaded,
   getEnvLoadFailure,
   currentSeat,
+  safeCurrentSeat,
   declaredHabitatEnvFile,
   missingApiKeyError,
 } from "./lib/env-preflight.ts"

@@ -42,7 +42,7 @@ import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
-import { currentSeat, declaredHabitatEnvFile, getEnvLoadFailure } from "../lib/env-preflight"
+import { safeCurrentSeat, declaredHabitatEnvFile, getEnvLoadFailure } from "../lib/env-preflight"
 import { emitJson } from "../lib/output-mode"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
@@ -286,7 +286,7 @@ export async function runProDual(options: {
 
   // Fall back to single-model mode if we can't run both mainstays.
   if (!m0Available || !m1Available) {
-    const seat = currentSeat()
+    const seat = safeCurrentSeat()
     const envFile = declaredHabitatEnvFile()
     const loadFailure = getEnvLoadFailure()
     const failureDetail =
