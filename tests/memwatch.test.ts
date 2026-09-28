@@ -32,14 +32,15 @@ import {
   type MemwatchOptions,
   type ProcessSample,
 } from "../tools/memwatch.ts"
+import { fileURLToPath } from "node:url"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const FIXTURE_DIR = resolve(dirname(new URL(import.meta.url).pathname), "fixtures")
+const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures")
 const LEAKY_CHILD = join(FIXTURE_DIR, "memwatch-leaky-child.ts")
-const MEMWATCH_BIN = resolve(dirname(new URL(import.meta.url).pathname), "..", "tools", "memwatch.ts")
+const MEMWATCH_BIN = resolve(dirname(fileURLToPath(import.meta.url)), "..", "tools", "memwatch.ts")
 
 function mkTmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `memwatch-test-${prefix}-`))

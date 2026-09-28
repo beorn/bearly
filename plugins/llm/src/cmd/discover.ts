@@ -24,6 +24,7 @@
  */
 
 import { emitJson, isJsonMode } from "../lib/output-mode"
+import { fileURLToPath } from "node:url"
 
 export async function runDiscoverModels(opts: { apply?: boolean; classify?: boolean } = {}): Promise<void> {
   const fs = await import("fs")
@@ -55,7 +56,7 @@ export async function runDiscoverModels(opts: { apply?: boolean; classify?: bool
     console.log(formatRawDiscoveryTable(artifact.candidates))
 
     if (opts.apply) {
-      const typesTsPath = new URL("../lib/types.ts", import.meta.url).pathname
+      const typesTsPath = fileURLToPath(new URL("../lib/types.ts", import.meta.url))
       const typesTsContent = fs.readFileSync(typesTsPath, "utf-8")
       const patch = generateRegistryPatch(artifact.candidates, typesTsContent)
       const path = await import("path")
@@ -119,7 +120,7 @@ export async function runDiscoverModels(opts: { apply?: boolean; classify?: bool
       // Read types.ts via package-relative path. We deliberately compute the
       // path off this module's location so it works whether bearly is invoked
       // standalone or as a vendor submodule.
-      const typesTsPath = new URL("../lib/types.ts", import.meta.url).pathname
+      const typesTsPath = fileURLToPath(new URL("../lib/types.ts", import.meta.url))
       const typesTsContent = fs.readFileSync(typesTsPath, "utf-8")
       const patch = generateRegistryPatch(approved, typesTsContent)
       const path = await import("path")

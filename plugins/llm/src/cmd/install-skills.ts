@@ -20,6 +20,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitJson, isJsonMode } from "../lib/output-mode"
+import { fileURLToPath } from "node:url"
 
 /** Directory inside the npm tarball that holds the bundled skills. Resolved
  * via import.meta.url so it works when @bearly/llm is installed under
@@ -27,7 +28,7 @@ import { emitJson, isJsonMode } from "../lib/output-mode"
 function getBundledSkillsDir(): string {
   // src/cmd/install-skills.ts → ../../skills (when running from src/) or
   // dist/cmd/install-skills.mjs → ../../skills (when running from dist/).
-  const here = new URL(".", import.meta.url).pathname
+  const here = fileURLToPath(new URL(".", import.meta.url))
   // Walk up two levels — `cmd` → `src`/`dist` → package root.
   return path.resolve(here, "..", "..", "skills")
 }
