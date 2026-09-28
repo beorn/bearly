@@ -44,13 +44,6 @@ export function getBackendForFile(file: string): RefactorBackend | null {
 }
 
 /**
- * Get backend by name
- */
-export function getBackendByName(name: string): RefactorBackend | null {
-  return backends.find((b) => b.name === name) ?? null
-}
-
-/**
  * Get all registered backends
  */
 export function getBackends(): RefactorBackend[] {

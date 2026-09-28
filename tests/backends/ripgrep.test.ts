@@ -3,20 +3,21 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs"
-import { join } from "path"
+import { join, resolve } from "path"
 import { tmpdir } from "os"
-import { execSync } from "child_process"
+import { execSync, spawnSync } from "child_process"
 
 // Import to trigger registration
 import { RipgrepBackend, findPatterns, createPatternReplaceProposal } from "../../tools/lib/backends/ripgrep"
-import { getBackendByName, getBackends } from "../../tools/lib/backend"
+import { getBackends } from "../../tools/lib/backend"
 import { applyEditset } from "../../tools/lib/core/apply"
+import { loadEditset } from "../../tools/lib/core/editset"
 
 describe("ripgrep backend", () => {
   describe("registration", () => {
     test("registers with correct name", () => {
-      const backend = getBackendByName("ripgrep")
-      expect(backend).not.toBeNull()
+      const backend = getBackends().find((entry) => entry.name === "ripgrep")
+      expect(backend).toBeDefined()
       expect(backend?.name).toBe("ripgrep")
     })
 
@@ -136,6 +137,41 @@ describe("ripgrep backend", () => {
       } finally {
         process.chdir(cwd)
       }
+    })
+
+    /**
+     * @failure CLI rejects explicit empty replacements, blocking checked pattern deletions.
+     * @level l1
+     * @consumer refactor pattern.replace CLI
+     * @testonly none
+     */
+    test("CLI distinguishes an empty replacement from an omitted replacement", () => {
+      const cli = resolve(import.meta.dirname, "../../tools/refactor.ts")
+      const output = join(tempDir, "delete-editset.json")
+      const args = [
+        cli,
+        "pattern.replace",
+        "--pattern",
+        "/widget/",
+        "--backend",
+        "ripgrep",
+        "--glob",
+        "doc.md",
+        "--output",
+        output,
+      ]
+      const missing = spawnSync(process.execPath, args, { cwd: tempDir, encoding: "utf8" })
+      expect(missing.status, missing.stderr).toBe(1)
+      expect(missing.stderr).toContain("Usage: pattern.replace")
+
+      const explicit = spawnSync(process.execPath, [...args, "--replace", ""], { cwd: tempDir, encoding: "utf8" })
+      expect(explicit.status, explicit.stderr).toBe(0)
+      const editset = loadEditset(output)
+      expect(editset.to).toBe("")
+      expect(editset.edits).toHaveLength(1)
+      expect(editset.edits[0]?.replacement).toBe("")
+      // Proposal generation must not apply the deletion itself.
+      expect(readFileSync(join(tempDir, "doc.md"), "utf8")).toBe("The widget is great.\nWidgets are useful.\n")
     })
 
     test("generates correct edits for replacement", () => {
