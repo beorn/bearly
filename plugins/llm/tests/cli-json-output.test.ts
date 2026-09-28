@@ -41,7 +41,7 @@ function resetMocks() {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
     text: "ok",
-    reasoning: [],
+    finalStep: { reasoningText: undefined },
     usage: { inputTokens: 10, outputTokens: 5 },
   })
   streamTextMock.mockReset()
@@ -49,6 +49,7 @@ function resetMocks() {
     textStream: (async function* () {
       yield "ok"
     })(),
+    finalStep: Promise.resolve({ response: undefined }),
     usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
   }))
   queryBackgroundMock.mockReset()

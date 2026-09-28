@@ -62,7 +62,7 @@ describe("the fleet failure-rate warning at dispatch", () => {
 
     generateTextMock.mockImplementation(async () => ({
       text: "leg answer",
-      reasoning: [],
+      finalStep: { reasoningText: undefined },
       usage: { inputTokens: 100, outputTokens: 50 },
     }))
   })

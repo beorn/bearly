@@ -400,12 +400,16 @@ describe("4-leg dispatch + pairwise judge — integration", () => {
                     reasoning: "D edged out.",
                   },
           ),
-          reasoning: [],
+          finalStep: { reasoningText: undefined },
           usage: { inputTokens: 200, outputTokens: 80 },
         }
       }
       // Non-judge calls: leg responses through generateText.
-      return { text: "leg answer", reasoning: [], usage: { inputTokens: 100, outputTokens: 50 } }
+      return {
+        text: "leg answer",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
     })
     return {
       generateCalls: () => generateTextMock.mock.calls.length,

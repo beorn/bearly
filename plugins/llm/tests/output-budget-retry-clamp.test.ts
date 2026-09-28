@@ -66,7 +66,11 @@ describe("22972 — the context-exceeded retry clamps like the first attempt", (
   it("retries with the endpoint ceiling, not the whole remaining window", async () => {
     generateTextMock
       .mockRejectedValueOnce(contextExceeded())
-      .mockResolvedValueOnce({ text: "ok", reasoning: [], usage: { inputTokens: 1000, outputTokens: 2 } })
+      .mockResolvedValueOnce({
+        text: "ok",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 1000, outputTokens: 2 },
+      })
 
     await ask("say ok", "standard", { modelObject: model, stream: false })
 

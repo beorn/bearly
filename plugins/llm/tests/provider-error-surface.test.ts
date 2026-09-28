@@ -284,7 +284,7 @@ describe("queryModel streaming path — the empty-response silent failure fix", 
 
     generateTextMock.mockResolvedValueOnce({
       text: "alive",
-      reasoning: [],
+      finalStep: { reasoningText: undefined },
       usage: { inputTokens: 1, outputTokens: 1 },
     })
     await queryModel({ question: "say alive", model, observationStore })
@@ -314,6 +314,7 @@ describe("queryModel streaming path — the empty-response silent failure fix", 
         textStream: (async function* () {
           yield "partial"
         })(),
+        finalStep: Promise.resolve({ response: undefined }),
         usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
       }
     })
@@ -344,6 +345,7 @@ describe("queryModel streaming path — the empty-response silent failure fix", 
       opts.onError?.({ error: quotaStreamError() })
       return {
         textStream: (async function* () {})(),
+        finalStep: Promise.resolve({ response: undefined }),
         usage: Promise.resolve({ inputTokens: 0, outputTokens: 0 }),
       }
     })

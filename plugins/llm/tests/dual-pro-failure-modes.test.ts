@@ -98,7 +98,7 @@ describe("dual-pro failure modes", () => {
     generateTextMock.mockReset()
     generateTextMock.mockResolvedValueOnce({
       text: "Kimi's answer",
-      reasoning: [],
+      finalStep: { reasoningText: undefined },
       usage: { inputTokens: 10, outputTokens: 20 },
     })
 
@@ -149,12 +149,12 @@ describe("dual-pro failure modes", () => {
       generateTextMock.mockReset()
       generateTextMock.mockResolvedValueOnce({
         text: "second unranked opinion",
-        reasoning: [],
+        finalStep: { reasoningText: undefined },
         usage: { inputTokens: 10, outputTokens: 20 },
       })
       generateTextMock.mockResolvedValueOnce({
         text: content,
-        reasoning: [],
+        finalStep: { reasoningText: undefined },
         usage: { inputTokens: 50, outputTokens: 60 },
       })
 

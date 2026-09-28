@@ -11,9 +11,9 @@
  */
 
 import { createOpenAI } from "@ai-sdk/openai"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createAnthropic } from "@ai-sdk/anthropic"
-import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { createXai } from "@ai-sdk/xai"
+import { createGoogle } from "@ai-sdk/google"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import type { LanguageModel } from "ai"
 import type { Provider, Model } from "./types"
@@ -23,8 +23,8 @@ import { missingApiKeyError, ensureProviderKeysLoaded } from "./env-preflight"
 // Provider instances (lazy-initialized)
 let openaiProvider: ReturnType<typeof createOpenAI> | undefined
 let anthropicProvider: ReturnType<typeof createAnthropic> | undefined
-let googleProvider: ReturnType<typeof createGoogleGenerativeAI> | undefined
-let xaiProvider: ReturnType<typeof createXai> | undefined
+let googleProvider: ReturnType<typeof createGoogle> | undefined
+let xaiProvider: ReturnType<typeof createOpenAICompatible> | undefined
 let perplexityProvider: ReturnType<typeof createPerplexity> | undefined
 let openrouterProvider: ReturnType<typeof createOpenAI> | undefined
 
@@ -53,7 +53,7 @@ function getGoogle() {
   if (!googleProvider) {
     const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
     if (!apiKey) throw missingApiKeyError("GOOGLE_GENERATIVE_AI_API_KEY")
-    googleProvider = createGoogleGenerativeAI({ apiKey })
+    googleProvider = createGoogle({ apiKey })
   }
   return googleProvider
 }
@@ -63,7 +63,30 @@ function getXai() {
   if (!xaiProvider) {
     const apiKey = process.env.XAI_API_KEY
     if (!apiKey) throw missingApiKeyError("XAI_API_KEY")
-    xaiProvider = createXai({ apiKey })
+    xaiProvider = createOpenAICompatible({
+      name: "xai",
+      baseURL: "https://api.x.ai/v1",
+      apiKey,
+      includeUsage: true,
+      // Preserve @ai-sdk/xai 3.0.124's convertXaiChatUsage accounting:
+      // xAI Chat reports reasoning tokens separately from completion_tokens.
+      convertUsage: (usage) => {
+        const input = usage?.prompt_tokens ?? 0
+        const output = usage?.completion_tokens ?? 0
+        const cacheRead = usage?.prompt_tokens_details?.cached_tokens ?? 0
+        const reasoning = usage?.completion_tokens_details?.reasoning_tokens ?? 0
+        const inputIncludesCache = cacheRead <= input
+        return {
+          inputTokens: {
+            total: inputIncludesCache ? input : input + cacheRead,
+            noCache: inputIncludesCache ? input - cacheRead : input,
+            cacheRead,
+            cacheWrite: undefined,
+          },
+          outputTokens: { total: output + reasoning, text: output, reasoning },
+        }
+      },
+    })
   }
   return xaiProvider
 }
@@ -78,9 +101,8 @@ function getPerplexity() {
   return perplexityProvider
 }
 
-// OpenRouter is OpenAI-compatible (/v1/chat/completions) — we reuse createOpenAI
-// with a baseURL override. HTTP-Referer and X-Title are optional but recommended
-// for app attribution in OpenRouter's dashboard.
+// OpenRouter uses the OpenAI provider's default Responses API, as it did before
+// AI SDK 7. The baseURL and attribution headers route that API to OpenRouter.
 function getOpenRouter() {
   ensureProviderKeysLoaded()
   if (!openrouterProvider) {

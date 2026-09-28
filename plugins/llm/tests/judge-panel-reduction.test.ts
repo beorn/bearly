@@ -110,9 +110,17 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     generateTextMock.mockReset()
     generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
       if (promptText(args).includes("STRICT JSON")) {
-        return { text: JUDGE_JSON, reasoning: [], usage: { inputTokens: 200, outputTokens: 80 } }
+        return {
+          text: JUDGE_JSON,
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 200, outputTokens: 80 },
+        }
       }
-      return { text: "a surviving leg's answer", reasoning: [], usage: { inputTokens: 100, outputTokens: 50 } }
+      return {
+        text: "a surviving leg's answer",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
     })
 
     const { report, entry } = await runPro(env)
@@ -147,9 +155,13 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       // First surviving leg answers; every other leg returns empty, which
       // dual-pro already normalizes to a failure.
       if (legCalls === 1) {
-        return { text: "the only answer", reasoning: [], usage: { inputTokens: 100, outputTokens: 50 } }
+        return {
+          text: "the only answer",
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 100, outputTokens: 50 },
+        }
       }
-      return { text: "", reasoning: [], usage: { inputTokens: 10, outputTokens: 0 } }
+      return { text: "", finalStep: { reasoningText: undefined }, usage: { inputTokens: 10, outputTokens: 0 } }
     })
 
     const { report } = await runPro(env)
@@ -196,7 +208,7 @@ describe("24533 row 4 — a dead model is dropped BEFORE it is dispatched", () =
     const dispatched: string[] = []
     generateTextMock.mockImplementation(async (args: { model?: { modelId?: string } }) => {
       dispatched.push(String((args.model as { modelId?: string } | undefined)?.modelId ?? "unknown"))
-      return { text: "an answer", usage: { totalTokens: 10 } }
+      return { text: "an answer", finalStep: { reasoningText: undefined }, usage: { totalTokens: 10 } }
     })
 
     vi.resetModules()
@@ -248,11 +260,19 @@ describe("24533 — a dispatch error never blames a credential that is working i
     let legCalls = 0
     generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
       if (promptText(args).includes("STRICT JSON")) {
-        return { text: JUDGE_JSON, reasoning: [], usage: { inputTokens: 200, outputTokens: 80 } }
+        return {
+          text: JUDGE_JSON,
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 200, outputTokens: 80 },
+        }
       }
       legCalls += 1
       if (legCalls === 1) throw new Error("OpenRouter request failed: unauthorized (invalid api key)")
-      return { text: "sibling openrouter answer", reasoning: [], usage: { inputTokens: 100, outputTokens: 50 } }
+      return {
+        text: "sibling openrouter answer",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
     })
 
     vi.resetModules()
@@ -305,9 +325,17 @@ describe("24533 — the cost estimate is derived from the models actually select
     generateTextMock.mockReset()
     generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
       if (promptText(args).includes("STRICT JSON")) {
-        return { text: JUDGE_JSON, reasoning: [], usage: { inputTokens: 200, outputTokens: 80 } }
+        return {
+          text: JUDGE_JSON,
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 200, outputTokens: 80 },
+        }
       }
-      return { text: "an answer", reasoning: [], usage: { inputTokens: 100, outputTokens: 50 } }
+      return {
+        text: "an answer",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
     })
 
     vi.resetModules()

@@ -121,6 +121,13 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     expect(cap).toBe(262144 - Math.ceil(700_000 / 3.5) - 4096)
   })
 
+  test("top-level instructions still consume the combined context window", () => {
+    const messages = [{ role: "user", content: "x".repeat(700_000) }]
+    const withoutInstructions = computeMaxOutputTokens(k26Model, messages)
+    const withInstructions = computeMaxOutputTokens(k26Model, messages, "y".repeat(3500))
+    expect(withInstructions).toBe(withoutInstructions! - 1000)
+  })
+
   test("Non-reasoning model — returns undefined (provider default)", () => {
     const plainModel: Model = {
       provider: "openai",
