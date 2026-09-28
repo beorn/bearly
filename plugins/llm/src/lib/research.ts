@@ -48,9 +48,8 @@ export function describeProviderError(error: unknown, provider: Provider): strin
  * per-call envelope fragment (suitable for `ModelResponse.quota`) or
  * `undefined` if no rate-limit data was on the response.
  *
- * The AI SDK exposes the underlying response via `result.response` —
- * `headers` is on the response object. Provider availability of
- * rate-limit headers varies (Google Gemini doesn't ship them; OpenAI /
+ * The AI SDK exposes response headers on `result.finalStep`. Provider
+ * availability of rate-limit headers varies (Google Gemini doesn't ship them; OpenAI /
  * Anthropic / OpenRouter do). The capture is best-effort — silent when
  * the headers aren't present.
  */
@@ -64,7 +63,7 @@ function captureQuotaFromGenerateResult(
   return buildPerCallQuota(snapshot)
 }
 
-/** Same as above, but for `streamText` — `result.response` is a Promise. */
+/** Same as above, but for `streamText` — `result.finalStep` is a Promise. */
 async function captureQuotaFromResult(
   result: ReturnType<typeof streamText>,
   provider: import("./types").Provider,
