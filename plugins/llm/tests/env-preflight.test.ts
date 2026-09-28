@@ -20,6 +20,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import {
   currentSeat,
+  safeCurrentSeat,
   declaredHabitatEnvFile,
   ensureProviderKeysLoaded,
   envFileCandidates,
@@ -182,6 +183,30 @@ describe("missingApiKeyError", () => {
     }
   })
 
+  it("folds seat conflict into missingApiKeyError when declared seat sources disagree", () => {
+    const dir = mkdtempSync(join(tmpdir(), "env-preflight-conflict-"))
+    const savedSeat = process.env.SEAT
+    const savedTentSeat = process.env.TENT_SEAT
+    try {
+      process.env.SEAT = "@dev/9"
+      process.env.TENT_SEAT = "@dev/5"
+
+      // Must not throw synchronously; instead returns an Error containing BOTH facts:
+      // 1. The missing key check (e.g. OPENAI_API_KEY not set)
+      // 2. The seat conflict details
+      const err = missingApiKeyError("OPENAI_API_KEY", dir)
+      expect(err.message).toContain("OPENAI_API_KEY not set")
+      expect(err.message).toContain("declared seat sources disagree")
+      expect(err.message).toContain('SEAT="@dev/9"')
+      expect(err.message).toContain('TENT_SEAT="@dev/5"')
+    } finally {
+      if (savedSeat !== undefined) process.env.SEAT = savedSeat
+      else delete process.env.SEAT
+      if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
+      else delete process.env.TENT_SEAT
+    }
+  })
+
   it("parses .env content accurately", () => {
     const content = `
 # Comment line
@@ -266,6 +291,24 @@ QUOTED_HASH="value with # hash inside quotes"
       else delete process.env.TENT_SEAT
       if (savedTribeName !== undefined) process.env.TRIBE_NAME = savedTribeName
       else delete process.env.TRIBE_NAME
+    }
+  })
+
+  it("safeCurrentSeat returns resolved seat when valid and conflict string on disagreement", () => {
+    const savedSeat = process.env.SEAT
+    const savedTentSeat = process.env.TENT_SEAT
+    try {
+      process.env.SEAT = "@dev/8"
+      delete process.env.TENT_SEAT
+      expect(safeCurrentSeat()).toBe("@dev/8")
+
+      process.env.TENT_SEAT = "@dev/3"
+      expect(safeCurrentSeat()).toBe('<conflict: declared seat sources disagree: SEAT="@dev/8", TENT_SEAT="@dev/3">')
+    } finally {
+      if (savedSeat !== undefined) process.env.SEAT = savedSeat
+      else delete process.env.SEAT
+      if (savedTentSeat !== undefined) process.env.TENT_SEAT = savedTentSeat
+      else delete process.env.TENT_SEAT
     }
   })
 

@@ -9,7 +9,7 @@ import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
 import { checkAndRecoverPartials } from "./recover"
-import { currentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
+import { safeCurrentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
 
 /** Run multi-model debate command */
 export async function runDebate(options: {
@@ -36,7 +36,7 @@ export async function runDebate(options: {
   const { getBestAvailableModels } = await import("../lib/types")
   const { models: debateModels, warning: debateWarning } = getBestAvailableModels("debate", isProviderAvailable, 3)
   if (debateModels.length < 2) {
-    const seat = currentSeat()
+    const seat = safeCurrentSeat()
     const envFile = declaredHabitatEnvFile()
     const msg =
       `Need at least 2 models for debate for seat ${seat}: provider keys not found in declared env file (${envFile}) or launch environment. ${debateWarning || ""}`.trim()

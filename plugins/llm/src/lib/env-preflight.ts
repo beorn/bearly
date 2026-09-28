@@ -56,6 +56,25 @@ export function currentSeat(): string {
 }
 
 /**
+ * Safe wrapper around currentSeat() for error builders.
+ *
+ * When declared seat sources disagree, currentSeat() throws so that caller logic
+ * cannot silently proceed with an ambiguous seat. But when constructing an error
+ * message (e.g. missing API key or unavailable model), throwing aborts error construction
+ * and replaces the primary missing-key/model error with the seat conflict.
+ * safeCurrentSeat() catches the disagreement and folds it in as
+ * `<conflict: declared seat sources disagree: ...>` so both facts appear in the error.
+ */
+export function safeCurrentSeat(): string {
+  try {
+    return currentSeat()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return `<conflict: ${msg}>`
+  }
+}
+
+/**
  * Provider credentials managed by @bearly/llm.
  * Only these keys are loaded from declared env files into process.env.
  */
@@ -291,7 +310,7 @@ function anyProviderKeySet(): boolean {
  * declared env file and the seat.
  */
 export function missingApiKeyError(envVar: string, cwd: string = process.cwd()): Error {
-  const seat = currentSeat()
+  const seat = safeCurrentSeat()
   const seatDesc = seat.startsWith("seat:") ? seat : `seat ${seat}`
   const declaredFile = getLoadedEnvFile() ?? declaredHabitatEnvFile(cwd)
 
