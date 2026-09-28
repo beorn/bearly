@@ -493,11 +493,11 @@ The /i flag controls both match-case AND replacement-case:
       const inputFile = args[1]
       const include = getArg("--include")?.split(",")
       const exclude = getArg("--exclude")?.split(",")
-      const outputFile = getArg("--output") || inputFile
 
       if (!inputFile) {
         error("Usage: editset.select <file> [--include refIds] [--exclude refIds] [--output file]")
       }
+      const outputFile = getArg("--output") || inputFile
 
       const editset = loadEditset(inputFile)
       const filtered = filterEditset(editset, include, exclude)
@@ -574,11 +574,11 @@ The /i flag controls both match-case AND replacement-case:
 
     case "editset.patch": {
       const inputFile = args[1]
-      const outputFile = getArg("--output") || inputFile
 
       if (!inputFile) {
         error("Usage: editset.patch <file> [--output file] < patch.json")
       }
+      const outputFile = getArg("--output") || inputFile
 
       // Read patch from stdin
       const chunks: Buffer[] = []
