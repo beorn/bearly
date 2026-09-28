@@ -2,13 +2,13 @@ import { describe, test, expect } from "vitest"
 
 // Import to trigger registration
 import { AstGrepBackend, findPatterns, createPatternReplaceProposal } from "../../tools/lib/backends/ast-grep"
-import { getBackendByName } from "../../tools/lib/backend"
+import { getBackends } from "../../tools/lib/backend"
 
 describe("ast-grep backend", () => {
   describe("registration", () => {
     test("registers with correct name", () => {
-      const backend = getBackendByName("ast-grep")
-      expect(backend).not.toBeNull()
+      const backend = getBackends().find((entry) => entry.name === "ast-grep")
+      expect(backend).toBeDefined()
       expect(backend?.name).toBe("ast-grep")
     })
 

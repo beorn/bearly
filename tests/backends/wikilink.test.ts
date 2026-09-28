@@ -14,13 +14,13 @@ import {
   linkMatchesTarget,
   generateReplacement,
 } from "../../tools/lib/backends/wikilink"
-import { getBackendByName, getBackends } from "../../tools/lib/backend"
+import { getBackends } from "../../tools/lib/backend"
 
 describe("wikilink backend", () => {
   describe("registration", () => {
     test("registers with correct name", () => {
-      const backend = getBackendByName("wikilink")
-      expect(backend).not.toBeNull()
+      const backend = getBackends().find((entry) => entry.name === "wikilink")
+      expect(backend).toBeDefined()
       expect(backend?.name).toBe("wikilink")
     })
 

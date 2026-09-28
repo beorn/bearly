@@ -47,10 +47,9 @@ import {
   findBrokenPackageJsonPaths,
 } from "./lib/backends/package-json"
 import { findTsConfigRefs, createTsConfigEditset } from "./lib/backends/tsconfig-json"
-import { getBackendByName, getBackends } from "./lib/backend"
+import { getBackends } from "./lib/backend"
 import {
   findPatterns as migrateFindPatterns,
-  formatForLLM,
   buildMigrationPrompt,
   parseReplacements,
   createEditset as migrateCreateEditset,
@@ -336,8 +335,9 @@ function getArg(name: string): string | undefined {
 function getArgAll(name: string): string[] {
   const values: string[] = []
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === name && i + 1 < args.length) {
-      values.push(args[i + 1]!)
+    const value = args[i + 1]
+    if (args[i] === name && value !== undefined) {
+      values.push(value)
     }
   }
   return values
@@ -372,7 +372,7 @@ async function main() {
   switch (command) {
     case "symbol.at": {
       const file = args[1]
-      const line = parseInt(args[2]!, 10)
+      const line = parseInt(args[2] ?? "", 10)
       const col = parseInt(args[3] || "1", 10)
 
       if (!file || isNaN(line)) {
@@ -499,9 +499,9 @@ The /i flag controls both match-case AND replacement-case:
         error("Usage: editset.select <file> [--include refIds] [--exclude refIds] [--output file]")
       }
 
-      const editset = loadEditset(inputFile!)
+      const editset = loadEditset(inputFile)
       const filtered = filterEditset(editset, include, exclude)
-      saveEditset(filtered, outputFile!)
+      saveEditset(filtered, outputFile)
 
       const selectedCount = filtered.refs.filter((r) => r.selected).length
       output({
@@ -582,7 +582,11 @@ The /i flag controls both match-case AND replacement-case:
 
       // Read patch from stdin
       const chunks: Buffer[] = []
-      for await (const chunk of process.stdin) {
+      for await (const value of process.stdin) {
+        const chunk: unknown = value
+        if (!Buffer.isBuffer(chunk)) {
+          error("editset.patch expected binary stdin chunks; do not set a text encoding on stdin")
+        }
         chunks.push(chunk)
       }
       const stdinContent = Buffer.concat(chunks).toString("utf-8").trim()
@@ -591,10 +595,10 @@ The /i flag controls both match-case AND replacement-case:
         error('No patch provided on stdin. Usage: editset.patch <file> <<\'EOF\'\n{"refId": "replacement"}\nEOF')
       }
 
-      const editset = loadEditset(inputFile!)
+      const editset = loadEditset(inputFile)
       const patch = parsePatch(stdinContent)
       const patched = applyPatch(editset, patch)
-      saveEditset(patched, outputFile!)
+      saveEditset(patched, outputFile)
 
       const selectedCount = patched.refs.filter((r) => r.selected).length
       const skippedCount = patched.refs.filter((r) => !r.selected || r.replace === null).length
@@ -648,13 +652,14 @@ The /i flag controls both match-case AND replacement-case:
       const backendName = getArg("--backend")
       const outputFile = getArg("--output") || "editset.json"
 
-      if (!pattern || !replacement) {
+      if (!pattern || replacement === undefined) {
         error(
           `Usage: pattern.replace --pattern /regex/flags --replace <replacement> [--glob <glob>] [--backend ast-grep|ripgrep] [--output file]
 
 Examples:
   # Exact match, literal replacement (code migrations):
   pattern.replace --pattern '/screenRect/' --replace 'scrollRect'
+  pattern.replace --pattern '/obsoleteField/' --replace ''  # Delete matching text
   pattern.replace --pattern '/\\buseContentRect\\b/' --replace 'useBoxRect'
 
   # Case-insensitive match, case-preserving replacement (prose migrations):
