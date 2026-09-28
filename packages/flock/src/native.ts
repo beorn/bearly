@@ -1,3 +1,5 @@
+// oxlint-disable-next-line typescript/triple-slash-reference -- a consumer that type-checks this source needs the declaration, and an ambient module declaration cannot be imported (26287)
+/// <reference path="./bun-ffi.d.ts" />
 import {
   closeSync,
   existsSync,
@@ -10,8 +12,16 @@ import {
   writeSync,
 } from "node:fs"
 import { dirname } from "node:path"
-import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
+import { dlopen, read } from "bun:ffi"
 import type { FlockIo } from "./runtime.ts"
+
+import type { BunPointer as Pointer, FfiSymbolDefinitions, SliceDlopen, SliceReadI32 } from "./bun-ffi-slice.ts"
+
+/** Every bun:ffi call goes through the slice's shapes, which tests/ffi-drift holds real Bun to. */
+const openLibrary: SliceDlopen = dlopen
+// Bun reads garbage when byteOffset is passed as undefined, so it is passed only when given.
+const readI32: SliceReadI32 = (ptr, byteOffset) =>
+  byteOffset === undefined ? read.i32(ptr) : read.i32(ptr, byteOffset)
 
 const LOCK_EX = 2
 const LOCK_NB = 4
@@ -106,9 +116,9 @@ interface DarwinSymbols {
  * another way to issue it, not widening these.
  */
 const LIBC_DEFINITION = {
-  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  fcntl: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  ioctl: { args: [FFIType.i32, FFIType.u64], returns: FFIType.i32 },
+  flock: { args: ["i32", "i32"], returns: "i32" },
+  fcntl: { args: ["i32", "i32"], returns: "i32" },
+  ioctl: { args: ["i32", "u64"], returns: "i32" },
 } as const
 
 interface LibcCalls {
@@ -123,16 +133,16 @@ function loadLibc(platform: NodeJS.Platform): LibcCalls {
   if (platform === "linux") {
     const library = openFirst<LinuxSymbols>(platform, {
       ...LIBC_DEFINITION,
-      __errno_location: { args: [], returns: FFIType.ptr },
+      __errno_location: { args: [], returns: "ptr" },
     })
-    return libcCalls(library.symbols, () => read.i32(library.symbols.__errno_location()))
+    return libcCalls(library.symbols, () => readI32(library.symbols.__errno_location()))
   }
   if (platform === "darwin") {
     const library = openFirst<DarwinSymbols>(platform, {
       ...LIBC_DEFINITION,
-      __error: { args: [], returns: FFIType.ptr },
+      __error: { args: [], returns: "ptr" },
     })
-    return libcCalls(library.symbols, () => read.i32(library.symbols.__error()))
+    return libcCalls(library.symbols, () => readI32(library.symbols.__error()))
   }
   throw new Error(`@bearly/flock supports Bun on local macOS and Linux filesystems; unsupported platform: ${platform}`)
 }
@@ -156,12 +166,12 @@ function libcCalls(
 
 function openFirst<Symbols>(
   platform: NodeJS.Platform,
-  definition: Parameters<typeof dlopen>[1],
+  definition: FfiSymbolDefinitions,
 ): { readonly symbols: Symbols } {
   const failures: string[] = []
   for (const candidate of libcCandidates(platform)) {
     try {
-      return dlopen(candidate, definition) as unknown as { readonly symbols: Symbols }
+      return openLibrary(candidate, definition) as unknown as { readonly symbols: Symbols }
     } catch (error) {
       failures.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`)
     }

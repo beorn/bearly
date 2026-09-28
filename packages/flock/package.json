@@ -47,7 +47,7 @@
   "scripts": {
     "build": "tsdown",
     "test": "bunx --bun vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests/ffi-drift",
     "prepublishOnly": "bun run build"
   },
   "devDependencies": {
