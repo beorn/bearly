@@ -767,7 +767,7 @@ export async function main(): Promise<string | undefined> {
       // Dual-pro: champion + runner-up + (optional) challenger in parallel.
       // A/B/C test + judge scoring + leaderboard tracking.
       // --model override bypasses to single-model mode; missing OPENROUTER_API_KEY
-      // auto-falls-back to single-model mode inside runProDual.
+      // unavailable mainstays remain missing in runProDual's completion record.
       // --no-challenger reverts to legacy 2-leg behavior; --no-judge skips
       // the judge call (saves cost, loses scoring).
       // --exclude <model> drops a model from challenger rotation for THIS

@@ -156,7 +156,7 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
  *     "cost": 0.045,                         // USD, number (not string)
  *     "durationMs": 12345,
  *     "responseId": "resp_abc123",
- *     "status": "completed" | "failed" | "background" | "recovered",
+ *     "status": "completed" | "incomplete" | "failed" | "background" | "recovered",
  *     "chars": 4321,                         // response body length
  *     "query": "...",                        // optional
  *     "a": { ...leg meta },                  // optional, dual-pro

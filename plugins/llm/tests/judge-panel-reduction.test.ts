@@ -23,7 +23,9 @@ import { describe, it, expect } from "vitest"
 import { vi } from "vitest"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { spawnSync } from "node:child_process"
 import { makeTestEnv, type TestEnv } from "./helpers"
+import type { ProCompletion } from "../src/lib/format"
 
 const generateTextMock = vi.fn()
 const queryBackgroundMock = vi.fn()
@@ -61,18 +63,16 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
   }
 
   /** Run `pro` with 3 legs and return the rendered report plus the ab-pro entry. */
-  async function runPro(env: TestEnv): Promise<{ report: string; entry: Record<string, unknown> }> {
+  async function runPro(
+    env: TestEnv,
+    flags = ["--challenger", "gemini-3-pro-preview"],
+  ): Promise<{
+    report: string
+    entry: Record<string, unknown>
+    envelope: { status: string; completion?: ProCompletion }
+  }> {
     vi.resetModules()
-    process.argv = [
-      "node",
-      "cli.ts",
-      "pro",
-      "-y",
-      "--full-paths",
-      "--challenger",
-      "gemini-3-pro-preview",
-      "which storage layer?",
-    ]
+    process.argv = ["node", "cli.ts", "pro", "-y", "--full-paths", ...flags, "which storage layer?"]
     const mod = await import("../src/cli")
     try {
       await mod.main()
@@ -88,7 +88,11 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     const abPath = abProLogPath(env.homeDir)
     expect(existsSync(abPath), "the A/B log must be written even on a degraded run").toBe(true)
     const lines = readFileSync(abPath, "utf-8").trim().split("\n")
-    return { report, entry: JSON.parse(lines[lines.length - 1]!) as Record<string, unknown> }
+    return {
+      report,
+      entry: JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>,
+      envelope: JSON.parse(jsonLine!) as { status: string; completion?: ProCompletion },
+    }
   }
 
   /**
@@ -100,6 +104,165 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
   function readerLine1(report: string): string {
     return report.split("\n").find((l) => l.trim() !== "" && !l.trim().startsWith("<!--"))!
   }
+
+  // 26561 acceptance: completed controls and every incomplete panel boundary.
+  // Existing reduction tests cover surviving verdicts; these rows additionally
+  // distinguish missing opinions, missing judges, and explicit judge waiver.
+  // @failure a missing opinion or judge is reported as completed
+  // @level l3
+  // @consumer CLI callers and process-status readers
+  // @testonly none
+  it.each([
+    { name: "all legs and judges", flags: ["--legs", "4"], failure: "none", status: "completed", returned: 4 },
+    {
+      name: "all legs without judge",
+      flags: ["--no-challenger", "--no-judge"],
+      failure: "none",
+      status: "completed",
+      returned: 2,
+    },
+    {
+      name: "three of four with verdict",
+      flags: ["--legs", "4"],
+      failure: "anchor",
+      status: "incomplete",
+      returned: 3,
+    },
+    { name: "every judge failed", flags: ["--no-challenger"], failure: "judges", status: "incomplete", returned: 2 },
+    {
+      name: "unavailable configured mainstay",
+      flags: ["--no-challenger"],
+      failure: "unavailable",
+      status: "incomplete",
+      returned: 1,
+    },
+    {
+      name: "no judge still requires every leg",
+      flags: ["--no-challenger", "--no-judge"],
+      failure: "anchor",
+      status: "incomplete",
+      returned: 1,
+    },
+    { name: "no answer", flags: ["--no-challenger"], failure: "all", status: "failed", returned: 0 },
+    { name: "timed out mainstay", flags: ["--no-challenger"], failure: "timeout", status: "incomplete", returned: 1 },
+  ])(
+    "26561 $name",
+    async ({ flags, failure, status, returned }) => {
+      const env = makeTestEnv()
+      queryBackgroundMock.mockReset()
+      if (failure === "anchor" || failure === "all") {
+        queryBackgroundMock.mockRejectedValue(new Error("anchor dispatch failed"))
+      } else if (failure === "timeout") queryBackgroundMock.mockImplementation(() => new Promise(() => {}))
+      else {
+        queryBackgroundMock.mockImplementation(async ({ model }: { model: unknown }) => ({
+          model,
+          content: "anchor opinion",
+          durationMs: 1,
+        }))
+      }
+      if (failure === "unavailable") delete process.env.OPENAI_API_KEY
+      generateTextMock.mockReset()
+      generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
+        const judging = promptText(args).includes("STRICT JSON")
+        if (failure === "all" || (judging && failure === "judges")) throw new Error("provider dispatch failed")
+        return {
+          text: judging ? JUDGE_JSON : "available configured opinion",
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 100, outputTokens: 50 },
+        }
+      })
+      const previousTimeout = process.env.LLM_LEG_TIMEOUT_MS
+      if (failure === "timeout") process.env.LLM_LEG_TIMEOUT_MS = "25"
+      const { report, entry, envelope } = await (async () => {
+        try {
+          return await runPro(env, flags)
+        } finally {
+          if (failure === "timeout") {
+            if (previousTimeout === undefined) delete process.env.LLM_LEG_TIMEOUT_MS
+            else process.env.LLM_LEG_TIMEOUT_MS = previousTimeout
+          }
+        }
+      })()
+      expect(envelope.status).toBe(status)
+      expect(entry.status).toBe(status)
+      expect(entry.completion).toEqual(envelope.completion)
+      expect(envelope.completion?.returned).toHaveLength(returned)
+      expect(env.exitCodes).toEqual(status === "completed" ? [] : [1])
+      if (failure === "unavailable") {
+        expect(queryBackgroundMock).not.toHaveBeenCalled()
+        expect(envelope.completion?.missing).toEqual([
+          expect.objectContaining({ slot: "a", cause: "unavailable", model: "gpt-5.4-pro" }),
+        ])
+      }
+      if (failure === "timeout") expect(envelope.completion?.missing[0]?.cause).toBe("timed-out")
+      if (failure === "judges") {
+        expect(envelope.completion?.judges.failed).toHaveLength(1)
+        expect(envelope.completion?.judges.required).toEqual(["ab"])
+      }
+      if (failure === "anchor" && returned === 3) expect((entry.judge as { winner?: string }).winner).toBeDefined()
+      if (returned > 0) expect(report).toContain("available configured opinion")
+      if (status !== "completed") {
+        const last = env.stderr.at(-1)
+        expect(last).toContain(`${status}: ${returned}/`)
+        expect(last).toContain("report=")
+        expect(last).toContain("follow-up=")
+        expect(last).toContain("do not rerun the whole paid panel")
+        expect(last).not.toContain("\n")
+      }
+    },
+    20_000,
+  )
+
+  // @failure a mocked exit passes while the real incomplete CLI exits zero
+  // @level l3
+  // @consumer callers reading the native process status
+  // @testonly none
+  it("26561 preserves report, envelope and log before the real child exits 1", () => {
+    const env = makeTestEnv()
+    const outputFile = join(env.tmpDir, "native-panel.md")
+    const source = `
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        id: "resp_native", object: "response", created_at: 0, status: "completed", model: "moonshotai/kimi-k2.6",
+        output: [{ type: "message", id: "msg_native", role: "assistant", status: "completed",
+          content: [{ type: "output_text", text: "retained native opinion", annotations: [] }] }],
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }, error: null, incomplete_details: null
+      }), { headers: { "content-type": "application/json" } });
+      const { runProDual } = await import("./vendor/bearly/plugins/llm/src/cmd/pro.ts");
+      await runProDual({ question: "native incomplete witness", outputFile: ${JSON.stringify(outputFile)},
+        sessionTag: "native-panel", modelOverride: undefined, imagePath: undefined,
+        noChallenger: true, noJudge: true, skipConfirm: true,
+        streamToken: () => {}, buildContext: async () => undefined });
+    `
+    const child = spawnSync("@in", ["--", "bun", "--eval", source], {
+      cwd: process.cwd(),
+      encoding: "utf-8",
+      timeout: 15_000,
+      env: {
+        PATH: process.env.PATH,
+        HOME: env.homeDir,
+        TMPDIR: env.tmpDir,
+        CLAUDE_PROJECT_DIR: env.tmpDir,
+        OPENROUTER_API_KEY: "native-test-key",
+        LLM_NO_ENV_AUTOLOAD: "1",
+        LLM_SKIP_MODEL_LIVENESS: "1",
+        LLM_NO_HISTORY: "1",
+        LLM_NO_AUTO_PRICING: "1",
+        LLM_NO_CACHE: "1",
+        LLM_LEG_TIMEOUT_MS: "2000",
+      },
+    })
+    expect(child.error, child.stderr).toBeUndefined()
+    expect(child.status, child.stderr).toBe(1)
+    const envelope = JSON.parse(child.stdout.trim()) as { status: string; completion: ProCompletion }
+    expect(envelope.status, child.stderr).toBe("incomplete")
+    expect(envelope.completion.returned).toEqual(["b"])
+    expect(envelope.completion.missing[0]).toMatchObject({ slot: "a", cause: "unavailable" })
+    expect(readFileSync(outputFile, "utf-8")).toContain("retained native opinion")
+    const log = join(env.homeDir, ".claude/projects", env.tmpDir.replace(/\//g, "-"), "memory/ab-pro.jsonl")
+    const entry = JSON.parse(readFileSync(log, "utf-8").trim()) as { status: string; completion: ProCompletion }
+    expect(entry.status).toBe("incomplete")
+    expect(entry.completion).toEqual(envelope.completion)
+  }, 20_000)
 
   it("still returns a JUDGED verdict when the anchor leg is a dead model, and names the missing leg", async () => {
     const env = makeTestEnv()
@@ -253,6 +416,12 @@ describe("24533 row 4 — a dead model is dropped BEFORE it is dispatched", () =
    */
   it("never dispatches a leg whose model the provider does not serve, and still returns", async () => {
     const env = makeTestEnv()
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockImplementation(async ({ model }: { model: unknown }) => ({
+      model,
+      content: "the available anchor opinion",
+      durationMs: 1,
+    }))
     delete process.env.LLM_SKIP_MODEL_LIVENESS
     // The challenger must sit on a provider we CAN read a catalog for. The
     // first draft of this arm used `gemini-3-pro-preview` — a google model,
@@ -298,6 +467,14 @@ describe("24533 row 4 — a dead model is dropped BEFORE it is dispatched", () =
       env.exitCodes.some((code) => code !== 0),
       "a preflight drop is an incomplete requested panel",
     ).toBe(true)
+    const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))
+    expect(envelopeLine).toBeDefined()
+    const envelope = JSON.parse(envelopeLine ?? "null") as { status: string; completion: ProCompletion }
+    expect(envelope.status).toBe("incomplete")
+    expect(envelope.completion.requested).toHaveLength(3)
+    expect(envelope.completion.missing).toEqual([
+      expect.objectContaining({ slot: "c", model: "moonshotai/kimi-k3", cause: "dropped-before-dispatch" }),
+    ])
   })
 })
 

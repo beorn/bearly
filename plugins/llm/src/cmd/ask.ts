@@ -1,6 +1,6 @@
 /**
  * Single-model ask + finalize. Used by `bun llm`, `bun llm --quick`,
- * and the runProDual fallback when a mainstay provider is unavailable.
+ * and an explicitly selected single-model Pro call.
  */
 
 import { ask } from "../lib/research"

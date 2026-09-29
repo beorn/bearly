@@ -53,8 +53,9 @@ function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "f
     completion.missing.length > 0 ||
     (!completion.judges.waived &&
       (completion.judges.failed.length > 0 || completion.judges.returned.length !== completion.judges.required.length))
-  )
+  ) {
     return "incomplete"
+  }
   return "completed"
 }
 
@@ -289,7 +290,9 @@ export async function runProDual(options: {
       }
     }
     if (!m0Available || !m1Available) {
-      console.error("  • Real run note: unavailable mainstay would fall back to single-model pro mode.")
+      console.error(
+        "  • Real run note: unavailable mainstay stays missing; available opinions are retained with incomplete status and exit 1.",
+      )
     }
     console.error("  • Side effects: none (no provider calls, output files, A/B logs, or rotation counters)")
     return
@@ -966,7 +969,7 @@ export async function runProDual(options: {
     b: bLeg,
     c: cLegEnv,
     d: dLegEnv,
-    legs: legOutcomes.length,
+    legs: legSlots.length,
     judge: judgeResult
       ? {
           model: judgeModelId,
@@ -1052,7 +1055,7 @@ export async function runProDual(options: {
         ? completion.missing
             .map((leg) => `llm pro --model ${quote(leg.model)} --context-file ${quote(outputFile)} ${quote(question)}`)
             .join(" ; ")
-        : `judge only the missing pairs (${judgeFailed.map((pair) => pair.pair).join(", ")}) from the saved report`
+        : `llm ask --model ${quote(cfg.judge)} --context-file ${quote(outputFile)} ${quote(`Judge only missing pairs ${judgeFailed.map((pair) => pair.pair).join(", ")} from the saved opinions. For each pair return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`)}`
     console.error(
       `[dual-pro] ${status}: ${okLegs.length}/${requestedSlots.length} returned; missing=${missing}; judge=${judgeState}; report=${outputFile}; follow-up=${followUp}; do not rerun the whole paid panel`.replace(
         /\s*\n\s*/g,

@@ -189,6 +189,21 @@ all progress on stderr:
 bun tools/llm.ts "ping" --json | jq .file
 ```
 
+Pro panels report `completed` only when every requested opinion and required
+judge pair returned. A missing opinion or judge produces `incomplete` and
+exit 1; no returned opinions produce `failed` and exit 1. Returned opinions
+and available verdicts remain in the report and A/B log before that exit.
+
+The envelope's `completion` record names the requested slots and models,
+returned slots, missing slots with causes, and required, returned, or failed
+judge pairs. `--no-judge` waives judge pairs while still requiring every opinion.
+An explicit `--model` call requests one model and can complete on its own.
+
+The last stderr line includes the report path and a targeted follow-up command
+for missing work. That command reuses the saved report rather than paying for
+the whole panel again. A partial review can instead be handed on with its
+returned/requested count and judge state stated explicitly.
+
 ## Quota tracking
 
 Surface remaining credit + rate limits per provider so spending decisions

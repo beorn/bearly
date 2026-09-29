@@ -146,38 +146,45 @@ describe("output-mode singleton", () => {
 })
 
 describe("--json mode end-to-end", () => {
-  it("ask path: stdout has exactly one JSON line; envelope has the canonical schema", async () => {
-    const env = makeTestEnv()
-    resetMocks()
+  it.each([
+    { name: "ask", argv: ["ping"] },
+    { name: "explicit single-model pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"] },
+  ])(
+    "$name path: stdout has exactly one JSON line; envelope has the canonical schema",
+    async ({ argv }) => {
+      const env = makeTestEnv()
+      resetMocks()
 
-    vi.resetModules()
-    process.argv = ["node", "cli.ts", "--json", "ping"]
-    const mod = await import("../src/cli")
-    await mod.main()
+      vi.resetModules()
+      process.argv = ["node", "cli.ts", "--json", ...argv]
+      const mod = await import("../src/cli")
+      await mod.main()
 
-    // Exactly one JSON line on stdout — this is the contract.
-    const jsonLines = env.stdout.filter((l) => l.trim().startsWith("{"))
-    expect(jsonLines).toHaveLength(1)
+      // Exactly one JSON line on stdout — this is the contract.
+      const jsonLines = env.stdout.filter((l) => l.trim().startsWith("{"))
+      expect(jsonLines).toHaveLength(1)
 
-    const envelope = JSON.parse(jsonLines[0]!) as Record<string, unknown>
-    // Required fields per the bead schema.
-    // Output dir resolves via getOutputDir() — defaults to os.tmpdir() which
-    // is /var/folders/.../T on macOS, /tmp on Linux. Just match the trailing
-    // llm-…txt naming, not the prefix.
-    expect(envelope.file).toMatch(/llm-.*\.txt$/)
-    expect(envelope.model).toBeTruthy()
-    expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
-    expect(envelope.status).toBe("completed")
-    // durationMs is omitted when 0 (mocked stream completes instantly); just
-    // verify the field is absent or numeric — never a string or object.
-    if (envelope.durationMs !== undefined) expect(typeof envelope.durationMs).toBe("number")
-    expect(envelope.chars).toBe("ok".length)
+      const envelope = JSON.parse(jsonLines[0]!) as Record<string, unknown>
+      // Required fields per the bead schema.
+      // Output dir resolves via getOutputDir() — defaults to os.tmpdir() which
+      // is /var/folders/.../T on macOS, /tmp on Linux. Just match the trailing
+      // llm-…txt naming, not the prefix.
+      expect(envelope.file).toMatch(/llm-.*\.txt$/)
+      expect(envelope.model).toBeTruthy()
+      expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
+      expect(envelope.status).toBe("completed")
+      // durationMs is omitted when 0 (mocked stream completes instantly); just
+      // verify the field is absent or numeric — never a string or object.
+      if (envelope.durationMs !== undefined) expect(typeof envelope.durationMs).toBe("number")
+      expect(envelope.chars).toBe("ok".length)
 
-    // The "Output written to: ..." path line is suppressed in JSON mode (stderr
-    // is for progress only — file path lives in envelope.file).
-    const pathLines = env.stderr.filter((l) => l.includes("Output written to:"))
-    expect(pathLines).toHaveLength(0)
-  }, 10_000)
+      // The "Output written to: ..." path line is suppressed in JSON mode (stderr
+      // is for progress only — file path lives in envelope.file).
+      const pathLines = env.stderr.filter((l) => l.includes("Output written to:"))
+      expect(pathLines).toHaveLength(0)
+    },
+    10_000,
+  )
 
   it("legacy mode (no --json): stdout still has one JSON line + stderr has the path", async () => {
     const env = makeTestEnv()
@@ -208,7 +215,7 @@ describe("--json mode end-to-end", () => {
 
     vi.resetModules()
     // -y skips the cost-confirmation prompt
-    process.argv = ["node", "cli.ts", "--json", "pro", "-y", "test"]
+    process.argv = ["node", "cli.ts", "--json", "pro", "-y", "--no-judge", "test"]
     const mod = await import("../src/cli")
     await mod.main()
 
