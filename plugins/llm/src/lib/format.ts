@@ -27,6 +27,24 @@ export interface LegMeta {
   error?: string
 }
 
+/** The requested panel and its measured completion, including preflight loss. */
+export interface ProCompletion {
+  requested: ReadonlyArray<{ slot: "a" | "b" | "c" | "d"; role: "mainstay" | "split-test"; model: string }>
+  returned: ReadonlyArray<"a" | "b" | "c" | "d">
+  missing: ReadonlyArray<{
+    slot: "a" | "b" | "c" | "d"
+    model: string
+    cause: "dropped-before-dispatch" | "unavailable" | "timed-out" | "errored"
+    detail: string
+  }>
+  judges: {
+    waived: boolean
+    required: readonly string[]
+    returned: readonly string[]
+    failed: ReadonlyArray<{ pair: string; cause: string }>
+  }
+}
+
 export interface OutputMeta {
   query?: string
   model?: string
@@ -42,7 +60,8 @@ export interface OutputMeta {
   costUsd?: number
   durationMs?: number
   responseId?: string
-  status?: "completed" | "failed" | "background" | "recovered"
+  status?: "completed" | "incomplete" | "failed" | "background" | "recovered"
+  completion?: ProCompletion
   /** Dual-pro: per-leg sections. A/B are mainstays (always present in
    * dual-pro mode); C/D are optional split-test slots. */
   a?: LegMeta
@@ -178,9 +197,11 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.durationMs) result.durationMs = meta.durationMs
   if (meta?.responseId) result.responseId = meta.responseId
   if (meta?.status) result.status = meta.status
+  if (meta?.completion) result.completion = meta.completion
   if (meta?.a) result.a = legToEnvelope(meta.a)
   if (meta?.b) result.b = legToEnvelope(meta.b)
   if (meta?.c) result.c = legToEnvelope(meta.c)
+  if (meta?.d) result.d = legToEnvelope(meta.d)
   if (meta?.judge) result.judge = meta.judge
   if (meta?.leaderboardSnapshot) result.leaderboardSnapshot = meta.leaderboardSnapshot
   if (meta?.quota) result.quota = meta.quota

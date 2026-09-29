@@ -189,7 +189,10 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       "an incomplete panel must fail without explicit acceptance",
     ).toBe(true)
     const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))!
-    expect(JSON.parse(envelopeLine).status, "machine callers must see incomplete panel completion").toBe("incomplete")
+    expect(
+      (JSON.parse(envelopeLine) as { status?: string }).status,
+      "machine callers must see incomplete panel completion",
+    ).toBe("incomplete")
     expect(report, "the successful opinion survives the failure status").toContain("the only answer")
   }, 20_000)
 
@@ -231,7 +234,7 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       "one missing judge must make the panel incomplete",
     ).toBe(true)
     const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))!
-    expect(JSON.parse(envelopeLine).status).toBe("incomplete")
+    expect((JSON.parse(envelopeLine) as { status?: string }).status).toBe("incomplete")
   }, 20_000)
 })
 

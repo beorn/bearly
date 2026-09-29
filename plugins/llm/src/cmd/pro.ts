@@ -42,10 +42,21 @@ import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
-import { safeCurrentSeat, declaredHabitatEnvFile, getEnvLoadFailure } from "../lib/env-preflight"
-import { emitJson } from "../lib/output-mode"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
+import type { ProCompletion } from "../lib/format"
+
+/** One completion rule for every requested leg, independent of its role. */
+function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
+  if (completion.returned.length === 0) return "failed"
+  if (
+    completion.missing.length > 0 ||
+    (!completion.judges.waived &&
+      (completion.judges.failed.length > 0 || completion.judges.returned.length !== completion.judges.required.length))
+  )
+    return "incomplete"
+  return "completed"
+}
 
 /**
  * 24533 defect 4. The estimate was a hardcoded tier band — `~$5-15` whenever
@@ -284,44 +295,11 @@ export async function runProDual(options: {
     return
   }
 
-  // Fall back to single-model mode if we can't run both mainstays.
-  if (!m0Available || !m1Available) {
-    const seat = safeCurrentSeat()
-    const envFile = declaredHabitatEnvFile()
-    const loadFailure = getEnvLoadFailure()
-    const failureDetail =
-      loadFailure && loadFailure.error !== "no env file found"
-        ? ` (failed to read declared env file: ${loadFailure.error})`
-        : ""
-    if (!m0Available && !m1Available) {
-      const err = `Dual-pro failed for seat ${seat}: provider keys for neither mainstay could be loaded from declared env file (${envFile})${failureDetail} or launch environment.`
-      emitJson({ error: err, status: "failed" })
-      console.error(`error: ${err}`)
-      process.exit(1)
-    }
-    const missing = !m0Available
-      ? !mainstay0
-        ? `unknown model "${mainstay0Id}"`
-        : `provider key for ${mainstay0.provider}`
-      : !mainstay1
-        ? `unknown model "${mainstay1Id}"`
-        : `provider key for ${mainstay1.provider}`
-    console.error(
-      `⚠️  Dual-pro unavailable (${missing}) for seat ${seat} (declared env file: ${envFile}) — falling back to single model\n`,
-    )
-    await askAndFinish({
-      question,
-      modelMode: "pro" as ModelMode,
-      level: "standard",
-      header: (name) => `[${name} - pro mode]`,
-      modelOverride: undefined,
-      imagePath,
-      streamToken: options.streamToken,
-      buildContext,
-      outputFile,
-      sessionTag,
-    })
-    return
+  // An unavailable configured mainstay remains part of the requested panel.
+  // Run its available sibling through the same report path, never substitute
+  // an unrelated default model and call that a completed panel.
+  if (!mainstay0 || !mainstay1) {
+    throw new Error(`Dual-pro mainstay is not registered: ${!mainstay0 ? mainstay0Id : mainstay1Id}`)
   }
 
   const context = await buildContext(question)
@@ -336,6 +314,20 @@ export async function runProDual(options: {
   ]
   if (slotC && legCap >= 3) legSlots.push({ id: "c", role: "split-test", model: slotC })
   if (slotD && legCap >= 4) legSlots.push({ id: "d", role: "split-test", model: slotD })
+  const requestedSlots = [...legSlots]
+  const preflightMissing = new Map<
+    LegSlot["id"],
+    { cause: "unavailable" | "dropped-before-dispatch"; detail: string }
+  >()
+  for (const slot of requestedSlots) {
+    if (!isProviderAvailable(slot.model.provider)) {
+      preflightMissing.set(slot.id, {
+        cause: "unavailable",
+        detail: `provider key for ${slot.model.provider} is unavailable (${getProviderEnvVar(slot.model.provider)})`,
+      })
+    }
+  }
+  legSlots.splice(0, legSlots.length, ...requestedSlots.filter((slot) => !preflightMissing.has(slot.id)))
 
   /**
    * 24533 acceptance row 4. ASK THE PROVIDER WHETHER EACH CONFIGURED MODEL IS
@@ -364,6 +356,12 @@ export async function runProDual(options: {
   const deadIds = new Set(liveness.filter((l) => l.verdict === "absent").map((l) => l.modelId))
   if (deadIds.size > 0) {
     const dropped = legSlots.filter((s) => deadIds.has(s.model.modelId))
+    for (const slot of dropped) {
+      preflightMissing.set(slot.id, {
+        cause: "dropped-before-dispatch",
+        detail: `${slot.model.modelId} is not served by its provider`,
+      })
+    }
     const surviving = legSlots.filter((s) => !deadIds.has(s.model.modelId))
     legSlots.length = 0
     legSlots.push(...surviving)
@@ -371,16 +369,6 @@ export async function runProDual(options: {
       `  ⚠ ${dropped.length} leg(s) dropped before dispatch — not served by their provider: ` +
         dropped.map((s) => s.model.displayName).join(", "),
     )
-    if (legSlots.length === 0) {
-      throw new Error(
-        "Every configured /pro leg names a model its provider no longer serves: " +
-          liveness
-            .filter((l) => l.verdict === "absent")
-            .map((l) => `${l.modelId} (${l.wireId})`)
-            .join(", ") +
-          '. Run "bun llm pro --discover-models" and update dual-pro-config.json.',
-      )
-    }
   }
 
   const fleetLabel = legSlots
@@ -490,9 +478,14 @@ export async function runProDual(options: {
     failureKind?: import("../lib/dispatch-error").DispatchFailureKind
     /** The provider's own text, before classification added a cure. */
     rawError?: string
+    missingCause?: ProCompletion["missing"][number]["cause"]
   }
-  const legOutcomes: LegOutcome[] = legSlots.map((slot, i) => {
-    const settled = settledResults[i]!
+  const settledBySlot = new Map(legSlots.map((slot, i) => [slot.id, settledResults[i]!] as const))
+  const legOutcomes: LegOutcome[] = requestedSlots.map((slot) => {
+    const preflight = preflightMissing.get(slot.id)
+    if (preflight) return { ...slot, ok: false, error: preflight.detail, missingCause: preflight.cause }
+    const settled = settledBySlot.get(slot.id)
+    if (!settled) throw new Error(`Missing dispatch outcome for requested slot ${slot.id}`)
     const response = settled.status === "fulfilled" ? settled.value : undefined
     const raw: unknown = settled.status === "rejected" ? (settled.reason as unknown) : (response?.error ?? undefined)
     const described = raw === undefined ? undefined : describeDispatchFailure(raw, slot.model)
@@ -509,6 +502,7 @@ export async function runProDual(options: {
       response,
       error,
       ok,
+      ...(ok ? {} : { missingCause: described?.kind === "timeout" ? ("timed-out" as const) : ("errored" as const) }),
       ...(described === undefined ? {} : { failureKind: described.kind }),
       ...(rawText === undefined ? {} : { rawError: rawText }),
     }
@@ -615,6 +609,12 @@ export async function runProDual(options: {
    * silently skipped.
    */
   const judgeAnchor: LegOutcome | undefined = legA.ok ? legA : okLegs[0]
+  const judgeRequired =
+    !options.noJudge && okLegs.length >= 2 && judgeAnchor
+      ? okLegs.filter((l) => l.id !== judgeAnchor.id).map((l) => `${judgeAnchor.id}${l.id}`)
+      : []
+  const judgeReturned: string[] = []
+  const judgeFailed: { pair: string; cause: string }[] = []
   if (!options.noJudge && okLegs.length >= 2 && judgeAnchor) {
     const judgeModel = getModel(cfg.judge)
     if (!judgeModel) {
@@ -699,7 +699,11 @@ export async function runProDual(options: {
       const settled = await Promise.all(pairs.map((p) => judgeOnce(p.id, p.contender)))
       for (const r of settled) {
         judgeCost += r.cost
-        if (!r.result) continue
+        if (!r.result) {
+          judgeFailed.push({ pair: r.id, cause: r.error ?? "judge returned no result" })
+          continue
+        }
+        judgeReturned.push(r.id)
         const contenderId = contenderSlotByPairId.get(r.id)
         if (contenderId === undefined) continue
         pairByContender.set(contenderId, r.result)
@@ -716,7 +720,13 @@ export async function runProDual(options: {
         )
       }
     }
-    if (judgeError) console.error(`  ⚠ judge unavailable: ${judgeError}`)
+    if (judgeError) {
+      if (judgeFailed.length === 0) {
+        const cause = judgeError
+        judgeFailed.push(...judgeRequired.map((pair) => ({ pair, cause })))
+      }
+      console.error(`  ⚠ judge unavailable: ${judgeError}`)
+    }
   } else if (!options.noJudge && okLegs.length === 1) {
     // The only honest skip: one opinion cannot be scored against anything. Name
     // the leg that survived and the ones that did not, so the reason is legible
@@ -929,6 +939,20 @@ export async function runProDual(options: {
   // want the current rankings without re-reading ab-pro.jsonl.
   const priorEntries = await dualPro.readAbProLog()
   const leaderboardSnapshot = dualPro.buildLeaderboard(priorEntries, cfg.scoreWeights)
+  const completion: ProCompletion = {
+    requested: requestedSlots.map((slot) => ({ slot: slot.id, role: slot.role, model: slot.model.modelId })),
+    returned: okLegs.map((leg) => leg.id),
+    missing: legOutcomes
+      .filter((leg) => !leg.ok)
+      .map((leg) => ({
+        slot: leg.id,
+        model: leg.model.modelId,
+        cause: leg.missingCause ?? "errored",
+        detail: leg.error ?? "no response",
+      })),
+    judges: { waived: !!options.noJudge, required: judgeRequired, returned: judgeReturned, failed: judgeFailed },
+  }
+  const status = panelStatus(completion)
   await finalizeOutput(combined, outputFile, sessionTag, {
     query: question,
     model: `dual-pro (${legOutcomes.map((l) => l.model.displayName).join(" + ")})`,
@@ -936,7 +960,8 @@ export async function runProDual(options: {
     cost: formatCost(totalLegCost + judgeCost),
     costUsd: totalLegCost + judgeCost,
     durationMs: Math.max(0, ...legOutcomes.map((l) => l.response?.durationMs ?? 0)),
-    status: okLegs.length > 0 ? "completed" : "failed",
+    status,
+    completion,
     a: aLeg,
     b: bLeg,
     c: cLegEnv,
@@ -966,6 +991,8 @@ export async function runProDual(options: {
   // shape carries leg D + pairwise judge results; legacy gpt/kimi keys
   // remain for v1 readers.
   await appendAbProLog({
+    status,
+    completion,
     question,
     sessionTag,
     outputFile,
@@ -1007,12 +1034,31 @@ export async function runProDual(options: {
   // get written — useful for post-mortem — but the caller knows it went
   // wrong. Keep the legacy "Both dual-pro legs failed" message for the
   // 2-leg case, since downstream scripts grep for it.
-  if (okLegs.length === 0) {
-    const msg =
-      legOutcomes.length === 2
-        ? "\n⚠️  Both dual-pro legs failed — see report for details."
-        : "\n⚠️  All dual-pro legs failed — see report for details."
-    console.error(msg)
+  if (status !== "completed") {
+    if (okLegs.length === 0) {
+      const msg =
+        legOutcomes.length === 2
+          ? "\n⚠️  Both dual-pro legs failed — see report for details."
+          : "\n⚠️  All dual-pro legs failed — see report for details."
+      console.error(msg)
+    }
+    const missing = completion.missing.map((leg) => `${leg.slot}:${leg.model}=${leg.cause}`).join(", ") || "none"
+    const judgeState = options.noJudge
+      ? "waived"
+      : `${judgeReturned.length}/${judgeRequired.length} pairs; failed=${judgeFailed.map((pair) => pair.pair).join(",") || "none"}`
+    const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
+    const followUp =
+      completion.missing.length > 0
+        ? completion.missing
+            .map((leg) => `llm pro --model ${quote(leg.model)} --context-file ${quote(outputFile)} ${quote(question)}`)
+            .join(" ; ")
+        : `judge only the missing pairs (${judgeFailed.map((pair) => pair.pair).join(", ")}) from the saved report`
+    console.error(
+      `[dual-pro] ${status}: ${okLegs.length}/${requestedSlots.length} returned; missing=${missing}; judge=${judgeState}; report=${outputFile}; follow-up=${followUp}; do not rerun the whole paid panel`.replace(
+        /\s*\n\s*/g,
+        " ",
+      ),
+    )
     process.exit(1)
   }
 }
@@ -1026,6 +1072,8 @@ export async function runProDual(options: {
  * them to rank winners, estimate quality deltas, etc.
  */
 async function appendAbProLog(entry: {
+  status: "completed" | "incomplete" | "failed"
+  completion: ProCompletion
   question: string
   sessionTag: string
   outputFile: string
@@ -1100,6 +1148,8 @@ async function appendAbProLog(entry: {
         question: entry.question,
         queryHash,
         outputFile: entry.outputFile,
+        status: entry.status,
+        completion: entry.completion,
         // v1 (back-compat) — same payload as v1 readers expect. Always
         // mirrors legs A and B (the mainstays).
         gpt: legA
