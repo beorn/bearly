@@ -43,6 +43,17 @@ describe("planCliInvocation — name is the first positional, never a flag", () 
     })
   })
 
+  /** @failure delegate argv loses destination or treats its value as the name
+   * @level l1 @consumer worktree CLI composing callers */
+  test("create carries the exact destination without consuming it as a name", () => {
+    expect(planCliInvocation(["create", "--destination", "/scratch/exact", "wt3", "--base", "HEAD"])).toMatchObject({
+      action: "create",
+      name: "wt3",
+      options: { destination: "/scratch/exact", base: "HEAD" },
+    })
+    expect(planCliInvocation(["create", "wt3", "--destination"])).toMatchObject({ action: "usage-error" })
+  })
+
   test("commands with only flags are usage errors, not flag-named worktrees", () => {
     expect(planCliInvocation(["remove", "--force"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation(["reset"])).toMatchObject({ action: "usage-error" })

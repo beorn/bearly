@@ -1172,6 +1172,8 @@ function requireDeclaredPoolSlot(name: string, environment: NodeJS.ProcessEnv = 
 
 export interface CreateOptions extends WorktreeSetupOptions {
   allowDirty?: boolean // Skip uncommitted changes check
+  /** Exact absolute checkout path supplied by a composing caller; naming stays with that caller. */
+  destination?: string
   /**
    * Explicit base ref for a NEW branch / pool slot (`--base <ref>`). Skips the
    * default fetch-then-`origin/main` base resolution — the offline / deliberate
@@ -1778,7 +1780,7 @@ async function resolveCreateBase(gitRoot: string, explicitBase: string | undefin
 
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
-  const { install = true, direnv = true, hooks = true, allowDirty = false, base: explicitBase } = options
+  const { install = true, direnv = true, hooks = true, allowDirty = false, base: explicitBase, destination } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
@@ -1793,7 +1795,11 @@ export async function createWorktree(name: string, branch?: string, options: Cre
 
   const repoName = basename(gitRoot)
   const poolRoot = resolvePoolRoot(gitRoot)
-  const worktreePath = join(poolRoot, slotDirName(repoName, name))
+  if (destination !== undefined && !isAbsolute(destination)) {
+    error(`Worktree destination must be an absolute path: ${JSON.stringify(destination)}`)
+    process.exit(1)
+  }
+  const worktreePath = destination === undefined ? join(poolRoot, slotDirName(repoName, name)) : resolve(destination)
   // Slot-pattern names (wt0, wt1, ..., wt9) get a plain branch matching the
   // slot id — agents lease `@agent/N` and expect branch `wtN`. Other names
   // get the `feat/` prefix as a courtesy.
@@ -1802,7 +1808,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // Check if the slot already exists — in ANY pool location. Creating a
   // contained slot while its legacy sibling twin is still live would split the
   // slot's identity across two checkouts (two `wt3` dirs, one branch).
-  for (const candidate of slotPathCandidates(gitRoot, name, poolRoot)) {
+  for (const candidate of new Set([worktreePath, ...slotPathCandidates(gitRoot, name, poolRoot)])) {
     if (existsSync(candidate)) {
       error(`Directory already exists: ${candidate}`)
       if (candidate !== worktreePath) {
@@ -1823,11 +1829,17 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // that dirties the repo. The pool dir itself is created up front so
   // check-ignore evaluates the real path.
   if (worktreePath.startsWith(gitRoot + "/")) {
-    mkdirSync(poolRoot, { recursive: true })
-    const ignored = await safeExec($`cd ${gitRoot} && git check-ignore -q ${poolRoot}`)
+    const ignoreTarget = destination === undefined ? poolRoot : worktreePath
+    mkdirSync(destination === undefined ? poolRoot : dirname(worktreePath), { recursive: true })
+    const ignoreProbe = destination === undefined ? ignoreTarget : `${ignoreTarget}/`
+    const ignored = await safeExec($`cd ${gitRoot} && git check-ignore -q ${ignoreProbe}`)
     if (ignored.exitCode !== 0) {
-      error(`Contained pool root ${poolRoot} is not git-ignored.`)
-      console.log(CYAN + `  Add "${relative(gitRoot, poolRoot)}/" to ${join(gitRoot, ".gitignore")} and retry.` + RESET)
+      error(
+        `Contained worktree destination ${ignoreTarget} is not git-ignored (git check-ignore exit ${ignored.exitCode}).`,
+      )
+      console.log(
+        CYAN + `  Add "${relative(gitRoot, ignoreTarget)}/" to ${join(gitRoot, ".gitignore")} and retry.` + RESET,
+      )
       process.exit(1)
     }
   }
@@ -1880,7 +1892,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // Base-ref freshness (worktree-base-origin-main): any branch this create
   // CUTS is based on a freshly-fetched origin/main (or the explicit --base
   // escape hatch) — never on local HEAD / a stale cached ref. Resolved BEFORE
-  // preserveAheadBranchRef below so the ahead-of-origin/main preserve check
+  // refuseAheadBranchReset below so its selected-base check
   // also sees the fresh tip.
   const cutsNewBranch = isPoolSlot || (branchExists.exitCode !== 0 && remoteBranchExists.exitCode !== 0)
   if (explicitBase !== undefined && !cutsNewBranch) {
@@ -1911,13 +1923,10 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     info(`Creating new branch: ${branchName} at ${base}`)
   }
 
-  // PRESERVE-FIRST (L5): a pool slot recreated over a stale local `wtN` branch
-  // that is ahead of origin/main would lose those commits to the `-B ...
-  // origin/main` reset below. Snapshot them to a durable `wip/…` ref first. (The
-  // dirty-worktree case can't reach here — create refuses on an existing dir —
-  // so removeWorktree owns that; this closes the orphan-ahead-branch gap.)
+  // A missing checkout does not make the slot ref disposable. Refuse before
+  // -B when the chosen base omits its commits; preservation is an explicit cure.
   if (isPoolSlot && branchExists.exitCode === 0) {
-    await preserveAheadBranchRef(gitRoot, branchName, name)
+    await refuseAheadBranchReset(gitRoot, branchName, base)
   }
 
   // Create worktree
@@ -2202,30 +2211,25 @@ export async function preserveSlotState(
   return { preserved: true, ref: refShort, sha, reason, submodules: preservedSubs }
 }
 
-/**
- * Preserve a local slot branch that is ahead of origin/main when NO live slot
- * dir exists — the pool-slot recreate `-B <branch> origin/main` would otherwise
- * force-discard those commits. No-op when the branch is not ahead.
- */
-async function preserveAheadBranchRef(gitRoot: string, branchName: string, slotName: string): Promise<void> {
-  const aheadRes = await safeExec(
-    $`cd ${gitRoot} && git rev-list --count origin/main..refs/heads/${branchName} 2>/dev/null`,
-  )
-  const ahead = parseInt(aheadRes.stdout.trim(), 10) || 0
-  if (ahead === 0) return
-  const tip = (await safeExec($`cd ${gitRoot} && git rev-parse refs/heads/${branchName}`)).stdout.trim()
-  const refShort = `wip/${slotName}-preserve-${preserveStamp()}`
-  const setRef = await safeExec($`cd ${gitRoot} && git update-ref refs/heads/${refShort} ${tip}`)
-  if (setRef.exitCode !== 0) {
-    throw new Error(`preserve: saving ahead branch ${branchName} to ${refShort} failed: ${setRef.stdout}`)
+/** A fresh creator never moves a slot ref over commits missing from its chosen base. */
+async function refuseAheadBranchReset(gitRoot: string, branchName: string, base: string): Promise<void> {
+  const aheadRes = await safeExec($`cd ${gitRoot} && git rev-list --count ${base}..refs/heads/${branchName} 2>&1`)
+  const count = aheadRes.stdout.trim()
+  if (aheadRes.exitCode !== 0 || !/^\d+$/.test(count)) {
+    throw new Error(
+      `Cannot check slot branch ${branchName} against chosen base ${base} in ${gitRoot}: ` +
+        `git rev-list exited ${aheadRes.exitCode}: ${count}; refusing to reset the ref`,
+    )
   }
-  console.log("")
-  warn(`Preserved ${ahead} ahead commit(s) of slot branch ${branchName} before the -B origin/main reset:`)
-  console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${tip.slice(0, 12)})` + RESET)
-  await appendPreserveLog(
-    gitRoot,
-    `${new Date().toISOString()} slot=${slotName} ref=${refShort} sha=${tip} reason=ahead-branch branch=${branchName}`,
+  if (Number(count) === 0) return
+  error(`Refusing to reset slot branch ${branchName}: ${count} commit(s) are not on chosen base ${base}.`)
+  console.log(
+    CYAN +
+      `  Park and push the work to wip/<bead> before recreating this slot, or use a non-slot worktree name ` +
+      `with --branch ${branchName} to keep its existing tip. No ref was moved.` +
+      RESET,
   )
+  process.exit(1)
 }
 
 export interface RemoveOptions {
@@ -2780,11 +2784,12 @@ ${BOLD}CREATE OPTIONS${RESET}
   --base <ref>      Base a NEW branch/slot on <ref> instead of the default
                     fetch-then-origin/main (offline / deliberate escape hatch;
                     errors loud if the branch already exists)
+  --destination <path>  Create at this exact absolute path instead of the pool
   --no-install      Skip dependency installation
   --no-direnv       Skip direnv allow
   --no-hooks        Skip hook installation
   --allow-dirty     Create despite uncommitted changes in the MAIN repo (they stay
-                    in main; a stale ahead slot branch is preserved, not reset away)
+                    in main; an ahead slot ref is refused before any reset)
 
 ${BOLD}REMOVE OPTIONS${RESET}
   --delete-branch   Also delete the branch
@@ -2859,6 +2864,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     flags: {
       "--branch": { value: true },
       "--base": { value: true },
+      "--destination": { value: true },
       "--no-install": {},
       "--no-direnv": {},
       "--no-hooks": {},
@@ -2899,11 +2905,11 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
 }
 
 /**
- * Create plan options: every toggle resolved, but `base` stays optional —
- * `undefined` means "fetch, then origin/main" (the enforced default), an
- * explicit value is the operator's deliberate `--base <ref>` escape hatch.
+ * Create plan options: every toggle resolved; the base and exact destination stay optional —
+ * An absent base means "fetch, then origin/main"; an absent destination keeps pool naming.
  */
-export type CreatePlanOptions = Required<Omit<CreateOptions, "base">> & Pick<CreateOptions, "base">
+export type CreatePlanOptions = Required<Omit<CreateOptions, "base" | "destination">> &
+  Pick<CreateOptions, "base" | "destination">
 
 export type CliPlan =
   | { action: "help" }
@@ -2986,6 +2992,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
           hooks: !flags.has("--no-hooks"),
           allowDirty: flags.has("--allow-dirty"),
           base: values.get("--base"),
+          destination: values.get("--destination"),
         },
       }
     }

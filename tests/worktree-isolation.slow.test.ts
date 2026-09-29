@@ -138,89 +138,144 @@ describe("worktree submodule isolation round-trip", () => {
     }
   })
 
-  test.each(["default", "explicit"] as const)("%s destination keeps submodule changes isolated and removal leaves no orphans", async (placement) => {
-    const mainRepo = join(sandbox, "main")
-    const subRepo = join(sandbox, "sub")
+  /** @failure unsafe destination creates a checkout despite refusal policy
+   * @level l3 @consumer createWorktree composing callers */
+  test.each(["relative", "destination-collision", "legacy-collision", "contained-unignored"] as const)(
+    "exact destination refuses %s before creating a checkout",
+    async (scenario) => {
+      const mainRepo = join(sandbox, "main")
+      await initRepo(mainRepo)
+      writeFileSync(join(mainRepo, "README.md"), "main\n")
+      writeFileSync(join(mainRepo, ".gitignore"), ".worktrees/\n")
+      await commitAll(mainRepo, "main-init")
+      await $`cd ${mainRepo} && git config worktree.poolRoot .worktrees`.quiet()
+      const name = "destination-test"
+      const destination =
+        scenario === "relative"
+          ? "relative/exact"
+          : scenario === "contained-unignored"
+            ? join(mainRepo, "unignored", "exact")
+            : join(sandbox, "exact")
+      const collision =
+        scenario === "destination-collision"
+          ? destination
+          : scenario === "legacy-collision"
+            ? join(sandbox, `main-${name}`)
+            : undefined
+      if (collision !== undefined) mkdirSync(collision, { recursive: true })
+      const origCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
+        const options = { destination, base: "HEAD", install: false, direnv: false, hooks: false }
+        await expect(createWorktree(name, undefined, options)).rejects.toThrow(
+          /process.exit unexpectedly called with "1"/,
+        )
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(collision ?? (scenario === "relative" ? "absolute" : destination)),
+        )
+        const registry = await $`cd ${mainRepo} && git worktree list --porcelain`.text()
+        expect(registry).not.toContain(`worktree ${join(mainRepo, ".worktrees", `main-${name}`)}`)
+        if (scenario !== "relative" && scenario !== "destination-collision") expect(existsSync(destination)).toBe(false)
+      } finally {
+        process.chdir(origCwd)
+      }
+    },
+    60_000,
+  )
 
-    // Build the upstream submodule repo
-    await initRepo(subRepo)
-    writeFileSync(join(subRepo, "file.txt"), "original\n")
-    await commitAll(subRepo, "sub-init")
+  /** @failure exact destination loses registration or submodule isolation
+   * @level l3 @consumer createWorktree composing callers */
+  test.each(["default", "explicit", "contained"] as const)(
+    "%s destination keeps submodule changes isolated and removal leaves no orphans",
+    async (placement) => {
+      const mainRepo = join(sandbox, "main")
+      const subRepo = join(sandbox, "sub")
 
-    // Build the superproject with vendor/sub as a submodule
-    await initRepo(mainRepo)
-    writeFileSync(join(mainRepo, "README.md"), "main\n")
-    await commitAll(mainRepo, "main-init")
-    await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
-    await commitAll(mainRepo, "add-sub")
+      // Build the upstream submodule repo
+      await initRepo(subRepo)
+      writeFileSync(join(subRepo, "file.txt"), "original\n")
+      await commitAll(subRepo, "sub-init")
 
-    // Record the main repo's submodule file content before worktree work
-    const mainSubFile = join(mainRepo, "vendor/sub/file.txt")
-    const mainContentsBefore = readFileSync(mainSubFile, "utf8")
-    expect(mainContentsBefore).toBe("original\n")
+      // Build the superproject with vendor/sub as a submodule
+      await initRepo(mainRepo)
+      writeFileSync(join(mainRepo, "README.md"), "main\n")
+      if (placement === "contained") writeFileSync(join(mainRepo, ".gitignore"), ".custom/\n")
+      await commitAll(mainRepo, "main-init")
+      await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
+      await commitAll(mainRepo, "add-sub")
 
-    // Run createWorktree from inside mainRepo
-    const worktreeName = "iso-test"
-    const worktreePath = placement === "explicit"
-      ? join(sandbox, "custom", "exact-location")
-      : join(dirname(mainRepo), `main-${worktreeName}`)
-    const origCwd = process.cwd()
-    try {
-      process.chdir(mainRepo)
-      await createWorktree(worktreeName, undefined, {
-        ...(placement === "explicit" ? { destination: worktreePath } : {}),
-        install: false,
-        direnv: false,
-        hooks: false,
-        base: "HEAD",
-      })
-    } finally {
-      process.chdir(origCwd)
-    }
+      // Record the main repo's submodule file content before worktree work
+      const mainSubFile = join(mainRepo, "vendor/sub/file.txt")
+      const mainContentsBefore = readFileSync(mainSubFile, "utf8")
+      expect(mainContentsBefore).toBe("original\n")
 
-    // The explicit destination is exact; absence retains the original naming.
-    const worktreeDirName = placement === "explicit" ? "exact-location" : `main-${worktreeName}`
-    expect(existsSync(worktreePath)).toBe(true)
-    const wtSubFile = join(worktreePath, "vendor/sub/file.txt")
-    expect(existsSync(wtSubFile)).toBe(true)
+      // Run createWorktree from inside mainRepo
+      const worktreeName = "iso-test"
+      const worktreePath =
+        placement === "contained"
+          ? join(mainRepo, ".custom", "exact-location")
+          : placement === "explicit"
+            ? join(sandbox, "custom", "exact-location")
+            : join(dirname(mainRepo), `main-${worktreeName}`)
+      const origCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
+        await createWorktree(worktreeName, undefined, {
+          ...(placement !== "default" ? { destination: worktreePath } : {}),
+          install: false,
+          direnv: false,
+          hooks: false,
+          base: "HEAD",
+        })
+      } finally {
+        process.chdir(origCwd)
+      }
 
-    // Verify per-worktree modules dir exists (isolation)
-    // git uses the basename of the worktree path as the worktree identifier
-    const modulesDir = await getWorktreeModulesDir(mainRepo, worktreeDirName)
-    expect(modulesDir).toBeDefined()
-    if (!modulesDir) throw new Error("modulesDir undefined")
-    expect(existsSync(modulesDir)).toBe(true)
-    expect(existsSync(join(modulesDir, "vendor/sub"))).toBe(true)
+      // The explicit destination is exact; absence retains the original naming.
+      const worktreeDirName = placement !== "default" ? "exact-location" : `main-${worktreeName}`
+      expect(existsSync(worktreePath)).toBe(true)
+      const wtSubFile = join(worktreePath, "vendor/sub/file.txt")
+      expect(existsSync(wtSubFile)).toBe(true)
 
-    // Submodule heads at this point should match the main repo
-    const heads = await getSubmoduleHeads(worktreePath)
-    expect(heads["vendor/sub"]).toBeDefined()
+      // Verify per-worktree modules dir exists (isolation)
+      // git uses the basename of the worktree path as the worktree identifier
+      const modulesDir = await getWorktreeModulesDir(mainRepo, worktreeDirName)
+      expect(modulesDir).toBeDefined()
+      if (!modulesDir) throw new Error("modulesDir undefined")
+      expect(existsSync(modulesDir)).toBe(true)
+      expect(existsSync(join(modulesDir, "vendor/sub"))).toBe(true)
 
-    // Modify the submodule inside the worktree
-    writeFileSync(wtSubFile, "modified-in-worktree\n")
-    expect(readFileSync(wtSubFile, "utf8")).toBe("modified-in-worktree\n")
+      // Submodule heads at this point should match the main repo
+      const heads = await getSubmoduleHeads(worktreePath)
+      expect(heads["vendor/sub"]).toBeDefined()
 
-    // Main repo's submodule file must be unchanged — this is the isolation invariant
-    const mainContentsAfter = readFileSync(mainSubFile, "utf8")
-    expect(mainContentsAfter).toBe("original\n")
+      // Modify the submodule inside the worktree
+      writeFileSync(wtSubFile, "modified-in-worktree\n")
+      expect(readFileSync(wtSubFile, "utf8")).toBe("modified-in-worktree\n")
 
-    // Commit the change inside the worktree's submodule to prove the .git is
-    // independent (would fail if .git were shared with the main's submodule)
-    await $`cd ${wtSubFile.replace(/\/file\.txt$/, "")} && git add -A && git -c user.email=t@t -c user.name=t commit -qm wt-change`.quiet()
-    const wtHeads = await getSubmoduleHeads(worktreePath)
-    const mainHeads = await getSubmoduleHeads(mainRepo)
-    expect(wtHeads["vendor/sub"]).not.toBe(mainHeads["vendor/sub"])
+      // Main repo's submodule file must be unchanged — this is the isolation invariant
+      const mainContentsAfter = readFileSync(mainSubFile, "utf8")
+      expect(mainContentsAfter).toBe("original\n")
 
-    // Tear down: removeWorktree() must leave no orphan modules dir.
-    // Existing target-path removal must also accept the creator's exact path.
-    try {
-      process.chdir(mainRepo)
-      await removeWorktree(worktreePath, { force: true })
-    } finally {
-      process.chdir(origCwd)
-    }
+      // Commit the change inside the worktree's submodule to prove the .git is
+      // independent (would fail if .git were shared with the main's submodule)
+      await $`cd ${wtSubFile.replace(/\/file\.txt$/, "")} && git add -A && git -c user.email=t@t -c user.name=t commit -qm wt-change`.quiet()
+      const wtHeads = await getSubmoduleHeads(worktreePath)
+      const mainHeads = await getSubmoduleHeads(mainRepo)
+      expect(wtHeads["vendor/sub"]).not.toBe(mainHeads["vendor/sub"])
 
-    expect(existsSync(worktreePath)).toBe(false)
-    expect(existsSync(modulesDir)).toBe(false)
-  }, 60_000)
+      // Tear down: removeWorktree() must leave no orphan modules dir.
+      // Existing target-path removal must also accept the creator's exact path.
+      try {
+        process.chdir(mainRepo)
+        await removeWorktree(worktreePath, { force: true })
+      } finally {
+        process.chdir(origCwd)
+      }
+
+      expect(existsSync(worktreePath)).toBe(false)
+      expect(existsSync(modulesDir)).toBe(false)
+    },
+    60_000,
+  )
 })

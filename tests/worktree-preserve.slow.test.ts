@@ -243,9 +243,13 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
 
       const preservesBefore = await preserveRefs(mainRepo, slot)
       const originalBase = (await $`cd ${mainRepo} && git rev-parse main`.text()).trim()
-      const recreate = (base?: string) => createWorktree(slot, undefined, {
-        install: false, direnv: false, hooks: false, ...(base === undefined ? {} : { base }),
-      })
+      const recreate = (base?: string) =>
+        createWorktree(slot, undefined, {
+          install: false,
+          direnv: false,
+          hooks: false,
+          ...(base === undefined ? {} : { base }),
+        })
       await expect(recreate()).rejects.toThrow(/process.exit unexpectedly called with "1"/)
       expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("wt7"))
       expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("origin/main"))
