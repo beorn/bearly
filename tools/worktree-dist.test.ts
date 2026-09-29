@@ -138,9 +138,9 @@ describe("dependency installation is immutable and fail-loud (21301)", () => {
 })
 
 /**
- * @failure Root's worktree composition skips setup, changes defaults, or hides a required failure.
+ * @failure Bearly's public setup skips a step, changes defaults, or hides a required failure.
  * @level l2
- * @consumer Bearly create and root's worktree creator use the same public setup operation.
+ * @consumer Bearly create and direct setup callers use the same public preparation operation.
  * @testonly none
  * CLI parsing and installDependencies alone cannot witness the setup sequence.
  */
