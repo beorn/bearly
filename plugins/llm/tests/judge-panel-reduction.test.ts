@@ -171,6 +171,21 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     expect(line1, "and give the reason a reader can act on").toMatch(/panel of one cannot be scored/)
     expect(line1).toMatch(/^# Dual-Pro Response — 1\/\d+ legs · /)
     expect(report, "the legs that did not return are still named").toMatch(/\*\*Missing legs\*\*:/)
+
+    // 26561 AC2: the existing warning above protects readers, but an
+    // exit-code-only caller still treats this unjudged panel as successful.
+    // Extend this same CLI witness so retained opinions cannot hide that fault.
+    // @failure an incomplete Pro panel is accepted as a finished review
+    // @level l3
+    // @consumer CLI callers using process status and the JSON envelope
+    // @testonly none
+    expect(
+      env.exitCodes.some((code) => code !== 0),
+      "an incomplete panel must fail without explicit acceptance",
+    ).toBe(true)
+    const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))!
+    expect(JSON.parse(envelopeLine).status, "machine callers must see incomplete panel completion").toBe("incomplete")
+    expect(report, "the successful opinion survives the failure status").toContain("the only answer")
   }, 20_000)
 })
 
