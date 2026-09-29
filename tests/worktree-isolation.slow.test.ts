@@ -138,7 +138,7 @@ describe("worktree submodule isolation round-trip", () => {
     }
   })
 
-  test("worktree changes to submodule don't leak to main, and remove leaves no orphans", async () => {
+  test.each(["default", "explicit"] as const)("%s destination keeps submodule changes isolated and removal leaves no orphans", async (placement) => {
     const mainRepo = join(sandbox, "main")
     const subRepo = join(sandbox, "sub")
 
@@ -161,10 +161,14 @@ describe("worktree submodule isolation round-trip", () => {
 
     // Run createWorktree from inside mainRepo
     const worktreeName = "iso-test"
+    const worktreePath = placement === "explicit"
+      ? join(sandbox, "custom", "exact-location")
+      : join(dirname(mainRepo), `main-${worktreeName}`)
     const origCwd = process.cwd()
     try {
       process.chdir(mainRepo)
       await createWorktree(worktreeName, undefined, {
+        ...(placement === "explicit" ? { destination: worktreePath } : {}),
         install: false,
         direnv: false,
         hooks: false,
@@ -174,9 +178,8 @@ describe("worktree submodule isolation round-trip", () => {
       process.chdir(origCwd)
     }
 
-    // createWorktree uses `${repoName}-${name}` in the parent dir
-    const worktreeDirName = `main-${worktreeName}`
-    const worktreePath = join(dirname(mainRepo), worktreeDirName)
+    // The explicit destination is exact; absence retains the original naming.
+    const worktreeDirName = placement === "explicit" ? "exact-location" : `main-${worktreeName}`
     expect(existsSync(worktreePath)).toBe(true)
     const wtSubFile = join(worktreePath, "vendor/sub/file.txt")
     expect(existsSync(wtSubFile)).toBe(true)
@@ -209,11 +212,10 @@ describe("worktree submodule isolation round-trip", () => {
     expect(wtHeads["vendor/sub"]).not.toBe(mainHeads["vendor/sub"])
 
     // Tear down: removeWorktree() must leave no orphan modules dir.
-    // removeWorktree re-derives `${repoName}-${name}` internally, so pass
-    // the bare name, not the directory name.
+    // Existing target-path removal must also accept the creator's exact path.
     try {
       process.chdir(mainRepo)
-      await removeWorktree(worktreeName, { force: true })
+      await removeWorktree(worktreePath, { force: true })
     } finally {
       process.chdir(origCwd)
     }

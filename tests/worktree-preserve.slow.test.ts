@@ -12,6 +12,8 @@
  * state. Before removing/force-resetting a slot the tooling AUTO-preserves to a
  * durable `wip/<slot>-preserve-<UTCstamp>` ref (built from a temporary index —
  * never `git stash`), prints it loudly, and continues (exit 0, zero prompts).
+ * Fresh creation refuses an orphan slot ref with commits absent from its base;
+ * choosing an exact destination does not authorize replacing that ref.
  * Submodule dirt is preserved into the MAIN submodule store so it survives the
  * per-worktree isolated-store teardown.
  *
@@ -219,10 +221,10 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
-  test("create force-resets an orphan ahead slot branch only AFTER preserving it", async () => {
+  test("create refuses an orphan slot with commits absent from the chosen base", async () => {
     // A stale `wtN` branch left ahead of origin/main with no live slot dir: the
     // pool-slot recreate does `git worktree add -B wtN origin/main`, which
-    // force-moves the ref and discards the ahead commits. Preserve them first.
+    // must refuse before moving the ref; removal's existing preservation is separate.
     const mainRepo = await buildMain()
     const slot = "wt7"
     const worktreePath = join(sandbox, "main-wt7")
@@ -239,22 +241,29 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       const branchSha = (await $`cd ${mainRepo} && git rev-parse refs/heads/${slot}`.text()).trim()
       expect(branchSha).toBe(orphanTip)
 
-      // Recreate the slot — the -B origin/main reset would discard wt7's ahead
-      // commit; preserve must fire first.
-      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
-      const refs = await preserveRefs(mainRepo, slot)
-      expect(refs.length).toBeGreaterThanOrEqual(1)
-      const found = await $`cd ${mainRepo} && git rev-parse ${refs[0]!}`.text()
-      expect(found.trim()).toBe(orphanTip)
-      const body = await $`cd ${mainRepo} && git show ${refs[0]!}:orphan.txt`.text()
-      expect(body).toBe("orphan-ahead\n")
+      const preservesBefore = await preserveRefs(mainRepo, slot)
+      const originalBase = (await $`cd ${mainRepo} && git rev-parse main`.text()).trim()
+      const recreate = (base?: string) => createWorktree(slot, undefined, {
+        install: false, direnv: false, hooks: false, ...(base === undefined ? {} : { base }),
+      })
+      await expect(recreate()).rejects.toThrow(/process.exit unexpectedly called with "1"/)
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("wt7"))
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("origin/main"))
+      expect(existsSync(worktreePath)).toBe(false)
+      expect((await $`cd ${mainRepo} && git rev-parse refs/heads/${slot}`.text()).trim()).toBe(orphanTip)
+      expect(await preserveRefs(mainRepo, slot)).toEqual(preservesBefore)
 
-      // Slot recreated at origin/main.
-      const aheadAfter = parseInt(
-        (await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(),
-        10,
-      )
-      expect(aheadAfter).toBe(0)
+      // Even when origin contains the work, an explicit older base must not
+      // overwrite it. The decision belongs to the selected base, not origin/main.
+      await $`cd ${mainRepo} && git push -q origin ${orphanTip}:refs/heads/main && git fetch -q origin main`.quiet()
+      await expect(recreate(originalBase)).rejects.toThrow(/process.exit unexpectedly called with "1"/)
+      expect(existsSync(worktreePath)).toBe(false)
+      expect((await $`cd ${mainRepo} && git rev-parse refs/heads/${slot}`.text()).trim()).toBe(orphanTip)
+
+      // A base containing the slot's commits is safe and needs no preservation.
+      await recreate()
+      expect((await $`cd ${worktreePath} && git rev-parse HEAD`.text()).trim()).toBe(orphanTip)
+      expect(await preserveRefs(mainRepo, slot)).toEqual(preservesBefore)
     } finally {
       process.chdir(origCwd)
     }
