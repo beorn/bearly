@@ -23,6 +23,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const generateTextMock = vi.fn()
 vi.mock("ai", () => ({ generateText: generateTextMock, streamText: vi.fn() }))
 
+// Keep both opinions local: the warning test must not dispatch a real
+// recoverable OpenAI request or rely on an incomplete panel exiting zero.
+const queryBackgroundMock = vi.fn()
+vi.mock("../src/lib/openai-deep", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
+  return { ...actual, queryOpenAIBackground: queryBackgroundMock }
+})
+
 const MAINSTAYS = ["gpt-5.4-pro", "moonshotai/kimi-k2.6"] as const
 
 describe("the fleet failure-rate warning at dispatch", () => {
@@ -60,6 +68,13 @@ describe("the fleet failure-rate warning at dispatch", () => {
       return true
     }) as unknown as () => boolean)
 
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockResolvedValue({
+      model: { displayName: "GPT-5.4 Pro" },
+      content: "local anchor opinion",
+      durationMs: 10,
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    })
     generateTextMock.mockImplementation(async () => ({
       text: "leg answer",
       finalStep: { reasoningText: undefined },

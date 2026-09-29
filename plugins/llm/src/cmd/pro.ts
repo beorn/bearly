@@ -30,8 +30,8 @@
  * model, pairwise judge results (ab/ac/ad), and a synthesized "winner"
  * field for back-compat with v2 readers.
  *
- * Auto-falls-back to single-model `askAndFinish` if a mainstay provider is
- * unavailable.
+ * An unavailable mainstay stays missing; retained opinions produce an
+ * incomplete report and nonzero exit.
  */
 
 import { ask } from "../lib/research"

@@ -196,7 +196,7 @@ describe("dual-pro failure modes", () => {
       expect(ab.judge.winner).toBeUndefined()
       expect(ab.a.content).toBe("first unranked opinion")
       expect(ab.b.content).toBe("second unranked opinion")
-      expect(env.exitCodes).not.toContain(1)
+      expect(env.exitCodes).toContain(1)
     },
     10_000,
   )
@@ -226,12 +226,11 @@ describe("dual-pro failure modes", () => {
     expect(ab.kimi.ok).toBe(false)
   }, 10_000)
 
-  it("LLM_DUAL_PRO_B=<unknown> falls back to single-model with unknown-model stderr", async () => {
+  it("LLM_DUAL_PRO_B=<unknown> refuses before dispatch with the unknown model named", async () => {
     const env = makeTestEnv()
     process.env.LLM_DUAL_PRO_B = "this-model-does-not-exist"
     try {
-      // Single-model fallback calls queryOpenAIBackground (gpt-5.4-pro is
-      // background-capable). One success returns a normal /pro response.
+      // Invalid requested-panel configuration must refuse before any paid call.
       queryBackgroundMock.mockReset()
       queryBackgroundMock.mockResolvedValueOnce({
         model: { displayName: "GPT-5.4 Pro" },
@@ -242,14 +241,13 @@ describe("dual-pro failure modes", () => {
       })
       generateTextMock.mockReset()
 
-      await runDualPro()
+      await expect(runDualPro()).rejects.toThrow("Dual-pro mainstay is not registered: this-model-does-not-exist")
 
-      // The fallback stderr names the unknown model verbatim so typos are
-      // debuggable.
-      const stderrAll = env.stderr.join("\n")
-      expect(stderrAll).toMatch(/Dual-pro unavailable \(unknown model "this-model-does-not-exist"\)/)
+      // The entry point refuses before either provider can be called.
+      expect(queryBackgroundMock).not.toHaveBeenCalled()
+      expect(generateTextMock).not.toHaveBeenCalled()
 
-      // No A/B log — single-model askAndFinish doesn't call appendAbProLog.
+      // No panel was dispatched, so there is no A/B log.
       const abPath = abProLogPath(env.homeDir)
       expect(existsSync(abPath)).toBe(false)
     } finally {

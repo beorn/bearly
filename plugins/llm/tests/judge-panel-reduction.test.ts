@@ -233,13 +233,13 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
           content: [{ type: "output_text", text: "retained native opinion", annotations: [] }] }],
         usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }, error: null, incomplete_details: null
       }), { headers: { "content-type": "application/json" } });
-      const { runProDual } = await import("./vendor/bearly/plugins/llm/src/cmd/pro.ts");
+      const { runProDual } = await import(${JSON.stringify(new URL("../src/cmd/pro.ts", import.meta.url).href)});
       await runProDual({ question: "native incomplete witness", outputFile: ${JSON.stringify(outputFile)},
         sessionTag: "native-panel", modelOverride: undefined, imagePath: undefined,
         noChallenger: true, noJudge: true, skipConfirm: true,
         streamToken: () => {}, buildContext: async () => undefined });
     `
-    const child = spawnSync("@in", ["--", "bun", "--eval", source], {
+    const child = spawnSync("bun", ["--eval", source], {
       cwd: process.cwd(),
       encoding: "utf-8",
       timeout: 15_000,
