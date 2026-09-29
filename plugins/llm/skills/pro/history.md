@@ -19,7 +19,7 @@ The history system enables pro-review to improve over time — adjusting cost es
     "P2": 5,
     "P3": 1
   },
-  "bead": "km-storage.pro-review-0313",
+  "bead": "@km/storage/6330-pro-review-0313",
   "fixed": {
     "P0": 9,
     "P1": 8

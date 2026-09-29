@@ -57,7 +57,7 @@ logs and log aggregators (Splunk, Datadog).
 - **`envelope.file` is relativized by default.** `/tmp/llm-...txt` →
   `llm-...txt` (basename), or `out/llm-x.txt` when the file lives under
   cwd. The actual file location is unchanged; only the envelope surface.
-  Resolves [km-bearly.llm-path-leakage].
+  Resolves [@km/bearly/12183-llm-path-leakage].
 - Consumers that read the `file` field with absolute-path expectations
   must either pass `--full-paths` or join with `os.tmpdir()` /
   `process.cwd()` themselves.
@@ -557,7 +557,7 @@ Cost-aware promotion default + defensive tests for /pro review findings.
   (`judgeFor`) paths filter the judge prompt to legs with content; failed
   legs aren't sent to the judge.
 
-See `bd show km-bearly.llm-pro-review-fixes` for the full re-verification
+See `bd show @km/bearly/12149-llm-pro-review-fixes` for the full re-verification
 log + remaining real findings (path leakage, O(N) leaderboard at scale,
 half-finished registry split).
 

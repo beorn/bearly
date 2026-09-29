@@ -35,7 +35,7 @@ bd update km-<scope>.pro-review-<MMDD> --parent km-all.pro-review-<N>
 - `packages/km-storage` → `km-storage`
 - `packages/km-board` → `km-board`
 - `apps/km-tui` → `km-tui`
-- `vendor/silvery` → `km-silvery`
+- `vendor/silvery` → `@km/14960-silvery`
 - `vendor/flexily` → `km-flexx`
 
 ### 3. Create Bug Beads (P0/P1 Only)
