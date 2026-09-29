@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- The first published 0.2.x: the flock-v0.2.0 tag never reached npm, because its CI publish failed E404 (26540). It carries 0.2.0 below plus:
+- A lent lock descriptor is adopted only when it holds the checkout lock, and two lock names that disagree refuse (26001).
+- Declares only the `bun:ffi` slice it calls, with no Bun globals (26287).
+- Development dependencies aligned (tsdown 0.22.13, pinned Bun types).
+
 ## 0.2.0
 
 - `@bearly/flock/holders`: who holds a lock on a file, read from Linux's `/proc/locks` by
