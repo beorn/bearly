@@ -137,6 +137,11 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     expect(line1).not.toMatch(/NOT JUDGED/)
     expect(report, "the dead leg is named where the reader reaches it").toMatch(/\*\*Missing legs\*\*:/)
     expect(report).toMatch(/unavailable or renamed/)
+    // 26561 AC2: a real reduced verdict still lacks a requested opinion.
+    expect(
+      env.exitCodes.some((code) => code !== 0),
+      "judging survivors must not hide a missing requested leg",
+    ).toBe(true)
   }, 20_000)
 
   it("does NOT fabricate a verdict when only one leg returns, and says why on line 1", async () => {
@@ -186,6 +191,47 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))!
     expect(JSON.parse(envelopeLine).status, "machine callers must see incomplete panel completion").toBe("incomplete")
     expect(report, "the successful opinion survives the failure status").toContain("the only answer")
+  }, 20_000)
+
+  /**
+   * 26561 AC1/2: one failed pair must not hide behind another pair's winner.
+   * Existing singleton/reduced-panel cases lose a leg; this arm returns every
+   * opinion and loses only one required judge, which those cases cannot catch.
+   * @failure a partially judged panel exits success with a synthesized winner
+   * @level l3
+   * @consumer Pro CLI exit-code and JSON callers
+   * @testonly none
+   */
+  it("preserves a surviving judge result but fails when another required pair cannot be judged", async () => {
+    const env = makeTestEnv()
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
+      model,
+      content: "anchor opinion",
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      durationMs: 10,
+    }))
+    generateTextMock.mockReset()
+    let judges = 0
+    generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
+      const judging = promptText(args).includes("STRICT JSON")
+      if (judging && ++judges === 1) throw new Error("one requested judge did not return")
+      return {
+        text: judging ? JUDGE_JSON : "contender opinion",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
+    })
+    const { report, entry } = await runPro(env)
+    expect(judges, "the three opinions require two pairwise judges").toBe(2)
+    expect((entry.judge as { winner?: string }).winner, "the valid pair's verdict is retained").toBeDefined()
+    expect(report).toContain("anchor opinion")
+    expect(
+      env.exitCodes.some((code) => code !== 0),
+      "one missing judge must make the panel incomplete",
+    ).toBe(true)
+    const envelopeLine = env.stdout.find((line) => line.trim().startsWith("{") && line.includes('"file"'))!
+    expect(JSON.parse(envelopeLine).status).toBe("incomplete")
   }, 20_000)
 })
 
@@ -244,6 +290,11 @@ describe("24533 row 4 — a dead model is dropped BEFORE it is dispatched", () =
     ).toBe(false)
     expect(dispatched.length, "the surviving mainstays still run").toBeGreaterThan(0)
     vi.unstubAllGlobals()
+    // 26561 AC1/2: dropping before dispatch must retain the requested roster.
+    expect(
+      env.exitCodes.some((code) => code !== 0),
+      "a preflight drop is an incomplete requested panel",
+    ).toBe(true)
   })
 })
 
