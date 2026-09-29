@@ -188,6 +188,12 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       expect(entry.completion).toEqual(envelope.completion)
       expect(envelope.completion?.returned).toHaveLength(returned)
       expect(env.exitCodes).toEqual(status === "completed" ? [] : [1])
+      // A false empty required set would make status pass while skipping judging.
+      // The accepted full-panel/waiver cases must prove the pair population too.
+      expect(envelope.completion?.judges.waived).toBe(flags.includes("--no-judge"))
+      const requiredPairs = flags.includes("--no-judge") ? 0 : Math.max(0, returned - 1)
+      expect(envelope.completion?.judges.required).toHaveLength(requiredPairs)
+      expect(envelope.completion?.judges.returned).toHaveLength(failure === "judges" ? 0 : requiredPairs)
       if (failure === "unavailable") {
         expect(queryBackgroundMock).not.toHaveBeenCalled()
         expect(envelope.completion?.missing).toEqual([
