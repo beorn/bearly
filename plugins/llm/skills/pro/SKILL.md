@@ -44,6 +44,15 @@ Default fleet: champion `gpt-5.4-pro`, runner-up `moonshotai/kimi-k2.6`, rotatin
 - For `--deep` runs (fire-and-forget, exit ~5s): recover with `bun llm recover <id>` (interactive) or `bun llm await <id>` (silent block, prints final file path — better for background tasks).
 - Never restart an interrupted deep run — it continues server-side at OpenAI. Just recover.
 
+## Incomplete reviews
+
+- Read Pro's JSON line on stdout even after exit 1. `incomplete` means a requested opinion or required judge pair is missing; `failed` means no opinion returned. The envelope's `file` field points to the separate text report. Missing or unreadable JSON is an error, never completion.
+- The saved report and A/B log retain returned opinions and available verdicts. The envelope's `completion` record names requested models, returned opinions, missing causes, and required, returned, or failed judge pairs.
+- With `--no-judge`, all requested opinions yield `completed`, exit 0, with judging waived; a missing opinion still yields `incomplete`, exit 1. A `--model` result completes only its own one-model request. Neither result supplies the judging needed for a multi-model judged approval.
+- Recover only missing work with the targeted command on the last stderr line, which reuses the saved report. Do not rerun the whole paid panel.
+- Or hand on a partial review: give the returned/requested count, list missing models and judge pairs, and say `unjudged` if no verdict exists or judging is unfinished. Example: `partial, 1 of 2 opinions, unjudged; missing model B`. Keep available scores with that qualification.
+- A targeted follow-up writes a separate result; it does not edit the original report or completion record. Collect retained and new results in the approval packet. If approval requires a complete judged review, wait until that packet contains every required opinion and judge result.
+
 ## Dual-pro mode (3-leg dispatch)
 
 `bun llm pro "..."` fires **GPT-5.4 Pro + Kimi K2.6 + a rotating challenger** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
