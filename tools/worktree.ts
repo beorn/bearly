@@ -1170,10 +1170,7 @@ function requireDeclaredPoolSlot(name: string, environment: NodeJS.ProcessEnv = 
 // Commands
 // ============================================
 
-export interface CreateOptions {
-  install?: boolean
-  direnv?: boolean
-  hooks?: boolean
+export interface CreateOptions extends WorktreeSetupOptions {
   allowDirty?: boolean // Skip uncommitted changes check
   /**
    * Explicit base ref for a NEW branch / pool slot (`--base <ref>`). Skips the
@@ -1653,24 +1650,60 @@ async function uninitializedSubmodules(wtPath: string): Promise<string[]> {
 async function allowDirenv(worktreePath: string): Promise<void> {
   if (!existsSync(join(worktreePath, ".envrc"))) return
   info("Allowing direnv...")
-  const result = await safeExec($`direnv allow ${worktreePath} 2>/dev/null`)
+  const result = await safeExec($`direnv allow ${worktreePath} 2>&1`)
   if (result.exitCode === 0) success("Direnv allowed")
-  else console.log(DIM + "  (direnv not available)" + RESET)
+  else {
+    console.error(
+      `${worktreePath}: direnv allow unavailable (exit ${result.exitCode}): ${result.stdout.trim() || "no diagnostic output"}`,
+    )
+  }
 }
 
 async function installHooks(worktreePath: string): Promise<void> {
   if (!existsSync(join(worktreePath, "package.json"))) return
+  const pkg = (await Bun.file(join(worktreePath, "package.json")).json()) as {
+    scripts?: { prepare?: string }
+  }
+  if (pkg.scripts?.prepare) {
+    info("Installing hooks...")
+    const result = await safeExec($`cd ${worktreePath} && bun run prepare 2>&1`)
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `bun run prepare failed (exit ${result.exitCode}): ${result.stdout.trim() || "no diagnostic output"}`,
+      )
+    }
+    success("Hooks installed")
+  }
+}
+
+export interface WorktreeSetupOptions {
+  install?: boolean
+  direnv?: boolean
+  hooks?: boolean
+}
+
+/** Prepare an existing checkout, shared by generic creation and composing callers. */
+export async function setupWorktree(worktreePath: string, options: WorktreeSetupOptions = {}): Promise<void> {
+  if (!existsSync(worktreePath) || !statSync(worktreePath).isDirectory()) {
+    throw new Error(`${worktreePath}: worktree setup requires an existing directory`)
+  }
+  const { install = true, direnv = true, hooks = true } = options
   try {
-    const pkg = (await Bun.file(join(worktreePath, "package.json")).json()) as {
-      scripts?: { prepare?: string }
-    }
-    if (pkg.scripts?.prepare) {
-      info("Installing hooks...")
-      await safeExec($`cd ${worktreePath} && bun run prepare 2>/dev/null`)
-      success("Hooks installed")
-    }
-  } catch {
-    // Ignore
+    if (install) await installDependencies(worktreePath)
+  } catch (cause) {
+    throw new Error(
+      `${worktreePath}: dependency install failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    )
+  }
+  if (direnv) await allowDirenv(worktreePath)
+  try {
+    if (hooks) await installHooks(worktreePath)
+  } catch (cause) {
+    throw new Error(
+      `${worktreePath}: hooks prepare failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    )
   }
 }
 
@@ -1935,14 +1968,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     }
   }
 
-  // Run package manager install
-  if (install) await installDependencies(worktreePath)
-
-  // Allow direnv
-  if (direnv) await allowDirenv(worktreePath)
-
-  // Run prepare script for hooks
-  if (hooks) await installHooks(worktreePath)
+  await setupWorktree(worktreePath, { install, direnv, hooks })
 
   console.log("")
   success(`Worktree ready: ${worktreePath}`)
