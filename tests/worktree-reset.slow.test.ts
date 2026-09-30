@@ -53,6 +53,63 @@ afterEach(() => {
 })
 
 describe("worktree reset round-trip", () => {
+  /** @failure an explicit reset path reaches preservation/removal without safe registration
+   * @level l2 @consumer #26139 root worktree reset composition @testonly none */
+  test.each(["relative", "main", "caller", "unregistered", "ambiguous"] as const)(
+    "reset refuses %s destination before changing bytes or refs",
+    async (kind) => {
+      const mainRepo = join(sandbox, "main")
+      await initRepo(mainRepo)
+      writeFileSync(join(mainRepo, "README.md"), "main\n")
+      await commitAll(mainRepo, "main-init")
+      const upstreamRepo = join(sandbox, "origin.git")
+      await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+      await $`cd ${mainRepo} && git remote add origin ${upstreamRepo} && git push -q origin main`.quiet()
+      const worktreePath = join(sandbox, "wt-@dev3")
+      const origCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
+        await createWorktree("wt3", undefined, {
+          destination: worktreePath,
+          install: false,
+          direnv: false,
+          hooks: false,
+        })
+        writeFileSync(join(worktreePath, "payload.txt"), "keep these exact bytes\n")
+        let destination = worktreePath
+        if (kind === "relative") destination = "wt-@dev3"
+        if (kind === "main") destination = mainRepo
+        if (kind === "caller") process.chdir(worktreePath)
+        if (kind === "unregistered") {
+          destination = join(sandbox, "other-repository")
+          await initRepo(destination)
+          writeFileSync(join(destination, "README.md"), "foreign\n")
+          await commitAll(destination, "foreign-init")
+        }
+        if (kind === "ambiguous") {
+          const duplicate = join(sandbox, "duplicate")
+          await $`cd ${mainRepo} && git worktree add -q -b duplicate ${duplicate}`.quiet()
+          const gitdir = readFileSync(join(duplicate, ".git"), "utf8")
+            .trim()
+            .replace(/^gitdir: /, "")
+          writeFileSync(join(gitdir, "gitdir"), join(worktreePath, ".git") + "\n")
+          const registry = await $`cd ${mainRepo} && git worktree list --porcelain`.text()
+          expect(registry.split("\n").filter((line) => line === `worktree ${worktreePath}`)).toHaveLength(2)
+        }
+        const before = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+        await expect(
+          resetWorktree("wt3", { destination, force: true, install: false, direnv: false, hooks: false }),
+        ).rejects.toThrow(/absolute|inside|main repo|not registered|ambiguous/i)
+        expect(readFileSync(join(worktreePath, "payload.txt"), "utf8")).toBe("keep these exact bytes\n")
+        expect(await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(before)
+        expect(existsSync(join(worktreePath, ".git"))).toBe(true)
+      } finally {
+        process.chdir(origCwd)
+      }
+    },
+    60_000,
+  )
+
   // #26139: the same recovery contract must hold at the exact registered path;
   // legacy-only round trips miss a reset recreating a differently named folder.
   test.each(["legacy", "relocated"] as const)(

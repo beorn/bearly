@@ -2485,6 +2485,26 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     throw new Error(`Refusing to reset main repo (${gitRoot}).`)
   }
 
+  // Admission precedes preservation and teardown: a path existing on disk is
+  // not proof that this repository owns exactly one registered checkout there.
+  const registered = await getWorktrees(gitRoot)
+  const primary = registered[0]
+  if (primary === undefined) {
+    throw new Error(`Reset cannot read registered worktrees in ${gitRoot}; no worktree was changed`)
+  }
+  if (resolve(primary.path) === worktreePath) {
+    throw new Error(`Refusing to reset main repo (${primary.path}).`)
+  }
+  const matches = registered.filter((entry) => resolve(entry.path) === worktreePath)
+  if (matches.length > 1) {
+    throw new Error(
+      `Reset target ${worktreePath} is ambiguous in ${gitRoot}: ${matches.length} registrations; no worktree was changed`,
+    )
+  }
+  if (existsSync(worktreePath) && matches.length !== 1) {
+    throw new Error(`Reset target ${worktreePath} is not registered in ${gitRoot}; no worktree was changed`)
+  }
+
   // If the directory doesn't exist, just create it fresh — `reset` is
   // idempotent against a missing slot.
   if (!existsSync(worktreePath)) {
