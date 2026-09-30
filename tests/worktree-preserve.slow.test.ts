@@ -193,7 +193,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
 
   /** @failure force reset silently drops ignored root or submodule payload
    * @level l2 @consumer #26139 relocated reset @testonly none */
-  test.each(["root", "submodule", "uninitialized"] as const)(
+  test.each(["root", "submodule", "uninitialized", "changed-submodule-setup"] as const)(
     "reset refuses ignored %s payload with repository and path, preserving bytes and refs",
     async (location) => {
       const mainRepo = await buildMain()
@@ -203,8 +203,25 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         await initRepo(source)
         writeFileSync(join(source, "file.txt"), "submodule\n")
       }
-      const payload = "private notes\n.env"
+      const changedSetup = location === "changed-submodule-setup"
+      const payload = changedSetup ? "packages/local/dist/private notes\n.env" : "private notes\n.env"
       writeFileSync(join(source, ".gitignore"), "*.env\n")
+      if (changedSetup) {
+        mkdirSync(join(source, "packages/local"), { recursive: true })
+        writeFileSync(
+          join(source, "packages/local/package.json"),
+          JSON.stringify({ name: "local-fixture", exports: "./src/index.ts" }),
+        )
+        writeFileSync(
+          join(source, "packages/local/build.ts"),
+          'await Bun.write("dist/index.js", "export default 42\\n")\n',
+        )
+        writeFileSync(
+          join(mainRepo, "package.json"),
+          JSON.stringify({ name: "fixture", workspaces: ["vendor/sub/packages/*"] }),
+        )
+        writeFileSync(join(mainRepo, ".gitignore"), "node_modules/\n")
+      }
       await commitAll(source, "ignore private files")
       if (location !== "root") {
         await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add -q ${source} vendor/sub`.quiet()
@@ -217,6 +234,15 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         process.chdir(mainRepo)
         await createWorktree("wt5", undefined, { destination, install: false, direnv: false, hooks: false })
         const repository = location === "root" ? destination : join(destination, "vendor/sub")
+        if (changedSetup) {
+          // Only the current submodule declares this output. Its selected base
+          // has source exports, so recreation will not generate dist.
+          writeFileSync(
+            join(repository, "packages/local/package.json"),
+            JSON.stringify({ name: "local-fixture", exports: "./dist/index.js", scripts: { build: "bun build.ts" } }),
+          )
+        }
+        mkdirSync(dirname(join(repository, payload)), { recursive: true })
         writeFileSync(join(repository, payload), "precious ignored bytes\n")
         if (location === "uninitialized") rmSync(join(repository, ".git"))
         const refs = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
@@ -224,10 +250,19 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           location === "uninitialized"
             ? undefined
             : await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
-        const attempt = resetWorktree("wt5", { destination, force: true, install: false, direnv: false, hooks: false })
+        const attempt = resetWorktree("wt5", {
+          destination,
+          force: true,
+          install: changedSetup,
+          direnv: false,
+          hooks: false,
+        })
         await expect(attempt).rejects.toThrow(location === "uninitialized" ? "uninitialized" : "ignored")
         await expect(attempt).rejects.toThrow(repository)
-        if (location !== "uninitialized") await expect(attempt).rejects.toThrow(JSON.stringify(payload))
+        if (location !== "uninitialized") {
+          // Native Git groups this fully ignored subtree as a directory.
+          await expect(attempt).rejects.toThrow(JSON.stringify(changedSetup ? "packages/local/dist/" : payload))
+        }
         expect(readFileSync(join(repository, payload), "utf8")).toBe("precious ignored bytes\n")
         expect(await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(refs)
         if (subRefs !== undefined) {

@@ -2518,6 +2518,12 @@ async function assertResetIgnoredContent(
       "package-lock.json",
       ".envrc",
       ...packages.map((pkg) => relative(worktreePath, pkg)),
+      // A root Git diff cannot descend through a gitlink. Include the
+      // containing submodule so its selected commit and working dirt count.
+      ...repositories
+        .slice(1)
+        .filter((repository) => packages.some((pkg) => pkg === repository || pkg.startsWith(repository + "/")))
+        .map((repository) => relative(worktreePath, repository)),
     ]
     const sameSetup = await $`git -C ${worktreePath} diff --quiet ${base} -- ${inputs}`.nothrow().quiet()
     if (sameSetup.exitCode > 1) {
