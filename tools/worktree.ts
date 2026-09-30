@@ -1824,6 +1824,9 @@ async function resolveCreateBase(
   const base = preparedBase ?? "refs/remotes/origin/main"
   const resolved = await safeExec($`cd ${gitRoot} && git rev-parse --verify --quiet ${base}^{commit} 2>/dev/null`)
   if (resolved.exitCode !== 0 || resolved.stdout.trim() === "") {
+    if (!updateRefs) {
+      throw new Error(`Base ref does not resolve to a commit: ${base}; no worktree was changed`)
+    }
     error(`Base ref does not resolve to a commit: ${base}`)
     console.log(CYAN + "  A new branch is never silently based on local HEAD (worktree-base-origin-main)." + RESET)
     console.log(CYAN + "  Check the remote, or pass an explicit base: bun worktree create <name> --base <ref>" + RESET)
@@ -2486,8 +2489,9 @@ export interface ResetOptions {
 
 /** Validate caller-owned outputs lexically; an external symlink target is never followed. */
 function callerRegeneratedOutputs(worktreePath: string, paths: readonly string[] = []): string[] {
-  if (!Array.isArray(paths))
+  if (!Array.isArray(paths)) {
     throw new Error(`Invalid regenerated paths for ${worktreePath}: expected an array; no worktree was changed`)
+  }
   return paths.map((path) => {
     if (typeof path !== "string" || path.length === 0) {
       throw new Error(

@@ -93,7 +93,7 @@ describe("worktree reset round-trip", () => {
       // Caller outputs remain provable even if changed inputs invalidate vendor setup outputs.
       writeFileSync(join(destination, "package.json"), '{"name":"admit-fixture","version":"2.0.0"}\n')
       await resetWorktree("wt3", { ...options, install: true, admitOnly: true })
-      const cli = () =>
+      const cli = (preparedBase?: string) =>
         spawnSync(
           process.execPath,
           [
@@ -110,8 +110,23 @@ describe("worktree reset round-trip", () => {
             "--regenerates",
             JSON.stringify(options.regenerates),
           ],
-          { cwd: mainRepo, encoding: "utf8" },
+          {
+            cwd: mainRepo,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              ...(preparedBase === undefined ? {} : { BEARLY_WORKTREE_PREPARED_BASE_SHA: preparedBase }),
+            },
+          },
         )
+      const invalidBase = cli("refs/heads/admission-missing-base")
+      expect(invalidBase.status).toBe(2)
+      expect(invalidBase.stderr).toContain("refs/heads/admission-missing-base")
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      expect(readFileSync(join(destination, "package.json"), "utf8")).toBe(
+        '{"name":"admit-fixture","version":"2.0.0"}\n',
+      )
       expect(cli().status).toBe(0)
       expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
       expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
