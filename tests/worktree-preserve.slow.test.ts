@@ -477,6 +477,8 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure admission either ignores submodule dirt or writes recovery refs before actual removal
+   * @level l2 @consumer #26139 remove admission and submodule recovery @testonly none */
   test("removeWorktree --force PRESERVES submodule-only dirt into the MAIN submodule store", async () => {
     // The 21102 loss class: dirt lived only inside a submodule. The superproject
     // snapshot records the gitlink, but the submodule's dirty FILE content lives
@@ -498,12 +500,40 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       writeFileSync(join(worktreePath, "vendor/sub/file.txt"), "modified-in-worktree\n")
       writeFileSync(join(worktreePath, "vendor/sub/extra.txt"), "untracked-precious\n")
 
+      const mainSub = join(mainRepo, "vendor/sub")
+      const worktreeSub = join(worktreePath, "vendor/sub")
+      const refsBefore = await $`git -C ${mainRepo} show-ref`.text()
+      const subRefsBefore = await $`git -C ${mainSub} show-ref`.text()
+      const worktreeSubRefsBefore = await $`git -C ${worktreeSub} show-ref`.text()
+      const registrationBefore = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+      const admit = (...args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)), "remove", slot, "--admit", ...args],
+          {
+            cwd: mainRepo,
+            encoding: "utf8",
+            env: { ...process.env },
+          },
+        )
+      const refused = admit()
+      expect(refused.status, refused.stderr).toBe(2)
+      expect(refused.stderr).toContain("uncommitted changes")
+      const admitted = admit("--force")
+      expect(admitted.status, admitted.stderr).toBe(0)
+      expect(admitted.stdout).toBe("")
+      expect(readFileSync(join(worktreeSub, "file.txt"), "utf8")).toBe("modified-in-worktree\n")
+      expect(readFileSync(join(worktreeSub, "extra.txt"), "utf8")).toBe("untracked-precious\n")
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refsBefore)
+      expect(await $`git -C ${mainSub} show-ref`.text()).toBe(subRefsBefore)
+      expect(await $`git -C ${worktreeSub} show-ref`.text()).toBe(worktreeSubRefsBefore)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registrationBefore)
+
       // Force-remove — must preserve before destroying the isolated sub store.
       await removeWorktree(slot, { force: true })
       expect(existsSync(worktreePath)).toBe(false)
 
       // The submodule preserve ref lives durably in the MAIN submodule store.
-      const mainSub = join(mainRepo, "vendor/sub")
       const subRefs = await preserveRefs(mainSub, slot)
       expect(subRefs.length).toBe(1)
       const subRef = subRefs[0]!
