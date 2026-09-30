@@ -300,7 +300,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     60_000,
   )
 
-  /** @failure direct removal refuses declared checkout outputs and encourages a raw discard path
+  /** @failure remove admission mutates generated outputs, refs or processes, or ordinary removal drops recoverable dirt
    * @level l2 @consumer #26139 direct removal @testonly none */
   test("direct removal admits declared dependency, build and direnv outputs while preserving tracked dirt", async () => {
     const mainRepo = await buildMain()
@@ -326,7 +326,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       writeFileSync(join(destination, "README.md"), "tracked dirt to preserve\n")
       // Root must admit remove before retiring Hab. Ordinary removal alone
       // cannot prove that this CLI mode leaves the dirty checkout untouched.
-      const admit = (...args: string[]) =>
+      const runRemove = (...args: string[]) =>
         spawnSync(
           process.execPath,
           [fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)), "remove", ...args],
@@ -339,15 +339,32 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       const refs = await $`git -C ${mainRepo} show-ref`.text()
       const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
       const head = await $`git -C ${destination} rev-parse HEAD`.text()
-      const admitted = admit(
-        "--force",
-        destination,
-        "--admit",
-        "--delete-branch",
-        "--preserve-label",
-        "wt5-generated-output",
+      // A real resident matches the teardown selector, including its cwd.
+      // A forgotten admission return would reach dolt shutdown and kill it.
+      const resident = Bun.spawn(
+        [process.execPath, "-e", 'process.stdout.write("ready"); setInterval(() => {}, 1000)', "dolt", "sql-server"],
+        { cwd: join(destination, "node_modules"), stdout: "pipe", stderr: "pipe" },
       )
-      expect(admitted.status, admitted.stderr).toBe(0)
+      try {
+        const ready = await resident.stdout.getReader().read()
+        expect(new TextDecoder().decode(ready.value)).toBe("ready")
+        const candidate = spawnSync("lsof", ["-p", String(resident.pid), "-a", "-d", "cwd"], { encoding: "utf8" })
+        expect(candidate.status, candidate.stderr).toBe(0)
+        expect(candidate.stdout).toContain(`${destination}/`)
+        const admitted = runRemove(
+          "--force",
+          destination,
+          "--admit",
+          "--delete-branch",
+          "--preserve-label",
+          "wt5-generated-output",
+        )
+        expect(admitted.status, admitted.stderr).toBe(0)
+        expect(() => process.kill(resident.pid, 0)).not.toThrow()
+      } finally {
+        resident.kill()
+        await resident.exited
+      }
       expect(await $`git -C ${destination} rev-parse HEAD`.text()).toBe(head)
       expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
       expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
@@ -355,16 +372,27 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       for (const output of ["node_modules/previous.txt", "packages/local/dist/index.js", ".direnv/cache"]) {
         expect(readFileSync(join(destination, output), "utf8")).toBe("generated checkout output\n")
       }
-      const dirty = admit(destination, "--admit")
+      const dirty = runRemove(destination, "--admit")
       expect(dirty.status).toBe(2)
       expect(dirty.stderr).toContain("uncommitted changes")
-      const invalidLabel = admit(destination, "--force", "--admit", "--preserve-label", "foo//bar")
+      const invalidLabel = runRemove(destination, "--force", "--admit", "--preserve-label", "foo//bar")
       expect(invalidLabel.status).toBe(2)
       expect(invalidLabel.stderr).toContain("foo//bar")
-      const missing = admit(join(sandbox, "absent"), "--admit")
+      const missing = runRemove(join(sandbox, "absent"), "--admit")
       expect(missing.status).toBe(2)
       expect(missing.stderr).toContain(join(sandbox, "absent"))
-      expect(admit("--admit").status).toBe(2)
+      expect(runRemove("--admit").status).toBe(2)
+      // Generic remove's admission has never required membership in the
+      // caller's registry. GitSuper still owns the later removal refusal.
+      const unregistered = join(sandbox, "unregistered")
+      await initRepo(unregistered)
+      writeFileSync(join(unregistered, "README.md"), "foreign path stays intact\n")
+      await commitAll(unregistered, "foreign seed")
+      expect(runRemove(unregistered, "--admit").status).toBe(0)
+      const unregisteredRemove = runRemove(unregistered)
+      expect(unregisteredRemove.status).toBe(1)
+      expect(unregisteredRemove.stderr).toContain("Failed to remove worktree")
+      expect(readFileSync(join(unregistered, "README.md"), "utf8")).toBe("foreign path stays intact\n")
       expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
       expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
       await removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-generated-output" })
