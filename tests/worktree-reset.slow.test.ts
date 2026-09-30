@@ -53,83 +53,95 @@ afterEach(() => {
 })
 
 describe("worktree reset round-trip", () => {
-  test("reset --force PRESERVES uncommitted + ahead commits to wip/…, leaves a clean slot at origin/main", async () => {
-    const mainRepo = join(sandbox, "main")
+  // #26139: the same recovery contract must hold at the exact registered path;
+  // legacy-only round trips miss a reset recreating a differently named folder.
+  test.each(["legacy", "relocated"] as const)(
+    "reset --force at %s path PRESERVES uncommitted + ahead commits to wip/…, leaves a clean slot at origin/main",
+    async (location) => {
+      const mainRepo = join(sandbox, "main")
 
-    // Build the upstream repo and push origin/main
-    await initRepo(mainRepo)
-    writeFileSync(join(mainRepo, "README.md"), "main\n")
-    await commitAll(mainRepo, "main-init")
-    // Set up a fake remote so the worktree can have an origin/main to compare against.
-    const upstreamRepo = join(sandbox, "origin.git")
-    await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
-    await $`cd ${mainRepo} && git remote add origin ${upstreamRepo} && git push -q origin main`.quiet()
+      // Build the upstream repo and push origin/main
+      await initRepo(mainRepo)
+      writeFileSync(join(mainRepo, "README.md"), "main\n")
+      await commitAll(mainRepo, "main-init")
+      // Set up a fake remote so the worktree can have an origin/main to compare against.
+      const upstreamRepo = join(sandbox, "origin.git")
+      await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+      await $`cd ${mainRepo} && git remote add origin ${upstreamRepo} && git push -q origin main`.quiet()
 
-    const worktreeName = "wt-test"
-    const worktreePath = join(sandbox, "main-wt-test")
-    const origCwd = process.cwd()
-    try {
-      process.chdir(mainRepo)
+      const worktreeName = location === "relocated" ? "wt3" : "wt-test"
+      const worktreePath = location === "relocated" ? join(sandbox, "wt-@dev3") : join(sandbox, "main-wt-test")
+      const destination = location === "relocated" ? worktreePath : undefined
+      const origCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
 
-      // Create the worktree
-      await createWorktree(worktreeName, undefined, { install: false, direnv: false, hooks: false })
-      expect(existsSync(worktreePath)).toBe(true)
+        // Create the worktree
+        await createWorktree(worktreeName, undefined, { install: false, direnv: false, hooks: false, destination })
+        expect(existsSync(worktreePath)).toBe(true)
 
-      // Pollute the worktree: uncommitted file + a local-only commit
-      writeFileSync(join(worktreePath, "uncommitted.txt"), "dirt\n")
-      writeFileSync(join(worktreePath, "ahead.txt"), "ahead\n")
-      await $`cd ${worktreePath} && git add ahead.txt && git commit -qm "local-only commit"`.quiet()
-      writeFileSync(join(worktreePath, "uncommitted.txt"), "dirt-after-commit\n")
+        // Pollute the worktree: uncommitted file + a local-only commit
+        writeFileSync(join(worktreePath, "uncommitted.txt"), "dirt\n")
+        writeFileSync(join(worktreePath, "ahead.txt"), "ahead\n")
+        await $`cd ${worktreePath} && git add ahead.txt && git commit -qm "local-only commit"`.quiet()
+        writeFileSync(join(worktreePath, "uncommitted.txt"), "dirt-after-commit\n")
 
-      // Sanity-check pollution
-      const dirtyBefore = await $`cd ${worktreePath} && git status --short`.text()
-      expect(dirtyBefore.length).toBeGreaterThan(0)
-      const aheadBefore = parseInt(
-        (await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(),
-        10,
-      )
-      expect(aheadBefore).toBe(1)
+        // Sanity-check pollution
+        const dirtyBefore = await $`cd ${worktreePath} && git status --short`.text()
+        expect(dirtyBefore.length).toBeGreaterThan(0)
+        const aheadBefore = parseInt(
+          (await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(),
+          10,
+        )
+        expect(aheadBefore).toBe(1)
 
-      // Reset
-      await resetWorktree(worktreeName, { force: true, install: false, direnv: false, hooks: false })
+        // Reset
+        const resetOptions = { force: true, install: false, direnv: false, hooks: false, destination }
+        await resetWorktree(worktreeName, resetOptions)
 
-      // Worktree still exists
-      expect(existsSync(worktreePath)).toBe(true)
+        // Worktree still exists
+        expect(existsSync(worktreePath)).toBe(true)
+        if (location === "relocated") {
+          expect(existsSync(join(sandbox, "main-wt3"))).toBe(false)
+          expect((await $`cd ${worktreePath} && git branch --show-current`.text()).trim()).toBe("wt3")
+        }
 
-      // Worktree is clean
-      const dirtyAfter = await $`cd ${worktreePath} && git status --short`.text()
-      expect(dirtyAfter.trim()).toBe("")
+        // Worktree is clean
+        const dirtyAfter = await $`cd ${worktreePath} && git status --short`.text()
+        expect(dirtyAfter.trim()).toBe("")
 
-      // Worktree HEAD is at origin/main (zero commits ahead)
-      const aheadAfter = parseInt(
-        (await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(),
-        10,
-      )
-      expect(aheadAfter).toBe(0)
+        // Worktree HEAD is at origin/main (zero commits ahead)
+        const aheadAfter = parseInt(
+          (await $`cd ${worktreePath} && git rev-list --count origin/main..HEAD`.text()).trim(),
+          10,
+        )
+        expect(aheadAfter).toBe(0)
 
-      // The fresh slot no longer carries the old files (recreated at origin/main)…
-      expect(existsSync(join(worktreePath, "uncommitted.txt"))).toBe(false)
-      expect(existsSync(join(worktreePath, "ahead.txt"))).toBe(false)
+        // The fresh slot no longer carries the old files (recreated at origin/main)…
+        expect(existsSync(join(worktreePath, "uncommitted.txt"))).toBe(false)
+        expect(existsSync(join(worktreePath, "ahead.txt"))).toBe(false)
 
-      // …but the work is NOT gone — it was preserved to wip/<slot>-preserve-*
-      // (L5: no destructive step discards). The snapshot recovers the exact
-      // uncommitted content, and its history carries the ahead commit + file.
-      const refsOut = (
-        await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname)"} ${"refs/heads/wip/" + worktreeName + "-preserve-*"}`.text()
-      )
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-      expect(refsOut.length).toBe(1)
-      const preserveRef = refsOut[0]!
-      const recoveredDirt = await $`cd ${mainRepo} && git show ${preserveRef}:uncommitted.txt`.text()
-      expect(recoveredDirt).toBe("dirt-after-commit\n")
-      const recoveredAhead = await $`cd ${mainRepo} && git show ${preserveRef}:ahead.txt`.text()
-      expect(recoveredAhead).toBe("ahead\n")
-    } finally {
-      process.chdir(origCwd)
-    }
-  }, 60_000)
+        // …but the work is NOT gone — it was preserved to wip/<slot>-preserve-*
+        // (L5: no destructive step discards). The snapshot recovers the exact
+        // uncommitted content, and its history carries the ahead commit + file.
+        const refsOut = (
+          await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname)"} ${"refs/heads/wip/" + worktreeName + "-preserve-*"}`.text()
+        )
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+        expect(refsOut.length).toBe(1)
+        const preserveRef = refsOut[0]!
+        const recoveredDirt = await $`cd ${mainRepo} && git show ${preserveRef}:uncommitted.txt`.text()
+        expect(recoveredDirt).toBe("dirt-after-commit\n")
+        const recoveredAhead = await $`cd ${mainRepo} && git show ${preserveRef}:ahead.txt`.text()
+        expect(recoveredAhead).toBe("ahead\n")
+      } finally {
+        process.chdir(origCwd)
+      }
+    },
+    60_000,
+  )
 
   test("a pool slot left on a task/<id> branch resets to current origin/main, not a stale wtN ref (@km/inbox/19363)", async () => {
     const mainRepo = join(sandbox, "main")

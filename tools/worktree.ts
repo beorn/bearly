@@ -2400,6 +2400,8 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 }
 
 export interface ResetOptions {
+  /** Exact absolute source/recreate path supplied by a composing caller; never a move destination. */
+  destination?: string
   /**
    * Proceed past the dirty/ahead safety block and recreate the slot. Work is
    * NOT discarded — removeWorktree preserves it to a durable `wip/…` ref first
@@ -2449,14 +2451,28 @@ export interface ResetOptions {
  */
 export async function resetWorktree(name: string, options: ResetOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
-  const { force = false, saveAheadAs, retargetOrigin = false, install = true, direnv = true, hooks = true } = options
+  const {
+    force = false,
+    saveAheadAs,
+    retargetOrigin = false,
+    install = true,
+    direnv = true,
+    hooks = true,
+    destination,
+  } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
     throw new Error("Not in a git repository")
   }
 
-  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
+  if (destination !== undefined && !isAbsolute(destination)) {
+    throw new Error(`Reset destination must be absolute: ${destination}; no worktree was changed`)
+  }
+  const worktreePath =
+    destination === undefined
+      ? resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
+      : resolve(destination)
 
   // Refuse to operate from inside the worktree being reset — the recreate
   // would leave the shell with a missing cwd.
@@ -2473,7 +2489,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // idempotent against a missing slot.
   if (!existsSync(worktreePath)) {
     info(`Worktree ${name} does not exist — creating fresh`)
-    await createWorktree(name, undefined, { install, direnv, hooks })
+    await createWorktree(name, undefined, { install, direnv, hooks, destination })
     return
   }
 
@@ -2515,7 +2531,11 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // recreate starts from origin/main (or origin/<branchName>) rather than
   // picking up the existing ref with its ahead commits.
   info(`Resetting worktree ${name}...`)
-  await removeWorktree(name, { force: true, deleteBranch: force, preserveLabel: saveAheadAs })
+  await removeWorktree(worktreePath, {
+    force: true,
+    deleteBranch: force,
+    preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
+  })
 
   // Retarget origin/<branch> to origin/main if requested. Done AFTER remove
   // so the worktree's own ref doesn't get yanked out from under git's
@@ -2542,7 +2562,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // Recreate. allowDirty: true because main-repo state is the caller's
   // problem, not the reset's — reset is about restoring the slot, not
   // cleaning the workspace.
-  await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true })
+  await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true, destination })
 
   success(`Worktree ${name} reset`)
 }
@@ -2885,6 +2905,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "--force": {},
       "-f": {},
       "--save-ahead-as": { value: true },
+      "--destination": { value: true },
       "--retarget-origin": {},
       "--no-install": {},
       "--no-direnv": {},
@@ -3023,6 +3044,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         options: {
           force: flags.has("--force") || flags.has("-f"),
           saveAheadAs: values.get("--save-ahead-as"),
+          ...(values.has("--destination") ? { destination: values.get("--destination") } : {}),
           retargetOrigin: flags.has("--retarget-origin"),
           install: !flags.has("--no-install"),
           direnv: !flags.has("--no-direnv"),
