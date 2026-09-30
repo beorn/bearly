@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync
 import { join } from "path"
 import { tmpdir } from "os"
 import { spawnSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree.ts"
 
@@ -97,7 +98,7 @@ describe("worktree reset round-trip", () => {
         spawnSync(
           process.execPath,
           [
-            new URL("../tools/worktree.ts", import.meta.url).pathname,
+            fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)),
             "reset",
             "wt3",
             "--destination",
