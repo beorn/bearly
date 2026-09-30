@@ -525,7 +525,10 @@ export async function tempTree(prefix: string, options: TempTreeOptions = {}): P
       return join(path, ...segments)
     },
     async [Symbol.asyncDispose](): Promise<void> {
-      await safeRemove(path, { within: parent, allowedRoots: options.allowedRoots })
+      await safeRemove(path, {
+        within: parent,
+        ...(options.allowedRoots === undefined ? {} : { allowedRoots: options.allowedRoots }),
+      })
     },
   }
 }

@@ -629,11 +629,19 @@ describe("explicit scope and source evidence", () => {
     expect(census.holders).toContainEqual({ pid: 4242, source: "exe", target: "/bin/sh" })
   })
 
-  test("unexpected source I/O names the exact resource", async () => {
+  // #26885: an absent error code must still throw, rather than invent source availability.
+  test.each(["EISDIR", undefined])("unexpected source I/O with code %s names the exact resource", async (code) => {
     const { ownedPath, procRoot, processRoot } = fixture()
     const resource = join(processRoot, "maps")
     unlinkSync(resource)
     mkdirSync(resource)
+    if (code === undefined) {
+      const readFile = fsPromises.readFile
+      vi.spyOn(fsPromises, "readFile").mockImplementation(async (...args: Parameters<typeof fsPromises.readFile>) => {
+        if (String(args[0]) === resource) throw new Error("source failed without an error code")
+        return readFile(...args)
+      })
+    }
     await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })).rejects.toThrow(
       `path-holder observation failed at '${resource}'`,
     )

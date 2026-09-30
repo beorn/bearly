@@ -402,7 +402,11 @@ async function observeSource<T>(
     if (availability === undefined) {
       throw new Error(`path-holder observation failed at '${resource}': ${errorDetail(error)}`, { cause: error })
     }
-    return { availability, value: unavailableValue, issues: [{ resource, reason: availability, code }] }
+    return {
+      availability,
+      value: unavailableValue,
+      issues: [{ resource, reason: availability, ...(code === undefined ? {} : { code }) }],
+    }
   }
 }
 async function observeProcessLink(path: string, root: string): Promise<SourceObservation<string | undefined>> {

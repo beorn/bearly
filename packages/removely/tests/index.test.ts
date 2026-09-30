@@ -468,10 +468,14 @@ describe("tempTree", () => {
     expect(await readdir(base)).toEqual(["not-a-directory"])
   })
 
-  test("await using creates, exposes, and removes the fixture", async () => {
+  // #26885: absent and runtime-undefined policy both retain guarded default cleanup.
+  test.each([
+    ["omitted", {}],
+    ["undefined", Object.defineProperty({}, "allowedRoots", { value: undefined })],
+  ])("await using creates, exposes, and removes the fixture with %s allowedRoots", async (_label, options) => {
     let captured = ""
     {
-      await using fixture = await tempTree("fs-safe-using-")
+      await using fixture = await tempTree("fs-safe-using-", options)
       captured = fixture.path
       await writeFile(fixture.resolve("f.txt"), "x")
       expect(await readdir(captured)).toEqual(["f.txt"])
