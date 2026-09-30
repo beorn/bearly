@@ -27,6 +27,8 @@ import { $ } from "bun"
 import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "fs"
 import { join, dirname } from "path"
 import { tmpdir } from "os"
+import { spawnSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree.ts"
 
@@ -201,6 +203,9 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     ["remove", "root"],
     ["remove", "submodule"],
     ["remove", "uninitialized"],
+    ["remove-admit", "root"],
+    ["remove-admit", "submodule"],
+    ["remove-admit", "uninitialized"],
   ] as const)(
     "%s refuses ignored %s payload with repository and path, preserving bytes and refs",
     async (operation, location) => {
@@ -261,8 +266,13 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
             ? undefined
             : await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
         const attempt =
-          operation === "remove"
-            ? removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-remove-refused" })
+          operation !== "reset"
+            ? removeWorktree(destination, {
+                force: true,
+                deleteBranch: true,
+                preserveLabel: "wt5-remove-refused",
+                admitOnly: operation === "remove-admit",
+              })
             : resetWorktree("wt5", {
                 destination,
                 force: true,
@@ -314,6 +324,49 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         writeFileSync(join(destination, output), "generated checkout output\n")
       }
       writeFileSync(join(destination, "README.md"), "tracked dirt to preserve\n")
+      // Root must admit remove before retiring Hab. Ordinary removal alone
+      // cannot prove that this CLI mode leaves the dirty checkout untouched.
+      const admit = (...args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)), "remove", ...args],
+          {
+            cwd: mainRepo,
+            encoding: "utf8",
+            env: { ...process.env },
+          },
+        )
+      const refs = await $`git -C ${mainRepo} show-ref`.text()
+      const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+      const head = await $`git -C ${destination} rev-parse HEAD`.text()
+      const admitted = admit(
+        "--force",
+        destination,
+        "--admit",
+        "--delete-branch",
+        "--preserve-label",
+        "wt5-generated-output",
+      )
+      expect(admitted.status, admitted.stderr).toBe(0)
+      expect(await $`git -C ${destination} rev-parse HEAD`.text()).toBe(head)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      expect(readFileSync(join(destination, "README.md"), "utf8")).toBe("tracked dirt to preserve\n")
+      for (const output of ["node_modules/previous.txt", "packages/local/dist/index.js", ".direnv/cache"]) {
+        expect(readFileSync(join(destination, output), "utf8")).toBe("generated checkout output\n")
+      }
+      const dirty = admit(destination, "--admit")
+      expect(dirty.status).toBe(2)
+      expect(dirty.stderr).toContain("uncommitted changes")
+      const invalidLabel = admit(destination, "--force", "--admit", "--preserve-label", "foo//bar")
+      expect(invalidLabel.status).toBe(2)
+      expect(invalidLabel.stderr).toContain("foo//bar")
+      const missing = admit(join(sandbox, "absent"), "--admit")
+      expect(missing.status).toBe(2)
+      expect(missing.stderr).toContain(join(sandbox, "absent"))
+      expect(admit("--admit").status).toBe(2)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
       await removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-generated-output" })
       expect(existsSync(destination)).toBe(false)
       expect(await $`git -C ${mainRepo} show refs/heads/wip/wt5-generated-output:README.md`.text()).toBe(

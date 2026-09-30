@@ -2340,6 +2340,8 @@ async function refuseAheadBranchReset(gitRoot: string, branchName: string, base:
 }
 
 export interface RemoveOptions {
+  /** Run existing removal admission without preservation or teardown. */
+  admitOnly?: boolean
   /** Worktree-relative outputs the composing caller's setup recreates. */
   regenerates?: readonly string[]
   deleteBranch?: boolean
@@ -2389,25 +2391,28 @@ async function removeWorktreeWithAdmission(
   reset?: { setup: WorktreeSetupOptions; base: string },
 ): Promise<void> {
   assertValidWorktreeName(name)
-  const { deleteBranch = false, force = false, preserveLabel } = options
+  const { deleteBranch = false, force = false, preserveLabel, admitOnly = false } = options
 
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
     error("Not in a git repository")
-    process.exit(1)
+    process.exit(admitOnly ? 2 : 1)
   }
 
   const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
 
   if (!existsSync(worktreePath)) {
+    if (admitOnly) throw new Error(`Worktree not found: ${worktreePath}; no worktree was changed`)
     error(`Worktree not found: ${worktreePath}`)
     console.log(DIM + "Accepted forms: a slot name (wt3), a sibling dir name, or a path to the worktree." + RESET)
     console.log("")
     console.log("Current worktrees:")
     const result = await $`cd ${gitRoot} && git worktree list`.quiet()
     console.log(result.stdout.toString())
-    process.exit(1)
+    process.exit(admitOnly ? 2 : 1)
   }
+
+  if (preserveLabel !== undefined) assertValidPreserveRef(`refs/heads/wip/${preserveLabel}`, gitRoot)
 
   // Both direct removal and reset classify before preservation or teardown.
   await assertIgnoredContent(
@@ -2426,6 +2431,9 @@ async function removeWorktreeWithAdmission(
   if (!force) {
     const status = await getWorktreeStatus(worktreePath)
     if (status.dirty) {
+      if (admitOnly) {
+        throw new Error(`Worktree ${worktreePath} has uncommitted changes; use --force to admit preserved dirt`)
+      }
       warn("Worktree has uncommitted changes:")
       for (const change of status.changes.slice(0, 10)) {
         console.log(DIM + `  ${change}` + RESET)
@@ -2434,7 +2442,7 @@ async function removeWorktreeWithAdmission(
         console.log(DIM + `  ... and ${status.changes.length - 10} more` + RESET)
       }
       console.log(DIM + "Use --force to remove anyway" + RESET)
-      process.exit(1)
+      process.exit(admitOnly ? 2 : 1)
     }
 
     // Check submodules too
@@ -2445,12 +2453,17 @@ async function removeWorktreeWithAdmission(
 
       const subStatus = await getWorktreeStatus(subPath)
       if (subStatus.dirty) {
+        if (admitOnly) {
+          throw new Error(`Submodule ${subPath} has uncommitted changes; use --force to admit preserved dirt`)
+        }
         warn(`Submodule ${submodule} has uncommitted changes`)
         console.log(DIM + "Use --force to remove anyway" + RESET)
-        process.exit(1)
+        process.exit(admitOnly ? 2 : 1)
       }
     }
   }
+
+  if (admitOnly) return
 
   // PRESERVE-FIRST (L5): before ANY destructive step, snapshot dirty
   // working-tree state (incl. submodule dirt) and — when the branch will be
@@ -3082,6 +3095,8 @@ ${BOLD}CREATE OPTIONS${RESET}
                     in main; an ahead slot ref is refused before any reset)
 
 ${BOLD}REMOVE OPTIONS${RESET}
+  --admit           Read-only: check target, inputs/label, ignored content and dirt;
+                    exit 0 admitted, 2 refused; no preservation or teardown
   --regenerates <json>  One JSON array of relative outputs recreated by the caller
   --delete-branch   Also delete the branch
   -f, --force       Remove despite uncommitted changes — preserves them to wip/… first
@@ -3167,6 +3182,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   remove: {
     maxPositionals: 1,
     flags: {
+      "--admit": {},
       "--delete-branch": {},
       "--force": {},
       "-f": {},
@@ -3177,6 +3193,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   rm: {
     maxPositionals: 1,
     flags: {
+      "--admit": {},
       "--delete-branch": {},
       "--force": {},
       "-f": {},
@@ -3333,6 +3350,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         name,
         options: {
           deleteBranch: flags.has("--delete-branch"),
+          ...(flags.has("--admit") ? { admitOnly: true } : {}),
           ...(regenerates === undefined ? {} : { regenerates }),
           force: flags.has("--force") || flags.has("-f"),
           // Optional ref-naming label; undefined → the default
@@ -3421,7 +3439,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "usage-error":
       error(plan.message)
       console.log(DIM + "Run `bun worktree --help` for usage." + RESET)
-      process.exit(argv[0] === "reset" && argv.includes("--admit") ? 2 : 1)
+      process.exit(["reset", "remove", "rm"].includes(argv[0] ?? "") && argv.includes("--admit") ? 2 : 1)
       break
     case "path": {
       const gitRoot = findGitRoot(process.cwd())
@@ -3436,7 +3454,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await createWorktree(plan.name, plan.branch, plan.options)
       return
     case "remove":
-      await removeWorktree(plan.name, plan.options)
+      try {
+        await removeWorktree(plan.name, plan.options)
+      } catch (e) {
+        error(e instanceof Error ? e.message : String(e))
+        process.exit(plan.options.admitOnly ? 2 : 1)
+      }
       return
     case "reset":
       try {

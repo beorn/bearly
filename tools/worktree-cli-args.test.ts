@@ -115,9 +115,10 @@ describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
         action: "usage-error",
         message: expect.stringContaining("--regenerates"),
       })
-      if (action === "reset") {
-        expect(planCliInvocation([...args, "--admit"])).toMatchObject({ action: "reset", options: { admitOnly: true } })
-      }
+      expect(planCliInvocation([...args, "--admit"])).toMatchObject({
+        action: action === "rm" ? "remove" : action,
+        options: { admitOnly: true },
+      })
     },
   )
 
