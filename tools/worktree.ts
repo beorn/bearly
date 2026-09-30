@@ -1477,6 +1477,11 @@ export async function buildMissingDistPackages(worktreePath: string): Promise<vo
   }
 }
 
+function workspacePackageName(pkgDir: string): string | undefined {
+  const manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as { name?: string }
+  return manifest.name
+}
+
 /**
  * For every workspace package, ensure <root>/node_modules/<package-name>
  * is a symlink to the package directory. Skip packages that already have
@@ -1490,17 +1495,14 @@ function ensureWorkspaceSymlinks(rootPath: string): void {
   const nodeModules = join(rootPath, "node_modules")
   let linked = 0
   for (const pkgDir of pkgs) {
-    let manifest: { name?: string; private?: boolean }
+    let name: string | undefined
     try {
-      manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as {
-        name?: string
-        private?: boolean
-      }
+      name = workspacePackageName(pkgDir)
     } catch {
       continue
     }
-    if (!manifest.name) continue
-    const linkPath = join(nodeModules, manifest.name)
+    if (!name) continue
+    const linkPath = join(nodeModules, name)
     // existsSync follows symlinks; if the target is missing it returns false
     // even when the symlink itself is present. Use a stat probe instead so
     // we don't clobber a broken-but-present symlink (those are bun's choice
@@ -1526,7 +1528,7 @@ function ensureWorkspaceSymlinks(rootPath: string): void {
       linked++
     } catch {
       // Race with concurrent install or filesystem issue — log but keep going.
-      warn(`failed to symlink ${manifest.name} → ${target}`)
+      warn(`failed to symlink ${name} → ${target}`)
     }
   }
   if (linked > 0) info(`Ensured ${linked} workspace symlink(s) in node_modules`)
@@ -2496,7 +2498,9 @@ async function assertResetIgnoredContent(
   const packages = listWorkspacePackages(worktreePath)
   if (options.install !== false) {
     const plan = dependencyInstallPlan(worktreePath)
-    if (plan !== null || packages.length > 0) generated.push(join(worktreePath, "node_modules"))
+    if (plan !== null || packages.some((pkg) => Boolean(workspacePackageName(pkg)))) {
+      generated.push(join(worktreePath, "node_modules"))
+    }
     for (const pkg of packages) {
       if (plan !== null) generated.push(join(pkg, "node_modules"))
       if (hasDistBuild(pkg)) generated.push(join(pkg, "dist"))

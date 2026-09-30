@@ -109,7 +109,7 @@ afterEach(() => {
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
   /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
    * @level l2 @consumer #26139 reset setup @testonly none */
-  test.each(["lockfile", "workspace-only"] as const)(
+  test.each(["lockfile", "workspace-only", "unnamed-workspace"] as const)(
     "reset admits ignored %s output only when its setup regenerates it",
     async (setup) => {
       const mainRepo = await buildMain()
@@ -119,7 +119,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       writeFileSync(
         join(mainRepo, "packages/local/package.json"),
         JSON.stringify({
-          name: "local-fixture",
+          ...(setup === "unnamed-workspace" ? {} : { name: "local-fixture" }),
           version: "1.0.0",
           exports: "./dist/index.js",
           scripts: { build: "bun build.ts" },
@@ -138,12 +138,26 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         process.chdir(mainRepo)
         await createWorktree("wt5", undefined, { destination, install: true, direnv: false, hooks: false })
         const oldOutput = join(destination, "node_modules/previous.txt")
+        mkdirSync(dirname(oldOutput), { recursive: true })
         writeFileSync(oldOutput, "old generated output\n")
         writeFileSync(join(destination, "packages/local/dist/index.js"), "old generated build\n")
         await expect(
           resetWorktree("wt5", { destination, force: true, install: false, direnv: false, hooks: false }),
         ).rejects.toThrow("ignored")
         expect(readFileSync(oldOutput, "utf8")).toBe("old generated output\n")
+        if (setup === "unnamed-workspace") {
+          // Symlink setup skips packages without a name. Their presence cannot
+          // qualify an unrelated ignored node_modules payload for deletion.
+          const refsBefore = await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+          await expect(
+            resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false }),
+          ).rejects.toThrow("ignored")
+          expect(readFileSync(oldOutput, "utf8")).toBe("old generated output\n")
+          expect(await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(
+            refsBefore,
+          )
+          return
+        }
         await resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false })
         expect(existsSync(oldOutput)).toBe(false)
         expect(readFileSync(join(destination, "packages/local/dist/index.js"), "utf8")).toBe("export default 42\n")
