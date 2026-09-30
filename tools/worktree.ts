@@ -1746,6 +1746,32 @@ export function resolveBranchArg(input: {
   return ["-b", input.branchName, input.base]
 }
 
+function isPoolBranch(name: string, branchName: string): boolean {
+  return /^wt\d+$/.test(name) && branchName === name
+}
+
+function defaultWorktreeBranch(name: string): string {
+  return isPoolBranch(name, name) ? name : `feat/${name}`
+}
+
+async function worktreeBranchState(gitRoot: string, branchName: string) {
+  const hasRef = async (ref: string): Promise<boolean> => {
+    const result = await $`git -C ${gitRoot} show-ref --verify --quiet ${ref}`.nothrow().quiet()
+    if (result.exitCode === 0) return true
+    if (result.exitCode === 1) return false
+    throw new Error(`Cannot read ${ref} in ${gitRoot}: ${result.stderr.toString()}`)
+  }
+  const [branchExists, remoteBranchExists] = await Promise.all([
+    hasRef(`refs/heads/${branchName}`),
+    hasRef(`refs/remotes/origin/${branchName}`),
+  ])
+  return { branchExists, remoteBranchExists }
+}
+
+function cutsWorktreeBranch(isPoolSlot: boolean, branchExists: boolean, remoteBranchExists: boolean): boolean {
+  return isPoolSlot || (!branchExists && !remoteBranchExists)
+}
+
 /**
  * Resolve the start point for a branch this create will CUT (pool slot `-B` /
  * brand-new `-b`) — worktree-base-origin-main.
@@ -1830,7 +1856,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // Slot-pattern names (wt0, wt1, ..., wt9) get a plain branch matching the
   // slot id — agents lease `@agent/N` and expect branch `wtN`. Other names
   // get the `feat/` prefix as a courtesy.
-  const branchName = branch ?? (/^wt\d+$/.test(name) ? name : `feat/${name}`)
+  const branchName = branch ?? defaultWorktreeBranch(name)
 
   // Check if the slot already exists — in ANY pool location. Creating a
   // contained slot while its legacy sibling twin is still live would split the
@@ -1901,10 +1927,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
 
   // Check if branch exists
-  const branchExists = await safeExec($`cd ${gitRoot} && git show-ref --verify refs/heads/${branchName} 2>/dev/null`)
-  const remoteBranchExists = await safeExec(
-    $`cd ${gitRoot} && git show-ref --verify refs/remotes/origin/${branchName} 2>/dev/null`,
-  )
+  const { branchExists, remoteBranchExists } = await worktreeBranchState(gitRoot, branchName)
 
   // Slot-pattern names (wtN, where the branch is also `wtN`) are anonymous
   // pool resources, not stable shared branches. A `bun worktree reset` cycle
@@ -1914,14 +1937,14 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // reset silently lands at the pre-reset SHA (`@km/all/bun-worktree-reset-
   // silent-no-op`). Non-slot names keep the original behavior — they ARE
   // tracking a stable upstream.
-  const isPoolSlot = /^wt\d+$/.test(name) && branchName === name
+  const isPoolSlot = isPoolBranch(name, branchName)
 
   // Base-ref freshness (worktree-base-origin-main): any branch this create
   // CUTS is based on a freshly-fetched origin/main (or the explicit --base
   // escape hatch) — never on local HEAD / a stale cached ref. Resolved BEFORE
   // refuseAheadBranchReset below so its selected-base check
   // also sees the fresh tip.
-  const cutsNewBranch = isPoolSlot || (branchExists.exitCode !== 0 && remoteBranchExists.exitCode !== 0)
+  const cutsNewBranch = cutsWorktreeBranch(isPoolSlot, branchExists, remoteBranchExists)
   if (explicitBase !== undefined && !cutsNewBranch) {
     error(
       `--base ${explicitBase} conflicts with existing branch ${branchName} — checking out an existing branch keeps that branch's tip.`,
@@ -1933,8 +1956,8 @@ export async function createWorktree(name: string, branch?: string, options: Cre
 
   const branchArg = resolveBranchArg({
     isPoolSlot,
-    branchExists: branchExists.exitCode === 0,
-    remoteBranchExists: remoteBranchExists.exitCode === 0,
+    branchExists,
+    remoteBranchExists,
     branchName,
     base,
   })
@@ -1942,9 +1965,9 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     // -B resets-or-creates the slot branch at the fresh base, even over a stale
     // local wtN ref left by a prior task/<id> cycle (@km/inbox/19363).
     info(`Creating slot branch ${branchName} at ${base} (reset-or-create)`)
-  } else if (branchExists.exitCode === 0) {
+  } else if (branchExists) {
     info(`Using existing branch: ${branchName}`)
-  } else if (remoteBranchExists.exitCode === 0) {
+  } else if (remoteBranchExists) {
     info(`Tracking remote branch: origin/${branchName}`)
   } else {
     info(`Creating new branch: ${branchName} at ${base}`)
@@ -1952,7 +1975,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
 
   // A missing checkout does not make the slot ref disposable. Refuse before
   // -B when the chosen base omits its commits; preservation is an explicit cure.
-  if (isPoolSlot && branchExists.exitCode === 0) {
+  if (isPoolSlot && branchExists) {
     await refuseAheadBranchReset(gitRoot, branchName, base)
   }
 
@@ -2607,7 +2630,22 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     return
   }
 
-  const base = await resolveCreateBase(gitRoot, undefined, false)
+  const mainBase = await resolveCreateBase(gitRoot, undefined, false)
+  const recreateBranch = defaultWorktreeBranch(name)
+  const branchName = matches[0]?.branch
+  const branchState = await worktreeBranchState(gitRoot, recreateBranch)
+  const survivingBranch = branchState.branchExists && !(force && branchName === recreateBranch)
+  const cutsNewBranch = cutsWorktreeBranch(
+    isPoolBranch(name, recreateBranch),
+    survivingBranch,
+    branchState.remoteBranchExists,
+  )
+  let base = mainBase
+  if (!cutsNewBranch && !(retargetOrigin && branchName === recreateBranch && !survivingBranch)) {
+    const ref = survivingBranch ? `refs/heads/${recreateBranch}` : `refs/remotes/origin/${recreateBranch}`
+    const tip = await $`git -C ${gitRoot} rev-parse --verify ${ref}^{commit}`.quiet()
+    base = tip.stdout.toString().trim()
+  }
   await assertResetIgnoredContent(worktreePath, { install, direnv, hooks }, base)
 
   // Drift check (skipped under --force).
@@ -2619,7 +2657,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
           `Use --force to preserve them to wip/<slot>-preserve-* and recreate, or commit/save first.`,
       )
     }
-    const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count ${base}..HEAD 2>/dev/null`)
+    const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count ${mainBase}..HEAD 2>/dev/null`)
     const ahead = parseInt(aheadResult.stdout.trim(), 10) || 0
     if (ahead > 0) {
       throw new Error(
@@ -2635,13 +2673,10 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // just the ref-naming label — it flows through as `preserveLabel`, so the
   // classic `wip/<slug>` name still lands. There is no separate discard path.
 
-  // Query the worktree's branch name BEFORE remove — for slot patterns
-  // (wt0..wt9) it matches the slot name, but `feat/<name>` for non-pool names.
-  // We need this name for the optional retarget step below.
-  let branchName: string | undefined
-  if (retargetOrigin) {
-    const branchResult = await safeExec($`cd ${worktreePath} && git rev-parse --abbrev-ref HEAD 2>/dev/null`)
-    branchName = branchResult.stdout.trim() || undefined
+  // Once all admission gates pass, publish the observed main tip to the same
+  // tracking ref a normal create fetch updates. Refusal above changes no refs.
+  if (process.env[PREPARED_BASE_SHA_ENV] === undefined) {
+    await $`git -C ${gitRoot} update-ref refs/remotes/origin/main ${mainBase}`.quiet()
   }
 
   // Remove the worktree. Under --force, also delete the local branch so the
@@ -2665,7 +2700,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     if (remoteExists.exitCode === 0) {
       info(`Retargeting origin/${branchName} to origin/main...`)
       const pushResult = await safeExec(
-        $`cd ${gitRoot} && git push --force-with-lease=refs/heads/${branchName} origin ${base}:refs/heads/${branchName}`,
+        $`cd ${gitRoot} && git push --force-with-lease=refs/heads/${branchName} origin ${mainBase}:refs/heads/${branchName}`,
       )
       if (pushResult.exitCode !== 0) {
         throw new Error(
@@ -2679,7 +2714,14 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // Recreate. allowDirty: true because main-repo state is the caller's
   // problem, not the reset's — reset is about restoring the slot, not
   // cleaning the workspace.
-  await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true, destination, base })
+  await createWorktree(name, undefined, {
+    install,
+    direnv,
+    hooks,
+    allowDirty: true,
+    destination,
+    ...(cutsNewBranch ? { base } : {}),
+  })
 
   success(`Worktree ${name} reset`)
 }
