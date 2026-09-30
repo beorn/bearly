@@ -540,4 +540,62 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       process.chdir(origCwd)
     }
   }, 60_000)
+
+  /**
+   * @failure git worktree --force builds refs/heads/wip//absolute/path when the caller passes a path
+   * @level l2
+   * @consumer vendor/bearly/tools/worktree.ts removeWorktree preserveSlotState — production default label
+   */
+  test("removeWorktree --force with an absolute path preserves to the same valid slot ref as the bare name (23216)", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      writeFileSync(join(worktreePath, "scratch.txt"), "absolute-path-precious\n")
+
+      await removeWorktree(worktreePath, { force: true })
+      expect(existsSync(worktreePath)).toBe(false)
+
+      const refs = await preserveRefs(mainRepo, slot)
+      expect(refs).toEqual([expect.stringMatching(/^refs\/heads\/wip\/wt5-preserve-/)])
+      const scratch = await $`cd ${mainRepo} && git show ${refs[0]!}:scratch.txt`.text()
+      expect(scratch).toBe("absolute-path-precious\n")
+      expect(refs[0]!.includes("//")).toBe(false)
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /**
+   * @failure an invalid --preserve-label still snapshots or removes before git refuses the ref
+   * @level l2
+   * @consumer vendor/bearly/tools/worktree.ts removeWorktree — validate recovery ref before any git registration
+   */
+  test("removeWorktree --force rejects an invalid preserve label before changing the checkout (23216)", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      writeFileSync(join(worktreePath, "scratch.txt"), "must-not-be-discarded\n")
+      const refsBefore = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+
+      const attempt = removeWorktree(slot, { force: true, preserveLabel: "foo//bar" })
+      await expect(attempt).rejects.toThrow(/invalid recovery ref/)
+      await expect(attempt).rejects.toThrow(mainRepo)
+      await expect(attempt).rejects.toThrow(/foo\/\/bar/)
+
+      expect(existsSync(worktreePath)).toBe(true)
+      expect(readFileSync(join(worktreePath, "scratch.txt"), "utf8")).toBe("must-not-be-discarded\n")
+      expect(await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(refsBefore)
+      expect(await preserveRefs(mainRepo, slot)).toEqual([])
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
 })

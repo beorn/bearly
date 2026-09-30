@@ -11,7 +11,12 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { assertValidWorktreeName, planCliInvocation } from "./worktree.ts"
+import {
+  assertValidPreserveRef,
+  assertValidWorktreeName,
+  planCliInvocation,
+  slotNameFromResolvedPath,
+} from "./worktree.ts"
 
 describe("planCliInvocation — help interception (the hh---help incident)", () => {
   test("`reset --help` is help, not a reset of a worktree named --help", () => {
@@ -110,8 +115,9 @@ describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
         action: "usage-error",
         message: expect.stringContaining("--regenerates"),
       })
-      if (action === "reset")
+      if (action === "reset") {
         expect(planCliInvocation([...args, "--admit"])).toMatchObject({ action: "reset", options: { admitOnly: true } })
+      }
     },
   )
 
@@ -160,5 +166,31 @@ describe("assertValidWorktreeName — defense in depth at the API layer", () => 
     expect(() => assertValidWorktreeName("wt-ci")).not.toThrow()
     expect(() => assertValidWorktreeName("my-feature")).not.toThrow()
     expect(() => assertValidWorktreeName("../hh-wt5")).not.toThrow()
+  })
+})
+
+describe("slotNameFromResolvedPath — recovery ref identity (23216)", () => {
+  test("bare slot dir and absolute path share the slot slug", () => {
+    expect(slotNameFromResolvedPath("/repo/main", "/pool/main-wt5")).toBe("wt5")
+    expect(slotNameFromResolvedPath("/repo/main", "/pool/main-wt5")).toBe(
+      slotNameFromResolvedPath("/repo/main", "/other/main-wt5"),
+    )
+  })
+
+  test("a path outside the repo-prefix pattern uses the directory basename", () => {
+    expect(slotNameFromResolvedPath("/hh/dev", "/hh/dev/.worktrees/chief-fleetexec")).toBe("chief-fleetexec")
+  })
+})
+
+describe("assertValidPreserveRef — refuse unusable recovery refs before git writes (23216)", () => {
+  test("double-slash and dotted labels throw naming the repository", () => {
+    expect(() => assertValidPreserveRef("refs/heads/wip//tmp/foo", "/repo/main")).toThrow(/invalid recovery ref/)
+    expect(() => assertValidPreserveRef("refs/heads/wip//tmp/foo", "/repo/main")).toThrow("/repo/main")
+    expect(() => assertValidPreserveRef("refs/heads/wip/foo//bar", "/repo/main")).toThrow(/foo\/\/bar/)
+    expect(() => assertValidPreserveRef("refs/heads/wip/../x", "/repo/main")).toThrow(/invalid recovery ref/)
+  })
+
+  test("a slot preserve ref is accepted", () => {
+    expect(() => assertValidPreserveRef("refs/heads/wip/wt5-preserve-20260930T185050Z", "/repo/main")).not.toThrow()
   })
 })

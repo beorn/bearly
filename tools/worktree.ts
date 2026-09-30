@@ -127,14 +127,32 @@ export function getSubmodulePaths(repoRoot: string): string[] {
 }
 
 /** Safe shell execution - doesn't throw on non-zero exit */
-export async function safeExec(cmd: ReturnType<typeof $>): Promise<{ stdout: string; exitCode: number }> {
+export async function safeExec(
+  cmd: ReturnType<typeof $>,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   try {
     const result = await cmd.quiet()
-    return { stdout: result.stdout.toString(), exitCode: result.exitCode }
+    return {
+      stdout: result.stdout.toString(),
+      stderr: result.stderr?.toString() ?? "",
+      exitCode: result.exitCode,
+    }
   } catch (e) {
-    const err = e as { exitCode?: number; stdout?: Buffer }
-    return { stdout: err.stdout?.toString() ?? "", exitCode: err.exitCode ?? 1 }
+    const err = e as { exitCode?: number; stdout?: Buffer | string; stderr?: Buffer | string }
+    return {
+      stdout: err.stdout?.toString() ?? "",
+      stderr: err.stderr?.toString() ?? "",
+      exitCode: err.exitCode ?? 1,
+    }
   }
+}
+
+function gitCommandError(result: { stdout: string; stderr: string }): string {
+  const text = [result.stderr, result.stdout]
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join("\n")
+  return text || "(git produced no error text)"
 }
 
 /** Check if a commit exists on any remote branch */
@@ -296,6 +314,34 @@ export function resolvePoolRoot(
 /** Slot directory name inside a pool: `<repoName>-<name>`, unless already prefixed. */
 export function slotDirName(repoName: string, name: string): string {
   return name.startsWith(`${repoName}-`) ? name : `${repoName}-${name}`
+}
+
+/**
+ * Inverse of `slotDirName` for a resolved worktree path. Bare `wt5` and
+ * `/pool/main-wt5` must share one recovery-ref slug; using the raw CLI
+ * argument puts `//` into `refs/heads/wip/…` and `git update-ref` refuses it.
+ */
+export function slotNameFromResolvedPath(gitRoot: string, resolvedPath: string): string {
+  const repoName = basename(gitRoot)
+  const base = basename(resolve(resolvedPath))
+  const prefix = `${repoName}-`
+  if (base.startsWith(prefix) && base !== prefix) return base.slice(prefix.length)
+  return base
+}
+
+/** Refuse an unusable recovery ref before any checkout or git registration changes. */
+export function assertValidPreserveRef(refFull: string, repository: string): void {
+  const result = spawnSync("git", ["check-ref-format", refFull], { encoding: "utf8" })
+  if (result.status === 0) return
+  const detail = [result.stderr, result.stdout]
+    .map((part) => (part ?? "").trim())
+    .filter((part) => part !== "")
+    .join("\n")
+  throw new Error(
+    `preserve: invalid recovery ref ${refFull} in ${repository}` +
+      (detail ? `: ${detail}` : " — git check-ref-format refused it") +
+      "; checkout and git registrations were not changed",
+  )
 }
 
 /**
@@ -2179,6 +2225,12 @@ export async function preserveSlotState(
   const empty: PreserveResult = { preserved: false, submodules: [] }
   if (!existsSync(worktreePath)) return empty
   const includeAhead = opts.includeAhead ?? true
+  const recoverySlot = slotNameFromResolvedPath(gitRoot, worktreePath)
+  const stamp = opts.stamp ?? preserveStamp()
+  const refShort = opts.label ? `wip/${opts.label}` : `wip/${recoverySlot}-preserve-${stamp}`
+  const refFull = `refs/heads/${refShort}`
+  assertValidPreserveRef(refFull, gitRoot)
+  void slotName
 
   // Superproject's OWN file changes (excluding submodule state), + any dirty
   // submodule working tree. A pure gitlink advance (committed submodule move) is
@@ -2202,9 +2254,6 @@ export async function preserveSlotState(
 
   if (!dirty && !(ahead > 0 && includeAhead)) return empty
 
-  const stamp = opts.stamp ?? preserveStamp()
-  const refShort = opts.label ? `wip/${opts.label}` : `wip/${slotName}-preserve-${stamp}`
-  const refFull = `refs/heads/${refShort}`
   const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead > 0 ? "dirty+ahead" : dirty ? "dirty" : "ahead"
 
   const preservedSubs: PreservedSubmodule[] = []
@@ -2219,7 +2268,9 @@ export async function preserveSlotState(
       const subPath = join(worktreePath, sub)
       const subSha = await snapshotDirtyRepo(subPath, `preserve ${refShort} (${sub})`)
       const subRef = await safeExec($`cd ${subPath} && git update-ref ${refFull} ${subSha}`)
-      if (subRef.exitCode !== 0) throw new Error(`preserve: update-ref ${refFull} in ${sub} failed: ${subRef.stdout}`)
+      if (subRef.exitCode !== 0) {
+        throw new Error(`preserve: update-ref ${refFull} in ${sub} of ${gitRoot} failed: ${gitCommandError(subRef)}`)
+      }
       const mainSubPath = join(gitRoot, sub)
       if (!existsSync(join(mainSubPath, ".git"))) {
         throw new Error(
@@ -2234,7 +2285,7 @@ export async function preserveSlotState(
       preservedSubs.push({ path: sub, ref: refShort, sha: subSha })
     }
     // 2) Superproject snapshot, gitlinks repointed at the sub preserve commits.
-    sha = await snapshotDirtyRepo(worktreePath, `preserve ${refShort} (${slotName})`, subGitlinks)
+    sha = await snapshotDirtyRepo(worktreePath, `preserve ${refShort} (${recoverySlot})`, subGitlinks)
   } else {
     // clean-but-ahead → the ref points directly at HEAD (no snapshot commit).
     const headRes = await safeExec($`cd ${worktreePath} && git rev-parse HEAD`)
@@ -2242,11 +2293,13 @@ export async function preserveSlotState(
   }
 
   const setRef = await safeExec($`cd ${gitRoot} && git update-ref ${refFull} ${sha}`)
-  if (setRef.exitCode !== 0) throw new Error(`preserve: writing ${refFull} at ${sha} failed: ${setRef.stdout}`)
+  if (setRef.exitCode !== 0) {
+    throw new Error(`preserve: writing ${refFull} at ${sha} in ${gitRoot} failed: ${gitCommandError(setRef)}`)
+  }
 
   // Loud (§ Fail Loud) — print the recovery ref to the operator.
   console.log("")
-  warn(`Preserved ${reason} state of slot ${slotName} before the destructive step:`)
+  warn(`Preserved ${reason} state of slot ${recoverySlot} before the destructive step:`)
   console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
   console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
   for (const s of preservedSubs) {
@@ -2257,7 +2310,7 @@ export async function preserveSlotState(
   const subLog = preservedSubs.map((s) => `${s.path}@${s.sha.slice(0, 12)}`).join(",")
   await appendPreserveLog(
     gitRoot,
-    `${new Date().toISOString()} slot=${slotName} ref=${refShort} sha=${sha} reason=${reason}` +
+    `${new Date().toISOString()} slot=${recoverySlot} ref=${refShort} sha=${sha} reason=${reason}` +
       (subLog ? ` submodules=${subLog}` : "") +
       ` path=${worktreePath}`,
   )
@@ -2404,7 +2457,7 @@ async function removeWorktreeWithAdmission(
   // deleted — ahead-of-origin/main commits, to a durable `wip/…` ref. This is
   // the choke point every removal (direct + via resetWorktree) flows through,
   // so no `git worktree remove --force` can silently discard the 21102 class.
-  await preserveSlotState(worktreePath, name, gitRoot, {
+  await preserveSlotState(worktreePath, slotNameFromResolvedPath(gitRoot, worktreePath), gitRoot, {
     label: preserveLabel,
     includeAhead: deleteBranch,
   })
