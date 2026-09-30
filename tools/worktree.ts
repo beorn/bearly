@@ -2437,23 +2437,15 @@ export interface ResetOptions {
   hooks?: boolean
 }
 
-/**
- * Reset a worktree to a clean state at origin/main.
- *
- * Thin wrapper over `removeWorktree(force=true) + createWorktree()`. Used to
- * recover a pool slot whose branch has drifted ahead of origin/main or whose
- * working tree has accumulated uncommitted changes. DCG-safe — relies on
- * git's worktree-remove plumbing rather than `git reset --hard`.
- *
- * Refuses without --force if the worktree is dirty or its branch is ahead of
- * origin/main. With --force it PRESERVES that state to a durable `wip/…` ref
- * before recreating (L5) — no path discards. Preservation is unified into
- * removeWorktree's preserve-first choke point.
- *
- * Refuses if invoked from inside the target worktree (the recreate would
- * leave the caller's shell in a removed directory).
- */
+/** Refuse ignored payload whose regeneration the selected setup cannot prove. */
 async function assertResetIgnoredContent(worktreePath: string, options: WorktreeSetupOptions): Promise<void> {
+  const submoduleStatus = await $`git -C ${worktreePath} submodule status --recursive`.quiet()
+  const missing = parseUninitializedSubmodules(submoduleStatus.stdout.toString())
+  if (missing.length > 0) {
+    throw new Error(
+      `Reset cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}; no worktree was changed`,
+    )
+  }
   // Git owns recursive repository discovery and ignored-file classification.
   // NUL framing preserves paths containing newlines, spaces or quoting characters.
   const listCommand = 'printf "%s\\0" "$PWD"'
@@ -2476,10 +2468,11 @@ async function assertResetIgnoredContent(worktreePath: string, options: Worktree
   // Hooks install into Git administration; no arbitrary checkout folder is disposable.
   const generated: string[] = []
   const packages = listWorkspacePackages(worktreePath)
-  if (options.install !== false && dependencyInstallPlan(worktreePath) !== null) {
-    generated.push(join(worktreePath, "node_modules"))
+  if (options.install !== false) {
+    const plan = dependencyInstallPlan(worktreePath)
+    if (plan !== null || packages.length > 0) generated.push(join(worktreePath, "node_modules"))
     for (const pkg of packages) {
-      generated.push(join(pkg, "node_modules"))
+      if (plan !== null) generated.push(join(pkg, "node_modules"))
       if (hasDistBuild(pkg)) generated.push(join(pkg, "dist"))
     }
   }
@@ -2518,6 +2511,11 @@ async function assertResetIgnoredContent(worktreePath: string, options: Worktree
   }
 }
 
+/**
+ * Reset at the exact registered path, preserving dirty and ahead state before removal.
+ * Refuses from inside the target, and refuses unproven ignored payload before preservation.
+ * Without force, dirty or ahead state refuses; force saves it through removeWorktree's choke point.
+ */
 export async function resetWorktree(name: string, options: ResetOptions = {}): Promise<void> {
   assertValidWorktreeName(name)
   const {
