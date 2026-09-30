@@ -191,11 +191,19 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     60_000,
   )
 
-  /** @failure force reset silently drops ignored root or submodule payload
-   * @level l2 @consumer #26139 relocated reset @testonly none */
-  test.each(["root", "submodule", "uninitialized", "changed-submodule-setup"] as const)(
-    "reset refuses ignored %s payload with repository and path, preserving bytes and refs",
-    async (location) => {
+  /** @failure forced removal or reset silently drops ignored payload or writes preservation refs before refusing
+   * @level l2 @consumer #26139 removal admission @testonly none */
+  test.each([
+    ["reset", "root"],
+    ["reset", "submodule"],
+    ["reset", "uninitialized"],
+    ["reset", "changed-submodule-setup"],
+    ["remove", "root"],
+    ["remove", "submodule"],
+    ["remove", "uninitialized"],
+  ] as const)(
+    "%s refuses ignored %s payload with repository and path, preserving bytes and refs",
+    async (operation, location) => {
       const mainRepo = await buildMain()
       let source = mainRepo
       if (location !== "root") {
@@ -244,19 +252,24 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         }
         mkdirSync(dirname(join(repository, payload)), { recursive: true })
         writeFileSync(join(repository, payload), "precious ignored bytes\n")
+        // A premature preserveSlotState call would create a wip ref for this dirt.
+        writeFileSync(join(destination, "README.md"), "tracked dirt before admission\n")
         if (location === "uninitialized") rmSync(join(repository, ".git"))
         const refs = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
         const subRefs =
           location === "uninitialized"
             ? undefined
             : await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
-        const attempt = resetWorktree("wt5", {
-          destination,
-          force: true,
-          install: changedSetup,
-          direnv: false,
-          hooks: false,
-        })
+        const attempt =
+          operation === "remove"
+            ? removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-remove-refused" })
+            : resetWorktree("wt5", {
+                destination,
+                force: true,
+                install: changedSetup,
+                direnv: false,
+                hooks: false,
+              })
         await expect(attempt).rejects.toThrow(location === "uninitialized" ? "uninitialized" : "ignored")
         await expect(attempt).rejects.toThrow(repository)
         if (location !== "uninitialized") {
@@ -276,6 +289,40 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     },
     60_000,
   )
+
+  /** @failure direct removal refuses declared checkout outputs and encourages a raw discard path
+   * @level l2 @consumer #26139 direct removal @testonly none */
+  test("direct removal admits declared dependency, build and direnv outputs while preserving tracked dirt", async () => {
+    const mainRepo = await buildMain()
+    writeFileSync(join(mainRepo, ".gitignore"), "node_modules/\ndist/\n.direnv/\n")
+    writeFileSync(join(mainRepo, ".envrc"), "use flake\n")
+    writeFileSync(join(mainRepo, "package.json"), JSON.stringify({ name: "fixture", workspaces: ["packages/*"] }))
+    mkdirSync(join(mainRepo, "packages/local"), { recursive: true })
+    writeFileSync(
+      join(mainRepo, "packages/local/package.json"),
+      JSON.stringify({ name: "local-fixture", exports: "./dist/index.js", scripts: { build: "bun build.ts" } }),
+    )
+    await commitAll(mainRepo, "declare generated outputs")
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const destination = join(sandbox, "wt-@dev5")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { destination, install: false, direnv: false, hooks: false })
+      for (const output of ["node_modules/previous.txt", "packages/local/dist/index.js", ".direnv/cache"]) {
+        mkdirSync(dirname(join(destination, output)), { recursive: true })
+        writeFileSync(join(destination, output), "generated checkout output\n")
+      }
+      writeFileSync(join(destination, "README.md"), "tracked dirt to preserve\n")
+      await removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-generated-output" })
+      expect(existsSync(destination)).toBe(false)
+      expect(await $`git -C ${mainRepo} show refs/heads/wip/wt5-generated-output:README.md`.text()).toBe(
+        "tracked dirt to preserve\n",
+      )
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
 
   test("reset --force PRESERVES uncommitted work to wip/<slot>-preserve-* (does not discard)", async () => {
     const mainRepo = await buildMain()

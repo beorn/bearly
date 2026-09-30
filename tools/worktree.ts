@@ -2322,6 +2322,14 @@ export function resolveWorktreeTargetPath(gitRoot: string, name: string, options
 }
 
 export async function removeWorktree(name: string, options: RemoveOptions = {}): Promise<void> {
+  await removeWorktreeWithAdmission(name, options)
+}
+
+async function removeWorktreeWithAdmission(
+  name: string,
+  options: RemoveOptions,
+  reset?: { setup: WorktreeSetupOptions; base: string },
+): Promise<void> {
   assertValidWorktreeName(name)
   const { deleteBranch = false, force = false, preserveLabel } = options
 
@@ -2342,6 +2350,14 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
     console.log(result.stdout.toString())
     process.exit(1)
   }
+
+  // Both direct removal and reset classify before preservation or teardown.
+  await assertIgnoredContent(
+    worktreePath,
+    reset?.setup ?? { install: true, direnv: true, hooks: false },
+    reset === undefined ? "Remove" : "Reset",
+    reset?.base,
+  )
 
   // Get branch name before removing
   const branchResult = await $`cd ${worktreePath} && git branch --show-current`.quiet()
@@ -2461,17 +2477,42 @@ export interface ResetOptions {
   hooks?: boolean
 }
 
-/** Refuse ignored payload whose regeneration the selected setup cannot prove. */
-async function assertResetIgnoredContent(
+/** Outputs derived from the checkout's existing setup contract, never its ignore patterns. */
+function generatedWorktreeOutputs(
   worktreePath: string,
   options: WorktreeSetupOptions,
-  base: string,
+): { generated: string[]; packages: string[] } {
+  // Hooks install into Git administration; no arbitrary checkout folder is disposable.
+  const generated: string[] = []
+  const packages = listWorkspacePackages(worktreePath)
+  if (options.install !== false) {
+    const plan = dependencyInstallPlan(worktreePath)
+    if (plan !== null || packages.some((pkg) => Boolean(workspacePackageName(pkg)))) {
+      generated.push(join(worktreePath, "node_modules"))
+    }
+    for (const pkg of packages) {
+      if (plan !== null) generated.push(join(pkg, "node_modules"))
+      if (hasDistBuild(pkg)) generated.push(join(pkg, "dist"))
+    }
+  }
+  if (options.direnv !== false && existsSync(join(worktreePath, ".envrc"))) {
+    generated.push(join(worktreePath, ".direnv"))
+  }
+  return { generated, packages }
+}
+
+/** Refuse ignored payload whose disposability the checkout or recreated base cannot prove. */
+async function assertIgnoredContent(
+  worktreePath: string,
+  options: WorktreeSetupOptions,
+  verb: "Remove" | "Reset",
+  base?: string,
 ): Promise<void> {
   const submoduleStatus = await $`git -C ${worktreePath} submodule status --recursive`.quiet()
   const missing = parseUninitializedSubmodules(submoduleStatus.stdout.toString())
   if (missing.length > 0) {
     throw new Error(
-      `Reset cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}; no worktree was changed`,
+      `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}; no worktree was changed`,
     )
   }
   // Git owns recursive repository discovery and ignored-file classification.
@@ -2492,25 +2533,10 @@ async function assertResetIgnoredContent(
   }
   if (ignored.length === 0) return
 
-  // Derive outputs from the existing setup contract, never from ignore patterns.
-  // Hooks install into Git administration; no arbitrary checkout folder is disposable.
-  const generated: string[] = []
-  const packages = listWorkspacePackages(worktreePath)
-  if (options.install !== false) {
-    const plan = dependencyInstallPlan(worktreePath)
-    if (plan !== null || packages.some((pkg) => Boolean(workspacePackageName(pkg)))) {
-      generated.push(join(worktreePath, "node_modules"))
-    }
-    for (const pkg of packages) {
-      if (plan !== null) generated.push(join(pkg, "node_modules"))
-      if (hasDistBuild(pkg)) generated.push(join(pkg, "dist"))
-    }
-  }
-  if (options.direnv !== false && existsSync(join(worktreePath, ".envrc"))) {
-    generated.push(join(worktreePath, ".direnv"))
-  }
+  const { generated, packages } = generatedWorktreeOutputs(worktreePath, options)
   // A changed setup declaration cannot prove what the recreated base will generate.
-  if (generated.length > 0) {
+  // Direct removal preserves the current inputs, so only reset compares a base.
+  if (base !== undefined && generated.length > 0) {
     const inputs = [
       "package.json",
       "bun.lock",
@@ -2528,7 +2554,7 @@ async function assertResetIgnoredContent(
     const sameSetup = await $`git -C ${worktreePath} diff --quiet ${base} -- ${inputs}`.nothrow().quiet()
     if (sameSetup.exitCode > 1) {
       throw new Error(
-        `Reset cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
+        `${verb} cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
       )
     }
     if (sameSetup.exitCode !== 0) generated.length = 0
@@ -2542,7 +2568,7 @@ async function assertResetIgnoredContent(
   })
   if (blocked.length > 0) {
     throw new Error(
-      `Reset refuses ignored content not regenerated by its setup: ${blocked.join("; ")}. Move or delete the named payload deliberately; no worktree was changed`,
+      `${verb} refuses ignored content not regenerated by its setup: ${blocked.join("; ")}. Move or delete the named payload deliberately; no worktree was changed`,
     )
   }
 }
@@ -2632,7 +2658,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     const tip = await $`git -C ${gitRoot} rev-parse --verify ${ref}^{commit}`.quiet()
     base = tip.stdout.toString().trim()
   }
-  await assertResetIgnoredContent(worktreePath, { install, direnv, hooks }, base)
+  await assertIgnoredContent(worktreePath, { install, direnv, hooks }, "Reset", base)
 
   // Drift check (skipped under --force).
   if (!force) {
@@ -2669,11 +2695,15 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // recreate starts from origin/main (or origin/<branchName>) rather than
   // picking up the existing ref with its ahead commits.
   info(`Resetting worktree ${name}...`)
-  await removeWorktree(worktreePath, {
-    force: true,
-    deleteBranch: force,
-    preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
-  })
+  await removeWorktreeWithAdmission(
+    worktreePath,
+    {
+      force: true,
+      deleteBranch: force,
+      preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
+    },
+    { setup: { install, direnv, hooks }, base },
+  )
 
   // Retarget origin/<branch> to origin/main if requested. Done AFTER remove
   // so the worktree's own ref doesn't get yanked out from under git's
