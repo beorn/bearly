@@ -56,6 +56,20 @@ async function buildMain(): Promise<string> {
   return mainRepo
 }
 
+async function buildSubmoduleMain(): Promise<string> {
+  const mainRepo = join(sandbox, "main")
+  const subRepo = join(sandbox, "sub")
+  await initRepo(subRepo)
+  writeFileSync(join(subRepo, "file.txt"), "original\n")
+  await commitAll(subRepo, "sub-init")
+  await initRepo(mainRepo)
+  writeFileSync(join(mainRepo, "README.md"), "main\n")
+  await commitAll(mainRepo, "main-init")
+  await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
+  await commitAll(mainRepo, "add-sub")
+  return mainRepo
+}
+
 /** All preserve refs for a slot, in a repo (main or submodule). */
 async function preserveRefs(repo: string, slot: string): Promise<string[]> {
   // Interpolate the pattern + format as JS strings so Bun's shell escapes them
@@ -291,17 +305,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     // snapshot records the gitlink, but the submodule's dirty FILE content lives
     // in the per-worktree isolated object store that removeWorktree tears down.
     // Preservation must transfer it into the durable MAIN submodule store first.
-    const mainRepo = join(sandbox, "main")
-    const subRepo = join(sandbox, "sub")
-    await initRepo(subRepo)
-    writeFileSync(join(subRepo, "file.txt"), "original\n")
-    await commitAll(subRepo, "sub-init")
-
-    await initRepo(mainRepo)
-    writeFileSync(join(mainRepo, "README.md"), "main\n")
-    await commitAll(mainRepo, "main-init")
-    await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
-    await commitAll(mainRepo, "add-sub")
+    const mainRepo = await buildSubmoduleMain()
 
     const slot = "sub-dirt"
     const worktreePath = join(dirname(mainRepo), `main-${slot}`)
@@ -337,6 +341,53 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       const gitlink = (await $`cd ${mainRepo} && git ls-tree ${superRefs[0]!} vendor/sub`.text()).trim()
       const subTip = (await $`cd ${mainSub} && git rev-parse ${subRef}`.text()).trim()
       expect(gitlink).toContain(subTip)
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /** @failure Bearly destroys lender module objects before GitSuper can preserve a live borrower
+   * @level l2 @consumer #26139 worktree removal @testonly none */
+  test("remove preserves a borrower reading a unique packed lender commit", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const lender = join(sandbox, "main-lender")
+    const borrower = join(sandbox, "main-borrower")
+    const lenderSub = join(lender, "vendor/sub")
+    const borrowerSub = join(borrower, "vendor/sub")
+    const mainSub = join(mainRepo, "vendor/sub")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      const setup = { install: false, direnv: false, hooks: false, base: "HEAD" }
+      await createWorktree("lender", undefined, setup)
+      await $`git -C ${lenderSub} config user.email t@t`.quiet()
+      await $`git -C ${lenderSub} config user.name t`.quiet()
+      writeFileSync(join(lenderSub, "private.txt"), "unique lender object\n")
+      await commitAll(lenderSub, "unique lender commit")
+      const commit = (await $`git -C ${lenderSub} rev-parse HEAD`.text()).trim()
+      await commitAll(lender, "record lender gitlink")
+      await $`git -C ${lenderSub} repack -a -d`.quiet()
+      await createWorktree("borrower", undefined, setup)
+      const lenderObjects = (
+        await $`git -C ${lenderSub} rev-parse --path-format=absolute --git-path objects`.text()
+      ).trim()
+      const mainObjects = (await $`git -C ${mainSub} rev-parse --path-format=absolute --git-path objects`.text()).trim()
+      const alternates = (
+        await $`git -C ${borrowerSub} rev-parse --path-format=absolute --git-path objects/info/alternates`.text()
+      ).trim()
+      writeFileSync(alternates, `${lenderObjects}\n${mainObjects}\n`)
+      await $`git -C ${borrowerSub} update-ref refs/heads/borrowed ${commit}`.quiet()
+      await $`git -C ${borrowerSub} symbolic-ref HEAD refs/heads/borrowed`.quiet()
+      expect((await $`git -C ${mainSub} cat-file -e ${commit}`.nothrow().quiet()).exitCode).not.toBe(0)
+      expect(await $`git -C ${borrowerSub} show HEAD:private.txt`.text()).toBe("unique lender object\n")
+
+      await removeWorktree(lender, { force: true })
+      expect(existsSync(lender)).toBe(false)
+      expect(readFileSync(alternates, "utf8")).not.toContain(lenderObjects)
+      expect(await $`git -C ${borrowerSub} show HEAD:private.txt`.text()).toBe("unique lender object\n")
+      const fsck = await $`git -C ${borrowerSub} fsck --full`.nothrow().quiet()
+      expect(fsck.exitCode).toBe(0)
+      expect(fsck.stderr.toString()).toBe("")
     } finally {
       process.chdir(origCwd)
     }

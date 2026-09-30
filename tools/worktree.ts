@@ -29,9 +29,8 @@
  * config is respected elsewhere but not for `worktree add`, so the local
  * materializer populates every required gitlink after the worktree is added.
  *
- * On removal, we explicitly clean up `.git/worktrees/<name>/modules/`
- * before calling `git worktree remove` so git's own cleanup never leaves
- * orphans (which can happen on interrupted removes or older git versions).
+ * On removal, GitSuper rehomes live object borrowers while the lender's
+ * module store still exists, then owns checkout and administrative cleanup.
  */
 
 import { spawnSync } from "node:child_process"
@@ -2396,22 +2395,8 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
     info(`Stopped ${doltKilled} dolt sql-server(s) rooted in this worktree`)
   }
 
-  // Pre-clean per-worktree submodule modules dir to prevent orphans.
-  // On some git versions / interrupted operations, `git worktree remove` leaves
-  // .git/worktrees/<name>/modules/* behind. Removing it first ensures a clean
-  // exit regardless.
-  const modulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
-  if (modulesDir && existsSync(modulesDir)) {
-    info("Cleaning per-worktree submodule modules...")
-    try {
-      rmSync(modulesDir, { recursive: true, force: true })
-      success("Per-worktree submodule modules cleaned")
-    } catch (e) {
-      warn(`Failed to clean ${modulesDir} (continuing): ${(e as Error).message}`)
-    }
-  }
-
-  // Remove worktree
+  // GitSuper owns borrower dissociation and removal. Keep lender module
+  // objects alive until its rehome step has finished; no local pre-delete.
   info("Removing worktree...")
   const mechanics = poolWorktreeMechanics(gitRoot)
   try {
@@ -2425,15 +2410,6 @@ export async function removeWorktree(name: string, options: RemoveOptions = {}):
 
   // Prune
   await mechanics.prune({ operation: `pool worktree prune after removing ${worktreePath}` })
-
-  // Final orphan sweep — defensive, in case git left anything behind
-  if (modulesDir && existsSync(modulesDir)) {
-    try {
-      rmSync(modulesDir, { recursive: true, force: true })
-    } catch {
-      // ignore — reported above if needed
-    }
-  }
 
   // Delete branch if requested
   if (deleteBranch && branchName) {
