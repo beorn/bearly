@@ -1,0 +1,10 @@
+{
+  "schema": "vendor-kit/source-siblings/v1",
+  "siblings": [
+    {
+      "name": "git-super",
+      "repository": "beorn/git-super",
+      "commit": "7798f4b425216f6bd19db096c1e5f5002f2e22bd"
+    }
+  ]
+}

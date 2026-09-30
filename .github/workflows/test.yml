@@ -32,15 +32,10 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('package.json') }}
           restore-keys: bun-${{ runner.os }}-
 
-      # Registry flakes are the #1 cause of false-red CI on small repos —
-      # retry install up to 3x with backoff (same idiom as verify.yml).
-      - name: Install dependencies
-        run: |
-          for attempt in 1 2 3; do
-            bun install && exit 0
-            sleep $((attempt * 10))
-          done
-          exit 1
+      # Installs with the public sibling commits named in source-siblings.json (git-super) in
+      # place of their npm releases, retrying the install 3x, then restores package.json and
+      # bun.lock byte for byte: development never waits on npm (@hh/tooling/26691).
+      - uses: ./.github/actions/source-siblings
 
       # The refactor backends discover files via ripgrep; runners don't ship it.
       - name: Install ripgrep
