@@ -90,6 +90,31 @@ describe("planCliInvocation — name is the first positional, never a flag", () 
 })
 
 describe("planCliInvocation — unknown flags fail loud (shape guard)", () => {
+  /** @failure composing declarations disappear in parsing or malformed declarations are silently accepted
+   * @level l1 @consumer #26139 root reset/remove composition @testonly none */
+  test.each(["reset", "remove", "rm"])(
+    "%s carries one declared-output array and refuses duplicate or malformed input",
+    (action) => {
+      const args = [action, "wt3", "--regenerates", '[".hab-root","pm"]']
+      expect(planCliInvocation(args)).toMatchObject({
+        action: action === "rm" ? "remove" : action,
+        options: { regenerates: [".hab-root", "pm"] },
+      })
+      for (const value of ["not-json", "{}", '["pm",3]']) {
+        expect(planCliInvocation([action, "wt3", "--regenerates", value])).toMatchObject({
+          action: "usage-error",
+          message: expect.stringContaining("--regenerates"),
+        })
+      }
+      expect(planCliInvocation([...args, "--regenerates", "[]"])).toMatchObject({
+        action: "usage-error",
+        message: expect.stringContaining("--regenerates"),
+      })
+      if (action === "reset")
+        expect(planCliInvocation([...args, "--admit"])).toMatchObject({ action: "reset", options: { admitOnly: true } })
+    },
+  )
+
   test("an unmapped flag on a subcommand is a usage error, not silently ignored", () => {
     expect(planCliInvocation(["reset", "wt3", "--frce"])).toMatchObject({ action: "usage-error" })
     expect(planCliInvocation(["create", "wt3", "--allowdirty"])).toMatchObject({ action: "usage-error" })

@@ -14,9 +14,10 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
 import { $ } from "bun"
-import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "fs"
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
+import { spawnSync } from "node:child_process"
 
 import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree.ts"
 
@@ -53,6 +54,94 @@ afterEach(() => {
 })
 
 describe("worktree reset round-trip", () => {
+  /** @failure admission mutates, drops caller outputs, or misses a payload arriving before reset
+   * @level l2 @consumer #26139 root admission before Hab retirement @testonly none */
+  test("caller-regenerated metadata admits without writes; reset rechecks new payload and remove shares admission", async () => {
+    const mainRepo = join(sandbox, "main")
+    const destination = join(sandbox, "wt-@dev3")
+    await initRepo(mainRepo)
+    writeFileSync(join(mainRepo, ".gitignore"), ".hab-root\npm\nprecious.bin\n")
+    writeFileSync(join(mainRepo, "README.md"), "main\n")
+    writeFileSync(join(mainRepo, "package.json"), '{"name":"admit-fixture","version":"1.0.0"}\n')
+    await commitAll(mainRepo, "seed")
+    const upstream = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${upstream}`.quiet()
+    await $`git -C ${mainRepo} remote add origin ${upstream}`.quiet()
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      const options = {
+        destination,
+        force: true,
+        install: false,
+        direnv: false,
+        hooks: false,
+        regenerates: [".hab-root", "pm", "absent"],
+      }
+      await createWorktree("wt3", undefined, options)
+      writeFileSync(join(destination, ".hab-root"), "owned habitat\n")
+      symlinkSync(sandbox, join(destination, "pm"))
+      const refs = await $`git -C ${mainRepo} show-ref`.text()
+      const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+      await resetWorktree("wt3", { ...options, admitOnly: true })
+      for (const path of ["", ".", "..", "../outside", sandbox]) {
+        await expect(resetWorktree("wt3", { ...options, admitOnly: true, regenerates: [path] })).rejects.toThrow(
+          "regenerated path",
+        )
+      }
+      // Caller outputs remain provable even if changed inputs invalidate vendor setup outputs.
+      writeFileSync(join(destination, "package.json"), '{"name":"admit-fixture","version":"2.0.0"}\n')
+      await resetWorktree("wt3", { ...options, install: true, admitOnly: true })
+      const cli = () =>
+        spawnSync(
+          process.execPath,
+          [
+            new URL("../tools/worktree.ts", import.meta.url).pathname,
+            "reset",
+            "wt3",
+            "--destination",
+            destination,
+            "--force",
+            "--no-install",
+            "--no-direnv",
+            "--no-hooks",
+            "--admit",
+            "--regenerates",
+            JSON.stringify(options.regenerates),
+          ],
+          { cwd: mainRepo, encoding: "utf8" },
+        )
+      expect(cli().status).toBe(0)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      expect(readFileSync(join(destination, ".hab-root"), "utf8")).toBe("owned habitat\n")
+      expect(readlinkSync(join(destination, "pm"))).toBe(sandbox)
+      writeFileSync(join(destination, "precious.bin"), "arrived after admission\n")
+      const refused = cli()
+      expect(refused.status).toBe(2)
+      expect(refused.stderr).toContain("precious.bin")
+      await expect(resetWorktree("wt3", options)).rejects.toThrow("precious.bin")
+      expect(readFileSync(join(destination, "precious.bin"), "utf8")).toBe("arrived after admission\n")
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      rmSync(join(destination, "precious.bin"))
+      await expect(removeWorktree(destination, { force: true })).rejects.toThrow(".hab-root")
+      await removeWorktree(destination, {
+        force: true,
+        preserveLabel: "declared-remove",
+        regenerates: options.regenerates,
+      })
+      expect(existsSync(destination)).toBe(false)
+      expect(existsSync(join(mainRepo, "README.md"))).toBe(true)
+      const missingRefs = await $`git -C ${mainRepo} show-ref`.text()
+      await resetWorktree("wt3", { ...options, admitOnly: true })
+      expect(existsSync(destination)).toBe(false)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(missingRefs)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  })
+
   /** @failure an explicit reset path reaches preservation/removal without safe registration
    * @level l2 @consumer #26139 root worktree reset composition @testonly none */
   test.each(["relative", "main", "caller", "unregistered", "ambiguous"] as const)(
@@ -154,6 +243,11 @@ describe("worktree reset round-trip", () => {
 
         // Reset
         const resetOptions = { force: true, install: false, direnv: false, hooks: false, destination }
+        // Admission must not preserve or recreate even when forced dirt is admissible.
+        const refsBeforeAdmit = await $`git -C ${mainRepo} show-ref`.text()
+        await resetWorktree(worktreeName, { ...resetOptions, admitOnly: true })
+        expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refsBeforeAdmit)
+        expect(readFileSync(join(worktreePath, "uncommitted.txt"), "utf8")).toBe("dirt-after-commit\n")
         await resetWorktree(worktreeName, resetOptions)
 
         // Worktree still exists

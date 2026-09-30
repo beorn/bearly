@@ -48,7 +48,7 @@ import {
   symlinkSync,
 } from "fs"
 import { tmpdir } from "node:os"
-import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
+import { join, dirname, basename, isAbsolute, relative, resolve, sep } from "path"
 import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
@@ -2284,6 +2284,8 @@ async function refuseAheadBranchReset(gitRoot: string, branchName: string, base:
 }
 
 export interface RemoveOptions {
+  /** Worktree-relative outputs the composing caller's setup recreates. */
+  regenerates?: readonly string[]
   deleteBranch?: boolean
   force?: boolean
   /** Fixed preserve ref slug (`wip/<label>`); default `wip/<slot>-preserve-<stamp>`. */
@@ -2357,6 +2359,7 @@ async function removeWorktreeWithAdmission(
     reset?.setup ?? { install: true, direnv: true, hooks: false },
     reset === undefined ? "Remove" : "Reset",
     reset?.base,
+    callerRegeneratedOutputs(worktreePath, options.regenerates),
   )
 
   // Get branch name before removing
@@ -2444,6 +2447,10 @@ async function removeWorktreeWithAdmission(
 }
 
 export interface ResetOptions {
+  /** Run every admission check and return before creating, preserving or removing. */
+  admitOnly?: boolean
+  /** Worktree-relative outputs the composing caller's setup recreates. */
+  regenerates?: readonly string[]
   /** Exact absolute source/recreate path supplied by a composing caller; never a move destination. */
   destination?: string
   /**
@@ -2477,6 +2484,27 @@ export interface ResetOptions {
   hooks?: boolean
 }
 
+/** Validate caller-owned outputs lexically; an external symlink target is never followed. */
+function callerRegeneratedOutputs(worktreePath: string, paths: readonly string[] = []): string[] {
+  if (!Array.isArray(paths))
+    throw new Error(`Invalid regenerated paths for ${worktreePath}: expected an array; no worktree was changed`)
+  return paths.map((path) => {
+    if (typeof path !== "string" || path.length === 0) {
+      throw new Error(
+        `Invalid regenerated path ${JSON.stringify(path)} for ${worktreePath}: expected a nonempty relative path; no worktree was changed`,
+      )
+    }
+    const output = resolve(worktreePath, path)
+    const inside = relative(worktreePath, output)
+    if (isAbsolute(path) || inside === "" || inside === ".." || inside.startsWith(`..${sep}`)) {
+      throw new Error(
+        `Invalid regenerated path ${JSON.stringify(path)} for ${worktreePath}: must stay strictly inside the worktree; no worktree was changed`,
+      )
+    }
+    return output
+  })
+}
+
 /** Outputs derived from the checkout's existing setup contract, never its ignore patterns. */
 function generatedWorktreeOutputs(
   worktreePath: string,
@@ -2507,6 +2535,7 @@ async function assertIgnoredContent(
   options: WorktreeSetupOptions,
   verb: "Remove" | "Reset",
   base?: string,
+  regenerates: readonly string[] = [],
 ): Promise<void> {
   const submoduleStatus = await $`git -C ${worktreePath} submodule status --recursive`.quiet()
   const missing = parseUninitializedSubmodules(submoduleStatus.stdout.toString())
@@ -2559,6 +2588,8 @@ async function assertIgnoredContent(
     }
     if (sameSetup.exitCode !== 0) generated.length = 0
   }
+  // The composing caller proves these independently of the vendor's setup/base.
+  generated.push(...regenerates)
   const blocked = ignored.flatMap(({ repository, paths }) => {
     const payload = paths.filter((path) => {
       const absolute = resolve(repository, path)
@@ -2588,6 +2619,8 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     direnv = true,
     hooks = true,
     destination,
+    admitOnly = false,
+    regenerates,
   } = options
 
   const gitRoot = findGitRoot(process.cwd())
@@ -2602,6 +2635,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     destination === undefined
       ? resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
       : resolve(destination)
+  const regenerated = callerRegeneratedOutputs(worktreePath, regenerates)
 
   // Refuse to operate from inside the worktree being reset — the recreate
   // would leave the shell with a missing cwd.
@@ -2637,6 +2671,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // If the directory doesn't exist, just create it fresh — `reset` is
   // idempotent against a missing slot.
   if (!existsSync(worktreePath)) {
+    if (admitOnly) return
     info(`Worktree ${name} does not exist — creating fresh`)
     await createWorktree(name, undefined, { install, direnv, hooks, destination })
     return
@@ -2658,7 +2693,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     const tip = await $`git -C ${gitRoot} rev-parse --verify ${ref}^{commit}`.quiet()
     base = tip.stdout.toString().trim()
   }
-  await assertIgnoredContent(worktreePath, { install, direnv, hooks }, "Reset", base)
+  await assertIgnoredContent(worktreePath, { install, direnv, hooks }, "Reset", base, regenerated)
 
   // Drift check (skipped under --force).
   if (!force) {
@@ -2678,6 +2713,8 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
       )
     }
   }
+
+  if (admitOnly) return
 
   // Preservation is UNIFIED into removeWorktree's preserve-first choke point
   // below (dirty working tree + submodule dirt + ahead commits, all captured to
@@ -2701,6 +2738,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
       force: true,
       deleteBranch: force,
       preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
+      regenerates,
     },
     { setup: { install, direnv, hooks }, base },
   )
@@ -2987,10 +3025,13 @@ ${BOLD}CREATE OPTIONS${RESET}
                     in main; an ahead slot ref is refused before any reset)
 
 ${BOLD}REMOVE OPTIONS${RESET}
+  --regenerates <json>  One JSON array of relative outputs recreated by the caller
   --delete-branch   Also delete the branch
   -f, --force       Remove despite uncommitted changes — preserves them to wip/… first
 
 ${BOLD}RESET OPTIONS${RESET}
+  --admit                Check admission only: exit 0 admitted, 2 refused; no mutation
+  --regenerates <json>    One JSON array of relative outputs recreated by the caller
   -f, --force            Recreate despite dirt/ahead — PRESERVES to wip/… first (never discards)
   --save-ahead-as <slug> Name the preserve ref wip/<slug> instead of wip/<slot>-preserve-<stamp>
   --retarget-origin      Force-push origin/<name> back to origin/main before recreate
@@ -3068,15 +3109,29 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   },
   remove: {
     maxPositionals: 1,
-    flags: { "--delete-branch": {}, "--force": {}, "-f": {}, "--preserve-label": { value: true } },
+    flags: {
+      "--delete-branch": {},
+      "--force": {},
+      "-f": {},
+      "--preserve-label": { value: true },
+      "--regenerates": { value: true },
+    },
   },
   rm: {
     maxPositionals: 1,
-    flags: { "--delete-branch": {}, "--force": {}, "-f": {}, "--preserve-label": { value: true } },
+    flags: {
+      "--delete-branch": {},
+      "--force": {},
+      "-f": {},
+      "--preserve-label": { value: true },
+      "--regenerates": { value: true },
+    },
   },
   reset: {
     maxPositionals: 1,
     flags: {
+      "--admit": {},
+      "--regenerates": { value: true },
       "--force": {},
       "-f": {},
       "--save-ahead-as": { value: true },
@@ -3152,6 +3207,9 @@ export function planCliInvocation(argv: string[]): CliPlan {
       const flagSpec = spec.flags[arg]
       if (!flagSpec) return { action: "usage-error", message: `Unknown flag for ${command}: ${arg}` }
       if (flagSpec.value) {
+        if (arg === "--regenerates" && values.has(arg)) {
+          return { action: "usage-error", message: "--regenerates must be given once as one JSON array" }
+        }
         const value = argv[i + 1]
         if (value === undefined || value.startsWith("-")) {
           return { action: "usage-error", message: `${arg} requires a value` }
@@ -3169,6 +3227,23 @@ export function planCliInvocation(argv: string[]): CliPlan {
     return {
       action: "usage-error",
       message: `Too many arguments for ${command}: ${positionals.slice(spec.maxPositionals).join(" ")}`,
+    }
+  }
+
+  let regenerates: string[] | undefined
+  const declaration = values.get("--regenerates")
+  if (declaration !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(declaration)
+      if (!Array.isArray(parsed) || !parsed.every((path) => typeof path === "string")) {
+        return { action: "usage-error", message: "--regenerates requires a JSON array of relative paths" }
+      }
+      regenerates = parsed
+    } catch (cause) {
+      return {
+        action: "usage-error",
+        message: `--regenerates is malformed JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }
     }
   }
 
@@ -3201,6 +3276,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         name,
         options: {
           deleteBranch: flags.has("--delete-branch"),
+          ...(regenerates === undefined ? {} : { regenerates }),
           force: flags.has("--force") || flags.has("-f"),
           // Optional ref-naming label; undefined → the default
           // `wip/<slot>-preserve-<UTCstamp>` name (mirrors reset's --save-ahead-as).
@@ -3219,6 +3295,8 @@ export function planCliInvocation(argv: string[]): CliPlan {
         options: {
           force: flags.has("--force") || flags.has("-f"),
           saveAheadAs: values.get("--save-ahead-as"),
+          ...(flags.has("--admit") ? { admitOnly: true } : {}),
+          ...(regenerates === undefined ? {} : { regenerates }),
           ...(values.has("--destination") ? { destination: values.get("--destination") } : {}),
           retargetOrigin: flags.has("--retarget-origin"),
           install: !flags.has("--no-install"),
@@ -3286,7 +3364,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "usage-error":
       error(plan.message)
       console.log(DIM + "Run `bun worktree --help` for usage." + RESET)
-      process.exit(1)
+      process.exit(argv[0] === "reset" && argv.includes("--admit") ? 2 : 1)
       break
     case "path": {
       const gitRoot = findGitRoot(process.cwd())
@@ -3308,7 +3386,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         await resetWorktree(plan.name, plan.options)
       } catch (e) {
         error(e instanceof Error ? e.message : String(e))
-        process.exit(1)
+        process.exit(plan.options.admitOnly ? 2 : 1)
       }
       return
     case "list":
