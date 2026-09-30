@@ -136,6 +136,26 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         expect(await Bun.file(join(destination, "node_modules/local-fixture/package.json")).json()).toMatchObject({
           name: "local-fixture",
         })
+        if (setup === "workspace-only") {
+          // The cached origin/main still declares generation, while the actual
+          // next base no longer does. Admission must use the recreated base.
+          const publisher = join(sandbox, "publisher")
+          await $`git clone -q ${join(sandbox, "origin.git")} ${publisher}`.quiet()
+          await $`git -C ${publisher} config user.email t@t`.quiet()
+          await $`git -C ${publisher} config user.name t`.quiet()
+          writeFileSync(join(publisher, "package.json"), JSON.stringify({ name: "fixture", workspaces: [] }))
+          await commitAll(publisher, "stop generating workspace output")
+          await $`git -C ${publisher} push -q origin main`.quiet()
+          writeFileSync(oldOutput, "keep until regeneration is proven\n")
+          const refsBefore = await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+          await expect(
+            resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false }),
+          ).rejects.toThrow("ignored")
+          expect(readFileSync(oldOutput, "utf8")).toBe("keep until regeneration is proven\n")
+          expect(await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(
+            refsBefore,
+          )
+        }
       } finally {
         process.chdir(origCwd)
       }

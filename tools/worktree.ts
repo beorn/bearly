@@ -52,6 +52,7 @@ import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve } from "path"
 import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
+import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
 import { censusProcessCwds, type ProcessCwdCensus } from "removely"
 
@@ -1759,8 +1760,30 @@ export function resolveBranchArg(input: {
  * which skips the fetch and uses that ref verbatim. Either way the chosen ref
  * must resolve to a commit — fail loud, never fall back to a stale local ref.
  */
-async function resolveCreateBase(gitRoot: string, explicitBase: string | undefined): Promise<string> {
+async function resolveCreateBase(
+  gitRoot: string,
+  explicitBase: string | undefined,
+  updateRefs = true,
+): Promise<string> {
   const preparedBase = explicitBase ?? process.env[PREPARED_BASE_SHA_ENV]
+  if (preparedBase === undefined && !updateRefs) {
+    // Admission must observe the fresh base without changing refs on refusal.
+    const remote = await $`git -C ${gitRoot} ls-remote --exit-code origin refs/heads/main`.nothrow().quiet()
+    if (remote.exitCode !== 0) {
+      throw new Error(
+        `Reset cannot read origin refs/heads/main from ${gitRoot}: ${remote.stderr.toString()}; no worktree was changed`,
+      )
+    }
+    const advertised = /^([0-9a-f]{40}(?:[0-9a-f]{24})?)\trefs\/heads\/main\r?\n?$/.exec(remote.stdout.toString())
+    const commit = advertised?.[1]
+    if (commit === undefined) {
+      throw new Error(
+        `Reset cannot identify origin refs/heads/main from ${gitRoot}: ${JSON.stringify(remote.stdout.toString())}; no worktree was changed`,
+      )
+    }
+    await ensureCommitObject({ repository: gitRoot, remote: "origin", commit, anchor: false })
+    return commit
+  }
   if (preparedBase === undefined) {
     info("Fetching origin main (fresh base for the new branch)...")
     const fetched = await safeExec($`cd ${gitRoot} && git fetch --no-recurse-submodules origin main 2>&1`)
@@ -1779,7 +1802,7 @@ async function resolveCreateBase(gitRoot: string, explicitBase: string | undefin
     console.log(CYAN + "  Check the remote, or pass an explicit base: bun worktree create <name> --base <ref>" + RESET)
     process.exit(1)
   }
-  return base
+  return updateRefs ? base : resolved.stdout.trim()
 }
 
 export async function createWorktree(name: string, branch?: string, options: CreateOptions = {}): Promise<void> {
@@ -2438,7 +2461,11 @@ export interface ResetOptions {
 }
 
 /** Refuse ignored payload whose regeneration the selected setup cannot prove. */
-async function assertResetIgnoredContent(worktreePath: string, options: WorktreeSetupOptions): Promise<void> {
+async function assertResetIgnoredContent(
+  worktreePath: string,
+  options: WorktreeSetupOptions,
+  base: string,
+): Promise<void> {
   const submoduleStatus = await $`git -C ${worktreePath} submodule status --recursive`.quiet()
   const missing = parseUninitializedSubmodules(submoduleStatus.stdout.toString())
   if (missing.length > 0) {
@@ -2489,7 +2516,7 @@ async function assertResetIgnoredContent(worktreePath: string, options: Worktree
       ".envrc",
       ...packages.map((pkg) => relative(worktreePath, pkg)),
     ]
-    const sameSetup = await $`git -C ${worktreePath} diff --quiet origin/main -- ${inputs}`.nothrow().quiet()
+    const sameSetup = await $`git -C ${worktreePath} diff --quiet ${base} -- ${inputs}`.nothrow().quiet()
     if (sameSetup.exitCode > 1) {
       throw new Error(
         `Reset cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
@@ -2580,7 +2607,8 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     return
   }
 
-  await assertResetIgnoredContent(worktreePath, { install, direnv, hooks })
+  const base = await resolveCreateBase(gitRoot, undefined, false)
+  await assertResetIgnoredContent(worktreePath, { install, direnv, hooks }, base)
 
   // Drift check (skipped under --force).
   if (!force) {
@@ -2591,7 +2619,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
           `Use --force to preserve them to wip/<slot>-preserve-* and recreate, or commit/save first.`,
       )
     }
-    const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
+    const aheadResult = await safeExec($`cd ${worktreePath} && git rev-list --count ${base}..HEAD 2>/dev/null`)
     const ahead = parseInt(aheadResult.stdout.trim(), 10) || 0
     if (ahead > 0) {
       throw new Error(
@@ -2637,7 +2665,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     if (remoteExists.exitCode === 0) {
       info(`Retargeting origin/${branchName} to origin/main...`)
       const pushResult = await safeExec(
-        $`cd ${gitRoot} && git push --force-with-lease=refs/heads/${branchName} origin refs/remotes/origin/main:refs/heads/${branchName}`,
+        $`cd ${gitRoot} && git push --force-with-lease=refs/heads/${branchName} origin ${base}:refs/heads/${branchName}`,
       )
       if (pushResult.exitCode !== 0) {
         throw new Error(
@@ -2651,7 +2679,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   // Recreate. allowDirty: true because main-repo state is the caller's
   // problem, not the reset's — reset is about restoring the slot, not
   // cleaning the workspace.
-  await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true, destination })
+  await createWorktree(name, undefined, { install, direnv, hooks, allowDirty: true, destination, base })
 
   success(`Worktree ${name} reset`)
 }
