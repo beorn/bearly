@@ -24,7 +24,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
 import { $ } from "bun"
-import { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs"
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "fs"
 import { join, dirname } from "path"
 import { tmpdir } from "os"
 
@@ -93,6 +93,86 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
+   * @level l2 @consumer #26139 reset setup @testonly none */
+  test("reset admits ignored dependency output only when its setup reinstalls it", async () => {
+    const mainRepo = await buildMain()
+    writeFileSync(join(mainRepo, ".gitignore"), "node_modules/\n")
+    writeFileSync(join(mainRepo, "package.json"), JSON.stringify({ name: "fixture", workspaces: ["packages/*"] }))
+    mkdirSync(join(mainRepo, "packages/local"), { recursive: true })
+    writeFileSync(
+      join(mainRepo, "packages/local/package.json"),
+      JSON.stringify({ name: "local-fixture", version: "1.0.0" }),
+    )
+    await $`cd ${mainRepo} && bun install`.quiet()
+    await commitAll(mainRepo, "dependency setup")
+    await $`cd ${mainRepo} && git push -q origin main`.quiet()
+    const destination = join(sandbox, "wt-@dev5")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { destination, install: true, direnv: false, hooks: false })
+      const oldOutput = join(destination, "node_modules/previous.txt")
+      writeFileSync(oldOutput, "old generated output\n")
+      await expect(
+        resetWorktree("wt5", { destination, force: true, install: false, direnv: false, hooks: false }),
+      ).rejects.toThrow("ignored")
+      expect(readFileSync(oldOutput, "utf8")).toBe("old generated output\n")
+      await resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false })
+      expect(existsSync(oldOutput)).toBe(false)
+      expect(await Bun.file(join(destination, "node_modules/local-fixture/package.json")).json()).toMatchObject({
+        name: "local-fixture",
+      })
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /** @failure force reset silently drops ignored root or submodule payload
+   * @level l2 @consumer #26139 relocated reset @testonly none */
+  test.each(["root", "submodule"] as const)(
+    "reset refuses ignored %s payload with repository and path, preserving bytes and refs",
+    async (location) => {
+      const mainRepo = await buildMain()
+      let source = mainRepo
+      if (location === "submodule") {
+        source = join(sandbox, "sub-source")
+        await initRepo(source)
+        writeFileSync(join(source, "file.txt"), "submodule\n")
+      }
+      const payload = "private notes\n.env"
+      writeFileSync(join(source, ".gitignore"), "*.env\n")
+      await commitAll(source, "ignore private files")
+      if (location === "submodule") {
+        await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add -q ${source} vendor/sub`.quiet()
+        await commitAll(mainRepo, "add submodule")
+      }
+      await $`cd ${mainRepo} && git push -q origin main`.quiet()
+      const destination = join(sandbox, "wt-@dev5")
+      const origCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
+        await createWorktree("wt5", undefined, { destination, install: false, direnv: false, hooks: false })
+        const repository = location === "root" ? destination : join(destination, "vendor/sub")
+        writeFileSync(join(repository, payload), "precious ignored bytes\n")
+        const refs = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+        const subRefs = await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+        const attempt = resetWorktree("wt5", { destination, force: true, install: false, direnv: false, hooks: false })
+        await expect(attempt).rejects.toThrow("ignored")
+        await expect(attempt).rejects.toThrow(repository)
+        await expect(attempt).rejects.toThrow(JSON.stringify(payload))
+        expect(readFileSync(join(repository, payload), "utf8")).toBe("precious ignored bytes\n")
+        expect(await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(refs)
+        expect(await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(
+          subRefs,
+        )
+      } finally {
+        process.chdir(origCwd)
+      }
+    },
+    60_000,
+  )
+
   test("reset --force PRESERVES uncommitted work to wip/<slot>-preserve-* (does not discard)", async () => {
     const mainRepo = await buildMain()
     const slot = "wt5"
