@@ -10,7 +10,7 @@
         "@ai-sdk/openai": "4.0.83",
         "@ai-sdk/openai-compatible": "3.0.62",
         "@ai-sdk/perplexity": "5.0.5",
-        "@modelcontextprotocol/sdk": "^1.31.0",
+        "@modelcontextprotocol/sdk": "1.31.0",
         "@silvery/commander": "^0.19.2",
         "@termless/core": "^0.6.0",
         "@termless/xtermjs": "^0.3.1",
