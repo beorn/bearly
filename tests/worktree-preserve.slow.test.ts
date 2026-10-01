@@ -24,7 +24,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
 import { $ } from "bun"
-import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "fs"
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync } from "fs"
 import { join, dirname } from "path"
 import { tmpdir } from "os"
 import { spawnSync } from "node:child_process"
@@ -118,6 +118,50 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure a later transfer failure hides its cause or the recovery refs already saved, or removes the source
+   * @level l2 @consumer #27037 partial preservation failure @testonly none */
+  test("a rejected parent transfer names the failure and retained leaf recovery", async () => {
+    const mainRepo = await buildSubmoduleMain(true)
+    const originalCwd = process.cwd()
+    const worktreePath = join(sandbox, "main-wt5")
+    const primaryParent = join(mainRepo, "vendor/sub")
+    const primaryLeaf = join(primaryParent, "apps/maddoc")
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
+      const sourceLeaf = join(worktreePath, "vendor/sub/apps/maddoc")
+      writeFileSync(join(sourceLeaf, "file.txt"), "leaf saved before parent failure\n")
+      const parentCommon = (await $`git -C ${primaryParent} rev-parse --path-format=absolute --git-common-dir`.text()).trim()
+      const hook = join(parentCommon, "hooks/reference-transaction")
+      mkdirSync(dirname(hook), { recursive: true })
+      writeFileSync(hook, '#!/usr/bin/env bun\nif (process.argv[2] === "prepared" && (await Bun.stdin.text()).includes("refs/heads/wip/")) process.exit(1)\n')
+      chmodSync(hook, 0o755)
+      const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+      let failure: unknown
+      try {
+        await removeWorktree("wt5", { force: true })
+      } catch (cause) {
+        failure = cause
+      }
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toContain("git fetch")
+      expect((failure as Error).message).toContain(primaryParent)
+      const refs = await preserveRefs(primaryLeaf, "wt5")
+      expect(refs).toHaveLength(1)
+      expect(await $`git -C ${primaryLeaf} show ${refs[0]! + ":file.txt"}`.text()).toBe("leaf saved before parent failure\n")
+      expect((failure as Error).message).toContain(primaryLeaf + ":" + refs[0]!)
+      expect(readFileSync(join(sourceLeaf, "file.txt"), "utf8")).toBe("leaf saved before parent failure\n")
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      const rootCommon = (await $`git -C ${mainRepo} rev-parse --path-format=absolute --git-common-dir`.text()).trim()
+      const log = readFileSync(join(rootCommon, "worktree-preserve.log"), "utf8")
+      expect(log).toContain("status=failed")
+      expect(log).toContain(primaryLeaf + ":" + refs[0]!)
+      expect(log).toContain("git fetch")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   /** @failure remove/reset loses clean child commits or nested dirty/ahead work from the durable child store
    * @level l2 @consumer #27037 worktree cleanup recovery @testonly none */
   test.each([

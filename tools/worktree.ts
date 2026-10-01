@@ -2359,15 +2359,16 @@ export async function preserveSlotState(
     }
     if (sha === undefined) throw new Error("preserve: child recovery did not produce its root recovery ref")
   } catch (cause) {
+    const failure = cause instanceof Error ? cause.message : String(cause)
     const refs = written.map((entry) => `${entry.repo}:${refFull}@${entry.sha}`).join(", ")
     if (written.length > 0) {
       warn(`preserve: incomplete; source and registration retained. Recovery refs already written: ${refs}`)
       await appendPreserveLog(
         gitRoot,
-        `${new Date().toISOString()} slot=${recoverySlot} status=failed refs=${refs} path=${worktreePath}`,
+        `${new Date().toISOString()} slot=${recoverySlot} status=failed refs=${refs} path=${worktreePath} failure=${failure}`,
       )
     }
-    throw new Error(`preserve failed before removal; recovery refs already written: ${refs || "none"}`, { cause })
+    throw new Error(`${worktreePath}: preserve failed before removal: ${failure}; recovery refs already written: ${refs || "none"}`, { cause })
   }
 
   // Loud (§ Fail Loud) — print the recovery ref to the operator.
