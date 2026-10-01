@@ -389,8 +389,9 @@ async function linuxPathProcessHolderCensus<S extends PathHolderScope>(
       return holders
     }),
   )
-  // One derivation from the head counters. Equivalent to scanning the per-source table: a source records a reason
-  // exactly when some inspected process had it, which is exactly when that reason's head counter counted the process.
+  // One derivation from the head counters. A head counter is zero exactly when no source records that reason, so this
+  // agrees with scanning the per-source table on zero against non-zero; the counts differ, since the head counts
+  // processes and the table counts each source.
   const complete =
     processCoverage.unavailable.denied === 0 &&
     processCoverage.unavailable.unanswered === 0 &&

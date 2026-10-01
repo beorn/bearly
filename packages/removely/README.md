@@ -36,7 +36,12 @@ Denied, missing or ambiguous observations make Linux `coverage.complete` false
 and name the affected process, source and resource. A Linux census answers by a
 deadline (`deadlineMs`, default `PATH_HOLDER_CENSUS_DEADLINE_MS` = 2000 ms of
 wall clock from its start, shared by every `/proc` read): a read still pending
-then is `unanswered`, which is incomplete too. `coverage.processes` counts the
+then is `unanswered`, which is incomplete too. A read given up on keeps running
+in the runtime and may keep the process alive until the kernel answers it, so a
+one-shot caller exits explicitly once it has the census. argv is compared as
+written, never resolved: an element that reaches the target through a symlink
+is not seen, and resolving it at census time would name whatever the link
+points at then. `coverage.processes` counts the
 processes with each reason (`sourceDenied`, `sourceUnanswered`, `sourceMissing`,
 `sourceAmbiguous`) ahead of the per-source table. An individual missing source
 does not prove its process exited. `holders: []` alone never establishes absence.
