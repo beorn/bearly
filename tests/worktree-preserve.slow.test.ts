@@ -58,17 +58,26 @@ async function buildMain(): Promise<string> {
   return mainRepo
 }
 
-async function buildSubmoduleMain(): Promise<string> {
+async function buildSubmoduleMain(nested = false): Promise<string> {
   const mainRepo = join(sandbox, "main")
   const subRepo = join(sandbox, "sub")
   await initRepo(subRepo)
   writeFileSync(join(subRepo, "file.txt"), "original\n")
   await commitAll(subRepo, "sub-init")
+  if (nested) {
+    const leafRepo = join(sandbox, "leaf")
+    await initRepo(leafRepo)
+    writeFileSync(join(leafRepo, "file.txt"), "original\n")
+    await commitAll(leafRepo, "leaf-init")
+    await $`cd ${subRepo} && git -c protocol.file.allow=always submodule add ${leafRepo} apps/maddoc`.quiet()
+    await commitAll(subRepo, "add-leaf")
+  }
   await initRepo(mainRepo)
   writeFileSync(join(mainRepo, "README.md"), "main\n")
   await commitAll(mainRepo, "main-init")
   await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
   await commitAll(mainRepo, "add-sub")
+  if (nested) await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule update --init --recursive`.quiet()
   return mainRepo
 }
 
@@ -109,6 +118,80 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure remove/reset loses clean child commits or nested dirty/ahead work from the durable child store
+   * @level l2 @consumer #27037 worktree cleanup recovery @testonly none */
+  test.each([
+    ["remove", "clean-child-ahead"],
+    ["reset", "clean-child-ahead"],
+    ["remove", "nested-dirty"],
+    ["reset", "nested-dirty"],
+    ["remove", "nested-ahead"],
+    ["reset", "nested-ahead"],
+  ] as const)(
+    "%s preserves %s in the primary submodule store",
+    async (operation, shape) => {
+      const mainRepo = await buildSubmoduleMain(true)
+      const origin = join(sandbox, "origin.git")
+      await $`git init --bare -q -b main ${origin}`.quiet()
+      await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+      await $`git -C ${mainRepo} push -q origin main`.quiet()
+      const originalCwd = process.cwd()
+      const slot = "wt5"
+      const worktreePath = join(sandbox, "main-wt5")
+      const relativeTarget = shape === "clean-child-ahead" ? "vendor/sub" : "vendor/sub/apps/maddoc"
+      const source = join(worktreePath, relativeTarget)
+      const primary = join(mainRepo, relativeTarget)
+      const bytes = `${operation} ${shape} private work\n`
+      let privateTip: string | undefined
+      try {
+        process.chdir(mainRepo)
+        await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+        writeFileSync(join(source, "file.txt"), bytes)
+        if (shape !== "nested-dirty") {
+          await $`git -C ${source} config user.email t@t`.quiet()
+          await $`git -C ${source} config user.name t`.quiet()
+          await commitAll(source, "private-child-work")
+          privateTip = (await $`git -C ${source} rev-parse HEAD`.text()).trim()
+          expect((await $`git -C ${source} status --porcelain`.text()).trim()).toBe("")
+        }
+
+        if (operation === "remove") await removeWorktree(slot, { force: true, deleteBranch: true })
+        else await resetWorktree(slot, { force: true, install: false, direnv: false, hooks: false })
+
+        // A recreated path or root gitlink alone does not retain child objects.
+        const refs = await preserveRefs(primary, slot)
+        expect(refs).toHaveLength(1)
+        const ref = refs[0]!
+        expect(await $`git -C ${primary} show ${ref + ":file.txt"}`.text()).toBe(bytes)
+        if (privateTip !== undefined) {
+          expect((await $`git -C ${primary} cat-file -t ${privateTip}`.text()).trim()).toBe("commit")
+          await $`git -C ${primary} merge-base --is-ancestor ${privateTip} ${ref}`.quiet()
+        }
+        const rootRefs = await preserveRefs(mainRepo, slot)
+        expect(rootRefs).toHaveLength(1)
+        const childPrimary = join(mainRepo, "vendor/sub")
+        const childRefs = await preserveRefs(childPrimary, slot)
+        expect(childRefs).toHaveLength(1)
+        const childTip = (await $`git -C ${childPrimary} rev-parse ${childRefs[0]!}`.text()).trim()
+        expect((await $`git -C ${mainRepo} rev-parse ${rootRefs[0]! + ":vendor/sub"}`.text()).trim()).toBe(childTip)
+        if (shape !== "clean-child-ahead") {
+          const leafTip = (await $`git -C ${primary} rev-parse ${ref}`.text()).trim()
+          expect((await $`git -C ${childPrimary} rev-parse ${childRefs[0]! + ":apps/maddoc"}`.text()).trim()).toBe(
+            leafTip,
+          )
+        }
+        expect(
+          consoleLogSpy.mock.calls.some((args) =>
+            args.some((arg) => String(arg).includes(ref.replace("refs/heads/", ""))),
+          ),
+        ).toBe(true)
+      } finally {
+        process.chdir(originalCwd)
+      }
+    },
+    60_000,
+  )
+
   /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
    * @level l2 @consumer #26139 reset setup @testonly none */
   test.each(["lockfile", "workspace-only", "unnamed-workspace"] as const)(
