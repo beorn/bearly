@@ -2220,11 +2220,10 @@ export interface PreserveOptions {
   /** Override the UTC stamp (tests). */
   stamp?: string
   /**
-   * Preserve ahead-of-origin/main commits when the tree is otherwise clean.
-   * removeWorktree passes `deleteBranch` here: a surviving branch already holds
-   * the ahead work, so we only snapshot ahead-only state when the branch dies.
-   * Dirty state is ALWAYS preserved regardless (its snapshot parents at HEAD, so
-   * ahead commits ride along).
+   * Preserve ROOT ahead-of-origin/main commits when otherwise clean.
+   * removeWorktree passes `deleteBranch`: the surviving root branch holds that
+   * root history. Child HEADs lacking surviving primary-store reachability are
+   * preserved regardless of this option, as is dirty state (parented at HEAD).
    */
   includeAhead?: boolean
 }
@@ -2240,9 +2239,10 @@ async function preserveGit(repo: string, args: string[]): Promise<string> {
 
 /**
  * Preserve a live slot's uncommitted (working-tree + submodule) changes and/or
- * ahead-of-origin/main commits to a durable ref BEFORE a destructive step.
- * No-op (`preserved:false`) when the slot is clean and not ahead. Fails LOUD if
- * a dirty submodule cannot be transferred to a durable store — never silently.
+ * root ahead-of-origin/main commits and private child history BEFORE destruction.
+ * No-op (`preserved:false`) only after successful inventory/history reads show
+ * no work needing recovery. Read/transfer failures refuse source removal and
+ * name the cause plus any recovery refs already written.
  */
 export async function preserveSlotState(
   worktreePath: string,
