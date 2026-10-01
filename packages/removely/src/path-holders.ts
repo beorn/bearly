@@ -11,7 +11,7 @@
 import { execFile } from "node:child_process"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
 import { basename, resolve, sep } from "node:path"
-import { linuxBootTimeMs, procStatStartedAtMs } from "./pid-identity.ts"
+import { linuxBootTimeMs, procStatStartTicks, startTicksToMs } from "./pid-identity.ts"
 import { darwinProcessCwds, type ProcessCwdRow } from "./process-census.ts"
 
 /**
@@ -1045,18 +1045,17 @@ async function observeProcessIdentity(
     const comm = contents.slice(open + 1, close)
     // `pid (comm) state ppid …` — state is the first field after comm, so it
     // costs nothing beyond the read already made for identity; the start time
-    // is field 22 of the same line, parsed where pid-identity parses it.
+    // is field 22 of the same line, parsed once, by pid-identity.
     const rest = contents
       .slice(close + 1)
       .trim()
       .split(/\s+/u)
     const state = rest[0]
     const ppid = Number(rest[1])
-    // Field 22, starttime: the 20th field after comm, as the kernel wrote it.
-    const startTicks = Number(rest[19])
+    const startTicks = procStatStartTicks(contents)
     // Field 20, num_threads: the 18th field after comm.
     const threads = Number(rest[17])
-    const startedAtMs = procStatStartedAtMs(contents, bootedAtMs)
+    const startedAtMs = startTicksToMs(startTicks, bootedAtMs)
     return {
       comm,
       ...(Number.isSafeInteger(Number(rest[6])) && (Number(rest[6]) & 0x00200000) !== 0
@@ -1064,7 +1063,7 @@ async function observeProcessIdentity(
         : {}),
       ...(state === undefined || state === "" ? {} : { state }),
       ...(Number.isSafeInteger(ppid) ? { ppid } : {}),
-      ...(rest[19] !== undefined && Number.isSafeInteger(startTicks) ? { startTicks } : {}),
+      ...(startTicks === undefined ? {} : { startTicks }),
       ...(rest[17] !== undefined && Number.isSafeInteger(threads) ? { threads } : {}),
       ...(startedAtMs === undefined ? {} : { startedAt: new Date(startedAtMs).toISOString() }),
     }

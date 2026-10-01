@@ -1,9 +1,10 @@
 /**
  * Linux `/proc/[pid]/stat` boot-time and process-start-time parsing.
  *
- * The one parser of `/proc/[pid]/stat` field 22; `path-holders.ts`'s
- * path-holder census is the sole remaining caller, using it to attribute a
- * held path to the process that has held it since before the census began.
+ * The one parser of `/proc/[pid]/stat` field 22 in this package: the
+ * path-holder census reads each row's start through `procStatStartTicks`, both
+ * as the ticks it compares and, through `startTicksToMs`, as the wall-clock time
+ * it names.
  */
 
 import { readFileSync } from "node:fs"
@@ -34,16 +35,15 @@ export function linuxBootTimeMs(procRoot: string): number | undefined {
 }
 
 /**
- * Wall-clock ms at which the process behind this `/proc/[pid]/stat` line
- * started: field 22, in clock ticks since boot, against the boot time. The one
- * parser of that field; the path-holder census reads it through here too.
+ * Field 22 of a `/proc/[pid]/stat` line: the clock tick since boot at which the
+ * process started, as the kernel wrote it; undefined when the line has no such
+ * field.
  *
  * `comm` is field 2, is parenthesized, and may itself contain spaces AND
  * parentheses — so the split point is the LAST `)`, never the first, and never a
  * whitespace split of the whole line.
  */
-export function procStatStartedAtMs(stat: string, bootedAtMs: number | undefined): number | undefined {
-  if (bootedAtMs === undefined) return undefined
+export function procStatStartTicks(stat: string): number | undefined {
   const close = stat.lastIndexOf(")")
   if (close < 0) return undefined
   const fields = stat
@@ -51,6 +51,12 @@ export function procStatStartedAtMs(stat: string, bootedAtMs: number | undefined
     .trim()
     .split(/\s+/u)
   // fields[0] is `state`, which is field 3; field 22 is therefore index 19.
-  const ticks = Number(fields[19])
-  return Number.isFinite(ticks) && ticks >= 0 ? bootedAtMs + (ticks / LINUX_USER_HZ) * 1_000 : undefined
+  const field = fields[19]
+  const ticks = Number(field)
+  return field !== undefined && Number.isSafeInteger(ticks) && ticks >= 0 ? ticks : undefined
+}
+
+/** Wall-clock ms for a start tick against the boot time; undefined without either. */
+export function startTicksToMs(ticks: number | undefined, bootedAtMs: number | undefined): number | undefined {
+  return ticks === undefined || bootedAtMs === undefined ? undefined : bootedAtMs + (ticks / LINUX_USER_HZ) * 1_000
 }
