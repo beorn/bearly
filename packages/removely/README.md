@@ -48,8 +48,21 @@ does not prove its process exited. `holders: []` alone never establishes absence
 
 A complete census describes a non-atomic observation of its stated scope.
 It cannot exclude later producers, translate mount aliases or establish inode
-identity, and does not authorize a destructive operation. The synchronous
-`censusProcessCwds` API retains its separate, weaker cwd-only contract.
+identity, and does not authorize a destructive operation.
+
+The path census is one projection of `inspectProcessCensus`, which returns one
+row per admitted Linux process: its owner uid, the kernel's start ticks as read,
+and the sources asked for (`sources`, default all six). A row's argv comes back
+only with `includeArgv: true`, since a command line can carry a secret. A row is
+not a stable identity: a caller that signals a pid re-checks it first.
+`inspectProcessCwds()` is the cwd projection. It lists every readable same-uid
+cwd and names each process it could not read in `unreadable`, with its uid and
+argv; `clearedByIdentity(entry)` clears exactly `systemd --user`, `(sd-pam)` and
+`sshd-session: <user>@…`, and every other entry is for the caller to refuse on.
+`maps` is read after `cmdline` and never once `cmdline` has not answered, so one
+process stuck on its mmap lock pins one I/O-pool thread. The synchronous
+`censusProcessCwds` API retains its separate, weaker cwd-only contract until its
+callers move.
 
 The CLI uses the same removal guard:
 

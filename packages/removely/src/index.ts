@@ -13,6 +13,9 @@ export {
 } from "./process-census.ts"
 
 export {
+  clearedByIdentity,
+  inspectProcessCensus,
+  inspectProcessCwds,
   inspectPathHolderCensus,
   pathHolderRefusal,
   PATH_HOLDER_CENSUS_DEADLINE_MS,
@@ -27,6 +30,15 @@ export {
   type PathHolderSourceCoverage,
   type PathHolderObservationIssue,
   type UnreadableProcess,
+  type ProcessCensus,
+  type ProcessCensusCoverage,
+  type ProcessCensusOptions,
+  type ProcessCwdProjection,
+  type ProcessDescriptor,
+  type ProcessRow,
+  type ProcessRowSource,
+  type ProcessRowSources,
+  type SourceName as ProcessCensusSource,
 } from "./path-holders.ts"
 
 /**

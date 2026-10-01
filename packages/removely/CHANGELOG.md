@@ -18,6 +18,20 @@ Minor (0.4.0 at release): additive option, fields and export.
   incomplete.
 - An `anon_inode:` mapping in `maps` is readable evidence, as it already was for
   a descriptor link, rather than ambiguous.
+- New `inspectProcessCensus({ scope, deadlineMs?, sources?, includeArgv? })`: one
+  row per process, with the owner uid of `/proc/<pid>`, the kernel's `startTicks`
+  as read, and the sources asked for. `inspectPathHolderCensus` is now a projection
+  of it with the one matching rule, and `inspectProcessCwds()` is the cwd
+  projection; it names every denied process in `unreadable` rather than skipping
+  it. A row's argv is returned only with `includeArgv`. A row is no protection
+  against pid reuse: a caller that signals a pid re-checks it first.
+- `UnreadableProcess` gains `uid` and `argv`. A denied process's argv is read for
+  its identity whatever the caller asked, and `clearedByIdentity(entry)` clears
+  exactly `systemd --user`, `(sd-pam)` and `sshd-session: <user>@…` of the
+  current uid; every other unreadable entry is a refusal.
+- `maps` is read after `cmdline` and never once `cmdline` has not answered: both
+  wait on the target's mmap lock, so one stuck process pins one I/O-pool thread
+  instead of two, and its `maps` is named `unanswered` with its `argv`.
 
 ## 0.3.0
 

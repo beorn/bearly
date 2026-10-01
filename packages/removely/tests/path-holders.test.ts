@@ -19,8 +19,19 @@ import * as fsPromises from "node:fs/promises"
 import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { inspectPathHolderCensus, pathHolderRefusal, safeRemoveSync, type PathHolder } from "../src/index.ts"
-import { inspectPathHolderCensusInProc } from "../src/path-holders.ts"
+import {
+  clearedByIdentity,
+  inspectPathHolderCensus,
+  pathHolderRefusal,
+  safeRemoveSync,
+  type PathHolder,
+  type UnreadableProcess,
+} from "../src/index.ts"
+import {
+  inspectPathHolderCensusInProc,
+  inspectProcessCensusInProc,
+  inspectProcessCwdsInProc,
+} from "../src/path-holders.ts"
 
 // Root setup imports Removely before this suite; reload it so the I/O controls
 // below bind to the collector under test rather than its cached real adapters.
@@ -521,17 +532,25 @@ describe("inspectPathHolderCensus", () => {
           })
           expect(performance.now() - started).toBeLessThan(5_000)
           expect(census.holders).toEqual([{ pid: 4343, source: "cwd", target: probe.ownedPath }])
+          // maps waits on the same mmap lock as cmdline, so it is never issued once cmdline has not answered: one stuck
+          // process pins one I/O-pool thread, not two (hh 26990, @cto adce5a62 point 7).
           expect(census.coverage).toMatchObject({
             complete: false,
             processes: { sameUid: 2, sourceDenied: 0, sourceUnanswered: 1 },
-            sources: { argv: { readable: 1, unavailable: { exited: 0, denied: 0, unanswered: 1 } } },
+            sources: {
+              argv: { readable: 1, unavailable: { exited: 0, denied: 0, unanswered: 1 } },
+              maps: { readable: 1, unavailable: { unanswered: 1 } },
+            },
             unreadable: [
               {
                 pid: 4242,
                 comm: "bun",
                 denied: [],
-                unanswered: ["argv"],
-                issues: [{ source: "argv", reason: "unanswered" }],
+                unanswered: ["argv", "maps"],
+                issues: [
+                  { source: "argv", reason: "unanswered" },
+                  { source: "maps", reason: "unanswered" },
+                ],
               },
             ],
           })
@@ -920,5 +939,133 @@ describe("Node lsof adapter and scope boundary", () => {
     await expect(inspectPathHolderCensus("/")).rejects.toThrow("requires explicit scope")
     // @ts-expect-error Unknown scope cannot silently default to a supported one.
     await expect(inspectPathHolderCensus("/", { scope: "unknown" })).rejects.toThrow("requires explicit scope")
+  })
+})
+
+/**
+ * @failure Four readers walked /proc for holders, each with its own rules: a cwd census that skipped a denied process
+ *          silently, and a second walk that re-read argv the census had already read and dropped (hh 26990 slice 4).
+ */
+describe("the process census rows and their projections (hh 26990 slice 4)", () => {
+  // Field 22 (starttime) is the 20th field after comm.
+  const STAT = "4242 (bun) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 987654 0 0\n"
+
+  function processFixture(cmdline: string): { procRoot: string; processRoot: string; ownedPath: string } {
+    const fixture = mkdtempSync(join(tmpdir(), "removely-rows-"))
+    temporary.push(fixture)
+    const ownedPath = join(fixture, "owned")
+    const procRoot = join(fixture, "proc")
+    const processRoot = join(procRoot, "4242")
+    mkdirSync(ownedPath)
+    mkdirSync(join(processRoot, "fd"), { recursive: true })
+    symlinkSync(ownedPath, join(processRoot, "cwd"))
+    symlinkSync("/bin/sh", join(processRoot, "exe"))
+    symlinkSync("/", join(processRoot, "root"))
+    writeFileSync(join(processRoot, "maps"), "")
+    writeFileSync(join(processRoot, "stat"), STAT)
+    writeFileSync(join(processRoot, "cmdline"), cmdline)
+    return { procRoot, processRoot, ownedPath }
+  }
+
+  function denyCwd(processRoot: string): void {
+    const readlink = fsPromises.readlink
+    vi.spyOn(fsPromises, "readlink").mockImplementation((async (path: string) => {
+      if (path === join(processRoot, "cwd")) {
+        throw Object.assign(new Error(`EACCES: permission denied, readlink '${path}'`), { code: "EACCES" })
+      }
+      return readlink(path)
+    }) as typeof fsPromises.readlink)
+  }
+
+  test.runIf(process.platform === "linux")(
+    "a row carries the owner uid, the kernel's start ticks and only the sources asked for; argv only when asked",
+    async () => {
+      const probe = processFixture("bun\0--token=secret\0")
+      const census = await inspectProcessCensusInProc(probe.procRoot, { scope: "same-uid", sources: ["cwd", "argv"] })
+      expect(census.rows).toEqual([
+        {
+          pid: 4242,
+          uid: process.getuid?.(),
+          comm: "bun",
+          ppid: 1,
+          state: "S",
+          startTicks: 987654,
+          sources: {
+            cwd: { availability: "readable", value: probe.ownedPath, issues: [] },
+            argv: { availability: "readable", value: [], issues: [] },
+          },
+          issues: [],
+        },
+      ])
+      expect(Object.keys(census.coverage.sources)).toEqual(["cwd", "argv"])
+      const withArgv = await inspectProcessCensusInProc(probe.procRoot, {
+        scope: "same-uid",
+        sources: ["argv"],
+        includeArgv: true,
+      })
+      expect(withArgv.rows[0]?.sources.argv?.value).toEqual(["bun", "--token=secret"])
+    },
+  )
+
+  test.runIf(process.platform === "linux")(
+    "a denied row's argv is read for its identity although the caller asked for cwd only, and the cwd projection names it",
+    async () => {
+      const probe = processFixture("/usr/lib/systemd/systemd\0--user\0--deserialize=12\0")
+      denyCwd(probe.processRoot)
+      const cwds = await inspectProcessCwdsInProc(probe.procRoot)
+      expect(cwds).toMatchObject({ rows: [], complete: false, mechanism: "proc" })
+      expect(cwds.unreadable).toEqual([
+        expect.objectContaining({
+          pid: 4242,
+          uid: process.getuid?.(),
+          comm: "bun",
+          denied: ["cwd"],
+          argv: ["/usr/lib/systemd/systemd", "--user", "--deserialize=12"],
+        }),
+      ])
+      const entry = cwds.unreadable[0]
+      if (entry === undefined) throw new Error("no unreadable entry")
+      expect(clearedByIdentity(entry)).toBe("systemd --user")
+    },
+  )
+
+  test.runIf(process.platform === "linux")("the cwd projection lists every readable same-uid cwd", async () => {
+    const probe = processFixture("bun\0")
+    expect(await inspectProcessCwdsInProc(probe.procRoot)).toEqual({
+      rows: [{ pid: 4242, cwd: probe.ownedPath }],
+      complete: true,
+      unreadable: [],
+      mechanism: "proc",
+    })
+  })
+
+  test("clearedByIdentity clears only the issue's exact commands on a denied same-uid entry", () => {
+    const identity = { uid: 3001, user: "hh" }
+    const denied = (argv: string[], extra: Partial<UnreadableProcess> = {}): UnreadableProcess => ({
+      pid: 7,
+      uid: 3001,
+      denied: ["cwd"],
+      issues: [{ source: "cwd", resource: "/proc/7/cwd", reason: "denied", code: "EACCES" }],
+      argv,
+      ...extra,
+    })
+    expect(clearedByIdentity(denied(["/usr/lib/systemd/systemd", "--user"]), identity)).toBe("systemd --user")
+    expect(clearedByIdentity(denied(["(sd-pam)"]), identity)).toBe("(sd-pam)")
+    expect(clearedByIdentity(denied(["sshd-session: hh@notty"]), identity)).toBe("sshd-session: hh@notty")
+    // Every other entry is a refusal: another command, another user's session, another uid, an unanswered read.
+    expect(clearedByIdentity(denied(["/usr/lib/systemd/systemd"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied(["ssh-agent", "-s"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied(["sshd-session: root@notty"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied(["(sd-pam)"], { uid: 0 }), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied(["(sd-pam)"], { uid: undefined }), identity)).toBeUndefined()
+    expect(
+      clearedByIdentity(
+        denied(["(sd-pam)"], {
+          unanswered: ["maps"],
+          issues: [{ source: "maps", resource: "/proc/7/maps", reason: "unanswered" }],
+        }),
+        identity,
+      ),
+    ).toBeUndefined()
   })
 })
