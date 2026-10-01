@@ -1,117 +1,35 @@
 import { describe, expect, test } from "vitest"
-import { censusProcessCwds, type ProcessCwdCensusDeps } from "../src/index.ts"
+import { darwinProcessCwds } from "../src/process-census.ts"
 
-function linuxDeps(overrides: Partial<ProcessCwdCensusDeps> = {}): ProcessCwdCensusDeps {
-  return {
-    platform: "linux",
-    uid: 501,
-    maxProcesses: 8,
-    listLinuxPids: () => [10, 11, 12],
-    linuxPidUid: (pid) => (pid === 11 ? 777 : 501),
-    linuxPidCwd: (pid) => `/work/${pid}`,
-    runDarwinLsof: () => ({ status: 1, stdout: "", stderr: "unused" }),
-    ...overrides,
-  }
-}
-
-describe("censusProcessCwds", () => {
-  test("returns typed pid/cwd rows for only the current uid", () => {
-    expect(censusProcessCwds(linuxDeps())).toEqual({
-      available: true,
-      rows: [
-        { pid: 10, cwd: "/work/10" },
-        { pid: 12, cwd: "/work/12" },
-      ],
-      reason: "Linux /proc census",
+describe("darwinProcessCwds", () => {
+  test("parses a uid-scoped lsof census into pid/cwd rows", () => {
+    const uid = process.getuid?.()
+    const rows = darwinProcessCwds((asked) => {
+      expect(asked).toBe(uid)
+      return { status: 0, stdout: "p10\0\nn/work/10\0p12\0\nn/work/12\0", stderr: "" }
     })
+
+    expect(rows).toEqual([
+      { pid: 10, cwd: "/work/10" },
+      { pid: 12, cwd: "/work/12" },
+    ])
   })
 
-  test("skips a same-uid pid whose cwd is unreadable (EACCES) rather than aborting the census", () => {
-    const result = censusProcessCwds(
-      linuxDeps({
-        linuxPidCwd: (pid) => {
-          if (pid === 12) throw Object.assign(new Error("permission denied"), { code: "EACCES" })
-          return `/work/${pid}`
-        },
-      }),
-    )
-
-    expect(result).toEqual({
-      available: true,
-      rows: [{ pid: 10, cwd: "/work/10" }],
-      reason: "Linux /proc census",
-    })
-  })
-
-  test("skips a same-uid pid that vanished between the owner check and the cwd read (ENOENT)", () => {
-    const result = censusProcessCwds(
-      linuxDeps({
-        linuxPidCwd: (pid) => {
-          if (pid === 12) throw Object.assign(new Error("no such file or directory"), { code: "ENOENT" })
-          return `/work/${pid}`
-        },
-      }),
-    )
-
-    expect(result).toEqual({
-      available: true,
-      rows: [{ pid: 10, cwd: "/work/10" }],
-      reason: "Linux /proc census",
-    })
-  })
-
-  test("returns unavailable, never a partial row set, for an unrecognized cwd read failure", () => {
-    const result = censusProcessCwds(
-      linuxDeps({
-        linuxPidCwd: (pid) => {
-          if (pid === 12) throw Object.assign(new Error("input/output error"), { code: "EIO" })
-          return `/work/${pid}`
-        },
-      }),
-    )
-
-    expect(result).toEqual({
-      available: false,
-      reason: "cannot read /proc/12/cwd: EIO",
-    })
-    expect("rows" in result).toBe(false)
+  test.each([
+    ["an lsof failure", { status: 1, stdout: "", stderr: "lsof: no permission" }, "lsof: no permission"],
+    [
+      "an lsof that could not run",
+      { status: null, stdout: "", stderr: "", error: "lsof is unavailable" },
+      "lsof is unavailable",
+    ],
+    ["a non-absolute cwd", { status: 0, stdout: "p10\0\nnwork\0", stderr: "" }, "non-absolute cwd for pid 10"],
+    ["an empty answer", { status: 0, stdout: "", stderr: "" }, "no process cwds"],
+  ])("throws on %s, never a partial row set", (_case, result, message) => {
+    expect(() => darwinProcessCwds(() => result)).toThrow(message)
   })
 
   test("fails loud when the bounded observation population is exceeded", () => {
-    expect(
-      censusProcessCwds(
-        linuxDeps({
-          maxProcesses: 2,
-        }),
-      ),
-    ).toEqual({
-      available: false,
-      reason: "process count exceeds 2",
-    })
-  })
-
-  test("parses a uid-scoped macOS lsof census into the same rows", () => {
-    const result = censusProcessCwds(
-      linuxDeps({
-        platform: "darwin",
-        runDarwinLsof: (uid) => {
-          expect(uid).toBe(501)
-          return {
-            status: 0,
-            stdout: "p10\0\nn/work/10\0p12\0\nn/work/12\0",
-            stderr: "",
-          }
-        },
-      }),
-    )
-
-    expect(result).toEqual({
-      available: true,
-      rows: [
-        { pid: 10, cwd: "/work/10" },
-        { pid: 12, cwd: "/work/12" },
-      ],
-      reason: "macOS lsof census",
-    })
+    const stdout = "p10\0\nn/work/10\0p11\0\nn/work/11\0p12\0\nn/work/12\0"
+    expect(() => darwinProcessCwds(() => ({ status: 0, stdout, stderr: "" }), 2)).toThrow("process count exceeds 2")
   })
 })

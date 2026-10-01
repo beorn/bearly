@@ -61,9 +61,7 @@ argv; `clearedByIdentity(entry)` clears four identities of the current uid
 (`systemd` with `--user`, `(sd-pam)`, `sshd-session` and `ssh-agent`), and every
 other entry is for the caller to refuse on.
 `maps` is read after `cmdline` and never once `cmdline` has not answered, so one
-process stuck on its mmap lock pins one I/O-pool thread. The synchronous
-`censusProcessCwds` API retains its separate, weaker cwd-only contract until its
-callers move.
+process stuck on its mmap lock pins one I/O-pool thread.
 
 The CLI uses the same removal guard:
 

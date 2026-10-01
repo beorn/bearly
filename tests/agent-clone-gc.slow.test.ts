@@ -36,10 +36,11 @@ async function runGc(repo: string, root: string, args: string[] = [], activeCwds
     await gcAgentClones(
       { root, includeUniqueWork: args.includes("--include-unique-work") },
       {
-        censusProcessCwds: async () => ({
-          available: true,
+        inspectProcessCwds: async () => ({
           rows: activeCwds.map((cwd, index) => ({ pid: index + 1, cwd })),
-          reason: "deterministic test census",
+          complete: true,
+          unreadable: [],
+          mechanism: "proc",
         }),
       },
     )
@@ -310,7 +311,9 @@ describe("worktree gc deletion safety", () => {
       await gcAgentClones(
         { root },
         {
-          censusProcessCwds: async () => ({ available: false, reason: "test probe unavailable" }),
+          inspectProcessCwds: async () => {
+            throw new Error("test probe unavailable")
+          },
         },
       )
     } finally {
@@ -319,6 +322,46 @@ describe("worktree gc deletion safety", () => {
 
     expect(existsSync(clone)).toBe(true)
     expect(await registeredWorktrees(owner)).toContain(clone)
+  })
+
+  test.each([
+    ["preserves", "a process the census could not read", "bun", true],
+    ["removes", "only a process its identity clears", "ssh-agent", false],
+  ] as const)("%s a clean registered worktree when the cwd census misses %s", async (_verb, _what, comm, kept) => {
+    const { owner } = await initOwnerWithRemote()
+    const root = join(sandbox, "worktrees")
+    const clone = join(root, `agent-linked-unreadable-${comm}`)
+    mkdirSync(root, { recursive: true })
+    await $`git -C ${owner} worktree add -q --detach ${clone} refs/remotes/origin/main`.quiet()
+    const resource = "/proc/77/cwd"
+    const originalCwd = process.cwd()
+
+    try {
+      process.chdir(owner)
+      await gcAgentClones(
+        { root },
+        {
+          inspectProcessCwds: async () => ({
+            rows: [{ pid: 1, cwd: owner }],
+            complete: false,
+            unreadable: [
+              {
+                pid: 77,
+                uid: process.getuid?.() ?? -1,
+                comm,
+                denied: ["cwd"],
+                issues: [{ source: "cwd", resource, reason: "denied", code: "EACCES" }],
+              },
+            ],
+            mechanism: "proc",
+          }),
+        },
+      )
+    } finally {
+      process.chdir(originalCwd)
+    }
+
+    expect(existsSync(clone)).toBe(kept)
   })
 
   test("uses refs/remotes/origin/main when landed history is reachable only through a merge", async () => {

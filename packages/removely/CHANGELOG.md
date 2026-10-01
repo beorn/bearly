@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-Minor (0.4.0 at release): additive option, fields and export.
+Minor (0.4.0 at release), with one breaking removal.
+
+- **Breaking:** `censusProcessCwds` and its `ProcessCwdCensus`,
+  `ProcessCwdCensusDeps` and `ProcessCwdCensusCommandResult` types are no longer
+  exported. Their Linux census skipped every process whose cwd it could not read;
+  `inspectProcessCwds()` names each one in `unreadable` instead. The macOS lsof
+  reader stays as `inspectProcessCwds()`'s internal source on darwin, and now
+  throws on any lsof failure where it returned `available: false`.
+  `ProcessCwdRow` is still exported.
 
 - The Linux path-holder census answers by a deadline: `deadlineMs` (default
   `PATH_HOLDER_CENSUS_DEADLINE_MS`, 2000 ms from the census start) races every

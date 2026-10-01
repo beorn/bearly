@@ -4,13 +4,7 @@ import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, parse, resolve, sep } from "node:path"
 
-export {
-  censusProcessCwds,
-  type ProcessCwdCensus,
-  type ProcessCwdCensusCommandResult,
-  type ProcessCwdCensusDeps,
-  type ProcessCwdRow,
-} from "./process-census.ts"
+export { type ProcessCwdRow } from "./process-census.ts"
 
 export {
   clearedByIdentity,

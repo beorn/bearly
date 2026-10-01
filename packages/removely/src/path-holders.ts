@@ -12,7 +12,7 @@ import { execFile } from "node:child_process"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
 import { basename, resolve, sep } from "node:path"
 import { linuxBootTimeMs, procStatStartedAtMs } from "./pid-identity.ts"
-import { censusProcessCwds, type ProcessCwdRow } from "./process-census.ts"
+import { darwinProcessCwds, type ProcessCwdRow } from "./process-census.ts"
 
 /**
  * How long a Linux census waits for /proc before it answers with what it has. Measured normal: the whole census took
@@ -765,9 +765,7 @@ export async function inspectProcessCwds(
 ): Promise<ProcessCwdProjection> {
   if (process.platform === "linux") return inspectProcessCwdsInProc("/proc", options)
   if (process.platform === "darwin") {
-    const census = censusProcessCwds()
-    if (!census.available) throw new Error(`process cwd census unavailable on darwin: ${census.reason}`)
-    return { rows: census.rows, complete: true, unreadable: [], mechanism: "lsof" }
+    return { rows: darwinProcessCwds(), complete: true, unreadable: [], mechanism: "lsof" }
   }
   throw new Error(`process cwd census is unsupported on platform ${process.platform}`)
 }

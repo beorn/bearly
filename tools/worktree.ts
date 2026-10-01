@@ -53,7 +53,7 @@ import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
-import { censusProcessCwds, type ProcessCwdCensus } from "removely"
+import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
 const RESET = "\x1b[0m"
@@ -484,11 +484,28 @@ interface GcCandidateProof {
 }
 
 export interface GcDependencies {
-  censusProcessCwds?: () => ProcessCwdCensus | Promise<ProcessCwdCensus>
+  inspectProcessCwds?: () => Promise<ProcessCwdProjection>
 }
 
-function proveNoLiveCwd(candidatePath: string, census: ProcessCwdCensus): GcCandidateProof {
-  if (!census.available) return { removable: false, reason: `CWD census unavailable: ${census.reason}` }
+/** The cwd census as gc reads it: the projection, or why there is none. */
+type GcCwdCensus = ProcessCwdProjection | Readonly<{ unavailable: string }>
+
+async function readGcCwdCensus(provider: NonNullable<GcDependencies["inspectProcessCwds"]>): Promise<GcCwdCensus> {
+  try {
+    return await provider()
+  } catch (cause) {
+    return { unavailable: cause instanceof Error ? cause.message : String(cause) }
+  }
+}
+
+function proveNoLiveCwd(candidatePath: string, census: GcCwdCensus): GcCandidateProof {
+  if ("unavailable" in census) return { removable: false, reason: `CWD census unavailable: ${census.unavailable}` }
+  // A process the census could not read may have its cwd inside the candidate, unless its identity clears it.
+  const uncleared = census.unreadable.filter((entry) => clearedByIdentity(entry) === undefined)
+  if (uncleared.length > 0) {
+    const named = uncleared.map((entry) => `pid ${entry.pid} ${entry.comm ?? "(no comm)"}`).join(", ")
+    return { removable: false, reason: `CWD census could not read ${named}, and no identity clears them` }
+  }
 
   let candidate: string
   try {
@@ -594,9 +611,9 @@ async function proveGcCandidate(
 async function removeGcCandidate(
   gitRoot: string,
   candidatePath: string,
-  censusProvider: NonNullable<GcDependencies["censusProcessCwds"]>,
+  censusProvider: NonNullable<GcDependencies["inspectProcessCwds"]>,
 ): Promise<void> {
-  const liveProof = proveNoLiveCwd(candidatePath, await censusProvider())
+  const liveProof = proveNoLiveCwd(candidatePath, await readGcCwdCensus(censusProvider))
   if (!liveProof.removable) {
     throw new Error(`Refusing to remove ${candidatePath}: ${liveProof.reason}`)
   }
@@ -648,8 +665,9 @@ export async function gcAgentClones(
   const preserved: AgentCloneStatus[] = []
   const reasons = new Map<string, string>()
   const registrations = await registeredWorktreePaths(gitRoot)
-  const censusProvider = dependencies.censusProcessCwds ?? censusProcessCwds
-  const cwdCensus = await censusProvider()
+  const censusProvider = dependencies.inspectProcessCwds ?? (() => inspectProcessCwds())
+  // No census, no proof: every candidate is preserved, with the reason beside it.
+  const cwdCensus = await readGcCwdCensus(censusProvider)
 
   if (includeUnique) {
     warn("--include-unique-work is retained for compatibility but is now a safety no-op; unique work is preserved")
@@ -2375,10 +2393,11 @@ export function resolveWorktreeTargetPath(gitRoot: string, name: string, options
     return resolve(name)
   }
   const poolRoot = options.poolRoot ?? dirname(gitRoot)
-  const candidates = slotPathCandidates(gitRoot, name, poolRoot)
-  if (candidates.length === 1) return candidates[0]!
+  // slotPathCandidates always names the pool path first.
+  const [poolPath, ...others] = slotPathCandidates(gitRoot, name, poolRoot) as [string, ...string[]]
+  if (others.length === 0) return poolPath
   const exists = options.exists ?? existsSync
-  return candidates.find((candidate) => exists(candidate)) ?? candidates[0]!
+  return [poolPath, ...others].find((candidate) => exists(candidate)) ?? poolPath
 }
 
 export async function removeWorktree(name: string, options: RemoveOptions = {}): Promise<void> {
@@ -3276,7 +3295,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
   const flags = new Set<string>()
   const values = new Map<string, string>()
   for (let i = 1; i < argv.length; i++) {
-    const arg = argv[i]!
+    const arg = argv[i] ?? ""
     if (arg.startsWith("-")) {
       const flagSpec = spec.flags[arg]
       if (!flagSpec) return { action: "usage-error", message: `Unknown flag for ${command}: ${arg}` }
@@ -3480,7 +3499,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     case "gc":
       await gcAgentClones(plan.options)
-      return
+      // A census read the kernel never answers keeps the runtime alive; the result is written, so exit (hh 26990).
+      process.exit(process.exitCode ?? 0)
   }
 }
 
