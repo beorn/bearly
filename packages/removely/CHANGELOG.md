@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+Minor (0.4.0 at release): additive option, fields and export.
+
+- The Linux path-holder census answers by a deadline: `deadlineMs` (default
+  `PATH_HOLDER_CENSUS_DEADLINE_MS`, 2000 ms from the census start) races every
+  `/proc` read, including the identity read and the re-stat. A read still
+  pending then is `unanswered`: counted in `unavailable.unanswered`, named in
+  `UnreadableProcess.unanswered`, and the census is incomplete. Reading
+  `/proc/<pid>/cmdline` or `maps` can wait on the target's mmap lock for minutes.
+- New `argv` source: an argv element that is itself an absolute path under the
+  target holds it; script text or a `--flag=<path>` that mentions it does not.
+- `coverage.processes` carries one head counter per incompleteness reason
+  (`sourceDenied`, `sourceUnanswered`, `sourceMissing`, `sourceAmbiguous`),
+  serialized before `sources`, so a truncated census still names why it is
+  incomplete.
+- An `anon_inode:` mapping in `maps` is readable evidence, as it already was for
+  a descriptor link, rather than ambiguous.
+
 ## 0.3.0
 
 - Export `GIT_REPOSITORY_LOCAL_ENV_VARS`, git's own `git rev-parse --local-env-vars`

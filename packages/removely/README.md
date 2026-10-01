@@ -20,8 +20,9 @@ Removal requires an explicit containment root. Missing targets throw unless
 `allowMissing: true` is supplied. Containment is a cooperative guard; it does
 not prevent concurrent filesystem changes or constrain another process.
 
-The async holder census checks cwd, executable, process root, mappings and
-open descriptors. Its scope is required:
+The async holder census checks cwd, executable, process root, argv (an element
+that is itself a path under the target), mappings and open descriptors. Its
+scope is required:
 
 - `all-visible` admits every numeric process directory visible in the Linux
   proc view, including other users. A restricted proc mount may hide processes.
@@ -32,7 +33,12 @@ open descriptors. Its scope is required:
 The target and platform inspection resources must exist and be readable.
 Missing required resources and unexpected I/O errors throw with their location.
 Denied, missing or ambiguous observations make Linux `coverage.complete` false
-and name the affected process, source and resource. An individual missing source
+and name the affected process, source and resource. A Linux census answers by a
+deadline (`deadlineMs`, default `PATH_HOLDER_CENSUS_DEADLINE_MS` = 2000 ms of
+wall clock from its start, shared by every `/proc` read): a read still pending
+then is `unanswered`, which is incomplete too. `coverage.processes` counts the
+processes with each reason (`sourceDenied`, `sourceUnanswered`, `sourceMissing`,
+`sourceAmbiguous`) ahead of the per-source table. An individual missing source
 does not prove its process exited. `holders: []` alone never establishes absence.
 
 A complete census describes a non-atomic observation of its stated scope.

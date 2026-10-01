@@ -4,7 +4,17 @@
  * @consumer Removely inspectPathHolderCensus and Bucketeer guarded pruning
  */
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import * as fsPromises from "node:fs/promises"
 import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
@@ -57,6 +67,7 @@ describe("inspectPathHolderCensus", () => {
     symlinkSync("/bin/sh", join(processRoot, "exe"))
     symlinkSync(ownedPath, join(processRoot, "root"))
     writeFileSync(join(processRoot, "maps"), "")
+    writeFileSync(join(processRoot, "cmdline"), "")
 
     const kill = vi.spyOn(process, "kill")
     const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
@@ -78,6 +89,7 @@ describe("inspectPathHolderCensus", () => {
     symlinkSync("/bin/sh", join(processRoot, "exe"))
     symlinkSync("/", join(processRoot, "root"))
     writeFileSync(join(processRoot, "maps"), `7f000000-7f001000 r--p 00000000 00:00 0 ${mappedFile}\n`)
+    writeFileSync(join(processRoot, "cmdline"), "")
 
     const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.holders).toEqual([{ pid: 4242, source: "fd/maps", target: mappedFile }])
@@ -97,6 +109,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("/bin/sh", join(processRoot, "exe"))
       symlinkSync("/", join(processRoot, "root"))
       writeFileSync(join(processRoot, "maps"), "")
+      writeFileSync(join(processRoot, "cmdline"), "")
       // Readable stat decorates a live process denial; it does not grant a waiver.
       writeFileSync(join(processRoot, "stat"), "4242 (probe) S 1 0 0 0\n")
       chmodSync(join(processRoot, "maps"), 0o000)
@@ -108,11 +121,12 @@ describe("inspectPathHolderCensus", () => {
         platform: "linux",
         scope: "same-uid",
         complete: false,
-        processes: { enumerated: 1, sameUid: 1, otherUid: 0, unavailable: { exited: 0, denied: 0 } },
+        processes: { enumerated: 1, sameUid: 1, otherUid: 0, sourceDenied: 1, unavailable: { exited: 0, denied: 0 } },
         sources: {
           cwd: { readable: 1, unavailable: { exited: 0, denied: 0 } },
           exe: { readable: 1, unavailable: { exited: 0, denied: 0 } },
           root: { readable: 1, unavailable: { exited: 0, denied: 0 } },
+          argv: { readable: 1, unavailable: { exited: 0, denied: 0 } },
           maps: { readable: 0, unavailable: { exited: 0, denied: 1 } },
           fd: { readable: 1, unavailable: { exited: 0, denied: 0 } },
         },
@@ -121,6 +135,54 @@ describe("inspectPathHolderCensus", () => {
       expect(census.coverage).toMatchObject({
         unreadable: [{ pid: 4242, comm: "probe", ppid: 1, denied: ["maps"] }],
       })
+    },
+  )
+
+  test.runIf(process.platform === "linux")(
+    "an incomplete census names each gap in the serialized head, before the per-source tail",
+    async () => {
+      // hh 24638: a hab page truncated this census's JSON mid-`sources`, leaving a head that read complete:false
+      // beside all-zero process counters — the reason lived only in the tail the evidence bound cut off. Each
+      // reason has its own head counter, and every one precedes `sources`, so any bounded prefix still names why.
+      const fixture = mkdtempSync(join(tmpdir(), "yrd-path-coverage-head-"))
+      temporary.push(fixture)
+      const ownedPath = join(fixture, "owned")
+      const procRoot = join(fixture, "proc")
+      mkdirSync(ownedPath)
+      const processRoot = (pid: number) => join(procRoot, String(pid))
+      for (const pid of [4242, 4243, 4244, 4245]) {
+        mkdirSync(join(processRoot(pid), "fd"), { recursive: true })
+        symlinkSync("/", join(processRoot(pid), "cwd"))
+        symlinkSync("/bin/sh", join(processRoot(pid), "exe"))
+        symlinkSync("/", join(processRoot(pid), "root"))
+        writeFileSync(join(processRoot(pid), "maps"), "")
+        writeFileSync(join(processRoot(pid), "cmdline"), "")
+        writeFileSync(join(processRoot(pid), "stat"), `${pid} (probe) S 1 0 0 0\n`)
+      }
+      // 4242 denies maps; 4243's cmdline never answers (a FIFO with no writer, as in the deadline row below);
+      // 4244 lost maps while it stayed present; 4245's cwd is a relative target no path rule can read.
+      chmodSync(join(processRoot(4242), "maps"), 0o000)
+      const fifo = join(processRoot(4243), "cmdline")
+      unlinkSync(fifo)
+      expect(childProcess.spawnSync("mkfifo", [fifo]).status).toBe(0)
+      unlinkSync(join(processRoot(4244), "maps"))
+      unlinkSync(join(processRoot(4245), "cwd"))
+      symlinkSync("relative/target", join(processRoot(4245), "cwd"))
+
+      try {
+        const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid", deadlineMs: 300 })
+        expect(census.coverage).toMatchObject({
+          complete: false,
+          processes: { sourceDenied: 1, sourceUnanswered: 1, sourceMissing: 1, sourceAmbiguous: 1 },
+        })
+        const json = JSON.stringify(census.coverage)
+        for (const counter of ["sourceDenied", "sourceUnanswered", "sourceMissing", "sourceAmbiguous"]) {
+          expect(json).toContain(`"${counter}":1`)
+          expect(json.indexOf(`"${counter}"`)).toBeLessThan(json.indexOf('"sources"'))
+        }
+      } finally {
+        closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
+      }
     },
   )
 
@@ -160,6 +222,7 @@ describe("inspectPathHolderCensus", () => {
         symlinkSync("/bin/sh", join(processRoot, "exe"))
         symlinkSync("/", join(processRoot, "root"))
         writeFileSync(join(processRoot, "maps"), "")
+        writeFileSync(join(processRoot, "cmdline"), "")
         writeFileSync(join(processRoot, "stat"), `${pid} (probe) ${state} 1 0 0 0\n`)
         // Deny exactly one source, the way a released fd table denies /proc/N/fd.
         chmodSync(join(processRoot, "maps"), 0o000)
@@ -194,6 +257,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("/bin/sh", join(processRoot, "exe"))
       symlinkSync("/", join(processRoot, "root"))
       writeFileSync(join(processRoot, "maps"), "")
+      writeFileSync(join(processRoot, "cmdline"), "")
       writeFileSync(join(processRoot, "stat"), `${pid} (probe) Z 1 0 0 0\n`)
       chmodSync(join(processRoot, "maps"), 0o000)
     }
@@ -207,6 +271,10 @@ describe("inspectPathHolderCensus", () => {
     expect(census.coverage).not.toHaveProperty("unreadable")
   })
 
+  // Not ported from @yrd/process (hh 26990, @cto 2e553d4c): "a gap whose proc exited between the denied read and the
+  // identity read clears itself" and "keeps an exited source separate from denial without reducing coverage". Both
+  // encode yrd's laxer rule, where a missing stat or source read as exit. Here only an absent process directory
+  // proves exit; the two rows below assert that stricter contract instead.
   test.runIf(process.platform === "linux")("missing optional identity never clears a denied observation", async () => {
     // A missing stat file is optional metadata, not proof its process directory vanished.
     const fixture = mkdtempSync(join(tmpdir(), "yrd-path-coverage-exited-between-reads-"))
@@ -225,6 +293,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("/bin/sh", join(processRoot, "exe"))
       symlinkSync("/", join(processRoot, "root"))
       writeFileSync(join(processRoot, "maps"), "")
+      writeFileSync(join(processRoot, "cmdline"), "")
       if (stat !== undefined) writeFileSync(join(processRoot, "stat"), stat)
       // Deny the fd table itself, the way a dying process denies /proc/N/fd.
       chmodSync(join(processRoot, "fd"), 0o000)
@@ -281,6 +350,7 @@ describe("inspectPathHolderCensus", () => {
         symlinkSync("/bin/sh", join(processRoot, "exe"))
         symlinkSync("/", join(processRoot, "root"))
         writeFileSync(join(processRoot, "maps"), "")
+        writeFileSync(join(processRoot, "cmdline"), "")
         if (stat !== undefined) writeFileSync(join(processRoot, "stat"), stat)
         chmodSync(join(processRoot, "fd"), 0o000)
         deniedFdTables.push(join(processRoot, "fd"))
@@ -315,6 +385,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("/", join(processRoot, "cwd"))
       symlinkSync("/bin/sh", join(processRoot, "exe"))
       symlinkSync("/", join(processRoot, "root"))
+      writeFileSync(join(processRoot, "cmdline"), "")
       // The PID remains alive: a source disappearing is not proof the process exited.
       writeFileSync(join(processRoot, "stat"), "4242 (probe) S 1 0 0 0\n")
 
@@ -341,21 +412,30 @@ describe("inspectPathHolderCensus", () => {
       mkdirSync(ownedPath)
       mkdirSync(procRoot)
 
-      await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })).resolves.toMatchObject({
+      const none = { exited: 0, denied: 0, missing: 0, ambiguous: 0, unanswered: 0 }
+      const source = { readable: 0, notApplicable: 0, unavailable: none }
+      await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })).resolves.toEqual({
         holders: [],
         coverage: {
           platform: "linux",
           scope: "same-uid",
           procRoot,
           complete: true,
-          processes: { enumerated: 0, sameUid: 0, otherUid: 0, zombie: 0, unavailable: { exited: 0, denied: 0 } },
-          sources: {
-            cwd: { readable: 0, unavailable: { exited: 0, denied: 0 } },
-            exe: { readable: 0, unavailable: { exited: 0, denied: 0 } },
-            root: { readable: 0, unavailable: { exited: 0, denied: 0 } },
-            maps: { readable: 0, unavailable: { exited: 0, denied: 0 } },
-            fd: { readable: 0, unavailable: { exited: 0, denied: 0 } },
+          processes: {
+            enumerated: 0,
+            sameUid: 0,
+            otherUid: 0,
+            admitted: 0,
+            inspected: 0,
+            excluded: 0,
+            zombie: 0,
+            sourceDenied: 0,
+            sourceUnanswered: 0,
+            sourceMissing: 0,
+            sourceAmbiguous: 0,
+            unavailable: none,
           },
+          sources: { cwd: source, exe: source, root: source, argv: source, maps: source, fd: source },
         },
       })
     },
@@ -371,6 +451,110 @@ describe("inspectPathHolderCensus", () => {
     await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })).rejects.toThrow(
       `Linux path-holder census requires readable proc root '${procRoot}'`,
     )
+  })
+
+  // hh 26947 (@cto a2bfdf39): a supervisor started as `bun <tree>/entry.ts` holds its tree by argv alone (cwd
+  // elsewhere, nothing mapped, no descriptor) and later resolves files beside its entry. Judged per argv element.
+  describe("argv holds a path only through an element that is itself a path under it", () => {
+    function argvFixture(): { ownedPath: string; procRoot: string; processRoot: string } {
+      const fixture = mkdtempSync(join(tmpdir(), "yrd-path-argv-"))
+      temporary.push(fixture)
+      const ownedPath = join(fixture, "owned")
+      const procRoot = join(fixture, "proc")
+      const processRoot = join(procRoot, "4242")
+      mkdirSync(ownedPath)
+      mkdirSync(join(processRoot, "fd"), { recursive: true })
+      symlinkSync("/", join(processRoot, "cwd"))
+      symlinkSync("/bin/sh", join(processRoot, "exe"))
+      symlinkSync("/", join(processRoot, "root"))
+      writeFileSync(join(processRoot, "maps"), "")
+      writeFileSync(join(processRoot, "stat"), "4242 (bun) S 1 0 0 0\n")
+      writeFileSync(join(processRoot, "cmdline"), "bun\0")
+      return { ownedPath, procRoot, processRoot }
+    }
+
+    test.runIf(process.platform === "linux")("an argv element under the root holds it", async () => {
+      const probe = argvFixture()
+      const entry = join(probe.ownedPath, "ag", "inhab.ts")
+      writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${entry}\0--name\0@dev.5\0`)
+      const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+      expect(census.holders).toEqual([{ pid: 4242, source: "argv", target: entry }])
+      expect(census.coverage).toMatchObject({ complete: true, sources: { argv: { readable: 1 } } })
+    })
+
+    test.runIf(process.platform === "linux")(
+      "script text or a flag value that mentions the path holds nothing",
+      async () => {
+        const probe = argvFixture()
+        writeFileSync(
+          join(probe.processRoot, "cmdline"),
+          `sh\0-c\0cd ${probe.ownedPath} && run\0--config=${probe.ownedPath}/x.json\0`,
+        )
+        const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+        expect(census.holders).toEqual([])
+        expect(census.coverage).toMatchObject({ complete: true })
+      },
+    )
+
+    // hh 26947 (@cto 3a61d4df): reading a live cmdline waits on the target's mmap lock, once for 23 minutes (hh 24248).
+    // A FIFO with no writer stands in for that lock: the open never returns until a writer arrives.
+    test.runIf(process.platform === "linux")(
+      "a source that does not answer by the deadline is named, the census answers, and the other pids are read",
+      async () => {
+        const probe = argvFixture()
+        const fifo = join(probe.processRoot, "cmdline")
+        unlinkSync(fifo)
+        expect(childProcess.spawnSync("mkfifo", [fifo]).status).toBe(0)
+        const neighbour = join(probe.procRoot, "4343")
+        mkdirSync(join(neighbour, "fd"), { recursive: true })
+        symlinkSync(probe.ownedPath, join(neighbour, "cwd"))
+        symlinkSync("/bin/sh", join(neighbour, "exe"))
+        symlinkSync("/", join(neighbour, "root"))
+        writeFileSync(join(neighbour, "maps"), "")
+        writeFileSync(join(neighbour, "stat"), "4343 (sh) S 1 0 0 0\n")
+        writeFileSync(join(neighbour, "cmdline"), "sh\0")
+        try {
+          const started = performance.now()
+          const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, {
+            scope: "same-uid",
+            deadlineMs: 300,
+          })
+          expect(performance.now() - started).toBeLessThan(5_000)
+          expect(census.holders).toEqual([{ pid: 4343, source: "cwd", target: probe.ownedPath }])
+          expect(census.coverage).toMatchObject({
+            complete: false,
+            processes: { sameUid: 2, sourceDenied: 0, sourceUnanswered: 1 },
+            sources: { argv: { readable: 1, unavailable: { exited: 0, denied: 0, unanswered: 1 } } },
+            unreadable: [
+              {
+                pid: 4242,
+                comm: "bun",
+                denied: [],
+                unanswered: ["argv"],
+                issues: [{ source: "argv", reason: "unanswered" }],
+              },
+            ],
+          })
+        } finally {
+          // Release the abandoned read so the worker can exit: a reader waiting in open() already counts as a reader,
+          // so a non-blocking writer open succeeds and its close hands the reader EOF.
+          closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
+        }
+      },
+    )
+
+    test.runIf(process.platform === "linux")("an unreadable cmdline is a denial, never an empty argv", async () => {
+      const probe = argvFixture()
+      chmodSync(join(probe.processRoot, "cmdline"), 0o000)
+      const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+      expect(census.holders).toEqual([])
+      expect(census.coverage).toMatchObject({
+        complete: false,
+        processes: { sourceDenied: 1 },
+        sources: { argv: { readable: 0, unavailable: { exited: 0, denied: 1 } } },
+        unreadable: [{ pid: 4242, comm: "bun", denied: ["argv"] }],
+      })
+    })
   })
 })
 
@@ -392,6 +576,7 @@ describe("explicit scope and source evidence", () => {
     symlinkSync("/bin/sh", join(processRoot, "exe"))
     symlinkSync("/", join(processRoot, "root"))
     writeFileSync(join(processRoot, "maps"), "")
+    writeFileSync(join(processRoot, "cmdline"), "")
     writeFileSync(join(processRoot, "stat"), `${pid} (probe) S 1 0 0 0\n`)
     return { ownedPath, procRoot, processRoot }
   }
@@ -601,6 +786,23 @@ describe("explicit scope and source evidence", () => {
       })
     },
   )
+
+  // hh 26990 (@cto 2e553d4c): an anonymous inode names no path, in maps as in a descriptor link. The relative
+  // target beside it is the control: the exemption is that one form, not every non-absolute mapping.
+  test("an anon_inode mapping is readable evidence, while another relative mapping stays ambiguous", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    const resource = join(processRoot, "maps")
+    writeFileSync(resource, "7f000000-7f001000 rw-s 00000000 00:0e 1234 anon_inode:i915.gem\n")
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    expect(census.coverage).toMatchObject({ complete: true, sources: { maps: { readable: 1 } } })
+    writeFileSync(resource, "7f000000-7f001000 rw-s 00000000 00:0e 1234 relative/mapping\n")
+    const control = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    expect(control.coverage).toMatchObject({
+      complete: false,
+      processes: { sourceAmbiguous: 1 },
+      sources: { maps: { unavailable: { ambiguous: 1 } } },
+    })
+  })
 
   test("ambiguous paths provably outside the selected root do not invent a coverage gap", async () => {
     const { ownedPath, procRoot, processRoot } = fixture()

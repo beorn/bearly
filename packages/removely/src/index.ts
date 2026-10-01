@@ -15,6 +15,7 @@ export {
 export {
   inspectPathHolderCensus,
   pathHolderRefusal,
+  PATH_HOLDER_CENSUS_DEADLINE_MS,
   type PathHolder,
   type PathHolderScope,
   type PathHolderCensusOptions,
