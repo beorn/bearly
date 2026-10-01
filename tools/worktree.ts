@@ -53,6 +53,7 @@ import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
+import { superStatus } from "git-super/status"
 import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
@@ -2228,6 +2229,15 @@ export interface PreserveOptions {
   includeAhead?: boolean
 }
 
+/** Preservation reads and writes must never turn a failed Git command into empty state. */
+async function preserveGit(repo: string, args: string[]): Promise<string> {
+  const result = await safeExec($`git -C ${repo} ${args}`)
+  if (result.exitCode !== 0) {
+    throw new Error(`preserve: git ${args.join(" ")} failed in ${repo}: ${gitCommandError(result)}`)
+  }
+  return result.stdout.trim()
+}
+
 /**
  * Preserve a live slot's uncommitted (working-tree + submodule) changes and/or
  * ahead-of-origin/main commits to a durable ref BEFORE a destructive step.
@@ -2250,69 +2260,114 @@ export async function preserveSlotState(
   assertValidPreserveRef(refFull, gitRoot)
   void slotName
 
-  // Superproject's OWN file changes (excluding submodule state), + any dirty
-  // submodule working tree. A pure gitlink advance (committed submodule move) is
-  // NOT the uncommitted-work loss class, so it does not trigger preservation.
-  const superFile = await safeExec(
-    $`cd ${worktreePath} && git status --porcelain --untracked-files=all --ignore-submodules=all 2>/dev/null`,
-  )
-  const superFileDirty = superFile.stdout.trim().length > 0
-
-  const dirtySubs: string[] = []
-  for (const sub of getSubmodulePaths(worktreePath)) {
-    const subPath = join(worktreePath, sub)
-    if (!existsSync(join(subPath, ".git"))) continue
-    const st = await getWorktreeStatus(subPath)
-    if (st.dirty) dirtySubs.push(sub)
-  }
-  const dirty = superFileDirty || dirtySubs.length > 0
-
-  const aheadRes = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
-  const ahead = parseInt(aheadRes.stdout.trim(), 10) || 0
-
-  if (!dirty && !(ahead > 0 && includeAhead)) return empty
-
-  const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead > 0 ? "dirty+ahead" : dirty ? "dirty" : "ahead"
-
-  const preservedSubs: PreservedSubmodule[] = []
-  let sha: string
-
-  if (dirty) {
-    // 1) Snapshot each dirty submodule, then TRANSFER its preserve commit into
-    //    the durable MAIN submodule store so it survives removeWorktree tearing
-    //    down the per-worktree isolated store.
-    const subGitlinks = new Map<string, string>()
-    for (const sub of dirtySubs) {
-      const subPath = join(worktreePath, sub)
-      const subSha = await snapshotDirtyRepo(subPath, `preserve ${refShort} (${sub})`)
-      const subRef = await safeExec($`cd ${subPath} && git update-ref ${refFull} ${subSha}`)
-      if (subRef.exitCode !== 0) {
-        throw new Error(`preserve: update-ref ${refFull} in ${sub} of ${gitRoot} failed: ${gitCommandError(subRef)}`)
-      }
-      const mainSubPath = join(gitRoot, sub)
-      if (!existsSync(join(mainSubPath, ".git"))) {
-        throw new Error(
-          `preserve: cannot durably save dirty submodule ${sub} — main submodule store ${mainSubPath} is not initialized`,
-        )
-      }
-      const fetched = await safeExec($`cd ${mainSubPath} && git fetch -q ${subPath} +${refFull}:${refFull} 2>&1`)
-      if (fetched.exitCode !== 0) {
-        throw new Error(`preserve: transferring ${sub} preserve ref into main store failed: ${fetched.stdout}`)
-      }
-      subGitlinks.set(sub, subSha)
-      preservedSubs.push({ path: sub, ref: refShort, sha: subSha })
+  const inventory = superStatus({ repo: worktreePath })
+  const primaryInventory = superStatus({ repo: gitRoot })
+  for (const [where, status] of [
+    [worktreePath, inventory],
+    [gitRoot, primaryInventory],
+  ] as const) {
+    if (status.submoduleProblems.length > 0) {
+      throw new Error(
+        `preserve: cannot inventory ${where}: ${status.submoduleProblems.map((p) => `${p.path}: ${p.reason}`).join("; ")}`,
+      )
     }
-    // 2) Superproject snapshot, gitlinks repointed at the sub preserve commits.
-    sha = await snapshotDirtyRepo(worktreePath, `preserve ${refShort} (${recoverySlot})`, subGitlinks)
-  } else {
-    // clean-but-ahead → the ref points directly at HEAD (no snapshot commit).
-    const headRes = await safeExec($`cd ${worktreePath} && git rev-parse HEAD`)
-    sha = headRes.stdout.trim()
   }
-
-  const setRef = await safeExec($`cd ${gitRoot} && git update-ref ${refFull} ${sha}`)
-  if (setRef.exitCode !== 0) {
-    throw new Error(`preserve: writing ${refFull} at ${sha} in ${gitRoot} failed: ${gitCommandError(setRef)}`)
+  const primaryRepositories = new Map(primaryInventory.consultedRepositories.map((repo) => [repo.path, repo.root]))
+  const repositories = []
+  // GitSuper owns discovery. Complete all reads before creating even the first ref.
+  for (const repo of inventory.consultedRepositories) {
+    const primary = primaryRepositories.get(repo.path)
+    if (primary === undefined) {
+      throw new Error(
+        `preserve: primary submodule store ${join(gitRoot, repo.path)} is not initialized; no worktree was removed`,
+      )
+    }
+    const head = await preserveGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"])
+    const primaryHead = await preserveGit(primary, ["rev-parse", "--verify", "HEAD^{commit}"])
+    const dirty =
+      (await preserveGit(repo.root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]))
+        .length > 0
+    let ahead = false
+    if (repo.path === ".") {
+      if (includeAhead) {
+        const count = await preserveGit(repo.root, ["rev-list", "--count", "origin/main..HEAD"])
+        if (!/^\d+$/.test(count)) throw new Error(`preserve: invalid ahead count in ${repo.root}: ${count}`)
+        ahead = Number(count) > 0
+      }
+    } else {
+      const object = await safeExec($`git -C ${primary} rev-parse --verify --quiet ${head + "^{commit}"}`)
+      if (object.exitCode === 1 && object.stdout === "" && object.stderr === "") {
+        // This is explicit object absence, not a failed reachability read.
+        ahead = true
+      } else if (object.exitCode !== 0) {
+        throw new Error(`preserve: cannot read child commit ${head} in ${primary}: ${gitCommandError(object)}`)
+      } else {
+        // Child-store refs survive removal; only the ROOT slot branch is deleted.
+        const retainedRefs = await preserveGit(primary, ["for-each-ref", `--contains=${head}`, "--format=%(refname)"])
+        if (retainedRefs.length === 0) {
+          const ancestry = await safeExec($`git -C ${primary} merge-base --is-ancestor ${head} ${primaryHead}`)
+          if (ancestry.exitCode !== 0 && ancestry.exitCode !== 1) {
+            throw new Error(`preserve: cannot prove ${head} reachable in ${primary}: ${gitCommandError(ancestry)}`)
+          }
+          ahead = ancestry.exitCode === 1
+        }
+      }
+    }
+    const parent =
+      inventory.consultedRepositories.findLast(
+        (candidate) =>
+          candidate.path !== "." && candidate.path !== repo.path && repo.path.startsWith(candidate.path + "/"),
+      )?.path ?? "."
+    repositories.push({ ...repo, primary, head, dirty, ahead, parent })
+  }
+  const dirty = repositories.some((repo) => repo.dirty)
+  const ahead = repositories.some((repo) => repo.ahead)
+  if (!dirty && !ahead) return empty
+  const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead ? "dirty+ahead" : dirty ? "dirty" : "ahead"
+  const preservedSubs: PreservedSubmodule[] = []
+  const overrides = new Map<string, Map<string, string>>()
+  const written: { repo: string; sha: string }[] = []
+  let sha: string | undefined
+  try {
+    for (const repo of [...repositories].reverse()) {
+      const gitlinks = overrides.get(repo.path)
+      if (!repo.dirty && !repo.ahead && gitlinks === undefined) continue
+      const saved =
+        repo.dirty || gitlinks !== undefined
+          ? await snapshotDirtyRepo(repo.root, `preserve ${refShort} (${repo.path})`, gitlinks)
+          : repo.head
+      const refRepo = repo.path === "." ? gitRoot : repo.root
+      await preserveGit(refRepo, ["update-ref", refFull, saved])
+      written.push({ repo: refRepo, sha: saved })
+      if (repo.path === ".") {
+        sha = saved
+        continue
+      }
+      await preserveGit(repo.primary, ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`])
+      written.push({ repo: repo.primary, sha: saved })
+      const received = await preserveGit(repo.primary, ["rev-parse", "--verify", refFull + "^{commit}"])
+      if (received !== saved) {
+        throw new Error(`preserve: ${refFull} in ${repo.primary} is ${received}, expected ${saved}`)
+      }
+      if ((await preserveGit(repo.primary, ["cat-file", "-t", saved])) !== "commit") {
+        throw new Error(`preserve: transferred object ${saved} in ${repo.primary} is not a commit`)
+      }
+      preservedSubs.push({ path: repo.path, ref: refShort, sha: saved })
+      const parentLinks = overrides.get(repo.parent) ?? new Map<string, string>()
+      parentLinks.set(repo.parent === "." ? repo.path : repo.path.slice(repo.parent.length + 1), saved)
+      overrides.set(repo.parent, parentLinks)
+    }
+    if (sha === undefined) throw new Error("preserve: child recovery did not produce its root recovery ref")
+  } catch (cause) {
+    const refs = written.map((entry) => `${entry.repo}:${refFull}@${entry.sha}`).join(", ")
+    if (written.length > 0) {
+      warn(`preserve: incomplete; source and registration retained. Recovery refs already written: ${refs}`)
+      await appendPreserveLog(
+        gitRoot,
+        `${new Date().toISOString()} slot=${recoverySlot} status=failed refs=${refs} path=${worktreePath}`,
+      )
+    }
+    throw new Error(`preserve failed before removal; recovery refs already written: ${refs || "none"}`, { cause })
   }
 
   // Loud (§ Fail Loud) — print the recovery ref to the operator.

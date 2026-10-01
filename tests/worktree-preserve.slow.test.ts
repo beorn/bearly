@@ -127,6 +127,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     ["reset", "nested-dirty"],
     ["remove", "nested-ahead"],
     ["reset", "nested-ahead"],
+    ["remove-keep-branch", "clean-child-ahead"],
   ] as const)(
     "%s preserves %s in the primary submodule store",
     async (operation, shape) => {
@@ -155,8 +156,9 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           expect((await $`git -C ${source} status --porcelain`.text()).trim()).toBe("")
         }
 
-        if (operation === "remove") await removeWorktree(slot, { force: true, deleteBranch: true })
-        else await resetWorktree(slot, { force: true, install: false, direnv: false, hooks: false })
+        if (operation.startsWith("remove")) {
+          await removeWorktree(slot, { force: true, deleteBranch: operation === "remove" })
+        } else await resetWorktree(slot, { force: true, install: false, direnv: false, hooks: false })
 
         // A recreated path or root gitlink alone does not retain child objects.
         const refs = await preserveRefs(primary, slot)
@@ -181,10 +183,14 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           )
         }
         expect(
-          consoleLogSpy.mock.calls.some((args) =>
-            args.some((arg) => String(arg).includes(ref.replace("refs/heads/", ""))),
+        consoleLogSpy.mock.calls.some((args: unknown[]) =>
+          args.some((arg: unknown) => String(arg).includes(ref.replace("refs/heads/", ""))),
           ),
         ).toBe(true)
+        const common = (await $`git -C ${mainRepo} rev-parse --path-format=absolute --git-common-dir`.text()).trim()
+        const log = readFileSync(join(common, "worktree-preserve.log"), "utf8")
+        expect(log).toContain(ref.replace("refs/heads/", ""))
+        expect(log).toContain(relativeTarget + "@")
       } finally {
         process.chdir(originalCwd)
       }
@@ -487,6 +493,46 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       process.chdir(origCwd)
     }
   }, 60_000)
+
+  /** @failure cleanup mutates a source recovery ref before noticing its primary child destination is missing
+   * @level l2 @consumer #27037 preservation preflight @testonly none */
+  test.each(["remove", "reset"] as const)(
+    "%s refuses an uninitialized primary child before mutation",
+    async (operation) => {
+      const mainRepo = await buildSubmoduleMain()
+      const origin = join(sandbox, "origin.git")
+      await $`git init --bare -q -b main ${origin}`.quiet()
+      await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+      await $`git -C ${mainRepo} push -q origin main`.quiet()
+      const originalCwd = process.cwd()
+      const worktreePath = join(sandbox, "main-wt5")
+      const source = join(worktreePath, "vendor/sub")
+      try {
+        process.chdir(mainRepo)
+        await createWorktree("wt5", undefined, { install: false, direnv: false, hooks: false })
+        writeFileSync(join(source, "file.txt"), "must stay in source\n")
+      // Deinit changes shared submodule activation and would refuse at admission,
+      // before this preservation preflight can observe the missing destination.
+      rmSync(join(mainRepo, "vendor/sub"), { recursive: true, force: true })
+      mkdirSync(join(mainRepo, "vendor/sub"))
+        const sourceRefs = await $`git -C ${source} show-ref`.text()
+        const rootRefs = await $`git -C ${mainRepo} show-ref`.text()
+        const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+        const attempt =
+          operation === "remove"
+            ? removeWorktree("wt5", { force: true })
+            : resetWorktree("wt5", { force: true, install: false, direnv: false, hooks: false })
+        await expect(attempt).rejects.toThrow("primary submodule store")
+        expect(readFileSync(join(source, "file.txt"), "utf8")).toBe("must stay in source\n")
+        expect(await $`git -C ${source} show-ref`.text()).toBe(sourceRefs)
+        expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(rootRefs)
+        expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      } finally {
+        process.chdir(originalCwd)
+      }
+    },
+    60_000,
+  )
 
   test("reset --force PRESERVES uncommitted work to wip/<slot>-preserve-* (does not discard)", async () => {
     const mainRepo = await buildMain()
