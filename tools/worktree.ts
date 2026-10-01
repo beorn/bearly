@@ -2343,7 +2343,22 @@ export async function preserveSlotState(
         sha = saved
         continue
       }
-      await preserveGit(repo.primary, ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`])
+      try {
+        await preserveGit(repo.primary, ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`])
+      } catch (cause) {
+        // Fetch may fail after updating its ref. Report proven partial recovery too.
+        const received = await safeExec($`git -C ${repo.primary} rev-parse --verify --quiet ${refFull + "^{commit}"}`)
+        if (received.exitCode === 0) {
+          written.push({ repo: repo.primary, sha: received.stdout.trim() })
+        } else if (received.exitCode !== 1 || received.stdout !== "" || received.stderr !== "") {
+          const failure = cause instanceof Error ? cause.message : String(cause)
+          throw new Error(
+            `${failure}; cannot inspect recovery ref ${refFull} in ${repo.primary}: ${gitCommandError(received)}`,
+            { cause },
+          )
+        }
+        throw cause
+      }
       written.push({ repo: repo.primary, sha: saved })
       const received = await preserveGit(repo.primary, ["rev-parse", "--verify", refFull + "^{commit}"])
       if (received !== saved) {
@@ -2368,7 +2383,10 @@ export async function preserveSlotState(
         `${new Date().toISOString()} slot=${recoverySlot} status=failed refs=${refs} path=${worktreePath} failure=${failure}`,
       )
     }
-    throw new Error(`${worktreePath}: preserve failed before removal: ${failure}; recovery refs already written: ${refs || "none"}`, { cause })
+    throw new Error(
+      `${worktreePath}: preserve failed before removal: ${failure}; recovery refs already written: ${refs || "none"}`,
+      { cause },
+    )
   }
 
   // Loud (§ Fail Loud) — print the recovery ref to the operator.
