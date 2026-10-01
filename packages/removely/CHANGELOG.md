@@ -42,13 +42,20 @@ Minor (0.4.0 at release), with one breaking removal.
 - `maps` is read after `cmdline` and never once `cmdline` has not answered: both
   wait on the target's mmap lock, so one stuck process pins one I/O-pool thread
   instead of two, and its `maps` is named `unanswered` with its `argv`.
-- A denied source is read once more after the walk, because a live process can
-  deny its own `/proc` entries for a moment, as while it execs. The second read
-  stands in for the first. If the process directory has gone, or the pid now has
-  another start time, the source counts as `exited`; if it is now a zombie, it
-  counts as `notApplicable`. Only a source the same live process denies twice is
-  `denied`. A source that is `exited` or `notApplicable` and also carries a
-  target's ambiguity is counted `ambiguous`, as a readable one already was.
+- One exit proof for a source that went missing or was denied: the process
+  directory answering ENOENT to a stat, or a start time read both times and
+  different, counts the source `exited`; a one-thread zombie counts it
+  `notApplicable`. A denied or unanswered re-stat proves nothing. Only the
+  absence of a reading clears: a holder, a value or an ambiguous target stands.
+  A denied source that gave no reading is then read once more, as a retry for a
+  process that denied its `/proc` entries for a moment; a retry that does not
+  answer by the census deadline changes nothing.
+- A zombie holds nothing only with one thread (field 20 of its stat line). A
+  thread-group leader that exited while another thread lives also reads Z; it is
+  now inspected like any process, so its sources' gaps stay and the caller
+  refuses.
+- A source that is `exited` or `notApplicable` and also carries a target's
+  ambiguity is counted `ambiguous`, as a readable one already was.
 
 ## 0.3.0
 

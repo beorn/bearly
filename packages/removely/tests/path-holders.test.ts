@@ -45,6 +45,11 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }))
 
 const temporary: string[] = []
+
+/** A /proc/<pid>/stat line with state (field 3), num_threads (field 20) and starttime (field 22) as given. */
+function procStat(pid: number, state = "S", { threads = 1, startTicks = 0 } = {}): string {
+  return `${pid} (probe) ${state} 1 ${Array.from({ length: 15 }, () => "0").join(" ")} ${threads} 0 ${startTicks} 0\n`
+}
 const actualPlatform = process.platform
 
 afterEach(() => {
@@ -235,7 +240,7 @@ describe("inspectPathHolderCensus", () => {
         symlinkSync("/", join(processRoot, "root"))
         writeFileSync(join(processRoot, "maps"), "")
         writeFileSync(join(processRoot, "cmdline"), "")
-        writeFileSync(join(processRoot, "stat"), `${pid} (probe) ${state} 1 0 0 0\n`)
+        writeFileSync(join(processRoot, "stat"), procStat(pid, state))
         // Deny exactly one source, the way a released fd table denies /proc/N/fd.
         chmodSync(join(processRoot, "maps"), 0o000)
       }
@@ -270,7 +275,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("/", join(processRoot, "root"))
       writeFileSync(join(processRoot, "maps"), "")
       writeFileSync(join(processRoot, "cmdline"), "")
-      writeFileSync(join(processRoot, "stat"), `${pid} (probe) Z 1 0 0 0\n`)
+      writeFileSync(join(processRoot, "stat"), procStat(pid, "Z"))
       chmodSync(join(processRoot, "maps"), 0o000)
     }
 
@@ -688,22 +693,17 @@ describe("explicit scope and source evidence", () => {
     })
   })
 
-  /** One readdir of `path` is denied, as while its process execs; `during` runs inside that denial. */
-  function denyOnce(path: string, during: () => void = () => {}) {
+  /** `times` readdirs of `path` are denied (once: as while its process execs); `during` runs inside the first. */
+  function denyOnce(path: string, during: () => void = () => {}, times = 1) {
     const readdir = fsPromises.readdir
     let denials = 0
     vi.spyOn(fsPromises, "readdir").mockImplementation((async (...args: Parameters<typeof fsPromises.readdir>) => {
-      if (String(args[0]) === path && denials++ === 0) {
-        during()
+      if (String(args[0]) === path && denials++ < times) {
+        if (denials === 1) during()
         throw Object.assign(new Error("denied fd"), { code: "EACCES" })
       }
       return readdir(...args)
     }) as typeof fsPromises.readdir)
-  }
-
-  function statLine(pid: number, startTicks: number): string {
-    // Field 22 is the start time: state is field 3, so 18 fields sit between them.
-    return `${pid} (probe) S 1 ${Array.from({ length: 17 }, () => "0").join(" ")} ${startTicks} 0\n`
   }
 
   test("a source denied once and read on the second try is read, not reported", async () => {
@@ -729,15 +729,76 @@ describe("explicit scope and source evidence", () => {
 
   test("a pid that names another process by the second read proves the denied one exited", async () => {
     const { ownedPath, procRoot, processRoot } = fixture()
-    writeFileSync(join(processRoot, "stat"), statLine(4242, 100))
+    writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 100 }))
     symlinkSync(ownedPath, join(processRoot, "fd", "7"))
-    denyOnce(join(processRoot, "fd"), () => writeFileSync(join(processRoot, "stat"), statLine(4242, 200)))
+    denyOnce(join(processRoot, "fd"), () =>
+      writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 200 })),
+    )
     const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
     // The second read belongs to the new process, which this census never listed, so it holds nothing here.
     expect(census.holders).toEqual([])
     expect(census.coverage).toMatchObject({
       complete: true,
       sources: { fd: { unavailable: { denied: 0, exited: 1 } } },
+    })
+  })
+
+  test("a denied source of a process that is now a one-thread zombie is not applicable", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    denyOnce(join(processRoot, "fd"), () => writeFileSync(join(processRoot, "stat"), procStat(4242, "Z")))
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.coverage).toMatchObject({
+      complete: true,
+      sources: { fd: { notApplicable: 1, unavailable: { denied: 0, exited: 0 } } },
+    })
+    expect(census.coverage).not.toHaveProperty("unreadable")
+  })
+
+  test("a source the same live process denies twice stays denied", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 100 }))
+    denyOnce(join(processRoot, "fd"), () => {}, 2)
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.coverage).toMatchObject({
+      complete: false,
+      sources: { fd: { unavailable: { denied: 1, exited: 0 } } },
+      unreadable: [{ pid: 4242, denied: ["fd"] }],
+    })
+  })
+
+  test("a zombie leader whose other threads live is inspected, and its denial stands", async () => {
+    // Field 20 says two threads: the live thread's cwd, fd and maps are still there.
+    const { ownedPath, procRoot, processRoot } = fixture()
+    writeFileSync(join(processRoot, "stat"), procStat(4242, "Z", { threads: 2 }))
+    denyOnce(join(processRoot, "fd"), () => {}, 2)
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.coverage).toMatchObject({
+      complete: false,
+      processes: { zombie: 0, inspected: 1 },
+      sources: { fd: { notApplicable: 0, unavailable: { denied: 1 } } },
+      unreadable: [{ pid: 4242, state: "Z", denied: ["fd"] }],
+    })
+  })
+
+  test("the retry never takes away a reading: a holder beside a denied descriptor stands, and so does the denial", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 100 }))
+    symlinkSync(ownedPath, join(processRoot, "fd", "7"))
+    symlinkSync(ownedPath, join(processRoot, "fd", "8"))
+    const denied = join(processRoot, "fd", "8")
+    const readlink = fsPromises.readlink
+    let denials = 0
+    vi.spyOn(fsPromises, "readlink").mockImplementation((async (...args: Parameters<typeof fsPromises.readlink>) => {
+      // Denied once only: a retry of the fd table would read it, so a denial left standing proves there was none.
+      if (String(args[0]) === denied && denials++ === 0) throw Object.assign(new Error("denied fd"), { code: "EACCES" })
+      return readlink(...args)
+    }) as typeof fsPromises.readlink)
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.holders).toEqual([{ pid: 4242, source: "fd/7", target: ownedPath }])
+    expect(census.coverage).toMatchObject({
+      complete: false,
+      sources: { fd: { unavailable: { denied: 1 } } },
+      unreadable: [{ pid: 4242, issues: [expect.objectContaining({ resource: denied, reason: "denied" })] }],
     })
   })
 

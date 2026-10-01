@@ -33,7 +33,7 @@ export type PathHolder = Readonly<{
 }>
 export type SourceName = "cwd" | "exe" | "root" | "argv" | "maps" | "fd"
 export type PathHolderUnavailableCoverage = Readonly<{
-  /** The process directory was proven absent after its source disappeared. */
+  /** The process proved gone (its directory absent, or another start time) after its source was missing or denied. */
   exited: number
   denied: number
   /** A source disappeared while process exit could not be established. */
@@ -45,7 +45,7 @@ export type PathHolderUnavailableCoverage = Readonly<{
 }>
 export type PathHolderSourceCoverage = Readonly<{
   readable: number
-  /** Proven zombie or kernel-thread executable; never inferred from ENOENT alone. */
+  /** Proven one-thread zombie or kernel-thread executable; never inferred from ENOENT or a denial alone. */
   notApplicable: number
   unavailable: PathHolderUnavailableCoverage
 }>
@@ -438,33 +438,9 @@ async function collectProcessRows(
         identity,
         processIssues,
       }
-      if (identity.state === "Z") return { ...base, kind: "zombie", sources: {} }
+      if (heldNothingAsZombie(identity)) return { ...base, kind: "zombie", sources: {} }
       const sources = await observeSources(deadline, proc, selected)
-      if (
-        Object.values(sources).some((observation) => observation.issues.some((issue) => issue.reason === "missing"))
-      ) {
-        // An unanswered re-stat proves nothing, so the vanished source stays missing.
-        const presence = await observeSource(deadline, proc, () => stat(proc), undefined)
-        const afterIdentity =
-          presence.availability === "readable" ? await observeProcessIdentity(deadline, proc, bootedAtMs) : undefined
-        for (const [source, observation] of Object.entries(sources) as Array<
-          [SourceName, SourceObservation<unknown>]
-        >) {
-          if (!observation.issues.some((issue) => issue.reason === "missing")) continue
-          const resolvedAvailability =
-            presence.availability === "missing"
-              ? "exited"
-              : afterIdentity?.state === "Z" || (source === "exe" && afterIdentity?.kernelThread === true)
-                ? "notApplicable"
-                : undefined
-          if (resolvedAvailability !== undefined) {
-            // A vanished fd and a denied/ambiguous sibling are independent
-            // observations. Exit proof clears the vanished source only.
-            observation.issues = observation.issues.filter((issue) => issue.reason !== "missing")
-            observation.availability = observation.issues[0]?.reason ?? resolvedAvailability
-          }
-        }
-      }
+      await resolveUnreadSources(deadline, proc, identity, bootedAtMs, sources)
       const row: MutableRow = { ...base, kind: "inspected", sources }
       const denied = Object.values(sources).some((observation) =>
         observation.issues.some((issue) => issue.reason === "denied"),
@@ -475,60 +451,88 @@ async function collectProcessRows(
       return row
     }),
   )
-  const live = rows.filter((row): row is MutableRow => row !== undefined)
-  await Promise.all(live.map((row) => rereadDeniedSources(deadline, row, bootedAtMs)))
   return {
     procRoot,
     scope,
-    rows: live,
+    rows: rows.filter((row): row is MutableRow => row !== undefined),
     enumerated: numericEntries.length,
     ...counts,
   }
 }
 
 /**
- * A same-uid process can deny its own /proc entries for a moment, as while it execs (hh 26990: a transient `bun` and
- * `@in` held a landing once in a parallel run, @dev/review-adhoc5 78b11692). So once the walk is done, each denied
- * source is read once more. A process directory that has gone, or now holds a process with another start time, proves
- * the denied process exited; a zombie holds nothing; otherwise the second read stands in for the first. Only a source
- * the same live process denies twice stays denied.
+ * A zombie holds nothing, but only a zombie with one thread is one (@cto 6eef7d1e): a thread-group leader that exited
+ * while another thread lives also reads Z, and the live thread's cwd, fd and maps are still there. A thread count that
+ * was not read proves nothing.
  */
-async function rereadDeniedSources(
+function heldNothingAsZombie(identity: ProcessIdentity): boolean {
+  return identity.state === "Z" && identity.threads === 1
+}
+
+/** A source whose read gave no reading: nothing a retry could take away. */
+function gaveNoReading(observation: SourceObservation<unknown>): boolean {
+  const { value } = observation
+  return Array.isArray(value) ? value.length === 0 : value === undefined
+}
+
+/**
+ * The one exit proof (hh 26990, @cto 2e553d4c and 6eef7d1e), entered for a source that went missing or was denied.
+ * What it clears is the absence of a reading, never a reading: a holder, a value or an ambiguous target stands.
+ * - The process directory answering ENOENT to a stat proves exit. A denied or unanswered re-stat proves nothing.
+ * - A start time read both times and different proves the first process exited.
+ * - A zombie with one thread holds nothing; an executable a kernel thread lacks is not applicable.
+ * - Otherwise a denied source that gave no reading is read once more, as a retry for a process that denied its /proc
+ *   entries for a moment. A second read that does not answer by the census deadline changes nothing.
+ * Every read here races the same census deadline; the process-level issue is untouched.
+ */
+async function resolveUnreadSources(
   deadline: CensusDeadline,
-  row: MutableRow,
+  proc: string,
+  identity: ProcessIdentity,
   bootedAtMs: number | undefined,
+  sources: Partial<Record<SourceName, SourceObservation<unknown>>>,
 ): Promise<void> {
-  if (row.kind !== "inspected") return
-  const denied = (Object.keys(row.sources) as SourceName[]).filter((source) =>
-    row.sources[source]?.issues.some((issue) => issue.reason === "denied"),
-  )
-  if (denied.length === 0) return
-  const again = await observeSources(deadline, row.procPath, denied)
-  // Identity is read after the second read, so a read that answers is known to be this process's.
-  const presence = await observeSource(deadline, row.procPath, () => stat(row.procPath), undefined)
+  const unread = (reason: "missing" | "denied") =>
+    (Object.keys(sources) as SourceName[]).filter((source) =>
+      sources[source]?.issues.some((issue) => issue.reason === reason),
+    )
+  const missing = unread("missing")
+  const denied = unread("denied")
+  if (missing.length === 0 && denied.length === 0) return
+  const presence = await observeSource(deadline, proc, () => stat(proc), undefined)
   const after =
-    presence.availability === "readable" ? await observeProcessIdentity(deadline, row.procPath, bootedAtMs) : undefined
-  const resolved =
+    presence.availability === "readable" ? await observeProcessIdentity(deadline, proc, bootedAtMs) : undefined
+  const exited =
     presence.availability === "missing" ||
-    (row.identity.startTicks !== undefined &&
-      after?.startTicks !== undefined &&
-      after.startTicks !== row.identity.startTicks)
-      ? "exited"
-      : after?.state === "Z"
-        ? "notApplicable"
-        : undefined
-  for (const source of denied) {
-    const observation = row.sources[source]
-    if (observation === undefined) continue
-    if (resolved !== undefined) {
-      observation.issues = observation.issues.filter((issue) => issue.reason !== "denied")
-      observation.availability = observation.issues[0]?.reason ?? resolved
-      continue
+    (identity.startTicks !== undefined && after?.startTicks !== undefined && after.startTicks !== identity.startTicks)
+  const resolve = (source: SourceName, reason: "missing" | "denied", resolved: "exited" | "notApplicable") => {
+    const observation = sources[source]
+    if (observation === undefined) return
+    observation.issues = observation.issues.filter((issue) => issue.reason !== reason)
+    observation.availability = observation.issues[0]?.reason ?? resolved
+  }
+  for (const [reason, names] of [
+    ["missing", missing],
+    ["denied", denied],
+  ] as const) {
+    for (const source of names) {
+      if (exited) resolve(source, reason, "exited")
+      else if (after !== undefined && heldNothingAsZombie(after)) resolve(source, reason, "notApplicable")
+      else if (reason === "missing" && source === "exe" && after?.kernelThread === true) {
+        resolve(source, reason, "notApplicable")
+      }
     }
+  }
+  if (exited || presence.availability !== "readable" || (after !== undefined && heldNothingAsZombie(after))) return
+  const retry = denied.filter((source) => {
+    const observation = sources[source]
+    return observation !== undefined && gaveNoReading(observation)
+  })
+  if (retry.length === 0) return
+  const again = await observeSources(deadline, proc, retry)
+  for (const source of retry) {
     const second = again[source]
-    if (presence.availability === "readable" && second !== undefined && second.availability !== "unanswered") {
-      row.sources[source] = second
-    }
+    if (second !== undefined && second.availability !== "unanswered") sources[source] = second
   }
 }
 
@@ -1022,6 +1026,8 @@ type ProcessIdentity = {
   startTicks?: number
   startedAt?: string
   kernelThread?: true
+  /** Field 20, num_threads: a zombie leader whose other threads live still says more than one. */
+  threads?: number
 }
 async function observeProcessIdentity(
   deadline: CensusDeadline,
@@ -1048,6 +1054,8 @@ async function observeProcessIdentity(
     const ppid = Number(rest[1])
     // Field 22, starttime: the 20th field after comm, as the kernel wrote it.
     const startTicks = Number(rest[19])
+    // Field 20, num_threads: the 18th field after comm.
+    const threads = Number(rest[17])
     const startedAtMs = procStatStartedAtMs(contents, bootedAtMs)
     return {
       comm,
@@ -1057,6 +1065,7 @@ async function observeProcessIdentity(
       ...(state === undefined || state === "" ? {} : { state }),
       ...(Number.isSafeInteger(ppid) ? { ppid } : {}),
       ...(rest[19] !== undefined && Number.isSafeInteger(startTicks) ? { startTicks } : {}),
+      ...(rest[17] !== undefined && Number.isSafeInteger(threads) ? { threads } : {}),
       ...(startedAtMs === undefined ? {} : { startedAt: new Date(startedAtMs).toISOString() }),
     }
   } catch {

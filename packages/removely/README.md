@@ -61,7 +61,11 @@ argv; `clearedByIdentity(entry)` clears four identities of the current uid
 (`systemd` with `--user`, `(sd-pam)`, `sshd-session` and `ssh-agent`), and every
 other entry is for the caller to refuse on.
 `maps` is read after `cmdline` and never once `cmdline` has not answered, so one
-process stuck on its mmap lock pins one I/O-pool thread.
+process stuck on its mmap lock pins one I/O-pool thread. A source that went missing or was
+denied is resolved by one exit proof: the process directory gone, or another
+start time, counts it exited, and a one-thread zombie holds nothing. A denied
+source with no reading is then read once more, a retry for a process that
+denied its `/proc` entries for a moment; a reading is never taken away.
 
 The CLI uses the same removal guard:
 
