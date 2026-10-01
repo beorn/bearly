@@ -27,8 +27,10 @@ Minor (0.4.0 at release): additive option, fields and export.
   against pid reuse: a caller that signals a pid re-checks it first.
 - `UnreadableProcess` gains `uid` and `argv`. A denied process's argv is read for
   its identity whatever the caller asked, and `clearedByIdentity(entry)` clears
-  exactly `systemd --user`, `(sd-pam)` and `sshd-session: <user>@…` of the
-  current uid; every other unreadable entry is a refusal.
+  four identities of the current uid, carried as the predicates it replaces
+  matched them: `systemd` with `--user` anywhere in argv, `(sd-pam)` by name or
+  argv, and `sshd-session` and `ssh-agent` by name. Every other unreadable entry
+  is a refusal.
 - `maps` is read after `cmdline` and never once `cmdline` has not answered: both
   wait on the target's mmap lock, so one stuck process pins one I/O-pool thread
   instead of two, and its `maps` is named `unanswered` with its `argv`.

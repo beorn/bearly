@@ -10,7 +10,6 @@
  */
 import { execFile } from "node:child_process"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
-import { userInfo } from "node:os"
 import { basename, resolve, sep } from "node:path"
 import { linuxBootTimeMs, procStatStartedAtMs } from "./pid-identity.ts"
 import { censusProcessCwds, type ProcessCwdRow } from "./process-census.ts"
@@ -742,30 +741,35 @@ export async function inspectProcessCwdsInProc(
 }
 
 /**
- * The one predicate for a denied same-uid process (hh 26990 line 60, @cto adce5a62): the session manager pair and an
- * sshd session of this user leave their login context non-dumpable, so their sources deny the census for their whole
- * life while their command lines stay readable. Each is cleared by its exact command and recorded as "denied, cleared
- * by identity"; every other unreadable entry, and any entry with an issue other than a denial, is a refusal.
- * Returns the identity that cleared it, or undefined.
+ * The one predicate for a denied same-uid process (hh 26990 line 60, @cto adce5a62 and c1e73bcd). Four identities
+ * leave their context non-dumpable, so their sources deny the census for their whole life while their name and command
+ * line stay readable. Each is carried as the predicates it replaces matched it, never narrowed:
+ * - `systemd` with `--user` anywhere in its argv: the PAM-spawned user session manager;
+ * - `(sd-pam)`, by name or as its whole argv: the session manager's PAM sibling;
+ * - `sshd-session`, by name: this user's ssh connection after its privilege transitions (2026-08-26, 73 leaked roots);
+ * - `ssh-agent`, by name: non-dumpable for its whole life, it kept every nightly sweep blind on 2026-09-24 (25342).
+ * Each clears an entry recorded as "denied, cleared by identity". An entry of another uid, without a uid, or with any
+ * issue other than a denial is a refusal. Returns the identity that cleared it, or undefined.
  */
 export function clearedByIdentity(
   entry: UnreadableProcess,
-  identity: Readonly<{ uid: number; user: string }> = currentIdentity(),
+  identity: Readonly<{ uid: number }> = currentIdentity(),
 ): string | undefined {
   if (entry.uid !== identity.uid) return undefined
   if (entry.issues.length === 0 || entry.issues.some((issue) => issue.reason !== "denied")) return undefined
   const argv = entry.argv ?? []
-  const [first, second] = argv
-  if (first !== undefined && basename(first) === "systemd" && second === "--user") return "systemd --user"
-  if (argv.length === 1 && first === "(sd-pam)") return "(sd-pam)"
-  if (argv.length === 1 && first?.startsWith(`sshd-session: ${identity.user}@`) === true) return first
+  const [first] = argv
+  if (first !== undefined && basename(first) === "systemd" && argv.includes("--user")) return "systemd --user"
+  if (entry.comm === "(sd-pam)" || (argv.length === 1 && first === "(sd-pam)")) return "(sd-pam)"
+  if (entry.comm === "sshd-session") return "sshd-session"
+  if (entry.comm === "ssh-agent") return "ssh-agent"
   return undefined
 }
 
-function currentIdentity(): Readonly<{ uid: number; user: string }> {
+function currentIdentity(): Readonly<{ uid: number }> {
   const uid = process.getuid?.()
   if (uid === undefined) throw new Error("removely: clearedByIdentity needs the current uid")
-  return { uid, user: userInfo().username }
+  return { uid }
 }
 
 async function canonicalPath(path: string): Promise<string> {

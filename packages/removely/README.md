@@ -57,8 +57,9 @@ only with `includeArgv: true`, since a command line can carry a secret. A row is
 not a stable identity: a caller that signals a pid re-checks it first.
 `inspectProcessCwds()` is the cwd projection. It lists every readable same-uid
 cwd and names each process it could not read in `unreadable`, with its uid and
-argv; `clearedByIdentity(entry)` clears exactly `systemd --user`, `(sd-pam)` and
-`sshd-session: <user>@…`, and every other entry is for the caller to refuse on.
+argv; `clearedByIdentity(entry)` clears four identities of the current uid
+(`systemd` with `--user`, `(sd-pam)`, `sshd-session` and `ssh-agent`), and every
+other entry is for the caller to refuse on.
 `maps` is read after `cmdline` and never once `cmdline` has not answered, so one
 process stuck on its mmap lock pins one I/O-pool thread. The synchronous
 `censusProcessCwds` API retains its separate, weaker cwd-only contract until its

@@ -1039,28 +1039,41 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
     })
   })
 
-  test("clearedByIdentity clears only the issue's exact commands on a denied same-uid entry", () => {
-    const identity = { uid: 3001, user: "hh" }
-    const denied = (argv: string[], extra: Partial<UnreadableProcess> = {}): UnreadableProcess => ({
+  test("clearedByIdentity clears the four carried identities on a denied same-uid entry, and nothing else", () => {
+    const identity = { uid: 3001 }
+    const denied = (comm: string, argv: string[], extra: Partial<UnreadableProcess> = {}): UnreadableProcess => ({
       pid: 7,
       uid: 3001,
+      comm,
       denied: ["cwd"],
       issues: [{ source: "cwd", resource: "/proc/7/cwd", reason: "denied", code: "EACCES" }],
       argv,
       ...extra,
     })
-    expect(clearedByIdentity(denied(["/usr/lib/systemd/systemd", "--user"]), identity)).toBe("systemd --user")
-    expect(clearedByIdentity(denied(["(sd-pam)"]), identity)).toBe("(sd-pam)")
-    expect(clearedByIdentity(denied(["sshd-session: hh@notty"]), identity)).toBe("sshd-session: hh@notty")
-    // Every other entry is a refusal: another command, another user's session, another uid, an unanswered read.
-    expect(clearedByIdentity(denied(["/usr/lib/systemd/systemd"]), identity)).toBeUndefined()
-    expect(clearedByIdentity(denied(["ssh-agent", "-s"]), identity)).toBeUndefined()
-    expect(clearedByIdentity(denied(["sshd-session: root@notty"]), identity)).toBeUndefined()
-    expect(clearedByIdentity(denied(["(sd-pam)"], { uid: 0 }), identity)).toBeUndefined()
-    expect(clearedByIdentity(denied(["(sd-pam)"], { uid: undefined }), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied("systemd", ["/usr/lib/systemd/systemd", "--user"]), identity)).toBe(
+      "systemd --user",
+    )
+    // --user anywhere in argv, as clean-root matched it (@cto c1e73bcd: carried, never narrowed).
+    expect(
+      clearedByIdentity(denied("systemd", ["/usr/lib/systemd/systemd", "--deserialize=12", "--user"]), identity),
+    ).toBe("systemd --user")
+    expect(clearedByIdentity(denied("(sd-pam)", ["(sd-pam)"]), identity)).toBe("(sd-pam)")
+    expect(clearedByIdentity(denied("(sd-pam)", []), identity)).toBe("(sd-pam)")
+    expect(clearedByIdentity(denied("sshd-session", ["sshd-session: hh@notty"]), identity)).toBe("sshd-session")
+    // ssh-agent by name whatever its argv: an agent started another way would reopen 25342.
+    expect(clearedByIdentity(denied("ssh-agent", ["ssh-agent", "-s"]), identity)).toBe("ssh-agent")
+    expect(
+      clearedByIdentity(denied("ssh-agent", ["/usr/bin/ssh-agent", "-D", "-a", "/run/agent.sock"]), identity),
+    ).toBe("ssh-agent")
+    // Every other entry is a refusal: another command, the system systemd, another uid, no uid, an unanswered read.
+    expect(clearedByIdentity(denied("mystery", ["mystery"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied("systemd", ["/usr/lib/systemd/systemd"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied("sd-pam", ["sd-pam"]), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied("(sd-pam)", ["(sd-pam)"], { uid: 0 }), identity)).toBeUndefined()
+    expect(clearedByIdentity(denied("(sd-pam)", ["(sd-pam)"], { uid: undefined }), identity)).toBeUndefined()
     expect(
       clearedByIdentity(
-        denied(["(sd-pam)"], {
+        denied("ssh-agent", ["ssh-agent"], {
           unanswered: ["maps"],
           issues: [{ source: "maps", resource: "/proc/7/maps", reason: "unanswered" }],
         }),
