@@ -34,6 +34,13 @@ Minor (0.4.0 at release): additive option, fields and export.
 - `maps` is read after `cmdline` and never once `cmdline` has not answered: both
   wait on the target's mmap lock, so one stuck process pins one I/O-pool thread
   instead of two, and its `maps` is named `unanswered` with its `argv`.
+- A denied source is read once more after the walk, because a live process can
+  deny its own `/proc` entries for a moment, as while it execs. The second read
+  stands in for the first. If the process directory has gone, or the pid now has
+  another start time, the source counts as `exited`; if it is now a zombie, it
+  counts as `notApplicable`. Only a source the same live process denies twice is
+  `denied`. A source that is `exited` or `notApplicable` and also carries a
+  target's ambiguity is counted `ambiguous`, as a readable one already was.
 
 ## 0.3.0
 

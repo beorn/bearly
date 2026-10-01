@@ -475,12 +475,60 @@ async function collectProcessRows(
       return row
     }),
   )
+  const live = rows.filter((row): row is MutableRow => row !== undefined)
+  await Promise.all(live.map((row) => rereadDeniedSources(deadline, row, bootedAtMs)))
   return {
     procRoot,
     scope,
-    rows: rows.filter((row): row is MutableRow => row !== undefined),
+    rows: live,
     enumerated: numericEntries.length,
     ...counts,
+  }
+}
+
+/**
+ * A same-uid process can deny its own /proc entries for a moment, as while it execs (hh 26990: a transient `bun` and
+ * `@in` held a landing once in a parallel run, @dev/review-adhoc5 78b11692). So once the walk is done, each denied
+ * source is read once more. A process directory that has gone, or now holds a process with another start time, proves
+ * the denied process exited; a zombie holds nothing; otherwise the second read stands in for the first. Only a source
+ * the same live process denies twice stays denied.
+ */
+async function rereadDeniedSources(
+  deadline: CensusDeadline,
+  row: MutableRow,
+  bootedAtMs: number | undefined,
+): Promise<void> {
+  if (row.kind !== "inspected") return
+  const denied = (Object.keys(row.sources) as SourceName[]).filter((source) =>
+    row.sources[source]?.issues.some((issue) => issue.reason === "denied"),
+  )
+  if (denied.length === 0) return
+  const again = await observeSources(deadline, row.procPath, denied)
+  // Identity is read after the second read, so a read that answers is known to be this process's.
+  const presence = await observeSource(deadline, row.procPath, () => stat(row.procPath), undefined)
+  const after =
+    presence.availability === "readable" ? await observeProcessIdentity(deadline, row.procPath, bootedAtMs) : undefined
+  const resolved =
+    presence.availability === "missing" ||
+    (row.identity.startTicks !== undefined &&
+      after?.startTicks !== undefined &&
+      after.startTicks !== row.identity.startTicks)
+      ? "exited"
+      : after?.state === "Z"
+        ? "notApplicable"
+        : undefined
+  for (const source of denied) {
+    const observation = row.sources[source]
+    if (observation === undefined) continue
+    if (resolved !== undefined) {
+      observation.issues = observation.issues.filter((issue) => issue.reason !== "denied")
+      observation.availability = observation.issues[0]?.reason ?? resolved
+      continue
+    }
+    const second = again[source]
+    if (presence.availability === "readable" && second !== undefined && second.availability !== "unanswered") {
+      row.sources[source] = second
+    }
   }
 }
 
@@ -613,7 +661,8 @@ function summarizeRows(
           ? observation
           : {
               ...observation,
-              availability: observation.availability === "readable" ? ("ambiguous" as const) : observation.availability,
+              // An observation with no issue of its own (readable, exited, not applicable) takes the target's.
+              availability: observation.issues.length === 0 ? ("ambiguous" as const) : observation.availability,
               issues: [...observation.issues, ...extra],
             }
       const coverage = sourceCoverage[source]

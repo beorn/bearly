@@ -2,6 +2,7 @@
  * @failure A process chrooted into a disposable path is invisible to teardown, so the path can be removed under a live holder.
  * @level l2
  * @consumer Removely inspectPathHolderCensus and Bucketeer guarded pruning
+ * @reach fs-walk <fixture-only: each census reads a tmpdir proc fixture; readdir is spied, never walked over the repo>
  */
 import { afterEach, describe, expect, test, vi } from "vitest"
 import {
@@ -670,19 +671,73 @@ describe("explicit scope and source evidence", () => {
       }
       return stat(...args)
     })
+    // The absent process directory proves exit for the vanished and the denied descriptor alike, since an exited
+    // process holds nothing; the ambiguous name was read and still says what it says (hh 26990).
     const afterExit = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(afterExit.coverage).toMatchObject({
       complete: false,
-      sources: { fd: { unavailable: { denied: 1, missing: 0, ambiguous: 1 } } },
+      sources: { fd: { unavailable: { denied: 0, missing: 0, ambiguous: 1 } } },
       unreadable: [
         {
           pid: 4242,
-          issues: expect.arrayContaining([
-            expect.objectContaining({ source: "fd", resource: join(processRoot, "fd", "7"), reason: "denied" }),
+          issues: [
             expect.objectContaining({ source: "fd", resource: join(processRoot, "fd", "9"), reason: "ambiguous" }),
-          ]),
+          ],
         },
       ],
+    })
+  })
+
+  /** One readdir of `path` is denied, as while its process execs; `during` runs inside that denial. */
+  function denyOnce(path: string, during: () => void = () => {}) {
+    const readdir = fsPromises.readdir
+    let denials = 0
+    vi.spyOn(fsPromises, "readdir").mockImplementation((async (...args: Parameters<typeof fsPromises.readdir>) => {
+      if (String(args[0]) === path && denials++ === 0) {
+        during()
+        throw Object.assign(new Error("denied fd"), { code: "EACCES" })
+      }
+      return readdir(...args)
+    }) as typeof fsPromises.readdir)
+  }
+
+  function statLine(pid: number, startTicks: number): string {
+    // Field 22 is the start time: state is field 3, so 18 fields sit between them.
+    return `${pid} (probe) S 1 ${Array.from({ length: 17 }, () => "0").join(" ")} ${startTicks} 0\n`
+  }
+
+  test("a source denied once and read on the second try is read, not reported", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    symlinkSync(ownedPath, join(processRoot, "fd", "7"))
+    denyOnce(join(processRoot, "fd"))
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.holders).toEqual([{ pid: 4242, source: "fd/7", target: ownedPath }])
+    expect(census.coverage).toMatchObject({ complete: true, sources: { fd: { readable: 1 } } })
+    expect(census.coverage).not.toHaveProperty("unreadable")
+  })
+
+  test("a denied source whose process directory has gone by the second read counts as exited", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    denyOnce(join(processRoot, "fd"), () => safeRemoveSync(processRoot, { within: procRoot }))
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    expect(census.coverage).toMatchObject({
+      complete: true,
+      sources: { fd: { unavailable: { denied: 0, exited: 1 } } },
+    })
+    expect(census.coverage).not.toHaveProperty("unreadable")
+  })
+
+  test("a pid that names another process by the second read proves the denied one exited", async () => {
+    const { ownedPath, procRoot, processRoot } = fixture()
+    writeFileSync(join(processRoot, "stat"), statLine(4242, 100))
+    symlinkSync(ownedPath, join(processRoot, "fd", "7"))
+    denyOnce(join(processRoot, "fd"), () => writeFileSync(join(processRoot, "stat"), statLine(4242, 200)))
+    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    // The second read belongs to the new process, which this census never listed, so it holds nothing here.
+    expect(census.holders).toEqual([])
+    expect(census.coverage).toMatchObject({
+      complete: true,
+      sources: { fd: { unavailable: { denied: 0, exited: 1 } } },
     })
   })
 
