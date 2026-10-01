@@ -120,8 +120,8 @@ afterEach(() => {
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
   /** @failure a later transfer failure hides its cause or the recovery refs already saved, or removes the source
    * @level l2 @consumer #27037 partial preservation failure @testonly none */
-  test.each(["before", "after"] as const)(
-    "a parent transfer failing %s its ref write names the failure and retained recovery",
+  test.each(["before", "after", "source"] as const)(
+    "a recovery write failing %s names the failure and retained recovery",
     async (phase) => {
       const mainRepo = await buildSubmoduleMain(true)
       const originalCwd = process.cwd()
@@ -153,7 +153,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           const wrapper = join(bin, "git")
           writeFileSync(
             wrapper,
-            `#!/usr/bin/env bun\nconst args = process.argv.slice(2); const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }); if (result.exitCode === 0 && args[1] === ${JSON.stringify(primaryParent)} && args[2] === "fetch") { process.stderr.write("fixture failure after ref write\\n"); process.exit(1); } process.exit(result.exitCode);\n`,
+            `#!/usr/bin/env bun\nconst args = process.argv.slice(2); const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }); if (result.exitCode === 0 && args[1] === ${JSON.stringify(phase === "source" ? sourceLeaf : primaryParent)} && args[2] === ${JSON.stringify(phase === "source" ? "update-ref" : "fetch")}) { process.stderr.write("fixture failure after ref write\\n"); process.exit(1); } process.exit(result.exitCode);\n`,
           )
           chmodSync(wrapper, 0o755)
           process.env.PATH = bin + ":" + originalPath
@@ -166,14 +166,16 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           failure = cause
         }
         expect(failure).toBeInstanceOf(Error)
-        expect((failure as Error).message).toContain("git fetch")
-        expect((failure as Error).message).toContain(primaryParent)
-        const refs = await preserveRefs(primaryLeaf, "wt5")
+        const operation = phase === "source" ? "git update-ref" : "git fetch"
+        const recoveryStore = phase === "source" ? sourceLeaf : primaryLeaf
+        expect((failure as Error).message).toContain(operation)
+        expect((failure as Error).message).toContain(phase === "source" ? sourceLeaf : primaryParent)
+        const refs = await preserveRefs(recoveryStore, "wt5")
         expect(refs).toHaveLength(1)
-        expect(await $`git -C ${primaryLeaf} show ${refs[0]! + ":file.txt"}`.text()).toBe(
+        expect(await $`git -C ${recoveryStore} show ${refs[0]! + ":file.txt"}`.text()).toBe(
           "leaf saved before parent failure\n",
         )
-        expect((failure as Error).message).toContain(primaryLeaf + ":" + refs[0]!)
+        expect((failure as Error).message).toContain(recoveryStore + ":" + refs[0]!)
         if (phase === "after") {
           const parentRefs = await preserveRefs(primaryParent, "wt5")
           expect(parentRefs).toHaveLength(1)
@@ -184,8 +186,8 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         const rootCommon = (await $`git -C ${mainRepo} rev-parse --path-format=absolute --git-common-dir`.text()).trim()
         const log = readFileSync(join(rootCommon, "worktree-preserve.log"), "utf8")
         expect(log).toContain("status=failed")
-        expect(log).toContain(primaryLeaf + ":" + refs[0]!)
-        expect(log).toContain("git fetch")
+        expect(log).toContain(recoveryStore + ":" + refs[0]!)
+        expect(log).toContain(operation)
       } finally {
         process.env.PATH = originalPath
         process.chdir(originalCwd)

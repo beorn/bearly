@@ -2237,6 +2237,31 @@ async function preserveGit(repo: string, args: string[]): Promise<string> {
   return result.stdout.trim()
 }
 
+/** Record recovery refs even when Git reports failure after its atomic ref write. */
+async function writeRecoveryRef(
+  repo: string,
+  args: string[],
+  ref: string,
+  sha: string,
+  written: { repo: string; sha: string }[],
+): Promise<void> {
+  try {
+    await preserveGit(repo, args)
+  } catch (cause) {
+    const received = await safeExec($`git -C ${repo} rev-parse --verify --quiet ${ref + "^{commit}"}`)
+    if (received.exitCode === 0) {
+      written.push({ repo, sha: received.stdout.trim() })
+    } else if (received.exitCode !== 1 || received.stdout !== "" || received.stderr !== "") {
+      const failure = cause instanceof Error ? cause.message : String(cause)
+      throw new Error(`${failure}; cannot inspect recovery ref ${ref} in ${repo}: ${gitCommandError(received)}`, {
+        cause,
+      })
+    }
+    throw cause
+  }
+  written.push({ repo, sha })
+}
+
 /**
  * Preserve a live slot's uncommitted (working-tree + submodule) changes and/or
  * root ahead-of-origin/main commits and private child history BEFORE destruction.
@@ -2337,29 +2362,18 @@ export async function preserveSlotState(
           ? await snapshotDirtyRepo(repo.root, `preserve ${refShort} (${repo.path})`, gitlinks)
           : repo.head
       const refRepo = repo.path === "." ? gitRoot : repo.root
-      await preserveGit(refRepo, ["update-ref", refFull, saved])
-      written.push({ repo: refRepo, sha: saved })
+      await writeRecoveryRef(refRepo, ["update-ref", refFull, saved], refFull, saved, written)
       if (repo.path === ".") {
         sha = saved
         continue
       }
-      try {
-        await preserveGit(repo.primary, ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`])
-      } catch (cause) {
-        // Fetch may fail after updating its ref. Report proven partial recovery too.
-        const received = await safeExec($`git -C ${repo.primary} rev-parse --verify --quiet ${refFull + "^{commit}"}`)
-        if (received.exitCode === 0) {
-          written.push({ repo: repo.primary, sha: received.stdout.trim() })
-        } else if (received.exitCode !== 1 || received.stdout !== "" || received.stderr !== "") {
-          const failure = cause instanceof Error ? cause.message : String(cause)
-          throw new Error(
-            `${failure}; cannot inspect recovery ref ${refFull} in ${repo.primary}: ${gitCommandError(received)}`,
-            { cause },
-          )
-        }
-        throw cause
-      }
-      written.push({ repo: repo.primary, sha: saved })
+      await writeRecoveryRef(
+        repo.primary,
+        ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`],
+        refFull,
+        saved,
+        written,
+      )
       const received = await preserveGit(repo.primary, ["rev-parse", "--verify", refFull + "^{commit}"])
       if (received !== saved) {
         throw new Error(`preserve: ${refFull} in ${repo.primary} is ${received}, expected ${saved}`)
