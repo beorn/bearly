@@ -1377,6 +1377,9 @@ async function checkUnpushedSubmodules(gitRoot: string, submodules: string[]): P
     console.log(
       `  Current checkout: ${gitRoot}; use the owned-environment Yrd/GitSuper delivery path, then retry creation.`,
     )
+    console.log("  From the owned authoring environment, replace the path and branch placeholders:")
+    console.log("    @in <owned-environment-path> -- bun yrd submit <task-branch> --prepare")
+    console.log(`  Workflow: ${join(import.meta.dir, "..", "README.md")}#publish-components-before-creation`)
     process.exit(1)
   }
   success("Submodules OK")
