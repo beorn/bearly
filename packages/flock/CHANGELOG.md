@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Runs under Node 24 as well as Bun: the lock core sits behind one platform seam, with a `bun:ffi` binding for Bun and a `koffi` binding for Node (hh 26964). `engines` now declares `node >=24`, and `koffi` is a dependency.
+
 ## 0.2.1
 
 - The first published 0.2.x: the flock-v0.2.0 tag never reached npm, because its CI publish failed E404 (26540). It carries 0.2.0 below plus:
