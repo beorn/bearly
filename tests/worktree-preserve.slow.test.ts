@@ -30,7 +30,7 @@ import { tmpdir } from "os"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
-import { createWorktree, removeWorktree, resetWorktree } from "../tools/worktree.ts"
+import { createWorktree, removeWorktree, resetWorktree, preserveSlotState } from "../tools/worktree.ts"
 
 let sandbox: string
 let consoleLogSpy: ReturnType<typeof vi.spyOn>
@@ -109,6 +109,44 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure selected preservation probes a private checkout or loses its staged parent gitlink metadata (27058 AC3/AC5)
+   * @level l2 @consumer Bearly preservation snapshots @testonly none */
+  test("preserves staged private gitlink metadata while skipping the empty checkout", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const destination = join(sandbox, "candidate")
+    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    const component = join(sandbox, "sub")
+    writeFileSync(join(component, "file.txt"), "next fixture pin\n")
+    await commitAll(component, "next fixture pin")
+    const pin = (await $`git -C ${component} rev-parse HEAD`.text()).trim()
+    await $`git -C ${destination} update-index --cacheinfo ${`160000,${pin},vendor/sub`}`.quiet()
+    writeFileSync(join(destination, "README.md"), "preserved root dirt\n")
+    const privateStore = join(mainRepo, ".git/modules/vendor/sub")
+    const head = readFileSync(join(privateStore, "HEAD"))
+    const config = readFileSync(join(privateStore, "config"))
+    const index = readFileSync(join(mainRepo, ".git/worktrees/candidate/index"))
+    const result = await preserveSlotState(destination, "wt5", mainRepo, {
+      label: "private-parent-metadata",
+      includeAhead: false,
+      excludedSubmodules: ["vendor/sub"],
+    })
+    expect(result.preserved).toBe(true)
+    expect(result.submodules).toEqual([])
+    expect(result.notCompared).toContainEqual({
+      path: "vendor/sub",
+      reason: "excluded",
+      message: expect.stringContaining("nothing to preserve in the checkout"),
+    })
+    expect(JSON.stringify(result)).toContain("vendor/sub")
+    expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("skipped by declaration")
+    expect((await $`git -C ${mainRepo} show ${`${result.sha}:README.md`}`.text()).trim()).toBe("preserved root dirt")
+    expect(await $`git -C ${mainRepo} ls-tree ${result.sha!} -- vendor/sub`.text()).toContain(pin)
+    expect(readFileSync(join(mainRepo, ".git/worktrees/candidate/index"))).toEqual(index)
+    expect(readFileSync(join(privateStore, "HEAD"))).toEqual(head)
+    expect(readFileSync(join(privateStore, "config"))).toEqual(config)
+    expect(existsSync(join(destination, "vendor/sub/.git"))).toBe(false)
+  })
+
   /** @failure blanket uninitialized admission rejects a declared empty private checkout (27058 AC3/AC5)
    * @level l2 @consumer Bearly removal admission @testonly none */
   test("admits an excluded empty checkout without changing its common store or registration", async () => {

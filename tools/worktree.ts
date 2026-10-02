@@ -36,6 +36,7 @@
 import { spawnSync } from "node:child_process"
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -93,6 +94,8 @@ export function worktreeAddEnvironment(environment: NodeJS.ProcessEnv = process.
 function poolWorktreeMechanics(gitRoot: string, environment: NodeJS.ProcessEnv = process.env) {
   return createLocalGitWorktreeStore({ repo: gitRoot, env: environment })
 }
+
+type RemovalInspection = Awaited<ReturnType<ReturnType<typeof poolWorktreeMechanics>["inspectRemoval"]>>
 
 // ============================================
 // Core Functions (exported for library use)
@@ -237,9 +240,31 @@ export async function getSubmoduleHeads(worktreePath: string): Promise<Record<st
 }
 
 /** Check for uncommitted changes in a worktree */
-export async function getWorktreeStatus(worktreePath: string): Promise<{ dirty: boolean; changes: string[] }> {
+export async function getWorktreeStatus(
+  worktreePath: string,
+  options: { excludedSubmodules?: readonly string[] } = {},
+): Promise<{ dirty: boolean; changes: string[]; notCompared?: RemovalInspection["notCompared"] }> {
   if (!existsSync(worktreePath)) {
     return { dirty: false, changes: [] }
+  }
+
+  if (options.excludedSubmodules !== undefined) {
+    const inspection = await poolWorktreeMechanics(worktreePath).inspectRemoval(worktreePath, options)
+    const changes: string[] = []
+    for (const repository of inspection.consultedRepositories) {
+      const status =
+        await $`git -C ${repository.root} --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=all`.quiet()
+      // Cached comparison reads parent index/tree metadata without opening child checkouts.
+      const staged =
+        await $`git -C ${repository.root} --no-optional-locks diff --cached --name-status --ignore-submodules=dirty`.quiet()
+      for (const line of [
+        ...status.stdout.toString().trim().split("\n"),
+        ...staged.stdout.toString().trim().split("\n"),
+      ].filter(Boolean)) {
+        changes.push(repository.path === "." ? line : `${repository.path}: ${line}`)
+      }
+    }
+    return { dirty: changes.length > 0, changes: [...new Set(changes)], notCompared: inspection.notCompared }
   }
 
   const result = await safeExec(
@@ -2137,6 +2162,7 @@ export interface PreserveResult {
   sha?: string
   reason?: "dirty" | "ahead" | "dirty+ahead"
   submodules: PreservedSubmodule[]
+  notCompared?: RemovalInspection["notCompared"]
 }
 
 /** UTC stamp safe as a ref component: `YYYYMMDDTHHMMSSZ`. */
@@ -2182,13 +2208,22 @@ async function snapshotDirtyRepo(
   repoPath: string,
   message: string,
   gitlinkOverrides?: Map<string, string>,
+  excludedSubmodules: readonly string[] = [],
 ): Promise<string> {
   const tmpDir = mkdtempSync(join(tmpdir(), "wt-preserve-idx-"))
   const idxEnv = { ...process.env, GIT_INDEX_FILE: join(tmpDir, "index") }
   try {
-    const seed = await safeExec($`cd ${repoPath} && git read-tree HEAD 2>&1`.env(idxEnv))
-    if (seed.exitCode !== 0) throw new Error(`preserve: read-tree HEAD failed in ${repoPath}: ${seed.stdout}`)
-    const add = await safeExec($`cd ${repoPath} && git add -A 2>&1`.env(idxEnv))
+    if (excludedSubmodules.length > 0) {
+      // The real parent index carries staged gitlink metadata; copying it never opens a child store.
+      const index = (await $`git -C ${repoPath} rev-parse --path-format=absolute --git-path index`.text()).trim()
+      if (!isAbsolute(index)) throw new Error(`preserve: parent index path is not absolute in ${repoPath}: ${index}`)
+      copyFileSync(index, idxEnv.GIT_INDEX_FILE)
+    } else {
+      const seed = await safeExec($`cd ${repoPath} && git read-tree HEAD 2>&1`.env(idxEnv))
+      if (seed.exitCode !== 0) throw new Error(`preserve: read-tree HEAD failed in ${repoPath}: ${seed.stdout}`)
+    }
+    const paths = [".", ...excludedSubmodules.map((path) => `:(exclude,literal)${path}`)]
+    const add = await safeExec($`cd ${repoPath} && git add -A -- ${paths} 2>&1`.env(idxEnv))
     if (add.exitCode !== 0) throw new Error(`preserve: add -A failed in ${repoPath}: ${add.stdout}`)
     if (gitlinkOverrides) {
       for (const [sub, subSha] of gitlinkOverrides) {
@@ -2214,6 +2249,8 @@ async function snapshotDirtyRepo(
 }
 
 export interface PreserveOptions {
+  /** Declared root-relative component exclusions, judged by the mechanics owner before preservation. */
+  excludedSubmodules?: readonly string[]
   /** Fixed ref slug: `wip/<label>` instead of `wip/<slot>-preserve-<stamp>`. */
   label?: string
   /** Override the UTC stamp (tests). */
@@ -2242,6 +2279,13 @@ export async function preserveSlotState(
 ): Promise<PreserveResult> {
   const empty: PreserveResult = { preserved: false, submodules: [] }
   if (!existsSync(worktreePath)) return empty
+  const inspection = await poolWorktreeMechanics(gitRoot).inspectRemoval(worktreePath, {
+    excludedSubmodules: opts.excludedSubmodules,
+  })
+  const observations = opts.excludedSubmodules === undefined ? {} : { notCompared: inspection.notCompared }
+  if (opts.excludedSubmodules !== undefined) {
+    for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
+  }
   const includeAhead = opts.includeAhead ?? true
   const recoverySlot = slotNameFromResolvedPath(gitRoot, worktreePath)
   const stamp = opts.stamp ?? preserveStamp()
@@ -2254,23 +2298,34 @@ export async function preserveSlotState(
   // submodule working tree. A pure gitlink advance (committed submodule move) is
   // NOT the uncommitted-work loss class, so it does not trigger preservation.
   const superFile = await safeExec(
-    $`cd ${worktreePath} && git status --porcelain --untracked-files=all --ignore-submodules=all 2>/dev/null`,
+    $`cd ${worktreePath} && git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=all 2>/dev/null`,
   )
-  const superFileDirty = superFile.stdout.trim().length > 0
+  let superFileDirty = superFile.stdout.trim().length > 0
+  if (opts.excludedSubmodules !== undefined) {
+    const staged = await $`git -C ${worktreePath} --no-optional-locks diff --cached --quiet --ignore-submodules=dirty`
+      .nothrow()
+      .quiet()
+    if (staged.exitCode > 1) {
+      throw new Error(`preserve: cannot read staged parent metadata in ${worktreePath}: ${staged.stderr.toString()}`)
+    }
+    superFileDirty ||= staged.exitCode !== 0
+  }
 
   const dirtySubs: string[] = []
-  for (const sub of getSubmodulePaths(worktreePath)) {
-    const subPath = join(worktreePath, sub)
-    if (!existsSync(join(subPath, ".git"))) continue
-    const st = await getWorktreeStatus(subPath)
-    if (st.dirty) dirtySubs.push(sub)
+  for (const entry of inspection.consultedRepositories) {
+    if (entry.path === ".") continue
+    const localExclusions = opts.excludedSubmodules
+      ?.filter((path) => path.startsWith(`${entry.path}/`))
+      .map((path) => path.slice(entry.path.length + 1))
+    const st = await getWorktreeStatus(entry.root, { excludedSubmodules: localExclusions ?? [] })
+    if (st.dirty) dirtySubs.push(entry.path)
   }
   const dirty = superFileDirty || dirtySubs.length > 0
 
   const aheadRes = await safeExec($`cd ${worktreePath} && git rev-list --count origin/main..HEAD 2>/dev/null`)
   const ahead = parseInt(aheadRes.stdout.trim(), 10) || 0
 
-  if (!dirty && !(ahead > 0 && includeAhead)) return empty
+  if (!dirty && !(ahead > 0 && includeAhead)) return { ...empty, ...observations }
 
   const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead > 0 ? "dirty+ahead" : dirty ? "dirty" : "ahead"
 
@@ -2284,7 +2339,10 @@ export async function preserveSlotState(
     const subGitlinks = new Map<string, string>()
     for (const sub of dirtySubs) {
       const subPath = join(worktreePath, sub)
-      const subSha = await snapshotDirtyRepo(subPath, `preserve ${refShort} (${sub})`)
+      const localExclusions = opts.excludedSubmodules
+        ?.filter((path) => path.startsWith(`${sub}/`))
+        .map((path) => path.slice(sub.length + 1))
+      const subSha = await snapshotDirtyRepo(subPath, `preserve ${refShort} (${sub})`, undefined, localExclusions)
       const subRef = await safeExec($`cd ${subPath} && git update-ref ${refFull} ${subSha}`)
       if (subRef.exitCode !== 0) {
         throw new Error(`preserve: update-ref ${refFull} in ${sub} of ${gitRoot} failed: ${gitCommandError(subRef)}`)
@@ -2303,7 +2361,12 @@ export async function preserveSlotState(
       preservedSubs.push({ path: sub, ref: refShort, sha: subSha })
     }
     // 2) Superproject snapshot, gitlinks repointed at the sub preserve commits.
-    sha = await snapshotDirtyRepo(worktreePath, `preserve ${refShort} (${recoverySlot})`, subGitlinks)
+    sha = await snapshotDirtyRepo(
+      worktreePath,
+      `preserve ${refShort} (${recoverySlot})`,
+      subGitlinks,
+      opts.excludedSubmodules,
+    )
   } else {
     // clean-but-ahead → the ref points directly at HEAD (no snapshot commit).
     const headRes = await safeExec($`cd ${worktreePath} && git rev-parse HEAD`)
@@ -2333,7 +2396,7 @@ export async function preserveSlotState(
       ` path=${worktreePath}`,
   )
 
-  return { preserved: true, ref: refShort, sha, reason, submodules: preservedSubs }
+  return { preserved: true, ref: refShort, sha, reason, submodules: preservedSubs, ...observations }
 }
 
 /** A fresh creator never moves a slot ref over commits missing from its chosen base. */
@@ -2358,6 +2421,7 @@ async function refuseAheadBranchReset(gitRoot: string, branchName: string, base:
 }
 
 export interface RemoveOptions {
+  excludedSubmodules?: readonly string[]
   /** Run existing removal admission without preservation or teardown. */
   admitOnly?: boolean
   /** Worktree-relative outputs the composing caller's setup recreates. */
@@ -2434,12 +2498,13 @@ async function removeWorktreeWithAdmission(
   if (preserveLabel !== undefined) assertValidPreserveRef(`refs/heads/wip/${preserveLabel}`, gitRoot)
 
   // Both direct removal and reset classify before preservation or teardown.
-  await assertIgnoredContent(
+  const inspection = await assertIgnoredContent(
     worktreePath,
     reset?.setup ?? { install: true, direnv: true, hooks: false },
     reset === undefined ? "Remove" : "Reset",
     reset?.base,
     callerRegeneratedOutputs(worktreePath, options.regenerates),
+    options.excludedSubmodules,
   )
 
   // Get branch name before removing
@@ -2448,7 +2513,7 @@ async function removeWorktreeWithAdmission(
 
   // Check for uncommitted changes
   if (!force) {
-    const status = await getWorktreeStatus(worktreePath)
+    const status = await getWorktreeStatus(worktreePath, { excludedSubmodules: options.excludedSubmodules })
     if (status.dirty) {
       if (admitOnly) {
         throw new Error(`Worktree ${worktreePath} has uncommitted changes; use --force to admit preserved dirt`)
@@ -2465,24 +2530,28 @@ async function removeWorktreeWithAdmission(
     }
 
     // Check submodules too
-    const submodules = getSubmodulePaths(worktreePath)
-    for (const submodule of submodules) {
-      const subPath = join(worktreePath, submodule)
-      if (!existsSync(join(subPath, ".git"))) continue
-
-      const subStatus = await getWorktreeStatus(subPath)
+    for (const entry of inspection.consultedRepositories) {
+      if (entry.path === ".") continue
+      const subPath = entry.root
+      const localExclusions = options.excludedSubmodules
+        ?.filter((path) => path.startsWith(`${entry.path}/`))
+        .map((path) => path.slice(entry.path.length + 1))
+      const subStatus = await getWorktreeStatus(subPath, { excludedSubmodules: localExclusions ?? [] })
       if (subStatus.dirty) {
         if (admitOnly) {
           throw new Error(`Submodule ${subPath} has uncommitted changes; use --force to admit preserved dirt`)
         }
-        warn(`Submodule ${submodule} has uncommitted changes`)
+        warn(`Submodule ${entry.path} has uncommitted changes`)
         console.log(DIM + "Use --force to remove anyway" + RESET)
         process.exit(admitOnly ? 2 : 1)
       }
     }
   }
 
-  if (admitOnly) return
+  if (admitOnly) {
+    for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
+    return
+  }
 
   // PRESERVE-FIRST (L5): before ANY destructive step, snapshot dirty
   // working-tree state (incl. submodule dirt) and — when the branch will be
@@ -2492,6 +2561,7 @@ async function removeWorktreeWithAdmission(
   await preserveSlotState(worktreePath, slotNameFromResolvedPath(gitRoot, worktreePath), gitRoot, {
     label: preserveLabel,
     includeAhead: deleteBranch,
+    excludedSubmodules: options.excludedSubmodules,
   })
 
   // Kill any `dolt sql-server` rooted in this worktree BEFORE touching the
@@ -2509,7 +2579,10 @@ async function removeWorktreeWithAdmission(
   info("Removing worktree...")
   const mechanics = poolWorktreeMechanics(gitRoot)
   try {
-    await mechanics.remove(worktreePath, { operation: `pool worktree remove ${worktreePath}` })
+    await mechanics.remove(worktreePath, {
+      operation: `pool worktree remove ${worktreePath}`,
+      excludedSubmodules: options.excludedSubmodules,
+    })
   } catch (cause) {
     error("Failed to remove worktree")
     console.log(cause instanceof Error ? cause.message : String(cause))
@@ -2535,6 +2608,7 @@ async function removeWorktreeWithAdmission(
 }
 
 export interface ResetOptions {
+  excludedSubmodules?: readonly string[]
   /** Run every admission check and return before creating, preserving or removing. */
   admitOnly?: boolean
   /** Worktree-relative outputs the composing caller's setup recreates. */
@@ -2625,23 +2699,20 @@ async function assertIgnoredContent(
   verb: "Remove" | "Reset",
   base?: string,
   regenerates: readonly string[] = [],
-): Promise<void> {
-  const submoduleStatus = await $`git -C ${worktreePath} submodule status --recursive`.quiet()
-  const missing = parseUninitializedSubmodules(submoduleStatus.stdout.toString())
+  excludedSubmodules: readonly string[] = [],
+): Promise<RemovalInspection> {
+  const inspection = await poolWorktreeMechanics(worktreePath).inspectRemoval(worktreePath, { excludedSubmodules })
+  const missing = inspection.uninitializedSubmodules
   if (missing.length > 0) {
     throw new Error(
       `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}; no worktree was changed`,
     )
   }
-  // Git owns recursive repository discovery and ignored-file classification.
-  // NUL framing preserves paths containing newlines, spaces or quoting characters.
-  const listCommand = 'printf "%s\\0" "$PWD"'
-  const children = await $`git -C ${worktreePath} submodule foreach --quiet --recursive ${listCommand}`.quiet()
-  const repositories = [worktreePath, ...children.stdout.toString().split("\0").filter(Boolean)]
+  const repositories = inspection.consultedRepositories.map((entry) => entry.root)
   const ignored: Array<{ repository: string; paths: string[] }> = []
   for (const repository of repositories) {
     const status =
-      await $`git -C ${repository} -c status.renames=false status --ignored --porcelain=v1 -z --ignore-submodules=all`.quiet()
+      await $`git -C ${repository} --no-optional-locks -c status.renames=false status --ignored --porcelain=v1 -z --ignore-submodules=all`.quiet()
     const paths = status.stdout
       .toString()
       .split("\0")
@@ -2649,7 +2720,7 @@ async function assertIgnoredContent(
       .map((entry) => entry.slice(3))
     if (paths.length > 0) ignored.push({ repository, paths })
   }
-  if (ignored.length === 0) return
+  if (ignored.length === 0) return inspection
 
   const { generated, packages } = generatedWorktreeOutputs(worktreePath, options)
   // A changed setup declaration cannot prove what the recreated base will generate.
@@ -2669,7 +2740,10 @@ async function assertIgnoredContent(
         .filter((repository) => packages.some((pkg) => pkg === repository || pkg.startsWith(repository + "/")))
         .map((repository) => relative(worktreePath, repository)),
     ]
-    const sameSetup = await $`git -C ${worktreePath} diff --quiet ${base} -- ${inputs}`.nothrow().quiet()
+    inputs.push(...excludedSubmodules.map((path) => `:(exclude,literal)${path}`))
+    const sameSetup = await $`git -C ${worktreePath} --no-optional-locks diff --quiet ${base} -- ${inputs}`
+      .nothrow()
+      .quiet()
     if (sameSetup.exitCode > 1) {
       throw new Error(
         `${verb} cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
@@ -2691,6 +2765,7 @@ async function assertIgnoredContent(
       `${verb} refuses ignored content not regenerated by its setup: ${blocked.join("; ")}. Move or delete the named payload deliberately; no worktree was changed`,
     )
   }
+  return inspection
 }
 
 /**
@@ -2782,11 +2857,18 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     const tip = await $`git -C ${gitRoot} rev-parse --verify ${ref}^{commit}`.quiet()
     base = tip.stdout.toString().trim()
   }
-  await assertIgnoredContent(worktreePath, { install, direnv, hooks }, "Reset", base, regenerated)
+  await assertIgnoredContent(
+    worktreePath,
+    { install, direnv, hooks },
+    "Reset",
+    base,
+    regenerated,
+    options.excludedSubmodules,
+  )
 
   // Drift check (skipped under --force).
   if (!force) {
-    const status = await getWorktreeStatus(worktreePath)
+    const status = await getWorktreeStatus(worktreePath, { excludedSubmodules: options.excludedSubmodules })
     if (status.dirty) {
       throw new Error(
         `Worktree ${name} has uncommitted changes (${status.changes.length} file(s)). ` +
@@ -2828,6 +2910,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
       deleteBranch: force,
       preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
       regenerates,
+      excludedSubmodules: options.excludedSubmodules,
     },
     { setup: { install, direnv, hooks }, base },
   )
