@@ -2736,6 +2736,14 @@ async function assertIgnoredContent(
   excludedSubmodules: readonly string[] = [],
 ): Promise<RemovalInspection> {
   const inspection = await poolWorktreeMechanics(worktreePath).inspectRemoval(worktreePath, { excludedSubmodules })
+  const incomplete = inspection.notCompared.filter((entry) => entry.reason !== "excluded")
+  if (incomplete.length > 0) {
+    throw new Error(
+      `${verb} cannot proceed with incomplete removal inspection: ${incomplete
+        .map((entry) => `${entry.path} (${entry.reason}): ${entry.message}`)
+        .join("; ")}; no worktree was changed`,
+    )
+  }
   const missing = inspection.uninitializedSubmodules
   if (missing.length > 0) {
     throw new Error(

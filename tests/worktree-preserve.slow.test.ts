@@ -29,6 +29,7 @@ import { join, dirname } from "path"
 import { tmpdir } from "os"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import * as worktreeMechanics from "git-super/worktree"
 
 import { createWorktree, removeWorktree, resetWorktree, preserveSlotState } from "../tools/worktree.ts"
 
@@ -168,11 +169,14 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     })
     expect(result.preserved).toBe(true)
     expect(result.submodules).toEqual([])
-    expect(result.notCompared).toContainEqual({
-      path: "vendor/sub",
-      reason: "excluded",
-      message: expect.stringContaining("nothing to preserve in the checkout"),
-    })
+    expect(result.notCompared).toContainEqual(
+      expect.objectContaining({
+        path: "vendor/sub",
+        reason: "excluded",
+        message: expect.stringContaining("nothing to preserve in the checkout"),
+        exclusion: expect.objectContaining({ classification: "declared", checkout: "empty" }),
+      }),
+    )
     expect(JSON.stringify(result)).toContain("vendor/sub")
     expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("skipped by declaration")
     expect((await $`git -C ${mainRepo} show ${`${result.sha}:README.md`}`.text()).trim()).toBe("preserved root dirt")
@@ -230,6 +234,42 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       process.chdir(originalCwd)
     }
   })
+
+  /** @failure removal admission accepts incomplete or unfamiliar inspection reasons (27058 AC3/AC5)
+   * @level l2 @consumer Bearly removal admission @testonly none */
+  test.each(["removed", "unreadable", "inconsistent", "future-reason"])(
+    "refuses %s inspection before classifying repositories",
+    async (reason) => {
+      const mainRepo = await buildMain()
+      const destination = join(sandbox, "candidate")
+      await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+      const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+      const refs = await $`git -C ${mainRepo} show-ref`.text()
+      const mechanics = worktreeMechanics.createLocalGitWorktreeStore({ repo: mainRepo })
+      const factory = vi.spyOn(worktreeMechanics, "createLocalGitWorktreeStore").mockReturnValue({
+        ...mechanics,
+        inspectRemoval: vi.fn().mockResolvedValue({
+          notCompared: [{ path: "vendor/private", reason, message: "parent identity is unresolved" }],
+          // If admission continues, either later classification produces the wrong refusal.
+          consultedRepositories: [{ path: ".", root: join(destination, "must-not-be-probed") }],
+          uninitializedSubmodules: ["included/missing"],
+        }),
+      })
+      const originalCwd = process.cwd()
+      try {
+        process.chdir(mainRepo)
+        await expect(
+          removeWorktree(destination, { force: true, admitOnly: true, excludedSubmodules: ["vendor/private"] }),
+        ).rejects.toThrow(`incomplete removal inspection: vendor/private (${reason}): parent identity is unresolved`)
+        expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+        expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+        expect(existsSync(destination)).toBe(true)
+      } finally {
+        process.chdir(originalCwd)
+        factory.mockRestore()
+      }
+    },
+  )
 
   /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
    * @level l2 @consumer #26139 reset setup @testonly none */
