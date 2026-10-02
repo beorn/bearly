@@ -119,6 +119,9 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
     await $`git -C ${mainRepo} push -q origin main`.quiet()
     const destination = join(sandbox, "candidate")
+    const privateStore = join(mainRepo, ".git/modules/vendor/sub")
+    const head = readFileSync(join(privateStore, "HEAD"))
+    const config = readFileSync(join(privateStore, "config"))
     const created = spawnSync(
       "bun",
       [
@@ -139,12 +142,12 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     )
     expect(created.status, `${created.stdout}\n${created.stderr}`).toBe(0)
     expect(created.stdout).toContain("vendor/sub: skipped by declaration")
+    expect(existsSync(join(destination, "vendor/sub/.git"))).toBe(false)
+    expect(readFileSync(join(privateStore, "HEAD"))).toEqual(head)
+    expect(readFileSync(join(privateStore, "config"))).toEqual(config)
     expect(await $`git -C ${destination} ls-tree HEAD -- vendor/sub`.text()).toBe(
       await $`git -C ${mainRepo} ls-tree HEAD -- vendor/sub`.text(),
     )
-    const privateStore = join(mainRepo, ".git/modules/vendor/sub")
-    const head = readFileSync(join(privateStore, "HEAD"))
-    const config = readFileSync(join(privateStore, "config"))
     const mainHead = (await $`git -C ${mainRepo} rev-parse HEAD`.text()).trim()
     const previousCwd = process.cwd()
     try {
