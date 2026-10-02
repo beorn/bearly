@@ -168,6 +168,23 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         excludedSubmodules: ["vendor/sub"],
       }
       await expect(removeWorktree(destination, selected)).resolves.toBeUndefined()
+      // Library and pure-parser checks do not prove the native CLI resolves the same mechanics owner.
+      const cli = spawnSync(
+        "bun",
+        [
+          fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)),
+          "remove",
+          destination,
+          "--admit",
+          "--force",
+          "--exclude-submodule",
+          "vendor/sub",
+        ],
+        { cwd: mainRepo, encoding: "utf8", timeout: 20_000 },
+      )
+      expect(cli.status, `${cli.stdout}\n${cli.stderr}`).toBe(0)
+      expect(cli.stdout).toContain("skipped by declaration")
+      expect(cli.stdout).toContain("vendor/sub")
       expect(readFileSync(join(privateStore, "HEAD"))).toEqual(head)
       expect(readFileSync(join(privateStore, "config"))).toEqual(config)
       expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)

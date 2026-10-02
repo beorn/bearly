@@ -3197,6 +3197,7 @@ ${BOLD}CREATE OPTIONS${RESET}
                     in main; an ahead slot ref is refused before any reset)
 
 ${BOLD}REMOVE OPTIONS${RESET}
+  --exclude-submodule <path>  Skip a declared empty component (repeatable)
   --admit           Read-only: check target, inputs/label, ignored content and dirt;
                     exit 0 admitted, 2 refused; no preservation or teardown
   --regenerates <json>  One JSON array of relative outputs recreated by the caller
@@ -3204,6 +3205,7 @@ ${BOLD}REMOVE OPTIONS${RESET}
   -f, --force       Remove despite uncommitted changes — preserves them to wip/… first
 
 ${BOLD}RESET OPTIONS${RESET}
+  --exclude-submodule <path>  Skip a declared empty component (repeatable)
   --admit                Check admission only: exit 0 admitted, 2 refused; no mutation
   --regenerates <json>    One JSON array of relative outputs recreated by the caller
   -f, --force            Recreate despite dirt/ahead — PRESERVES to wip/… first (never discards)
@@ -3290,6 +3292,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "-f": {},
       "--preserve-label": { value: true },
       "--regenerates": { value: true },
+      "--exclude-submodule": { value: true },
     },
   },
   rm: {
@@ -3301,6 +3304,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "-f": {},
       "--preserve-label": { value: true },
       "--regenerates": { value: true },
+      "--exclude-submodule": { value: true },
     },
   },
   reset: {
@@ -3308,6 +3312,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     flags: {
       "--admit": {},
       "--regenerates": { value: true },
+      "--exclude-submodule": { value: true },
       "--force": {},
       "-f": {},
       "--save-ahead-as": { value: true },
@@ -3377,6 +3382,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
   const positionals: string[] = []
   const flags = new Set<string>()
   const values = new Map<string, string>()
+  const excludedSubmodules: string[] = []
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i] ?? ""
     if (arg.startsWith("-")) {
@@ -3390,7 +3396,8 @@ export function planCliInvocation(argv: string[]): CliPlan {
         if (value === undefined || value.startsWith("-")) {
           return { action: "usage-error", message: `${arg} requires a value` }
         }
-        values.set(arg, value)
+        if (arg === "--exclude-submodule") excludedSubmodules.push(value)
+        else values.set(arg, value)
         i++
       } else {
         flags.add(arg)
@@ -3452,6 +3459,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         name,
         options: {
           deleteBranch: flags.has("--delete-branch"),
+          ...(excludedSubmodules.length === 0 ? {} : { excludedSubmodules }),
           ...(flags.has("--admit") ? { admitOnly: true } : {}),
           ...(regenerates === undefined ? {} : { regenerates }),
           force: flags.has("--force") || flags.has("-f"),
@@ -3472,6 +3480,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         options: {
           force: flags.has("--force") || flags.has("-f"),
           saveAheadAs: values.get("--save-ahead-as"),
+          ...(excludedSubmodules.length === 0 ? {} : { excludedSubmodules }),
           ...(flags.has("--admit") ? { admitOnly: true } : {}),
           ...(regenerates === undefined ? {} : { regenerates }),
           ...(values.has("--destination") ? { destination: values.get("--destination") } : {}),

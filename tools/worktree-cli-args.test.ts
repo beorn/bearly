@@ -32,6 +32,34 @@ describe("planCliInvocation — help interception (the hh---help incident)", () 
 })
 
 describe("planCliInvocation — name is the first positional, never a flag", () => {
+  /** @failure repeated exclusions are rejected, overwritten or consumed as a worktree name (27058 AC3/AC5)
+   * @level l1 @consumer Bearly remove/reset CLI forwarding @testonly none */
+  test.each(["remove", "rm", "reset"])(
+    "%s keeps every exclusion in order without consuming its value as a name",
+    (action) => {
+      expect(
+        planCliInvocation([
+          action,
+          "--exclude-submodule",
+          "vendor/private",
+          "--exclude-submodule",
+          "vendor/secret",
+          "wt5",
+        ]),
+      ).toMatchObject({
+        action: action === "rm" ? "remove" : action,
+        name: "wt5",
+        options: { excludedSubmodules: ["vendor/private", "vendor/secret"] },
+      })
+      for (const suffix of [[], ["--force"]]) {
+        expect(planCliInvocation([action, "wt5", "--exclude-submodule", ...suffix])).toMatchObject({
+          action: "usage-error",
+          message: expect.stringContaining("requires a value"),
+        })
+      }
+    },
+  )
+
   test("`reset --force wt3` resolves name wt3 (flag-first ordering)", () => {
     expect(planCliInvocation(["reset", "--force", "wt3"])).toEqual({
       action: "reset",
