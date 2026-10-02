@@ -410,6 +410,10 @@ export function safeRemoveSync(target: string, options: SafeRemoveOptions): void
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
+      // Bun's recursive rm reports a child that vanished mid-walk (a detached
+      // `git gc --auto`, a sibling cleanup) as ENOENT on the ROOT while the root
+      // survives. Only a target that is really gone is missing; retry the rest.
+      if (code === "ENOENT" && lstatOrNull(targetReal) !== null) continue
       if (code === "ENOENT" && options.allowMissing === true) break
       // EACCES/EPERM: a fixture wrote something read-only. Widen ONLY then, and
       // only under the already-verified containment root — never as a routine
@@ -432,6 +436,13 @@ export function safeRemoveSync(target: string, options: SafeRemoveOptions): void
       } Last error: ${String(lastError)}`,
     )
   }
+}
+
+async function lstatOrNullAsync(path: string): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+  return lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null
+    throw error
+  })
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
@@ -469,8 +480,10 @@ export async function safeRemove(target: string, options: SafeRemoveOptions): Pr
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
-      if (code === "ENOENT" && options.allowMissing === true) break
-      if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error
+      // A child vanishing mid-walk surfaces as ENOENT on a root that survives; see safeRemoveSync.
+      const rootSurvives = code === "ENOENT" && (await lstatOrNullAsync(targetReal)) !== null
+      if (code === "ENOENT" && !rootSurvives && options.allowMissing === true) break
+      if (!rootSurvives && code !== "ENOTEMPTY" && code !== "EBUSY") throw error
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 20 * (attempt + 1))
       })
@@ -479,10 +492,7 @@ export async function safeRemove(target: string, options: SafeRemoveOptions): Pr
 
   // Verify. A cleanup that silently no-ops leaving the caller green is the
   // dominant defect class this whole bead exists to kill.
-  const survivor = await lstat(targetReal).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null
-    throw error
-  })
+  const survivor = await lstatOrNullAsync(targetReal)
   if (survivor?.isDirectory() && !survivor.isSymbolicLink()) {
     const survivors = await readdir(targetReal)
     const detail = survivors.length > 0 ? ` Survivors: ${survivors.slice(0, 10).join(", ")}` : ""
