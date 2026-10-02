@@ -1,6 +1,6 @@
 # @bearly/flock
 
-Crash-safe, fd-held advisory file locks for Bun on local macOS and Linux
+Crash-safe, fd-held advisory file locks for Bun and Node 24 on local macOS and Linux
 filesystems.
 
 `@bearly/flock` is a small `flock(2)` binding with three guarantees:
@@ -18,13 +18,25 @@ intentionally retained after release and may describe the previous owner. Use
 
 ## Install
 
-> Install from npm; a git install resolves the TypeScript source and runs only under Bun.
+> Install from npm. Source installs require Bun or Node 24 with TypeScript stripping.
 
 ```bash
 bun add @bearly/flock
 ```
 
-This package imports `bun:ffi`; it does not support Node.js or Windows. Its
+Bun uses its own `bun:ffi` adapter; Node uses the prebuilt Koffi 3.3.2 adapter.
+Neither runtime loads the other binding. Koffi install scripts are not trusted;
+no compiler is required on the supported prebuilt platforms.
+
+| Runtime and platform | Evidence |
+| --- | --- |
+| Bun, Linux and macOS | Existing native contract suite |
+| Node 24, Linux x64 | Measured inherited-FD and crash-release contract suite |
+| Node 24, Linux arm64 and macOS x64/arm64 | Upstream prebuilds; unmeasured by us |
+| Windows | Unsupported |
+
+Node on macOS requires the same contract suite to pass before a consumer is
+declared supported. The
 contract is limited to local filesystems. Network filesystems can implement
 `flock` with different semantics and are outside this package's guarantees.
 
@@ -76,6 +88,8 @@ not atomic old-or-new visibility for unlocked readers.
 
 ```bash
 bun run test
+# With Node 24 available:
+bun run test:node
 bun run typecheck
 bun run build
 ```

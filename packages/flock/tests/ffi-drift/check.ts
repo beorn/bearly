@@ -13,3 +13,7 @@ type BunSatisfies<Real, Slice> = Real extends Slice ? true : false
 
 export const dlopenSatisfiesSlice: BunSatisfies<typeof dlopen, SliceDlopen> = true
 export const readI32SatisfiesSlice: BunSatisfies<typeof read.i32, SliceReadI32> = true
+
+import type koffi from "koffi"
+import type { SliceKoffi } from "../../src/koffi-slice.ts"
+export const koffiSatisfiesSlice: BunSatisfies<typeof koffi, SliceKoffi> = true
