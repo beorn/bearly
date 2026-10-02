@@ -18,7 +18,6 @@ export const F_GETFD = 1
  * ABI rather than correct by luck on one.
  */
 export const FIOCLEX = { linux: 0x5451, darwin: 0x2000_6601 } as const
-export const FIONCLEX = { linux: 0x5450, darwin: 0x2000_6602 } as const
 export const WOULD_BLOCK_ERRNOS = { linux: [11], darwin: [35] } as const
 export const INTERRUPTED_ERRNO = 4
 

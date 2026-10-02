@@ -1,5 +1,8 @@
 import { writeFileSync } from "node:fs"
-import { F_GETFD, FIONCLEX, supportedPlatform } from "../../src/native-platform.ts"
+import { F_GETFD, supportedPlatform } from "../../src/native-platform.ts"
+
+// Clearing CLOEXEC is fixture setup only; production only ever sets the flag.
+const FIONCLEX = { linux: 0x5450, darwin: 0x2000_6602 } as const
 import { adoptInheritedFlock, tryAcquireFlock } from "../../src/index.ts"
 
 const [mode, lockPath, readyPath] = process.argv.slice(2)

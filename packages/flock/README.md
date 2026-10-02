@@ -28,12 +28,12 @@ Bun uses its own `bun:ffi` adapter; Node uses the prebuilt Koffi 3.3.2 adapter.
 Neither runtime loads the other binding. Koffi install scripts are not trusted;
 no compiler is required on the supported prebuilt platforms.
 
-| Runtime and platform | Evidence |
-| --- | --- |
-| Bun, Linux and macOS | Existing native contract suite |
-| Node 24, Linux x64 | Measured inherited-FD and crash-release contract suite |
-| Node 24, Linux arm64 and macOS x64/arm64 | Upstream prebuilds; unmeasured by us |
-| Windows | Unsupported |
+| Runtime and platform                     | Evidence                                               |
+| ---------------------------------------- | ------------------------------------------------------ |
+| Bun, Linux and macOS                     | Existing native contract suite                         |
+| Node 24, Linux x64                       | Measured inherited-FD and crash-release contract suite |
+| Node 24, Linux arm64 and macOS x64/arm64 | Upstream prebuilds; unmeasured by us                   |
+| Windows                                  | Unsupported                                            |
 
 Node on macOS requires the same contract suite to pass before a consumer is
 declared supported. The

@@ -15,7 +15,7 @@
     "url": "https://github.com/beorn/bearly/issues"
   },
   "license": "MIT",
-  "author": "Bj\u00f8rn Stabell <bjorn@stabell.org>",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git",
@@ -51,6 +51,9 @@
     "prepublishOnly": "bun run build",
     "test:node": "FLOCK_TEST_RUNTIME=node vitest run"
   },
+  "dependencies": {
+    "koffi": "3.3.2"
+  },
   "devDependencies": {
     "@types/bun": "1.4.2",
     "tsdown": "0.22.13",
@@ -75,8 +78,5 @@
   "engines": {
     "bun": ">=1.3.13",
     "node": ">=24"
-  },
-  "dependencies": {
-    "koffi": "3.3.2"
   }
 }
