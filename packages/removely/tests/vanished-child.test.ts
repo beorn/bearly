@@ -1,8 +1,8 @@
 /**
  * A child that vanishes mid-walk is not a missing target.
  *
- * Bun's recursive `rm` reports a child removed underneath it — a detached
- * `git gc --auto`, a sibling cleanup — as ENOENT on the ROOT, while the root
+ * Bun's recursive `rm` reports a child removed underneath it — git's detached
+ * auto-maintenance, a sibling cleanup — as ENOENT on the ROOT, while the root
  * and its other children survive (measured on Bun 1.4.2: 2 of 60 rounds with a
  * concurrent deleter inside `project/.git`; bearly CI run 36965995135 threw
  * "still exists after removal … Survivors: project, xdg-data … ENOENT").

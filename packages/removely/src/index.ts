@@ -410,10 +410,14 @@ export function safeRemoveSync(target: string, options: SafeRemoveOptions): void
     } catch (error) {
       lastError = error
       const code = (error as NodeJS.ErrnoException).code
-      // Bun's recursive rm reports a child that vanished mid-walk (a detached
-      // `git gc --auto`, a sibling cleanup) as ENOENT on the ROOT while the root
-      // survives. Only a target that is really gone is missing; retry the rest.
-      if (code === "ENOENT" && lstatOrNull(targetReal) !== null) continue
+      // Bun's recursive rm reports a child that vanished mid-walk (git's detached
+      // auto-maintenance, a sibling cleanup) as ENOENT on the ROOT while the root
+      // survives. Only a target that is really gone is missing; retry the rest,
+      // backing off as the async path does while that writer finishes.
+      if (code === "ENOENT" && lstatOrNull(targetReal) !== null) {
+        pauseSync(20 * (attempt + 1))
+        continue
+      }
       if (code === "ENOENT" && options.allowMissing === true) break
       // EACCES/EPERM: a fixture wrote something read-only. Widen ONLY then, and
       // only under the already-verified containment root — never as a routine
@@ -443,6 +447,11 @@ async function lstatOrNullAsync(path: string): Promise<Awaited<ReturnType<typeof
     if (error.code === "ENOENT") return null
     throw error
   })
+}
+
+/** Block the thread for `ms` without spinning: the sync remover has no event loop to yield to. */
+function pauseSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {

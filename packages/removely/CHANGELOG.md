@@ -13,11 +13,12 @@ Minor (0.4.0 at release), with one breaking removal.
   `ProcessCwdRow` is still exported.
 
 - `safeRemove` and `safeRemoveSync` retry an ENOENT whose target still exists.
-  Bun's recursive `rm` reports a child that vanished mid-walk (a detached
-  `git gc --auto`, a sibling cleanup) as ENOENT on the root while the root
+  Bun's recursive `rm` reports a child that vanished mid-walk (git's detached
+  auto-maintenance, a sibling cleanup) as ENOENT on the root while the root
   survives; under `allowMissing: true` that read as absence and then failed the
   survivor check. Only a target that is really gone counts as missing now, and
-  spent retries still throw with the survivors listed.
+  spent retries still throw with the survivors listed. The sync path now backs
+  off between those retries (20, 40, 60 ms), as the async path already did.
 
 - The Linux path-holder census answers by a deadline: `deadlineMs` (default
   `PATH_HOLDER_CENSUS_DEADLINE_MS`, 2000 ms from the census start) races every
