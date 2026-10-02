@@ -70,6 +70,8 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ## Packages
 
+The [worktree CLI](tools/worktree.ts) accepts repeatable `--exclude-submodule <path>` on `create`, `reset`, and `remove`. On create, excluded components are reported and left unmaterialized with their recorded gitlinks intact. Omit the flag to keep the default creation behavior.
+
 ### The alien-\* family — "signals for a specific shape of data"
 
 Three sibling packages on top of [alien-signals](https://github.com/stackblitz/alien-signals). Each solves one data shape well; they compose for real apps.

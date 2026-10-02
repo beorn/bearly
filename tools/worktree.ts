@@ -3237,6 +3237,7 @@ ${BOLD}POOL ROOT${RESET}
   ${DIM}or ahead slot to wip/<slot>-preserve-<UTCstamp> (submodule dirt too).${RESET}
 
 ${BOLD}CREATE OPTIONS${RESET}
+  --exclude-submodule <path>  Leave a declared component unmaterialized (repeatable)
   --branch <name>   Use specific branch (also used as worktree name if no <name>)
   --base <ref>      Base a NEW branch/slot on <ref> instead of the default
                     fetch-then-origin/main (offline / deliberate escape hatch;
@@ -3326,6 +3327,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   create: {
     maxPositionals: 2,
     flags: {
+      "--exclude-submodule": { value: true },
       "--branch": { value: true },
       "--base": { value: true },
       "--destination": { value: true },
@@ -3494,6 +3496,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         branch: branchFromFlag ?? positionals[1],
         options: {
           install: !flags.has("--no-install"),
+          ...(excludedSubmodules.length === 0 ? {} : { excludedSubmodules }),
           direnv: !flags.has("--no-direnv"),
           hooks: !flags.has("--no-hooks"),
           allowDirty: flags.has("--allow-dirty"),

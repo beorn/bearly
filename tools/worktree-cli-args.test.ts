@@ -33,8 +33,8 @@ describe("planCliInvocation — help interception (the hh---help incident)", () 
 
 describe("planCliInvocation — name is the first positional, never a flag", () => {
   /** @failure repeated exclusions are rejected, overwritten or consumed as a worktree name (27058 AC3/AC5)
-   * @level l1 @consumer Bearly remove/reset CLI forwarding @testonly none */
-  test.each(["remove", "rm", "reset"])(
+   * @level l1 @consumer Bearly create/remove/reset CLI forwarding @testonly none */
+  test.each(["create", "remove", "rm", "reset"])(
     "%s keeps every exclusion in order without consuming its value as a name",
     (action) => {
       expect(

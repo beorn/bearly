@@ -119,7 +119,29 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
     await $`git -C ${mainRepo} push -q origin main`.quiet()
     const destination = join(sandbox, "candidate")
-    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    const created = spawnSync(
+      "bun",
+      [
+        fileURLToPath(new URL("../tools/worktree.ts", import.meta.url)),
+        "create",
+        "wt5",
+        "--base",
+        "HEAD",
+        "--destination",
+        destination,
+        "--no-install",
+        "--no-direnv",
+        "--no-hooks",
+        "--exclude-submodule",
+        "vendor/sub",
+      ],
+      { cwd: mainRepo, encoding: "utf8", timeout: 20_000 },
+    )
+    expect(created.status, `${created.stdout}\n${created.stderr}`).toBe(0)
+    expect(created.stdout).toContain("vendor/sub: skipped by declaration")
+    expect(await $`git -C ${destination} ls-tree HEAD -- vendor/sub`.text()).toBe(
+      await $`git -C ${mainRepo} ls-tree HEAD -- vendor/sub`.text(),
+    )
     const privateStore = join(mainRepo, ".git/modules/vendor/sub")
     const head = readFileSync(join(privateStore, "HEAD"))
     const config = readFileSync(join(privateStore, "config"))

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `worktree create` now accepts the existing repeatable `--exclude-submodule <path>` selector. Excluded components remain unmaterialized and are reported; creation without the flag keeps its existing behavior.
+
 ## [0.8.0] - 2026-03-31
 
 ### Added
