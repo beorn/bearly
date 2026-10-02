@@ -2905,7 +2905,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     const tip = await $`git -C ${gitRoot} rev-parse --verify ${ref}^{commit}`.quiet()
     base = tip.stdout.toString().trim()
   }
-  await assertIgnoredContent(
+  const inspection = await assertIgnoredContent(
     worktreePath,
     { install, direnv, hooks },
     "Reset",
@@ -2933,7 +2933,10 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     }
   }
 
-  if (admitOnly) return
+  if (admitOnly) {
+    for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
+    return
+  }
 
   // Preservation is UNIFIED into removeWorktree's preserve-first choke point
   // below (dirty working tree + submodule dirt + ahead commits, all captured to
