@@ -109,6 +109,37 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure blanket uninitialized admission rejects a declared empty private checkout (27058 AC3/AC5)
+   * @level l2 @consumer Bearly removal admission @testonly none */
+  test("admits an excluded empty checkout without changing its common store or registration", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const destination = join(sandbox, "candidate")
+    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    const privateStore = join(mainRepo, ".git/modules/vendor/sub")
+    const head = readFileSync(join(privateStore, "HEAD"))
+    const config = readFileSync(join(privateStore, "config"))
+    const registration = await $`git -C ${mainRepo} worktree list --porcelain`.text()
+    const refs = await $`git -C ${mainRepo} show-ref`.text()
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await expect(removeWorktree(destination, { force: true, admitOnly: true })).rejects.toThrow("uninitialized")
+      const selected = {
+        force: true,
+        admitOnly: true,
+        excludedSubmodules: ["vendor/sub"],
+      }
+      await expect(removeWorktree(destination, selected)).resolves.toBeUndefined()
+      expect(readFileSync(join(privateStore, "HEAD"))).toEqual(head)
+      expect(readFileSync(join(privateStore, "config"))).toEqual(config)
+      expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refs)
+      expect(existsSync(destination)).toBe(true)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  })
+
   /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
    * @level l2 @consumer #26139 reset setup @testonly none */
   test.each(["lockfile", "workspace-only", "unnamed-workspace"] as const)(
