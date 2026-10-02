@@ -54,7 +54,7 @@ import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
-import { superStatus } from "git-super/status"
+import { superStatus, type ConsultedRepository } from "git-super/status"
 import { remoteContainsCommit } from "git-super/push"
 import { readPrivateSubmodulePaths } from "git-super/commit-graph"
 import { createLocalGitProcess } from "git-super/process"
@@ -1353,15 +1353,37 @@ async function checkUncommittedChanges(
   success("Working tree is clean")
 }
 
-async function checkUnpushedSubmodules(gitRoot: string, submodules: string[]): Promise<void> {
+/**
+ * The repository whose index selects a component's gitlink: the deepest consulted component whose
+ * path is a proper ancestor of `path`. A nested component is selected in the repository it lives
+ * in, never the root, so its selected commit must be read from that owning repository's index.
+ */
+function owningRepository(
+  gitRoot: string,
+  components: readonly ConsultedRepository[],
+  path: string,
+): { root: string; gitlinkPath: string } {
+  let owner: ConsultedRepository | undefined
+  for (const component of components) {
+    if (component.path === path) continue
+    if (component.path !== "." && !path.startsWith(`${component.path}/`)) continue
+    if (owner === undefined || component.path.length > owner.path.length) owner = component
+  }
+  if (owner === undefined || owner.path === ".") return { root: gitRoot, gitlinkPath: path }
+  return { root: join(gitRoot, owner.path), gitlinkPath: path.slice(owner.path.length + 1) }
+}
+
+async function checkUnpushedSubmodules(gitRoot: string, components: readonly ConsultedRepository[]): Promise<void> {
   info("Checking submodule commits are published on current remotes...")
+  const submodules = components.filter((entry) => entry.path !== ".").map((entry) => entry.path)
   const observations = await Promise.all(
     submodules.map(async (submodule) => {
       const subPath = join(gitRoot, submodule)
       if (!existsSync(join(subPath, ".git"))) return undefined
-      const lsTree = await $`git -C ${gitRoot} ls-tree HEAD ${submodule}`.quiet()
+      const owner = owningRepository(gitRoot, components, submodule)
+      const lsTree = await $`git -C ${owner.root} ls-tree HEAD ${owner.gitlinkPath}`.quiet()
       const expectedCommit = lsTree.stdout.toString().split(/\s+/u)[2]
-      if (!expectedCommit) throw new Error(`Missing selected gitlink for ${submodule} in ${gitRoot}`)
+      if (!expectedCommit) throw new Error(`Missing selected gitlink for ${submodule} in ${owner.root}`)
       return (await commitExistsOnRemote(subPath, expectedCommit)) ? undefined : { submodule, expectedCommit }
     }),
   )
@@ -2046,7 +2068,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
 
   // Check for unpushed submodule commits
-  await checkUnpushedSubmodules(gitRoot, submodules)
+  await checkUnpushedSubmodules(gitRoot, inventory.consultedRepositories)
 
   // Warn about existing worktrees
   const existingWorktrees = await getWorktrees(gitRoot)
