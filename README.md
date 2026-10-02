@@ -70,7 +70,7 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ## Packages
 
-The [worktree CLI](tools/worktree.ts) accepts repeatable `--exclude-submodule <path>` on `create`, `reset`, and `remove`. On create, excluded components are reported and left unmaterialized with their recorded gitlinks intact. Omit the flag to keep the default creation behavior.
+The [worktree CLI](tools/worktree.ts) accepts repeatable `--exclude-submodule <path>` on `create`, `reset`, and `remove`. On create, excluded declared components are reported and left unmaterialized with their recorded gitlinks intact. Omit the flag to keep the default creation behavior.
 
 ### The alien-\* family — "signals for a specific shape of data"
 
