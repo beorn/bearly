@@ -8,6 +8,9 @@
     }
   },
   "overrides": {
-    "release": "per-package tag publishing (<pkg>-v<version>) from private workspace root — generic single-publish template doesn't apply"
+    "release": "per-package tag publishing (<pkg>-v<version>) from private workspace root — generic single-publish template doesn't apply",
+    "source-siblings-install-order:.github/workflows/release.yml#publish": "a publish installs and builds the registry graph; a release never builds against a source sibling",
+    "source-siblings-install-order:.github/workflows/test.yml#flock-native": "installs packages/flock alone, which declares no source sibling (git-super is the root's)",
+    "source-siblings-install-order:.github/workflows/test.yml#flock-node": "installs packages/flock alone, which declares no source sibling (git-super is the root's)"
   }
 }

@@ -55,6 +55,9 @@ import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submod
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
 import { superStatus } from "git-super/status"
+import { remoteContainsCommit } from "git-super/push"
+import { readPrivateSubmodulePaths } from "git-super/commit-graph"
+import { createLocalGitProcess } from "git-super/process"
 import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
@@ -159,10 +162,27 @@ function gitCommandError(result: { stdout: string; stderr: string }): string {
   return text || "(git produced no error text)"
 }
 
-/** Check if a commit exists on any remote branch */
+/** Prove exact commit reachability from current configured remotes, preserving local refs. */
 export async function commitExistsOnRemote(repoPath: string, commit: string): Promise<boolean> {
-  const result = await safeExec($`cd ${repoPath} && git branch -r --contains ${commit} 2>/dev/null`)
-  return result.exitCode === 0 && result.stdout.trim().length > 0
+  const listed = await $`git -C ${repoPath} remote`.quiet()
+  const remotes = listed.stdout.toString().trim().split(/\r?\n/u).filter(Boolean)
+  if (remotes.length === 0) {
+    throw new Error(`Cannot prove publication of ${commit} in ${repoPath}: no configured remotes`)
+  }
+  const unavailable: Error[] = []
+  for (const remote of remotes) {
+    try {
+      if (await remoteContainsCommit({ repository: repoPath, remote, commit })) return true
+    } catch (cause) {
+      unavailable.push(
+        new Error(`Publication evidence unavailable from ${remote} in ${repoPath} for ${commit}`, { cause }),
+      )
+    }
+  }
+  if (unavailable.length > 0) {
+    throw new AggregateError(unavailable, `Cannot prove publication of ${commit} in ${repoPath}`)
+  }
+  return false
 }
 
 /** Get list of worktrees */
@@ -1334,29 +1354,32 @@ async function checkUncommittedChanges(
 }
 
 async function checkUnpushedSubmodules(gitRoot: string, submodules: string[]): Promise<void> {
-  info("Checking submodule commits are pushed...")
-  const unpushed: string[] = []
-
-  for (const submodule of submodules) {
-    const subPath = join(gitRoot, submodule)
-    if (!existsSync(join(subPath, ".git"))) continue
-
-    const lsTree = await $`cd ${gitRoot} && git ls-tree HEAD ${submodule}`.quiet()
-    const expectedCommit = lsTree.stdout.toString().split(/\s+/)[2]
-
-    if (expectedCommit && !(await commitExistsOnRemote(subPath, expectedCommit))) {
-      unpushed.push(`  - ${submodule} (${expectedCommit.slice(0, 8)})`)
-    }
-  }
-
+  info("Checking submodule commits are published on current remotes...")
+  const observations = await Promise.all(
+    submodules.map(async (submodule) => {
+      const subPath = join(gitRoot, submodule)
+      if (!existsSync(join(subPath, ".git"))) return undefined
+      const lsTree = await $`git -C ${gitRoot} ls-tree HEAD ${submodule}`.quiet()
+      const expectedCommit = lsTree.stdout.toString().split(/\s+/u)[2]
+      if (!expectedCommit) throw new Error(`Missing selected gitlink for ${submodule} in ${gitRoot}`)
+      return (await commitExistsOnRemote(subPath, expectedCommit)) ? undefined : { submodule, expectedCommit }
+    }),
+  )
+  const unpushed = observations.filter((row) => row !== undefined)
   if (unpushed.length > 0) {
-    error("Found unpushed submodule commits:")
-    for (const line of unpushed) {
-      console.log(YELLOW + line + RESET)
+    error("Found submodule commits unreachable from configured remotes:")
+    for (const { submodule, expectedCommit } of unpushed) {
+      console.log(YELLOW + `  - ${submodule} (${expectedCommit})` + RESET)
+      console.log(
+        `  Preserve that exact commit from its owned authoring environment for ${submodule}, then submit that environment's branch through Yrd.`,
+      )
     }
-    console.log("")
-    console.log("Push submodules first:")
-    console.log(CYAN + '  git submodule foreach "git push origin HEAD || true"' + RESET)
+    console.log(
+      `  Current checkout: ${gitRoot}; use the owned-environment Yrd/GitSuper delivery path, then retry creation.`,
+    )
+    console.log("  From the owned authoring environment, replace the path and branch placeholders:")
+    console.log("    @in <owned-environment-path> -- bun yrd submit <task-branch> --prepare")
+    console.log(`  Workflow: ${join(import.meta.dir, "..", "README.md")}#publish-components-before-creation`)
     process.exit(1)
   }
   success("Submodules OK")
@@ -2004,27 +2027,22 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     }
   }
 
+  const declaredPrivate = await readPrivateSubmodulePaths(createLocalGitProcess(), gitRoot, "HEAD")
+  const excludedSubmodules = [...new Set([...(options.excludedSubmodules ?? []), ...declaredPrivate])]
+  for (const path of declaredPrivate) info(`${path}: not compared (declared private)`)
+
   // Get submodules list (used in multiple checks)
-  const inventory =
-    options.excludedSubmodules === undefined
-      ? undefined
-      : superStatus({ repo: gitRoot, excludedSubmodules: options.excludedSubmodules })
-  if (
-    inventory !== undefined &&
-    (inventory.submoduleProblems.length > 0 || inventory.uninitializedSubmodules.length > 0)
-  ) {
+  const inventory = superStatus({ repo: gitRoot, excludedSubmodules })
+  if (inventory.submoduleProblems.length > 0 || inventory.uninitializedSubmodules.length > 0) {
     throw new Error(
       `Create cannot classify included reference repositories in ${gitRoot}: ${inventory.uninitializedSubmodules.join(", ")} ${inventory.submoduleProblems.map((entry) => entry.reason).join("; ")}; initialize and resolve the named included components before retrying`,
     )
   }
-  const submodules =
-    inventory === undefined
-      ? getSubmodulePaths(gitRoot)
-      : inventory.consultedRepositories.filter((entry) => entry.path !== ".").map((entry) => entry.path)
+  const submodules = inventory.consultedRepositories.filter((entry) => entry.path !== ".").map((entry) => entry.path)
 
   // Check for uncommitted changes in main repo and submodules
   if (!allowDirty) {
-    await checkUncommittedChanges(gitRoot, submodules, options.excludedSubmodules)
+    await checkUncommittedChanges(gitRoot, submodules, excludedSubmodules)
   }
 
   // Check for unpushed submodule commits
@@ -2126,12 +2144,12 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // Initialize submodules (per-worktree isolated checkouts). Borrow objects from
   // the matching main-worktree checkout BEFORE clone; the slot keeps its own
   // refs/config/worktree while avoiding a private history download.
-  if (submodules.length > 0 || (options.excludedSubmodules?.length ?? 0) > 0) {
+  if (submodules.length > 0 || (excludedSubmodules?.length ?? 0) > 0) {
     info(`Initializing ${submodules.length} submodule(s) (isolated refs, local shared objects)...`)
     const subResult = await materializeSubmodulesFromLocalWorktreeParallel({
       worktree: worktreePath,
       referenceWorktree: gitRoot,
-      excludedSubmodules: options.excludedSubmodules,
+      excludedSubmodules,
     })
     if (subResult.exitCode !== 0) {
       error("Failed to initialize submodules:")
@@ -2139,7 +2157,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
       // Clean up
       await mechanics.remove(worktreePath, {
         operation: `failed setup cleanup ${worktreePath}`,
-        excludedSubmodules: options.excludedSubmodules,
+        excludedSubmodules,
       })
       process.exit(1)
     }

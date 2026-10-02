@@ -70,7 +70,21 @@ bun tools/refactor.ts --help              # Batch refactoring CLI
 
 ## Packages
 
-The [worktree CLI](tools/worktree.ts) accepts repeatable `--exclude-submodule <path>` on `create`, `reset`, and `remove`. On create, excluded declared components are reported and left unmaterialized with their recorded gitlinks intact. Omit the flag to keep the default creation behavior.
+The [worktree CLI](tools/worktree.ts) accepts repeatable `--exclude-submodule <path>` on `create`, `reset`, and `remove`. On create, excluded declared components are reported and left unmaterialized with their recorded gitlinks intact.
+
+Create automatically excludes paths declared `private = true` in the selected commit's `.gitmodules`, before cleanliness, publication or materialization reads. It reports them as not compared. Caller-supplied exclusions add to those private paths.
+
+### Publish components before creation
+
+If creation refuses an unpublished component, use the superproject's owned authoring environment whose branch selects that exact component commit:
+
+```bash
+@in <owned-environment-path> -- bun yrd submit <task-branch> --prepare
+```
+
+Replace both placeholders with the actual authoring path and branch. Yrd preparation retains moved component commits under remote `refs/git-super/pins/<sha>` refs; it does not open a queue change.
+
+Complete ordinary Yrd submission after the required checks, then retry creation from the intended source checkout.
 
 ### The alien-\* family — "signals for a specific shape of data"
 
