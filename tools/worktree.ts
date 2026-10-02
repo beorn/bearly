@@ -54,6 +54,7 @@ import { $ } from "bun"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
+import { superStatus } from "git-super/status"
 import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
@@ -249,7 +250,12 @@ export async function getWorktreeStatus(
   }
 
   if (options.excludedSubmodules !== undefined) {
-    const inspection = await poolWorktreeMechanics(worktreePath).inspectRemoval(worktreePath, options)
+    const inspection = superStatus({ repo: worktreePath, excludedSubmodules: options.excludedSubmodules })
+    if (inspection.submoduleProblems.length > 0) {
+      throw new Error(
+        `Cannot read selected worktree status in ${worktreePath}: ${inspection.submoduleProblems.map((entry) => entry.reason).join("; ")}`,
+      )
+    }
     const changes: string[] = []
     for (const repository of inspection.consultedRepositories) {
       const status =
@@ -1260,6 +1266,7 @@ function requireDeclaredPoolSlot(name: string, environment: NodeJS.ProcessEnv = 
 // ============================================
 
 export interface CreateOptions extends WorktreeSetupOptions {
+  excludedSubmodules?: readonly string[]
   allowDirty?: boolean // Skip uncommitted changes check
   /** Exact absolute checkout path supplied by a composing caller; naming stays with that caller. */
   destination?: string
@@ -1273,12 +1280,16 @@ export interface CreateOptions extends WorktreeSetupOptions {
   base?: string
 }
 
-async function checkUncommittedChanges(gitRoot: string, submodules: string[]): Promise<void> {
+async function checkUncommittedChanges(
+  gitRoot: string,
+  submodules: string[],
+  excludedSubmodules?: readonly string[],
+): Promise<void> {
   info("Checking for uncommitted changes...")
   const issues: string[] = []
 
   // Check main repo
-  const mainStatus = await getWorktreeStatus(gitRoot)
+  const mainStatus = await getWorktreeStatus(gitRoot, { excludedSubmodules })
   if (mainStatus.dirty) {
     issues.push(`Main repo has ${mainStatus.changes.length} uncommitted change(s)`)
     for (const change of mainStatus.changes.slice(0, 3)) {
@@ -1294,7 +1305,10 @@ async function checkUncommittedChanges(gitRoot: string, submodules: string[]): P
     const subPath = join(gitRoot, submodule)
     if (!existsSync(join(subPath, ".git"))) continue
 
-    const subStatus = await getWorktreeStatus(subPath)
+    const localExclusions = excludedSubmodules
+      ?.filter((path) => path.startsWith(`${submodule}/`))
+      .map((path) => path.slice(submodule.length + 1))
+    const subStatus = await getWorktreeStatus(subPath, { excludedSubmodules: localExclusions })
     if (subStatus.dirty) {
       issues.push(`Submodule ${submodule} has ${subStatus.changes.length} uncommitted change(s)`)
     }
@@ -1991,11 +2005,26 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   }
 
   // Get submodules list (used in multiple checks)
-  const submodules = getSubmodulePaths(gitRoot)
+  const inventory =
+    options.excludedSubmodules === undefined
+      ? undefined
+      : superStatus({ repo: gitRoot, excludedSubmodules: options.excludedSubmodules })
+  if (
+    inventory !== undefined &&
+    (inventory.submoduleProblems.length > 0 || inventory.uninitializedSubmodules.length > 0)
+  ) {
+    throw new Error(
+      `Create cannot classify included reference repositories in ${gitRoot}: ${inventory.uninitializedSubmodules.join(", ")} ${inventory.submoduleProblems.map((entry) => entry.reason).join("; ")}; initialize and resolve the named included components before retrying`,
+    )
+  }
+  const submodules =
+    inventory === undefined
+      ? getSubmodulePaths(gitRoot)
+      : inventory.consultedRepositories.filter((entry) => entry.path !== ".").map((entry) => entry.path)
 
   // Check for uncommitted changes in main repo and submodules
   if (!allowDirty) {
-    await checkUncommittedChanges(gitRoot, submodules)
+    await checkUncommittedChanges(gitRoot, submodules, options.excludedSubmodules)
   }
 
   // Check for unpushed submodule commits
@@ -2097,19 +2126,24 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   // Initialize submodules (per-worktree isolated checkouts). Borrow objects from
   // the matching main-worktree checkout BEFORE clone; the slot keeps its own
   // refs/config/worktree while avoiding a private history download.
-  if (submodules.length > 0) {
+  if (submodules.length > 0 || (options.excludedSubmodules?.length ?? 0) > 0) {
     info(`Initializing ${submodules.length} submodule(s) (isolated refs, local shared objects)...`)
     const subResult = await materializeSubmodulesFromLocalWorktreeParallel({
       worktree: worktreePath,
       referenceWorktree: gitRoot,
+      excludedSubmodules: options.excludedSubmodules,
     })
     if (subResult.exitCode !== 0) {
       error("Failed to initialize submodules:")
       console.log(subResult.stderr || subResult.stdout)
       // Clean up
-      await mechanics.remove(worktreePath, { operation: `failed setup cleanup ${worktreePath}` })
+      await mechanics.remove(worktreePath, {
+        operation: `failed setup cleanup ${worktreePath}`,
+        excludedSubmodules: options.excludedSubmodules,
+      })
       process.exit(1)
     }
+    for (const entry of subResult.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
     // Verify isolation — each submodule's .git should point at per-worktree modules dir
     const modulesDir = await getWorktreeModulesDir(gitRoot, basename(worktreePath))
     if (modulesDir && existsSync(modulesDir)) {
@@ -2837,7 +2871,13 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
   if (!existsSync(worktreePath)) {
     if (admitOnly) return
     info(`Worktree ${name} does not exist — creating fresh`)
-    await createWorktree(name, undefined, { install, direnv, hooks, destination })
+    await createWorktree(name, undefined, {
+      install,
+      direnv,
+      hooks,
+      destination,
+      excludedSubmodules: options.excludedSubmodules,
+    })
     return
   }
 
@@ -2946,6 +2986,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     hooks,
     allowDirty: true,
     destination,
+    excludedSubmodules: options.excludedSubmodules,
     ...(cutsNewBranch ? { base } : {}),
   })
 
@@ -3340,8 +3381,8 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
  * Create plan options: every toggle resolved; the base and exact destination stay optional —
  * An absent base means "fetch, then origin/main"; an absent destination keeps pool naming.
  */
-export type CreatePlanOptions = Required<Omit<CreateOptions, "base" | "destination">> &
-  Pick<CreateOptions, "base" | "destination">
+export type CreatePlanOptions = Required<Omit<CreateOptions, "base" | "destination" | "excludedSubmodules">> &
+  Pick<CreateOptions, "base" | "destination" | "excludedSubmodules">
 
 export type CliPlan =
   | { action: "help" }

@@ -109,6 +109,42 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure reset forwards exclusions to removal but reopens the private reference or initializes its replacement (27058 AC3/AC5)
+   * @level l2 @consumer Bearly reset recreation @testonly none */
+  test("reset recreation leaves the excluded checkout empty and its common store unchanged", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const origin = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${origin}`.quiet()
+    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const destination = join(sandbox, "candidate")
+    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    const privateStore = join(mainRepo, ".git/modules/vendor/sub")
+    const head = readFileSync(join(privateStore, "HEAD"))
+    const config = readFileSync(join(privateStore, "config"))
+    const mainHead = (await $`git -C ${mainRepo} rev-parse HEAD`.text()).trim()
+    const previousCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await resetWorktree("wt5", {
+        destination,
+        force: true,
+        install: false,
+        direnv: false,
+        hooks: false,
+        excludedSubmodules: ["vendor/sub"],
+      })
+      expect(existsSync(destination)).toBe(true)
+      expect(existsSync(join(destination, "vendor/sub/.git"))).toBe(false)
+      expect((await $`git -C ${destination} rev-parse HEAD`.text()).trim()).toBe(mainHead)
+      expect(readFileSync(join(privateStore, "HEAD"))).toEqual(head)
+      expect(readFileSync(join(privateStore, "config"))).toEqual(config)
+      expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("skipped by declaration")
+    } finally {
+      process.chdir(previousCwd)
+    }
+  })
+
   /** @failure selected preservation probes a private checkout or loses its staged parent gitlink metadata (27058 AC3/AC5)
    * @level l2 @consumer Bearly preservation snapshots @testonly none */
   test("preserves staged private gitlink metadata while skipping the empty checkout", async () => {
