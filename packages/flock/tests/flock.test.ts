@@ -1,6 +1,14 @@
+/**
+ * @failure Node public imports must work while both runtimes preserve inherited fd ownership and crash release.
+ * @level l3
+ * @consumer @bearly/flock public API, Hab supervisors and GitSuper writer leases
+ * @testonly none
+ */
 import { afterEach, describe, expect, test } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { spawn, type StdioOptions } from "node:child_process"
+import { setTimeout as sleep } from "node:timers/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createFlockRuntime, type FlockIo } from "../src/runtime.ts"
@@ -8,7 +16,7 @@ import { isFlockHeld, tryAcquireFlock } from "../src/index.ts"
 import { createNativeFlockRuntime, libcCandidates } from "../src/native.ts"
 
 const fixture = fileURLToPath(new URL("./fixtures/writer.ts", import.meta.url))
-const FD_CLOEXEC = 1
+import { FD_CLOEXEC } from "../src/native-platform.ts"
 const scratch: string[] = []
 
 afterEach(() => {
@@ -16,11 +24,18 @@ afterEach(() => {
 })
 
 describe("@bearly/flock", () => {
+  test("the public entry runs in the selected test runtime", async () => {
+    // Protect test:node from silently exercising Bun instead of the declared Node contract.
+    if (process.env.FLOCK_TEST_RUNTIME === "node") expect(process.versions.bun).toBeUndefined()
+    const api = await import("../src/index.ts")
+    using lock = api.tryAcquireFlock(join(tempRoot(), "public.lock"))
+    expect(lock?.held).toBe(true)
+  })
   test("a real writer killed with SIGKILL leaves an immediately acquirable flock", async () => {
     const root = tempRoot()
     const lockPath = join(root, "writer.lock")
     const readyPath = join(root, "ready")
-    const holder = Bun.spawn([process.execPath, fixture, "hold", lockPath, readyPath], {
+    const holder = spawnFixture([process.execPath, fixture, "hold", lockPath, readyPath], {
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -31,7 +46,7 @@ describe("@bearly/flock", () => {
       holder.kill("SIGKILL")
       expect(await holder.exited).not.toBe(0)
 
-      const successor = Bun.spawn([process.execPath, fixture, "once", lockPath], {
+      const successor = spawnFixture([process.execPath, fixture, "once", lockPath], {
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -63,14 +78,9 @@ describe("@bearly/flock", () => {
     expect(lock).not.toBeNull()
     if (lock === null) return
 
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        "--eval",
-        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(childReady)}, "ready"); await new Promise(() => {});`,
-      ],
-      { stdio: ["ignore", "pipe", "pipe", lock.fd] },
-    )
+    const child = spawnFixture([process.execPath, fixture, "adopt-hold", lockPath, childReady], {
+      stdio: ["ignore", "pipe", "pipe", lock.fd],
+    })
     try {
       await waitForFile(childReady, child, "inherited-fd child")
       lock.release()
@@ -119,7 +129,7 @@ describe("@bearly/flock", () => {
     expect(parent).not.toBeNull()
     if (parent === null) return
 
-    const child = Bun.spawn([process.execPath, fixture, "adopt", lockPath], {
+    const child = spawnFixture([process.execPath, fixture, "adopt", lockPath], {
       stdio: ["ignore", "pipe", "pipe", parent.fd],
     })
     try {
@@ -155,7 +165,7 @@ describe("@bearly/flock", () => {
     expect(parent).not.toBeNull()
     if (parent === null) return
 
-    const child = Bun.spawn([process.execPath, fixture, "adopt-cloexec", lockPath, reportPath], {
+    const child = spawnFixture([process.execPath, fixture, "adopt-cloexec", lockPath, reportPath], {
       stdio: ["ignore", "pipe", "pipe", parent.fd],
     })
     try {
@@ -387,12 +397,37 @@ async function waitForFile(path: string, processHandle: ProcessHandle, label: st
       throw new Error(`${label} exited before becoming ready: ${await stderr(processHandle)}`)
     }
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`)
-    await Bun.sleep(5)
+    await sleep(5)
   }
 }
 
 async function stderr(processHandle: ProcessHandle): Promise<string> {
-  return processHandle.stderr instanceof ReadableStream ? await new Response(processHandle.stderr).text() : ""
+  return String(processHandle.stderr)
+}
+
+/** Shared real-process fixture transport; the runtime under test is process.execPath. */
+function spawnFixture(argv: string[], options: { stdio?: StdioOptions; stdout?: "pipe"; stderr?: "pipe" }) {
+  const executable = argv[0]
+  if (executable === undefined) throw new Error("fixture needs an executable")
+  const child = spawn(executable, argv.slice(1), { stdio: options.stdio ?? ["ignore", "pipe", "pipe"] })
+  let diagnostics = ""
+  child.stderr?.on("data", (bytes: Buffer) => {
+    diagnostics += bytes.toString()
+  })
+  const exited = new Promise<number>((resolve, reject) => {
+    child.once("error", reject)
+    child.once("close", (code) => resolve(code ?? 1))
+  })
+  return {
+    get exitCode() {
+      return child.exitCode
+    },
+    get stderr() {
+      return diagnostics
+    },
+    exited,
+    kill: (signal: NodeJS.Signals) => child.kill(signal),
+  }
 }
 
 function fakeIo(overrides: Partial<FlockIo> = {}): {
