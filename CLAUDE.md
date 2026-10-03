@@ -102,21 +102,4 @@ bun run typecheck
 
 Only publish child packages, never the root. The root `bearly` package stays at `0.0.0` permanently.
 
-Publishing is CI-driven via per-package tags. `.github/workflows/release.yml` fires on tags matching `<package-dir-name>-v<version>` and publishes only the matching package.
-
-```bash
-# Bump version in packages/<pkg>/package.json, then:
-git commit -am "release: alien-trees 0.2.0"
-git tag alien-trees-v0.2.0
-git push origin main --follow-tags
-```
-
-The workflow parses the tag, verifies `package.json` version matches (fails fast on drift), builds with tsc, and runs `npm publish --access public --provenance`.
-
-**Local fallback** for emergencies:
-
-```bash
-cd packages/<pkg> && bun run build && npm publish --access public --provenance
-```
-
-Required GitHub secret: `NPM_TOKEN`. Provenance runs via OIDC (no extra setup).
+Publishing is driven by `.github/workflows/release.yml` (`workflow_dispatch` on `main`, typically dispatched via `bun release execute`). The workflow takes the full public `main` commit SHA and an ordered JSON array of package names and versions, verifies exact tarballs with `beorn/verify-publishable`, and publishes them through npm Trusted Publishing via GitHub Actions OIDC (`id-token: write`, `--provenance`). No `NPM_TOKEN` secret or local fallback is used.
