@@ -11,6 +11,31 @@ import { assertSingleStatement } from "../src/index.ts"
 
 describe("assertSingleStatement", () => {
   test.each([
+    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'END'; END",
+    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT CASE WHEN 1 THEN CASE WHEN 1 THEN 2 ELSE 3 END ELSE 4 END; END",
+    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN /* END */ SELECT 1; END",
+    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END -- END",
+  ])("accepts lexical trigger forms with native SQLite as control: %s", (sql) => {
+    expect(assertSingleStatement(sql)).toBe(sql)
+    const db = new Database(":memory:")
+    try {
+      db.run("CREATE TABLE t (x INTEGER)")
+      db.prepare(sql).run()
+      expect(db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([{ name: "tr" }])
+    } finally {
+      db.close()
+    }
+  })
+
+  test.each([
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'CASE'; END; BEGIN; END", /BEGIN/],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'unterminated; END", /unterminated/],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END; BEGIN", /BEGIN/],
+  ])("refuses lexical trigger failures by what it saw: %s", (sql, reason) => {
+    expect(() => assertSingleStatement(sql)).toThrow(reason)
+  })
+
+  test.each([
     "SELECT 1",
     "SELECT 1;",
     "\nSELECT 1\n",

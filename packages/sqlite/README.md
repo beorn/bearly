@@ -12,7 +12,10 @@ The function returns the original text. It refuses semicolons except an exact
 final terminator and semicolons inside a whole CREATE TRIGGER BEGIN … END body.
 A newline or space after a terminator is refused. Quoted and commented semicolons
 are deliberately refused outside triggers; this boundary does not parse SQL.
-Trigger CASE expressions are supported as non-nested units.
+The trigger boundary skips SQLite strings, quoted identifiers and comments, and
+counts nested CASE expressions. It refuses unterminated lexical forms, misplaced
+BEGIN/END and any token after the trigger closes. Trailing comments without a
+terminator are skipped; a terminator must remain the exact final character.
 
 SQLite still checks syntax, identifiers and bindings. This assertion does not
 sanitize identifiers or values; use parameter binding for values.
