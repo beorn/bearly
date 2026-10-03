@@ -26,6 +26,6 @@ and works independently of the monorepo in a TypeScript-capable runtime.
 ## Error registry
 
 `sqlite-single-statement-required`: SQL violates the one-statement boundary.
-The function throws TypeError with this code and the first semicolon position.
+The function throws TypeError with this code and the offending token or lexical reason.
 Pass one complete statement, remove text after its terminator, or pass a whole
 trigger. It never splits SQL or supplies a default value.
