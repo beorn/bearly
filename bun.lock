@@ -146,6 +146,8 @@
       "name": "@bearly/sqlite",
       "version": "0.1.0",
       "devDependencies": {
+        "tsdown": "0.22.13",
+        "typescript": "^5.9.3",
         "vitest": "4.1.10",
       },
     },

@@ -4,22 +4,38 @@
   "description": "One shared single-statement assertion for native SQLite SQL text",
   "license": "MIT",
   "files": [
-    "src",
+    "dist",
     "README.md",
     "CHANGELOG.md"
   ],
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
     }
   },
   "scripts": {
+    "build": "tsdown",
+    "prepack": "bun run build",
     "test": "bunx --bun vitest run"
   },
   "devDependencies": {
+    "tsdown": "0.22.13",
+    "typescript": "^5.9.3",
     "vitest": "4.1.10"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": "src/index.ts",
+    "format": "esm"
   },
   "engines": {
     "bun": ">=1.4.2"
