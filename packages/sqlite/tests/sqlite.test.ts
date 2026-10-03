@@ -21,11 +21,13 @@ describe("assertSingleStatement", () => {
     ['CREATE TRIGGER "tr;name" AFTER INSERT ON t BEGIN SELECT 1; END', "tr;name"],
     ["CREATE TRIGGER tr /* ; */ AFTER INSERT ON t BEGIN SELECT 1; END", "tr"],
     ["CREATE TRIGGER tr AFTER INSERT ON t WHEN ';' = ';' BEGIN SELECT 1; END", "tr"],
+    ["CREATE TRIGGER end AFTER INSERT ON t BEGIN SELECT 1; END", "end"],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT end FROM t; END", "tr"],
   ])("accepts lexical trigger forms with native SQLite as control: %s", (sql, name) => {
     expect(assertSingleStatement(sql)).toBe(sql)
     const db = new Database(":memory:")
     try {
-      db.run("CREATE TABLE t (x INTEGER)")
+      db.run('CREATE TABLE t (x INTEGER, "end" INTEGER)')
       db.prepare(sql).run()
       expect(db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([{ name }])
     } finally {
@@ -37,6 +39,10 @@ describe("assertSingleStatement", () => {
     ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'CASE'; END; BEGIN; END", /BEGIN/],
     ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'unterminated; END", /unterminated/],
     ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END; BEGIN", /BEGIN/],
+    ["BEGIN; SELECT 1; END", /semicolon at 5/],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN BEGIN SELECT 1; END; END", /BEGIN at \d+.*quote/],
+    ["CREATE TRIGGER begin AFTER INSERT ON t BEGIN SELECT 1; END", /BEGIN at \d+.*quote/],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT begin FROM t; END", /BEGIN at \d+.*quote/],
   ])("refuses lexical trigger failures by what it saw: %s", (sql, reason) => {
     expect(() => assertSingleStatement(sql)).toThrow(reason)
   })

@@ -85,20 +85,25 @@ export function assertSingleStatement(sql: string): string {
 
   let body = false
   let cases = 0
+  let previous: Token | undefined
   for (const token of walk) {
+    const before = previous
+    previous = token
     if (!body && token.kind === "punctuation" && token.text === ";") refuse("semicolon before trigger BEGIN")
     if (token.kind !== "word") continue
     if (token.text === "CASE") {
       cases++
     } else if (token.text === "BEGIN") {
-      if (body || cases !== 0) refuse(`cannot place BEGIN at ${token.start}`)
+      if (body || cases !== 0) refuse(`BEGIN at ${token.start} cannot open a nested body; quote BEGIN identifiers`)
       body = true
     } else if (token.text === "END") {
       if (cases > 0) {
         cases--
         continue
       }
-      if (!body) refuse(`END without trigger BEGIN at ${token.start}`)
+      // SQLite can use END as an identifier; the body terminator follows a
+      // complete command's semicolon. Comments/whitespace are not tokens.
+      if (!body || before?.kind !== "punctuation" || before.text !== ";") continue
       const suffix = walk.next().value
       if (suffix === undefined) return sql
       if (suffix.text === ";" && suffix.end === sql.length) return sql
@@ -111,6 +116,6 @@ export function assertSingleStatement(sql: string): string {
       refuse(`after trigger END: ${suffix.text} at ${suffix.start}`)
     }
   }
-  if (!body) refuse("trigger has no BEGIN")
-  refuse(`trigger has no closing END; CASE depth ${cases}`)
+  if (!body) refuse(`expected BEGIN at ${sql.length}; quote BEGIN identifiers`)
+  refuse(`expected closing END at ${sql.length}; end the previous statement with ';'; CASE depth ${cases}`)
 }

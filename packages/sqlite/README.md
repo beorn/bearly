@@ -17,6 +17,11 @@ counts nested CASE expressions. It refuses unterminated lexical forms, misplaced
 BEGIN/END and any token after the trigger closes. Trailing comments without a
 terminator are skipped; a terminator must remain the exact final character.
 
+Outside CASE, a trigger's closing END must follow a semicolon token. Comments and
+whitespace are skipped. This lets SQLite use unquoted END identifiers in a header
+or body. Unquoted BEGIN identifiers and nested BEGIN remain conservatively refused;
+quote BEGIN identifiers. End each body statement with a semicolon before closing END.
+
 SQLite still checks syntax, identifiers and bindings. This assertion does not
 sanitize identifiers or values; use parameter binding for values.
 
