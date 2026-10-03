@@ -11,17 +11,23 @@ import { assertSingleStatement } from "../src/index.ts"
 
 describe("assertSingleStatement", () => {
   test.each([
-    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'END'; END",
-    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT CASE WHEN 1 THEN CASE WHEN 1 THEN 2 ELSE 3 END ELSE 4 END; END",
-    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN /* END */ SELECT 1; END",
-    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END -- END",
-  ])("accepts lexical trigger forms with native SQLite as control: %s", (sql) => {
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 'END'; END", "tr"],
+    [
+      "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT CASE WHEN 1 THEN CASE WHEN 1 THEN 2 ELSE 3 END ELSE 4 END; END",
+      "tr",
+    ],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN /* END */ SELECT 1; END", "tr"],
+    ["CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END -- END", "tr"],
+    ['CREATE TRIGGER "tr;name" AFTER INSERT ON t BEGIN SELECT 1; END', "tr;name"],
+    ["CREATE TRIGGER tr /* ; */ AFTER INSERT ON t BEGIN SELECT 1; END", "tr"],
+    ["CREATE TRIGGER tr AFTER INSERT ON t WHEN ';' = ';' BEGIN SELECT 1; END", "tr"],
+  ])("accepts lexical trigger forms with native SQLite as control: %s", (sql, name) => {
     expect(assertSingleStatement(sql)).toBe(sql)
     const db = new Database(":memory:")
     try {
       db.run("CREATE TABLE t (x INTEGER)")
       db.prepare(sql).run()
-      expect(db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([{ name: "tr" }])
+      expect(db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([{ name }])
     } finally {
       db.close()
     }

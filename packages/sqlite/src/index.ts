@@ -86,12 +86,12 @@ export function assertSingleStatement(sql: string): string {
   let body = false
   let cases = 0
   for (const token of walk) {
+    if (!body && token.kind === "punctuation" && token.text === ";") refuse("semicolon before trigger BEGIN")
     if (token.kind !== "word") continue
     if (token.text === "CASE") {
       cases++
     } else if (token.text === "BEGIN") {
       if (body || cases !== 0) refuse(`cannot place BEGIN at ${token.start}`)
-      if (sql.slice(0, token.start).includes(";")) refuse("semicolon before trigger BEGIN")
       body = true
     } else if (token.text === "END") {
       if (cases > 0) {
