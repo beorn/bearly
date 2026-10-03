@@ -104,7 +104,9 @@ export function assertSingleStatement(sql: string): string {
       if (suffix.text === ";" && suffix.end === sql.length) return sql
       if (suffix.text === ";") {
         const after = walk.next().value
-        refuse(`after trigger END: ${after?.text ?? JSON.stringify(sql.slice(suffix.end))} at ${after?.start ?? suffix.end}`)
+        refuse(
+          `after trigger END: ${after?.text ?? JSON.stringify(sql.slice(suffix.end))} at ${after?.start ?? suffix.end}`,
+        )
       }
       refuse(`after trigger END: ${suffix.text} at ${suffix.start}`)
     }
