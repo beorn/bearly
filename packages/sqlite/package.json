@@ -1,0 +1,17 @@
+{
+  "name": "@bearly/sqlite",
+  "version": "0.1.0",
+  "description": "One shared single-statement assertion for native SQLite SQL text",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src", "README.md", "CHANGELOG.md"],
+  "license": "MIT",
+  "engines": { "bun": ">=1.4.2" },
+  "scripts": { "test": "bunx --bun vitest run" },
+  "devDependencies": { "vitest": "^4.1.10" }
+}
