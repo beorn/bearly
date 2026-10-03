@@ -71,7 +71,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown"
+    "build": "tsdown --config package.json"
   },
   "devDependencies": {
     "@types/markdown-it": "14.2.0",
