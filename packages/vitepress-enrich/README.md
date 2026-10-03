@@ -197,3 +197,9 @@ const linkify = createLinkifier(entities)
 ## License
 
 MIT
+
+## Package verification
+
+`.attw.json` excludes the two raw CSS exports from JavaScript type resolution checks.
+All JavaScript exports remain checked. The CSS files must be present and match their source bytes in the package archive.
+Override approval and evidence: Hallohuman `pm/@gate/attw-vitepress-css-assets.md`.
