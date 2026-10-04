@@ -63,14 +63,24 @@ function clearProviderKeys(): Record<string, string> {
 }
 
 let saved: Record<string, string> = {}
+const seatVariables = ["SEAT", "TENT_SEAT", "TRIBE_NAME"] as const
+let savedSeatVariables: Record<string, string | undefined> = {}
 
 beforeEach(() => {
   saved = clearProviderKeys()
+  // Seat cases declare their own identity; inherited managed-seat values conflict with those fixtures.
+  savedSeatVariables = Object.fromEntries(seatVariables.map((name) => [name, process.env[name]]))
+  for (const name of seatVariables) delete process.env[name]
 })
 
 afterEach(() => {
   clearProviderKeys()
   for (const [name, value] of Object.entries(saved)) process.env[name] = value
+  for (const name of seatVariables) {
+    const value = savedSeatVariables[name]
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
 })
 
 describe("missingApiKeyError", () => {
