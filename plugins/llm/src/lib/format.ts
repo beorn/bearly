@@ -234,7 +234,11 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
   try {
     const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
     const encodedPath = projectRoot.replace(/\//g, "-")
-    const researchDir = `${os.homedir()}/.claude/projects/${encodedPath}/memory/research`
+    // HOME first, so test isolation holds; os.homedir() is fixed at process
+    // start under Bun and ignores a redirected HOME, leaking writes into the
+    // real profile (same guard as pro.ts / judge-history.ts / dual-pro.ts).
+    const home = process.env.HOME || os.homedir()
+    const researchDir = `${home}/.claude/projects/${encodedPath}/memory/research`
 
     // Ensure directory exists
     if (!existsSync(researchDir)) {

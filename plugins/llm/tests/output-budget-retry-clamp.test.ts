@@ -14,6 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Model } from "../src/lib/types"
+import { makeTestEnv } from "./helpers"
 
 const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
@@ -51,6 +52,7 @@ describe("22972 — the context-exceeded retry clamps like the first attempt", (
   let stderr: string[] = []
 
   beforeEach(() => {
+    makeTestEnv()
     generateTextMock.mockReset()
     process.env.OPENROUTER_API_KEY ??= "test-key-for-retry-clamp"
     stderr = []

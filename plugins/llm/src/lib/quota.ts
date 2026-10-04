@@ -68,7 +68,7 @@ let cachePathOverride: string | undefined
 export function getCachePath(): string {
   if (cachePathOverride) return cachePathOverride
   const xdg = process.env.XDG_CACHE_HOME
-  const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".cache")
+  const base = xdg && xdg.length > 0 ? xdg : join(process.env.HOME || homedir(), ".cache")
   return join(base, "bearly-llm", "last-quota-by-provider.json")
 }
 
