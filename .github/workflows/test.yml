@@ -25,6 +25,11 @@ jobs:
           # and this workflow is load-bearing for the km vendor-pin gate.
           bun-version: "1.3.14"
 
+      # Packed sibling builds require Node 24.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       # setup-bun caches only the bun BINARY; cache the install cache ourselves.
       - uses: actions/cache@v4
         with:
@@ -32,7 +37,7 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('package.json') }}
           restore-keys: bun-${{ runner.os }}-
 
-      # Installs with the public sibling commits named in source-siblings.json (git-super) in
+      # Installs with the public sibling commits named in source-siblings.json (git-super, loggily, silvery) in
       # place of their npm releases, retrying the install 3x, then restores package.json and
       # bun.lock byte for byte: development never waits on npm (@hh/tooling/26691).
       - uses: ./.github/actions/source-siblings

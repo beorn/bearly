@@ -5,6 +5,18 @@
       "name": "git-super",
       "repository": "beorn/git-super",
       "commit": "fa6dc2c7559c046216f61cc19221bed6230fc2b5"
+    },
+    {
+      "name": "loggily",
+      "repository": "beorn/loggily",
+      "commit": "1918304aa42492f484353fbb113ed7b839ab360f",
+      "pack": true
+    },
+    {
+      "name": "silvery",
+      "repository": "beorn/silvery",
+      "commit": "b956cf1ea635e8572179aaae1f4cc38f465a53bd",
+      "pack": true
     }
   ]
 }
