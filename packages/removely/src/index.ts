@@ -251,6 +251,16 @@ export function runWithGitMetadataScope<T>(action: () => T): T {
   return gitMetadataScope.run(new Map(), action)
 }
 
+/**
+ * Open the invocation scope for a process that serves exactly ONE invocation —
+ * the CLI entry. `enterWith` persists for the rest of the process, which is the
+ * whole invocation; a long-lived daemon worker instead uses
+ * `runWithGitMetadataScope` per command so no command inherits another's roots.
+ */
+export function openGitMetadataScope(): void {
+  gitMetadataScope.enterWith(new Map())
+}
+
 /** Git's repository-local variables that change what a rev-parse answers; the memo's environment half of the key. */
 const GIT_METADATA_ENV_KEYS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"] as const
 
