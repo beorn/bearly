@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
 
-import { findGitProjectRoot, resetGitMetadataCache, resolveGitMetadata, safeRemove } from "../src/index.ts"
+import { findGitProjectRoot, resolveGitMetadata, runWithGitMetadataScope, safeRemove } from "../src/index.ts"
 
 const roots: string[] = []
 
@@ -64,7 +64,6 @@ function recordOf(root: string) {
 }
 
 function expectFieldParity(root: string): void {
-  resetGitMetadataCache()
   const old = oldAnswers(root)
   const record = recordOf(root)
   expect(record.toplevel).toBe(old.toplevel)
@@ -80,30 +79,38 @@ afterAll(async () => {
 })
 
 describe("resolveGitMetadata — one rev-parse answering every repository question", () => {
-  test("memoizes per root: a repeated question answers the same probe object", () => {
+  test("memoizes inside one invocation scope and nothing outside any scope", () => {
     const root = initRepo(join(scratch("memo"), "repo"))
-    resetGitMetadataCache()
-    const first = resolveGitMetadata(root)
-    expect(first.kind).toBe("repo")
-    expect(resolveGitMetadata(root)).toBe(first)
-    expect(resolveGitMetadata(root, { cache: false })).not.toBe(first)
+    // No ambient scope: every question is a direct probe, so no long-lived process caches anything.
+    expect(resolveGitMetadata(root)).not.toBe(resolveGitMetadata(root))
+    const inside = runWithGitMetadataScope(() => {
+      const first = resolveGitMetadata(root)
+      return { first, again: resolveGitMetadata(root) }
+    })
+    expect(inside.first.kind).toBe("repo")
+    expect(inside.again).toBe(inside.first)
+    expect(runWithGitMetadataScope(() => resolveGitMetadata(root, { cache: false }))).not.toBe(inside.first)
+    // Separate invocations do not share entries — the row @cto required for two commands in one worker.
+    expect(runWithGitMetadataScope(() => resolveGitMetadata(root))).not.toBe(inside.first)
   })
 
-  test("keys the memo by root and by git environment, not by a process-global singleton", () => {
+  test("keys the memo by realpath root and by git environment inside one scope", () => {
     const fixture = scratch("keys")
     const first = initRepo(join(fixture, "first"))
     const second = initRepo(join(fixture, "second"))
-    resetGitMetadataCache()
-    expect(resolveGitMetadata(first)).not.toBe(resolveGitMetadata(second))
-    expect(resolveGitMetadata(first)).toBe(resolveGitMetadata(first))
-    expect(resolveGitMetadata(first, { env: { ...process.env, GIT_DIR: "/nonexistent" } })).not.toBe(
-      resolveGitMetadata(first),
-    )
+    const seen = runWithGitMetadataScope(() => ({
+      first: resolveGitMetadata(first),
+      second: resolveGitMetadata(second),
+      firstAgain: resolveGitMetadata(first),
+      otherEnv: resolveGitMetadata(first, { env: { ...process.env, GIT_DIR: "/nonexistent" } }),
+    }))
+    expect(seen.firstAgain).toBe(seen.first)
+    expect(seen.second).not.toBe(seen.first)
+    expect(seen.otherEnv).not.toBe(seen.first)
   })
 
   test("classifies a non-repository as no-repo, carrying git's own status", () => {
     const outside = scratch("outside")
-    resetGitMetadataCache()
     const probe = resolveGitMetadata(outside)
     expect(probe.kind).toBe("no-repo")
     expect(probe.status).toBe(128)
@@ -136,7 +143,6 @@ describe("resolveGitMetadata — one rev-parse answering every repository questi
     expectFieldParity(join(superproject, "product"))
 
     const noRepo = scratch("no-repo")
-    resetGitMetadataCache()
     expect(resolveGitMetadata(noRepo).kind).toBe("no-repo")
     expect(findGitProjectRoot(noRepo)).toBeNull()
   })

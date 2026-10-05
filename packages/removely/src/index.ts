@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { spawnSync } from "node:child_process"
 import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -235,51 +236,58 @@ const GIT_METADATA_FLAGS = [
   "--absolute-git-dir",
 ] as const
 
-const GIT_METADATA_CACHE_LIMIT = 128
-const gitMetadataCache = new Map<string, GitMetadataProbe>()
+// The memo lives in an INVOCATION-scoped store, never a module-global map (27703, cto 8f7ff82e): one
+// AsyncLocalStorage scope the CLI entry opens once and the daemon command worker opens per command.
+// A long-lived daemon worker must not carry one command's root into the next, and outside any scope
+// nothing is memoized at all, so no process caches repository facts by accident.
+const gitMetadataScope = new AsyncLocalStorage<Map<string, GitMetadataProbe>>()
 
-function gitMetadataCacheKey(root: string, env: NodeJS.ProcessEnv): string {
-  const variables = Object.keys(env)
-    .filter((key) => key.startsWith("GIT_"))
-    .sort()
-    .map((key) => `${key}=${env[key] ?? ""}`)
-    .join("\u0000")
-  return `${resolve(root)}\u0000${variables}`
+/**
+ * Open the invocation scope `resolveGitMetadata` memoizes into. The CLI entry
+ * wraps one run, the daemon command worker wraps each command; the action's own
+ * return value (and rejection) passes through unchanged.
+ */
+export function runWithGitMetadataScope<T>(action: () => T): T {
+  return gitMetadataScope.run(new Map(), action)
 }
 
-/** Drop every memoized probe; a long-lived host calls this when the git environment changes. */
-export function resetGitMetadataCache(): void {
-  gitMetadataCache.clear()
+/** Git's repository-local variables that change what a rev-parse answers; the memo's environment half of the key. */
+const GIT_METADATA_ENV_KEYS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"] as const
+
+function gitMetadataCacheKey(root: string, env: NodeJS.ProcessEnv): string {
+  let real = resolve(root)
+  try {
+    real = realpathSync(root)
+  } catch {
+    // silent-fallback-allow: a prospective root that does not exist yet (or a dangling symlink) keys
+    // by its resolved path — the memo key only has to be stable and unique, not a real directory.
+  }
+  const variables = GIT_METADATA_ENV_KEYS.map((key) => `${key}=${env[key] ?? ""}`).join("\u0000")
+  return `${real}\u0000${variables}`
 }
 
 /**
  * Resolve every repository fact the km CLI needs with one `git rev-parse`,
  * memoized per (root, GIT_* environment).
  *
- * Scope is the invocation: one CLI process, one entry per distinct root and
- * environment. Never a process-global singleton — a keyed cache, so a daemon
- * command worker that serves many cwds keeps each root's own answer, and
- * `resetGitMetadataCache` exists for a host that mutates a checkout under it.
+ * Scope is the invocation: the entry is memoized in the ambient
+ * `runWithGitMetadataScope` store (one per CLI run, one per daemon command),
+ * keyed by the queried root's realpath and the git environment. Outside any
+ * scope nothing is memoized — a direct probe every time.
  * A root that is not in Git answers `no-repo` (rc 128, "not a git repository");
  * any other non-zero exit answers `failure` carrying git's stderr, so a caller
  * still refuses with the exact message it refused with before.
  */
 export function resolveGitMetadata(root: string, options: GitMetadataOptions = {}): GitMetadataProbe {
   const env = options.env ?? gitEnvironmentWithoutRootOverrides()
-  const cache = options.cache !== false
-  const key = cache ? gitMetadataCacheKey(root, env) : null
-  if (key !== null) {
-    const hit = gitMetadataCache.get(key)
+  const store = options.cache === false ? undefined : gitMetadataScope.getStore()
+  const key = store === undefined ? null : gitMetadataCacheKey(root, env)
+  if (store !== undefined && key !== null) {
+    const hit = store.get(key)
     if (hit !== undefined) return hit
   }
   const probe = probeGitMetadata(root, env)
-  if (key !== null) {
-    if (gitMetadataCache.size >= GIT_METADATA_CACHE_LIMIT) {
-      const oldest = gitMetadataCache.keys().next()
-      if (!oldest.done) gitMetadataCache.delete(oldest.value)
-    }
-    gitMetadataCache.set(key, probe)
-  }
+  if (store !== undefined && key !== null) store.set(key, probe)
   return probe
 }
 
