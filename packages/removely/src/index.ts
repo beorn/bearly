@@ -184,6 +184,147 @@ export function gitEnvironmentWithoutRootOverrides(source: NodeJS.ProcessEnv = p
 }
 
 /**
+ * Every repository fact one invocation of the km CLI needs, answered by ONE
+ * `git rev-parse`. A single process asks for these repeatedly — the same
+ * `--show-toplevel` for the same root a dozen times — so the resolution is
+ * memoized per (root, GIT_* environment) instead of re-spawned per call site
+ * (measured 2026-10-05: `hh-km bd show` spawned 56 git processes, 49 of them
+ * this rev-parse family; the memo takes that to one per distinct root).
+ */
+export interface GitMetadataRecord {
+  readonly toplevel: string
+  readonly prefix: string
+  readonly commonDir: string
+  readonly absoluteGitDir: string
+  readonly superprojectWorktree: string | null
+}
+
+/** A probe result that carries git's own status/stderr so every caller renders its own refusal unchanged. */
+export type GitMetadataProbe =
+  | {
+      readonly kind: "repo"
+      readonly record: GitMetadataRecord
+      readonly status: number
+      readonly stderr: string
+    }
+  | { readonly kind: "no-repo"; readonly status: number; readonly stderr: string }
+  | {
+      readonly kind: "failure"
+      readonly status: number | null
+      readonly stdout: string
+      readonly stderr: string
+      readonly error: Error | null
+    }
+
+export interface GitMetadataOptions {
+  /** Git's repository-local environment; defaults to the GIT_*-scrubbed process environment. */
+  readonly env?: NodeJS.ProcessEnv
+  /** Set false to bypass (and not populate) the per-process memo. Default true. */
+  readonly cache?: boolean
+}
+
+// The ONE rev-parse that answers all five fields. `--show-superproject-working-tree` is the only
+// flag that can print nothing (no superproject) instead of an empty line, so it goes first and the
+// line count decides whether the record carries a superproject.
+const GIT_METADATA_FLAGS = [
+  "--show-superproject-working-tree",
+  "--path-format=absolute",
+  "--show-toplevel",
+  "--show-prefix",
+  "--git-common-dir",
+  "--absolute-git-dir",
+] as const
+
+const GIT_METADATA_CACHE_LIMIT = 128
+const gitMetadataCache = new Map<string, GitMetadataProbe>()
+
+function gitMetadataCacheKey(root: string, env: NodeJS.ProcessEnv): string {
+  const variables = Object.keys(env)
+    .filter((key) => key.startsWith("GIT_"))
+    .sort()
+    .map((key) => `${key}=${env[key] ?? ""}`)
+    .join("\u0000")
+  return `${resolve(root)}\u0000${variables}`
+}
+
+/** Drop every memoized probe; a long-lived host calls this when the git environment changes. */
+export function resetGitMetadataCache(): void {
+  gitMetadataCache.clear()
+}
+
+/**
+ * Resolve every repository fact the km CLI needs with one `git rev-parse`,
+ * memoized per (root, GIT_* environment).
+ *
+ * Scope is the invocation: one CLI process, one entry per distinct root and
+ * environment. Never a process-global singleton — a keyed cache, so a daemon
+ * command worker that serves many cwds keeps each root's own answer, and
+ * `resetGitMetadataCache` exists for a host that mutates a checkout under it.
+ * A root that is not in Git answers `no-repo` (rc 128, "not a git repository");
+ * any other non-zero exit answers `failure` carrying git's stderr, so a caller
+ * still refuses with the exact message it refused with before.
+ */
+export function resolveGitMetadata(root: string, options: GitMetadataOptions = {}): GitMetadataProbe {
+  const env = options.env ?? gitEnvironmentWithoutRootOverrides()
+  const cache = options.cache !== false
+  const key = cache ? gitMetadataCacheKey(root, env) : null
+  if (key !== null) {
+    const hit = gitMetadataCache.get(key)
+    if (hit !== undefined) return hit
+  }
+  const probe = probeGitMetadata(root, env)
+  if (key !== null) {
+    if (gitMetadataCache.size >= GIT_METADATA_CACHE_LIMIT) {
+      const oldest = gitMetadataCache.keys().next()
+      if (!oldest.done) gitMetadataCache.delete(oldest.value)
+    }
+    gitMetadataCache.set(key, probe)
+  }
+  return probe
+}
+
+function probeGitMetadata(root: string, env: NodeJS.ProcessEnv): GitMetadataProbe {
+  const result = spawnSync("git", ["-C", root, "rev-parse", ...GIT_METADATA_FLAGS], {
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  const stdout = result.stdout ?? ""
+  const stderr = (result.stderr ?? "").trim()
+  if (result.error) return { kind: "failure", status: result.status, stdout, stderr, error: result.error }
+  if (result.status === 0) {
+    const lines = stdout.replace(/\r?\n$/u, "").split(/\r?\n/u)
+    if (lines.length !== 4 && lines.length !== 5) {
+      return {
+        kind: "failure",
+        status: 0,
+        stdout,
+        stderr: stderr || `git rev-parse answered ${String(lines.length)} lines`,
+        error: null,
+      }
+    }
+    const [superprojectWorktree, toplevel, prefix, commonDir, absoluteGitDir] =
+      lines.length === 5 ? lines : [null, ...lines]
+    return {
+      kind: "repo",
+      record: {
+        toplevel: toplevel ?? "",
+        prefix: prefix ?? "",
+        commonDir: commonDir ?? "",
+        absoluteGitDir: absoluteGitDir ?? "",
+        superprojectWorktree: superprojectWorktree ?? null,
+      },
+      status: 0,
+      stderr,
+    }
+  }
+  if (result.status === 128 && /not a git repository/u.test(stderr)) {
+    return { kind: "no-repo", status: 128, stderr }
+  }
+  return { kind: "failure", status: result.status, stdout, stderr, error: null }
+}
+
+/**
  * Resolve the enclosing Git/superproject island. Prospective paths inherit the
  * boundary of their nearest existing ancestor. Returns null when that ancestor
  * is valid but outside Git; execution and repository errors throw.
@@ -193,29 +334,17 @@ export function findGitProjectRoot(cwd: string): string | null {
     throw new Error("git project boundary probe failed: empty cwd")
   }
   const { existingAncestor: probeCwd } = splitAtNearestExistingAncestor(cwd)
-  const args = ["-C", probeCwd, "rev-parse", "--show-superproject-working-tree", "--show-toplevel"]
-  const result = spawnSync("git", args, {
-    encoding: "utf8",
-    env: gitEnvironmentWithoutRootOverrides(),
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  if (result.error) {
-    throw new Error(`git project boundary probe failed for ${cwd}: ${result.error.message}`, { cause: result.error })
-  }
-
-  const stdout = (result.stdout ?? "").trim()
-  if (result.status === 0) {
-    const root = stdout
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .find(Boolean)
+  const probe = resolveGitMetadata(probeCwd)
+  if (probe.kind === "repo") {
+    const root = probe.record.superprojectWorktree ?? probe.record.toplevel
     if (root) return root
     throw new Error(`git project boundary probe failed for ${cwd}: git returned no project root`)
   }
-
-  const stderr = (result.stderr ?? "").trim()
-  if (result.status === 128 && /not a git repository/u.test(stderr)) return null
-  const detail = stderr || stdout || `git exited ${String(result.status)}`
+  if (probe.kind === "no-repo") return null
+  if (probe.error !== null) {
+    throw new Error(`git project boundary probe failed for ${cwd}: ${probe.error.message}`, { cause: probe.error })
+  }
+  const detail = probe.stderr || probe.stdout.trim() || `git exited ${String(probe.status)}`
   throw new Error(`git project boundary probe failed for ${cwd}: ${detail}`)
 }
 
