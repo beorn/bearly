@@ -26,6 +26,7 @@ export async function askAndFinish(options: {
   /** When true, include captured rate-limit headers in the JSON envelope
    *  under `quota`. Cache update is unconditional regardless of this flag. */
   includeQuota?: boolean
+  dryRun?: boolean
 }): Promise<void> {
   const {
     question,
@@ -63,6 +64,10 @@ export async function askAndFinish(options: {
     }
     if (result.warning) console.error(`⚠️  ${result.warning}\n`)
     model = result.model
+  }
+  if (options.dryRun) {
+    console.error(`[ask] Dry run - would query ${model.displayName} (${model.modelId})`)
+    return
   }
   console.error(header(model.displayName) + "\n")
 

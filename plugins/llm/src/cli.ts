@@ -566,6 +566,7 @@ function askOpts(
     // The runtime quota cache (~/.cache/bearly-llm/last-quota-by-provider.json)
     // is updated regardless — `bun llm quota` always sees fresh fallback data.
     includeQuota: hasFlag("--quota"),
+    dryRun: hasFlag("--dry-run"),
   }
 }
 
