@@ -118,6 +118,10 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5)
 }
 
+// The estimator overcounts English by ~14%; refuse only beyond that
+// uncertainty rather than treating an approximate token count as exact.
+const INPUT_ESTIMATE_REFUSAL_RATIO = 1.15
+
 /** Compute the output-token cap for a query. Returns `undefined` for
  * non-reasoning models (provider default applies).
  *
@@ -146,9 +150,9 @@ export function estimateTokens(text: string): number {
  * Static bound (`reasoning.maxOutputTokens` set): that value.
  * Both set: the minimum. Neither: `undefined`, deferring to the provider.
  *
- * If dynamic math produces a non-positive value (input already exceeds
- * the window — impossible in practice but worth guarding), fall back to
- * the static ceiling if any, or `undefined` to defer to the provider. */
+ * Clearly oversized estimates (>115% of the window) refuse this call.
+ * Inside that uncertainty band, a non-positive dynamic bound still defers
+ * to the provider, whose exact context-length cause is retained. */
 /**
  * The largest completion we will ask any endpoint to reserve.
  *
@@ -202,6 +206,11 @@ export function computeMaxOutputTokens(
       }),
     ].join("")
     const estimatedInput = estimateTokens(inputText)
+    if (estimatedInput > INPUT_ESTIMATE_REFUSAL_RATIO * reasoning.contextWindow) {
+      throw new Error(
+        `Estimated input ${estimatedInput} tokens exceeds ${model.provider} (${model.modelId}) registry context window ${reasoning.contextWindow} tokens beyond estimator uncertainty. Trim the context or pick a model whose context window fits.`,
+      )
+    }
     const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
     // A non-positive value means the input alone fills the window; adding it
     // as a bound would clamp every model to nonsense, so the static ceiling
@@ -365,7 +374,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // outright, which asked endpoints for their whole remaining window; see
   // computeMaxOutputTokens and bead 22972.) Non-reasoning chat models leave
   // the block unset entirely (provider default applies).
-  const maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt)
+  let maxOutputTokens: number | undefined
 
   // Provider-specific reasoning knobs. Each provider exposes a
   // *fundamentally different* mechanism — OpenAI's effort enum, Anthropic's
@@ -425,6 +434,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const hasProviderOptions = Object.keys(providerOptions).length > 0
 
   try {
+    maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt)
     if (stream && onToken) {
       // `streamText` does NOT throw on a provider error mid-stream — it ends
       // `textStream` empty and forwards the error to `onError` (whose default
@@ -440,7 +450,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
         onError: ({ error }) => {
-          streamFailure = describeDispatchFailure(error, { provider: model.provider })
+          streamFailure = describeDispatchFailure(error, model)
         },
       })
 
@@ -506,6 +516,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     // underestimates despite the 3.5-chars/token divisor + 4K SAFETY margin
     // (e.g. content dominated by CJK / emoji / unusual tokenizers).
     const errorMsg = error instanceof Error ? error.message : String(error)
+    const describedFailure = describeDispatchFailure(error, model)
     const capInfo = parseContextLengthError(errorMsg)
     if (capInfo && model.reasoning?.contextWindow) {
       const SAFETY = 4096
@@ -544,24 +555,33 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
           })
         } catch (retryError) {
           // Retry failed — fall through to the original error below.
-          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError)
-          return finishQuery(observationStore, model, {
+          const retryFailure = describeDispatchFailure(retryError, model)
+          return finishQuery(
+            observationStore,
             model,
-            content: "",
-            durationMs: Date.now() - startTime,
-            error: `${errorMsg} (retry with cap=${correctedCap} also failed: ${retryMsg})`,
-          })
+            {
+              model,
+              content: "",
+              durationMs: Date.now() - startTime,
+              error: `${describedFailure.message} (retry with cap=${correctedCap} also failed: ${retryFailure.message})`,
+            },
+            retryFailure,
+          )
         }
       }
       // Input alone exceeds the window — no cap will help. Report clearly.
-      return finishQuery(observationStore, model, {
+      return finishQuery(
+        observationStore,
         model,
-        content: "",
-        durationMs: Date.now() - startTime,
-        error: `Input (${capInfo.realInputTokens} tokens) exceeds ${model.displayName}'s ${model.reasoning.contextWindow}-token window. Shorten the prompt or context.`,
-      })
+        {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: `${describedFailure.message} Input (${capInfo.realInputTokens} tokens) exceeds ${model.displayName}'s ${model.reasoning.contextWindow}-token window. Shorten the prompt or context.`,
+        },
+        describedFailure,
+      )
     }
-    const describedFailure = describeDispatchFailure(error, { provider: model.provider })
     return finishQuery(
       observationStore,
       model,

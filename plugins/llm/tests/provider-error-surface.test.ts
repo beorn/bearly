@@ -90,6 +90,9 @@ describe("describeProviderError", () => {
     expect(described.message).toContain("HTTP 402")
     expect(described.message).toContain(`can only afford ${affordable}`)
     expect(described.message).toContain("https://openrouter.ai/settings/credits")
+    expect(described.remedy).toContain(String(affordable))
+    expect(described.remedy).toMatch(/top up/iu)
+    expect(described.remedy).not.toMatch(/endpoint/iu)
     expect(described.message).not.toMatch(/too slow|timed out/u)
   })
 
@@ -135,8 +138,14 @@ describe("describeProviderError", () => {
     expect(modelFailure).not.toHaveProperty("observation")
 
     const timeout = describeDispatchFailure(new Error("timed out after 2002ms"), { provider: "openrouter" })
-    expect(timeout).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(timeout).toMatchObject({ kind: "unknown", scope: "call" })
     expect(timeout).not.toHaveProperty("observation")
+    const elapsedBudget = describeDispatchFailure(
+      new Error("Review leg timed out after 2m; partial results will be reported."),
+      { provider: "openrouter" },
+    )
+    expect(elapsedBudget).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(elapsedBudget).not.toHaveProperty("observation")
   })
 
   it("carries Retry-After into rate-limit evidence for the recorder-owned expiry", () => {
@@ -185,8 +194,8 @@ describe("describeProviderError", () => {
       provider: "openrouter",
     })
 
-    expect(timeout).toMatchObject({ kind: "timeout", scope: "call" })
-    expect(modelTimeout).toMatchObject({ kind: "timeout", scope: "call" })
+    expect(timeout).toMatchObject({ kind: "unknown", scope: "call" })
+    expect(modelTimeout).toMatchObject({ kind: "unknown", scope: "call" })
     expect(unknown).toMatchObject({ kind: "unknown", scope: "call" })
     expect(`${timeout.message} ${modelTimeout.message} ${unknown.message}`).not.toMatch(
       /sk-secret|private-(?:model-)?text|https:\/\/x\.test/,
@@ -288,6 +297,63 @@ describe("filterNewModelCandidates — de-noise the auto-discovery banner", () =
 })
 
 describe("queryModel streaming path — the empty-response silent failure fix", () => {
+  // 26799: the real dispatch boundary must reject only clearly oversized
+  // estimates; uncertainty remains a provider request, with its cause intact.
+  it.each([false, true])(
+    "names a context-length rejection with route and token counts (inside band: %s)",
+    async (insideBand) => {
+      makeTestEnv()
+      const { queryModel } = await import("../src/lib/research")
+      const { getModel } = await import("../src/lib/types")
+      const model = getModel("moonshotai/kimi-k2.6")!
+      const body =
+        "This endpoint's maximum context length is 262144 tokens. However, you requested about 262189 tokens (30687 of text input, 231502 in the output). Please reduce the length of either one, or use the context-compression plugin to compress your prompt automatically."
+      const error = Object.assign(
+        new Error(insideBand ? "Unauthorized request option" : `${body} Unauthorized request option`),
+        { statusCode: 400, responseBody: body },
+      )
+      generateTextMock.mockReset().mockRejectedValue(error)
+      const write = vi.fn(async () => undefined)
+      const observationStore = {
+        pathFor: () => "/test/providers/openrouter.json",
+        read: vi.fn(async () => ({ status: "absent" as const, path: "/test/providers/openrouter.json" })),
+        write,
+      }
+      const result = await queryModel({
+        question: insideBand ? "x".repeat(Math.ceil(262144 * 1.1 * 3.5)) : "review this",
+        model,
+        observationStore,
+      })
+      expect(generateTextMock).toHaveBeenCalledTimes(insideBand ? 1 : 2)
+      expect(result.response.error).toContain(model.modelId)
+      expect(result.response.error).toMatch(/context length/iu)
+      expect(result.response.error).toContain("262144")
+      expect(result.response.error).toContain("262189")
+      expect(result.response.error).toContain("HTTP 400")
+      expect(result.response.error).not.toMatch(/auth failed/iu)
+      expect(write).not.toHaveBeenCalled()
+    },
+  )
+
+  it("returns a named call error without dispatch for estimates beyond 115% of the registry window", async () => {
+    makeTestEnv()
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const model = getModel("moonshotai/kimi-k2.6")!
+    generateTextMock.mockReset()
+    const result = await queryModel({
+      question: "x".repeat(262144 * 1.2 * 3.5),
+      model,
+      observationStore: null,
+    })
+    expect(generateTextMock).not.toHaveBeenCalled()
+    expect(result.response.error).toContain(model.modelId)
+    expect(result.response.error).toContain("314573")
+    expect(result.response.error).toContain("262144")
+    expect(result.response.error).toMatch(/trim.*context|shorten.*context/iu)
+    expect(result.response.error).toMatch(/model.*window/iu)
+  })
+
   it.each([
     ["Insufficient credits. Check your OpenAI billing at https://platform.openai.com/account/billing", "quota"],
     ["Organization not verified. Visit https://platform.openai.com/settings/organization/general to verify.", "auth"],
@@ -397,7 +463,7 @@ describe("queryModel streaming path — the empty-response silent failure fix", 
     expect(exited).toBe(1)
     const out = [...env.stderr, ...env.stdout].join("\n")
     // The real cause is surfaced instead of "silent failure".
-    expect(out).toMatch(/insufficient_quota/i)
+    expect(out).toMatch(/insufficient[ _]quota/i)
     expect(out).not.toMatch(/This is a silent failure/)
   })
 })
