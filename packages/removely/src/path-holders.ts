@@ -967,7 +967,10 @@ async function observeProcessLink(
 async function observeProcessArgv(deadline: CensusDeadline, path: string): Promise<SourceObservation<string[]>> {
   const observed = await observeSource(deadline, path, () => readFile(path, "utf8"), "")
   if (observed.availability !== "readable") return { ...observed, value: [] }
-  return { ...observed, value: observed.value.split("\0").filter((element) => element !== "") }
+  const value = observed.value.split("\0")
+  // The final NUL terminates the vector; other empty fields are real arguments.
+  if (value.at(-1) === "") value.pop()
+  return { ...observed, value }
 }
 async function observeProcessMaps(deadline: CensusDeadline, path: string): Promise<SourceObservation<string[]>> {
   const observed = await observeSource(deadline, path, () => readFile(path, "utf8"), "")

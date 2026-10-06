@@ -1093,6 +1093,28 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
     }) as typeof fsPromises.readlink)
   }
 
+  /**
+   * @failure Full offender argv loses empty arguments when the shared cmdline reader filters NUL fields.
+   * @level l2
+   * @consumer Removely process-source reading reused by Hab exact offender capture.
+   * @testonly none
+   * The existing argv projection case contains no empty argument or argument beyond Sysmon's 512-character clip.
+   */
+  test.runIf(process.platform === "linux")("preserves empty and long argv elements in the shared source", async () => {
+    const longArgument = "path with spaces/".repeat(80)
+    const probe = processFixture(`bun\0\0${longArgument}\0\0`)
+    const census = await inspectProcessCensusInProc(probe.procRoot, {
+      scope: "same-uid",
+      sources: ["argv"],
+      includeArgv: true,
+    })
+    expect(census.rows[0]?.sources.argv).toEqual({
+      availability: "readable",
+      value: ["bun", "", longArgument, ""],
+      issues: [],
+    })
+  })
+
   test.runIf(process.platform === "linux")(
     "a row carries the owner uid, the kernel's start ticks and only the sources asked for; argv only when asked",
     async () => {
