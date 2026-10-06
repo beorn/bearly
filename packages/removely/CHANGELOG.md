@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-Minor (0.4.0 at release), with one breaking removal.
+Minor, with one breaking removal.
 
 - **Breaking:** `censusProcessCwds` and its `ProcessCwdCensus`,
   `ProcessCwdCensusDeps` and `ProcessCwdCensusCommandResult` types are no longer
