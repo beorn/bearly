@@ -1921,6 +1921,39 @@ function cutsWorktreeBranch(isPoolSlot: boolean, branchExists: boolean, remoteBr
   return isPoolSlot || (!branchExists && !remoteBranchExists)
 }
 
+export type StrandedBranchCleanup = Readonly<{ removed: boolean; reason: string }>
+
+/**
+ * `git worktree add` creates the branch ref BEFORE it prepares the checkout, so
+ * a failure after that point (an unwritable pool path, a bad `--destination`)
+ * strands the ref — measured 2026-10-06, both a nonexistent parent and an
+ * unwritable directory leave the branch behind.
+ *
+ * Remove only a ref THIS create made. `existedBefore` carries the whole proof
+ * obligation: a ref that did not exist before the command cannot hold anyone's
+ * work, so removing it is lossless. The checkout-existing form and the tracking
+ * form (`branchExists` / `remoteBranchExists`) are left exactly as they were,
+ * and a tracking ref is recoverable from its remote anyway.
+ */
+export async function clearStrandedBranch(
+  gitRoot: string,
+  branchName: string,
+  existedBefore: boolean,
+): Promise<StrandedBranchCleanup> {
+  if (existedBefore) {
+    return { removed: false, reason: `${branchName} existed before this create; left as it was` }
+  }
+  const ref = `refs/heads/${branchName}`
+  const present = await safeExec($`cd ${gitRoot} && git rev-parse --verify --quiet ${ref}`)
+  if (present.exitCode !== 0) {
+    return { removed: false, reason: `no ${ref} was created` }
+  }
+  const removed = await safeExec($`cd ${gitRoot} && git branch -D ${branchName}`)
+  return removed.exitCode === 0
+    ? { removed: true, reason: `removed the ${ref} this create made` }
+    : { removed: false, reason: `could not remove ${ref}: ${removed.stderr.trim() || `exit ${removed.exitCode}`}` }
+}
+
 /**
  * Resolve the start point for a branch this create will CUT (pool slot `-B` /
  * brand-new `-b`) — worktree-base-origin-main.
@@ -2157,8 +2190,14 @@ export async function createWorktree(name: string, branch?: string, options: Cre
   try {
     await mechanics.add(add)
   } catch (cause) {
+    const cleanup = await clearStrandedBranch(gitRoot, branchName, branchExists)
     error("Failed to create worktree")
     console.log(cause instanceof Error ? cause.message : String(cause))
+    // The stranded ref is the invisible half of this failure; never leave it unnamed.
+    console.log(DIM + `  branch ${branchName}: ${cleanup.reason}` + RESET)
+    if (!cleanup.removed && !branchExists) {
+      warn(`  ${branchName} may be stranded; remove it with \`git branch -D ${branchName}\``)
+    }
     process.exit(1)
   }
   success("Worktree created")
