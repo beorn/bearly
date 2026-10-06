@@ -49,14 +49,15 @@ export function atomicPublishFileSync(path: string, body: string | Uint8Array): 
 
 class AtomicPublicationError extends Error {
   readonly published = true
-  constructor(
-    readonly path: string,
-    cause: unknown,
-  ) {
+  // An explicit field, not a parameter property: plainbrain runs this source under Node's strip-only loader,
+  // which rejects parameter properties (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+  readonly path: string
+  constructor(path: string, cause: unknown) {
     super(
       `atomicPublishFileSync: ${path}: destination exists complete; post-publication cleanup or durability failed`,
       { cause },
     )
+    this.path = path
     this.name = "AtomicPublicationError"
   }
 }
