@@ -69,6 +69,39 @@ function resetGenerateTextToOk() {
 }
 
 describe("cli-single-fire", () => {
+  /**
+   * @failure Single-model --dry-run spends money or writes a response.
+   * @level l1
+   * @consumer CLI callers previewing a query before dispatch.
+   * Existing single-fire coverage allows one call; Pro dry-run uses another dispatcher.
+   */
+  it.each([
+    { label: "default", mode: [] },
+    { label: "explicit ask", mode: ["--ask"] },
+    { label: "quick", mode: ["quick"] },
+    { label: "opinion", mode: ["opinion"] },
+  ])(
+    "$label --dry-run previews without provider calls",
+    async ({ mode }) => {
+      const env = makeTestEnv()
+      resetGenerateTextToOk()
+      const beforeTmpFiles = listLlmTmpFiles()
+
+      const result = await runCli([...mode, "--dry-run", "--model", "google/gemini-2.5-pro", "preview this query"])
+
+      expect(result.error).toBeUndefined()
+      expect(result.exited).toBeUndefined()
+      expect(generateTextMock).not.toHaveBeenCalled()
+      expect(streamTextMock).not.toHaveBeenCalled()
+      expect(queryBackgroundMock).not.toHaveBeenCalled()
+      expect(env.stdout).toHaveLength(0)
+      expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
+      expect(env.stderr.join("\n")).toMatch(/Dry run.*would query/s)
+      expect(env.stderr.join("\n")).toContain("google/gemini-2.5-pro")
+    },
+    10_000,
+  )
+
   it("main() fires exactly once per invocation (default/ask path)", async () => {
     const env = makeTestEnv()
     resetGenerateTextToOk()
