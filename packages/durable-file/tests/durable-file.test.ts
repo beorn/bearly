@@ -8,7 +8,6 @@ import { join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { atomicPublishFileSync, atomicWriteFileSync } from "../src/index.ts"
 import {
   classifyErrno,
   exitCodeForVerdict,
@@ -37,6 +36,11 @@ vi.mock("node:fs", async (importOriginal) => {
     },
   }
 })
+// A setup file can load this module before the mock above registers (the superproject's root vitest
+// setup reaches it through habitat.ts), and a cached instance keeps the real node:fs. A fresh instance
+// after resetModules binds the mocked one, so the injected faults reach the code under test.
+vi.resetModules()
+const { atomicPublishFileSync, atomicWriteFileSync } = await import("../src/index.ts")
 
 const roots: string[] = []
 const OBSERVED_AT = "2026-08-14T20:00:00.000Z"
