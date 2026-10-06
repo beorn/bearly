@@ -67,6 +67,17 @@ start time, counts it exited, and a one-thread zombie holds nothing. A denied
 source with no reading is then read once more, a retry for a process that
 denied its `/proc` entries for a moment; a reading is never taken away.
 
+`inspectProcessSources(pid, options)` reads only that PID's selected `argv`
+and/or `cwd` (both by default), without a census. It shares source parsing with
+the census; argv preserves empty elements, whitespace and long arguments.
+`procRoot` selects an alternate proc view. `readFile` and `readlink` callbacks
+let production callers admit and track I/O in their existing budget. The caller
+owns deadlines and before/after birth fencing; this function does not establish
+a stable incarnation or infer exit from a missing source. Successful empty argv
+is readable evidence, distinct from missing or denied argv. Unexpected I/O throws
+with the source path. Values are unredacted: callers must redact before writing
+or rendering and restrict their exposure and persisted permissions.
+
 The CLI uses the same removal guard:
 
 ```sh

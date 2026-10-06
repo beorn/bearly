@@ -20,6 +20,7 @@ import * as fsPromises from "node:fs/promises"
 import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import * as removely from "../src/index.ts"
 import {
   clearedByIdentity,
   inspectPathHolderCensus,
@@ -1092,6 +1093,53 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
       return readlink(path)
     }) as typeof fsPromises.readlink)
   }
+
+  /**
+   * @failure Exact offender evidence requires a second host census or bypasses the caller's tracked I/O.
+   * @level l2
+   * @consumer Linux Sysmon targeted context operation.
+   * @testonly none
+   * Existing census tests cannot exercise caller-selected one-PID source reads through injected production I/O.
+   */
+  test.runIf(process.platform === "linux")("reads only selected sources of one target through caller I/O", async () => {
+    const probe = processFixture("bun\0with spaces\0")
+    const enumerate = vi.spyOn(fsPromises, "readdir")
+    const file = vi.fn((path: string) => fsPromises.readFile(path, "utf8"))
+    const link = vi.fn((path: string) => fsPromises.readlink(path))
+    const sources = await removely.inspectProcessSources(4242, {
+      procRoot: probe.procRoot,
+      sources: ["argv"],
+      readFile: file,
+      readlink: link,
+    })
+    expect(sources).toEqual({ argv: { availability: "readable", value: ["bun", "with spaces"], issues: [] } })
+    expect(enumerate).not.toHaveBeenCalled()
+    expect(link).not.toHaveBeenCalled()
+    expect(file.mock.calls.map(([path]) => path)).toEqual([join(probe.processRoot, "cmdline")])
+  })
+
+  test.each([false, true])("keeps readable empty argv distinct from a missing source (missing=%s)", async (missing) => {
+    const probe = processFixture("")
+    if (missing) unlinkSync(join(probe.processRoot, "cmdline"))
+    denyCwd(probe.processRoot)
+    const sources = await removely.inspectProcessSources(4242, { procRoot: probe.procRoot })
+    expect(sources.argv).toEqual(
+      missing
+        ? {
+            availability: "missing",
+            value: [],
+            issues: [
+              { source: "argv", resource: join(probe.processRoot, "cmdline"), reason: "missing", code: "ENOENT" },
+            ],
+          }
+        : { availability: "readable", value: [], issues: [] },
+    )
+    expect(sources.cwd).toEqual({
+      availability: "denied",
+      value: undefined,
+      issues: [{ source: "cwd", resource: join(probe.processRoot, "cwd"), reason: "denied", code: "EACCES" }],
+    })
+  })
 
   /**
    * @failure Full offender argv loses empty arguments when the shared cmdline reader filters NUL fields.

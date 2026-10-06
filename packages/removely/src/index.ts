@@ -10,6 +10,7 @@ export {
   clearedByIdentity,
   inspectProcessCensus,
   inspectProcessCwds,
+  inspectProcessSources,
   inspectPathHolderCensus,
   pathHolderRefusal,
   PATH_HOLDER_CENSUS_DEADLINE_MS,
@@ -32,6 +33,7 @@ export {
   type ProcessRow,
   type ProcessRowSource,
   type ProcessRowSources,
+  type ProcessSourceOptions,
   type SourceName as ProcessCensusSource,
 } from "./path-holders.ts"
 

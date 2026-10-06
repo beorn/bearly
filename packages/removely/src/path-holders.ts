@@ -10,7 +10,7 @@
  */
 import { execFile } from "node:child_process"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
-import { basename, resolve, sep } from "node:path"
+import { basename, dirname, resolve, sep } from "node:path"
 import { linuxBootTimeMs, procStatStartTicks, startTicksToMs } from "./pid-identity.ts"
 import { darwinProcessCwds, type ProcessCwdRow } from "./process-census.ts"
 
@@ -268,6 +268,46 @@ export type ProcessRowSources = Readonly<{
   maps?: ProcessRowSource<readonly string[]>
   fd?: ProcessRowSource<readonly ProcessDescriptor[]>
 }>
+
+export type ProcessSourceOptions = Readonly<{
+  /** Alternate proc view, also used by the existing census; defaults to /proc. */
+  procRoot?: string
+  sources?: readonly ("argv" | "cwd")[]
+  /** Production callers can admit and track the actual syscall in their existing I/O budget. */
+  readFile?: (path: string) => Promise<string>
+  readlink?: (path: string) => Promise<string>
+}>
+
+/**
+ * Read selected sources of one PID without enumerating processes or claiming a stable identity.
+ * The caller owns admission, deadlines and before/after birth fencing. Missing or denied sources remain named;
+ * unexpected I/O fails loudly. These raw values are not redacted and must not reach unprotected logs or artifacts.
+ */
+export async function inspectProcessSources(
+  pid: number,
+  options: ProcessSourceOptions = {},
+): Promise<Pick<ProcessRowSources, "argv" | "cwd">> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError(`removely: invalid process source pid '${pid}'`)
+  const selected = options.sources ?? ["argv", "cwd"]
+  for (const source of selected) {
+    if (source !== "argv" && source !== "cwd") {
+      throw new TypeError(`removely: unsupported process source '${String(source)}'`)
+    }
+  }
+  const proc = `${options.procRoot ?? "/proc"}/${pid}`
+  const [argv, cwd] = await Promise.all([
+    selected.includes("argv") ? readProcessArgv(`${proc}/cmdline`, options.readFile) : undefined,
+    selected.includes("cwd") ? observeProcessLink(undefined, `${proc}/cwd`, options.readlink) : undefined,
+  ])
+  return {
+    ...(argv === undefined
+      ? {}
+      : { argv: { ...argv, issues: argv.issues.map((issue) => ({ source: "argv" as const, ...issue })) } }),
+    ...(cwd === undefined
+      ? {}
+      : { cwd: { ...cwd, issues: cwd.issues.map((issue) => ({ source: "cwd" as const, ...issue })) } }),
+  }
+}
 /**
  * One process of a census. `uid` is the owner of `/proc/<pid>`, the read every row already makes; status is not read
  * (a second read per pid that can stall), and for a same-uid process whose sources deny it gives the same uid as
@@ -558,7 +598,7 @@ async function observeSources(
     return { argv, maps }
   }
   const [cwd, exe, root, fd, locked] = await Promise.all([
-    want("cwd") ? observeProcessLink(deadline, `${proc}/cwd`) : undefined,
+    want("cwd") ? observeProcessCwd(deadline, proc) : undefined,
     want("exe") ? observeProcessLink(deadline, `${proc}/exe`) : undefined,
     want("root") ? observeProcessLink(deadline, `${proc}/root`) : undefined,
     want("fd") ? observeProcessDescriptors(deadline, `${proc}/fd`) : undefined,
@@ -923,13 +963,14 @@ function recordSourceCoverage(coverage: MutableSourceCoverage, observation: Sour
   }
 }
 async function observeSource<T>(
-  deadline: CensusDeadline,
+  deadline: CensusDeadline | undefined,
   resource: string,
   read: () => Promise<T>,
   unavailableValue: T,
 ): Promise<SourceObservation<T>> {
   try {
-    const answer = await deadline.answer(read())
+    const answer =
+      deadline === undefined ? { answered: true as const, value: await read() } : await deadline.answer(read())
     if (!answer.answered) {
       return { availability: "unanswered", value: unavailableValue, issues: [{ resource, reason: "unanswered" }] }
     }
@@ -949,10 +990,11 @@ async function observeSource<T>(
   }
 }
 async function observeProcessLink(
-  deadline: CensusDeadline,
+  deadline: CensusDeadline | undefined,
   path: string,
+  read: (path: string) => Promise<string> = (path) => readlink(path),
 ): Promise<SourceObservation<string | undefined>> {
-  const observed = await observeSource(deadline, path, () => readlink(path), undefined)
+  const observed = await observeSource(deadline, path, () => read(path), undefined)
   // A link that names no path, other than a socket, pipe or anonymous inode, is ambiguous whatever the target; a path
   // that may lie under one root is judged by that root's projection.
   if (
@@ -965,7 +1007,38 @@ async function observeProcessLink(
   return observed
 }
 async function observeProcessArgv(deadline: CensusDeadline, path: string): Promise<SourceObservation<string[]>> {
-  const observed = await observeSource(deadline, path, () => readFile(path, "utf8"), "")
+  const proc = dirname(path)
+  const answer = await deadline.answer(
+    inspectProcessSources(Number(basename(proc)), {
+      procRoot: dirname(proc),
+      sources: ["argv"],
+    }),
+  )
+  if (!answer.answered) return unansweredObservation(path, [])
+  const argv = answer.value.argv
+  if (argv === undefined) throw new Error(`removely: requested argv source missing from result for '${proc}'`)
+  return { ...argv, value: [...argv.value], issues: [...argv.issues] }
+}
+async function observeProcessCwd(
+  deadline: CensusDeadline,
+  proc: string,
+): Promise<SourceObservation<string | undefined>> {
+  const answer = await deadline.answer(
+    inspectProcessSources(Number(basename(proc)), {
+      procRoot: dirname(proc),
+      sources: ["cwd"],
+    }),
+  )
+  if (!answer.answered) return unansweredObservation(`${proc}/cwd`, undefined)
+  const cwd = answer.value.cwd
+  if (cwd === undefined) throw new Error(`removely: requested cwd source missing from result for '${proc}'`)
+  return { ...cwd, issues: [...cwd.issues] }
+}
+async function readProcessArgv(
+  path: string,
+  read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+): Promise<SourceObservation<string[]>> {
+  const observed = await observeSource(undefined, path, () => read(path), "")
   if (observed.availability !== "readable") return { ...observed, value: [] }
   const value = observed.value.split("\0")
   // The final NUL terminates the vector; other empty fields are real arguments.
