@@ -28,7 +28,7 @@ describe("assertSingleStatement", () => {
     const db = new Database(":memory:")
     try {
       db.run('CREATE TABLE t (x INTEGER, "end" INTEGER)')
-      db.prepare(sql).run()
+      db.prepare(assertSingleStatement(sql)).run()
       expect(db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([{ name }])
     } finally {
       db.close()
