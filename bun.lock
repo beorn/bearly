@@ -127,11 +127,21 @@
         "vitest": "^4.1.10",
       },
     },
+    "packages/process-sources": {
+      "name": "@bearly/process-sources",
+      "version": "0.1.0",
+      "devDependencies": {
+        "tsdown": "0.22.13",
+      },
+    },
     "packages/removely": {
       "name": "removely",
       "version": "0.3.0",
       "bin": {
         "removely": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@bearly/process-sources": "^0.1.0",
       },
       "devDependencies": {
         "@types/node": "^25.9.4",
@@ -248,6 +258,8 @@
     "@bearly/mux-protocol": ["@bearly/mux-protocol@workspace:packages/mux-protocol"],
 
     "@bearly/pacing": ["@bearly/pacing@workspace:packages/pacing"],
+
+    "@bearly/process-sources": ["@bearly/process-sources@workspace:packages/process-sources"],
 
     "@bearly/runtime-info": ["@bearly/runtime-info@workspace:packages/runtime-info"],
 
