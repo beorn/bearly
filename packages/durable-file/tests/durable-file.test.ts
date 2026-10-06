@@ -1,12 +1,14 @@
 /**
  * @reach fs-walk <fixture-only: scratch creates a mkdtempSync verdict directory>
  */
-import { afterEach, describe, expect, test } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test, vi } from "vitest"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeRemoveSync } from "removely"
-import { atomicWriteFileSync } from "../src/index.ts"
+import { spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { atomicPublishFileSync, atomicWriteFileSync } from "../src/index.ts"
 import {
   classifyErrno,
   exitCodeForVerdict,
@@ -15,10 +17,34 @@ import {
   type VerdictArtifact,
 } from "../src/verdict.ts"
 
+const faults = vi.hoisted(() => ({ short: false, failure: "", syncs: 0 }))
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...real,
+    writeSync: (fd: number, bytes: Uint8Array, offset: number, length: number) => {
+      if (faults.failure === "write") throw new Error("injected write failure")
+      return real.writeSync(fd, bytes, offset, faults.short ? Math.min(3, length) : length)
+    },
+    fsyncSync: (fd: number) => {
+      faults.syncs += 1
+      if (faults.failure === "directory" && faults.syncs === 2) throw new Error("injected directory fsync failure")
+      return real.fsyncSync(fd)
+    },
+    linkSync: (...args: Parameters<typeof real.linkSync>) => {
+      if (faults.failure === "link") throw Object.assign(new Error("injected link refusal"), { code: "EPERM" })
+      return real.linkSync(...args)
+    },
+  }
+})
+
 const roots: string[] = []
 const OBSERVED_AT = "2026-08-14T20:00:00.000Z"
 
 afterEach(() => {
+  faults.short = false
+  faults.failure = ""
+  faults.syncs = 0
   for (const root of roots.splice(0)) {
     safeRemoveSync(root, { within: tmpdir(), allowMissing: true })
   }
@@ -52,6 +78,121 @@ describe("atomicWriteFileSync", () => {
 
     expect(readFileSync(path, "utf8")).toBe("new verdict\n")
     expect(readdirSync(root)).toEqual(["verdict.json"])
+  })
+})
+
+/** @failure Exclusive first publication overwrites, tears bytes or hides durability failure. @level l2 @consumer habitat scratch marker and signing-key creator */
+describe("atomicPublishFileSync", () => {
+  test("publishes once with private mode and never overwrites the winner", () => {
+    const root = scratch(),
+      path = join(root, "marker")
+    expect(atomicPublishFileSync(path, "first")).toBe("published")
+    expect(atomicPublishFileSync(path, "second")).toBe("exists")
+    expect(readFileSync(path, "utf8")).toBe("first")
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+    expect(readdirSync(root)).toEqual(["marker"])
+  })
+  test("requires the caller's parent directory and a nonempty path", () => {
+    const root = scratch()
+    expect(() => atomicPublishFileSync(join(root, "missing", "marker"), "body")).toThrow()
+    expect(existsSync(join(root, "missing"))).toBe(false)
+    expect(() => atomicPublishFileSync(" ", "body")).toThrow(/path must not be empty/)
+  })
+  test("writes all bytes despite short writes", () => {
+    faults.short = true
+    const path = join(scratch(), "marker")
+    expect(atomicPublishFileSync(path, "complete marker bytes")).toBe("published")
+    expect(readFileSync(path, "utf8")).toBe("complete marker bytes")
+  })
+  test.each(["write", "link"])("cleans temporary bytes after a %s failure without publishing", (phase) => {
+    const root = scratch(),
+      path = join(root, "marker")
+    faults.failure = phase
+    expect(() => atomicPublishFileSync(path, "body")).toThrow(/injected/)
+    expect(readdirSync(root)).toEqual([])
+  })
+  test("names a post-publication durability failure and retains the complete destination", () => {
+    const root = scratch(),
+      path = join(root, "marker")
+    faults.failure = "directory"
+    try {
+      atomicPublishFileSync(path, "complete")
+      throw new Error("publication should fail")
+    } catch (error) {
+      expect(error).toMatchObject({ name: "AtomicPublicationError", published: true, path })
+      expect(String(error)).toContain("destination exists complete")
+    }
+    expect(readFileSync(path, "utf8")).toBe("complete")
+    expect(readdirSync(root)).toEqual(["marker"])
+  })
+  test("concurrent publishers elect one winner and readers see only its complete bytes", async () => {
+    const root = scratch(),
+      path = join(root, "marker")
+    const modulePath = fileURLToPath(new URL("../src/index.ts", import.meta.url))
+    const script = join(root, "publisher.ts")
+    writeFileSync(
+      script,
+      `import { atomicPublishFileSync } from ${JSON.stringify(modulePath)}; await new Response(Bun.stdin).text(); const body=Bun.argv[3].repeat(250000); console.log(JSON.stringify({result:atomicPublishFileSync(Bun.argv[2], body),body:Bun.argv[3]}))`,
+    )
+    const children = Array.from({ length: 6 }, (_, i) =>
+      spawn(process.execPath, [script, path, String(i)], { stdio: ["pipe", "pipe", "pipe"] }),
+    )
+    const results = children.map(
+      (child) =>
+        new Promise<{ result: string; body: string }>((resolve, reject) => {
+          let out = "",
+            err = ""
+          child.stdout.on("data", (data) => {
+            out += data
+          })
+          child.stderr.on("data", (data) => {
+            err += data
+          })
+          child.on("error", reject)
+          child.on("close", (code) => {
+            if (code !== 0) {
+              reject(new Error(`publisher ${code}: ${err}`))
+              return
+            }
+            try {
+              const value: unknown = JSON.parse(out)
+              if (
+                typeof value !== "object" ||
+                value === null ||
+                !("result" in value) ||
+                !("body" in value) ||
+                typeof value.result !== "string" ||
+                typeof value.body !== "string"
+              ) {
+                throw new Error(`invalid publisher receipt: ${out}`)
+              }
+              resolve({ result: value.result, body: value.body })
+            } catch (error) {
+              reject(error)
+            }
+          })
+        }),
+    )
+    let done = false
+    const finished = Promise.allSettled(results).finally(() => {
+      done = true
+    })
+    for (const child of children) child.stdin.end("go")
+    const observed = new Set<string>()
+    while (!done) {
+      if (existsSync(path)) observed.add(readFileSync(path, "utf8"))
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    const settled = await finished
+    for (const row of settled) if (row.status === "rejected") throw row.reason
+    const rows = settled.flatMap((row) => (row.status === "fulfilled" ? [row.value] : []))
+    expect(rows.filter((row) => row.result === "published")).toHaveLength(1)
+    expect(rows.filter((row) => row.result === "exists")).toHaveLength(5)
+    const winner = rows.find((row) => row.result === "published")!.body.repeat(250000)
+    expect(observed.size).toBeGreaterThan(0)
+    observed.add(readFileSync(path, "utf8"))
+    expect([...observed]).toEqual([winner])
+    expect(readdirSync(root).sort()).toEqual(["marker", "publisher.ts"])
   })
 })
 

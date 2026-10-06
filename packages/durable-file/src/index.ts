@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs"
+import { closeSync, fsyncSync, mkdirSync, linkSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
 /** Publish complete bytes through a unique sibling and both durability barriers. */
@@ -7,20 +7,71 @@ export function atomicWriteFileSync(path: string, body: string | Uint8Array): vo
   if (path.trim().length === 0) throw new Error("atomicWriteFileSync: path must not be empty")
   const directory = dirname(path)
   mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const temporary = join(directory, `.${basename(path)}.tmp-${process.pid.toString(36)}-${randomUUID()}`)
+  const temporary = temporaryPath(path)
 
   try {
-    const file = openSync(temporary, "wx", 0o600)
-    try {
-      writeAllBytesSync(file, typeof body === "string" ? Buffer.from(body) : body, path)
-      fsyncSync(file)
-    } finally {
-      closeSync(file)
-    }
+    writeTemporaryFileSync(temporary, body, path)
     renameSync(temporary, path)
     syncDirectorySync(directory)
   } catch (error) {
     removeTemporary(temporary, error)
+  }
+}
+
+/** Exclusively publish complete bytes. The caller owns the existing parent directory. */
+export function atomicPublishFileSync(path: string, body: string | Uint8Array): "published" | "exists" {
+  if (path.trim().length === 0) throw new Error("atomicPublishFileSync: path must not be empty")
+  const directory = dirname(path)
+  const temporary = temporaryPath(path)
+  let published = false
+  try {
+    writeTemporaryFileSync(temporary, body, path)
+    try {
+      linkSync(temporary, path)
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error
+      unlinkSync(temporary)
+      return "exists"
+    }
+    published = true
+    unlinkSync(temporary)
+    syncDirectorySync(directory)
+    return "published"
+  } catch (error) {
+    try {
+      removeTemporary(temporary, error)
+    } catch (failure) {
+      if (published) throw new AtomicPublicationError(path, failure)
+      throw failure
+    }
+  }
+}
+
+class AtomicPublicationError extends Error {
+  readonly published = true
+  constructor(
+    readonly path: string,
+    cause: unknown,
+  ) {
+    super(
+      `atomicPublishFileSync: ${path}: destination exists complete; post-publication cleanup or durability failed`,
+      { cause },
+    )
+    this.name = "AtomicPublicationError"
+  }
+}
+
+function temporaryPath(path: string): string {
+  return join(dirname(path), `.${basename(path)}.tmp-${process.pid.toString(36)}-${randomUUID()}`)
+}
+
+function writeTemporaryFileSync(temporary: string, body: string | Uint8Array, path: string): void {
+  const file = openSync(temporary, "wx", 0o600)
+  try {
+    writeAllBytesSync(file, typeof body === "string" ? Buffer.from(body) : body, path)
+    fsyncSync(file)
+  } finally {
+    closeSync(file)
   }
 }
 
