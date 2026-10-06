@@ -206,22 +206,23 @@ returned/requested count and judge state stated explicitly.
 
 ## Quota tracking
 
-Surface remaining credit + rate limits per provider so spending decisions
-are visible. Two layers, both opt-in.
+Surface key allowances, usage, and rate limits per provider. An ordinary
+OpenRouter key exposes its allowance, while wallet credit remains unknown.
+Two layers, both opt-in.
 
 ### `bun tools/llm.ts quota` — one-shot snapshot
 
 ```
-Provider         Balance / Used      Rate Limit         Last Used
+Provider         Allowance / Usage   Rate Limit         Last Used
 ---------------------------------------------------------------
 OpenAI           $300 / $700/mo     50K TPM, 500 RPM   2026-04-27 07:43
-OpenRouter       $48 credit          100 RPM            (live)
+OpenRouter       $48 key allowance remaining; wallet unknown   100 RPM   (live)
 Anthropic        (header-only)       100K TPM           2026-04-27 02:30
 Google Gemini    (no quota API)      —                  —
 xAI (Grok)       (no quota API)      —                  —
 ```
 
-- **OpenRouter** — live `GET /api/v1/auth/key` (no admin key needed)
+- **OpenRouter** — live `GET /api/v1/auth/key` (no admin key needed). Reports key limit, remaining key allowance, and key usage; a null limit means no key limit. These values do not reveal wallet credit or monthly spending.
 - **OpenAI** — tries `/v1/organization/usage/completions` (admin key required); falls back to cached rate-limit headers
 - **Anthropic** — header-only (no balance endpoint); shows the most recent `anthropic-ratelimit-*` headers from cache
 - **Google / xAI / Perplexity** — no quota API; row says so

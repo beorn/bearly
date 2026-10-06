@@ -57,7 +57,7 @@ describe("22972 — a 402 is an output-budget refusal, never a credentials one",
     expect(described.kind).toBe("output-budget")
     expect(described.message).toMatch(/NOT a credentials problem/iu)
     expect(described.message).toMatch(/maxOutputTokens/u)
-    expect(described.message).toMatch(/max_completion_tokens/u)
+    expect(described.remedy).toMatch(/538968/u)
     // Both numbers, so the reader can size the fix without a second round trip.
     expect(described.message).toContain("943716")
     expect(described.message).toContain("538968")
@@ -108,13 +108,17 @@ describe("22972 — the budget is the smallest of every bound that applies", () 
 })
 
 describe("22972 — the registry cannot regain the shape that caused it", () => {
-  it("every SKU declaring a contextWindow also declares its endpoint output cap", () => {
+  it("DeepSeek Chat uses its advertised route context window and completion ceiling", () => {
+    const model = MODELS.find((m) => m.modelId === "deepseek/deepseek-chat")!
+    expect(model.reasoning).toMatchObject({ contextWindow: 128000, maxOutputTokens: 16000 })
+  })
+  it("every OpenRouter SKU and every contextWindow declares its endpoint output cap", () => {
     // This is the arm that catches the NEXT occurrence. Both retirements began
     // with a model entering the registry carrying only a combined window, which
     // reads as complete and silently means "ask for everything".
-    const missing = MODELS.filter((m) => m.reasoning?.contextWindow && m.reasoning.maxOutputTokens === undefined).map(
-      (m) => m.modelId,
-    )
+    const missing = MODELS.filter(
+      (m) => (m.provider === "openrouter" || m.reasoning?.contextWindow) && m.reasoning?.maxOutputTokens === undefined,
+    ).map((m) => m.modelId)
     expect(missing, `add maxOutputTokens (the endpoint's max_completion_tokens) for: ${missing.join(", ")}`).toEqual([])
   })
 

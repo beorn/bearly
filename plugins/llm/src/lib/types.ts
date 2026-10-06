@@ -770,6 +770,9 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.27,
     outputPricePerM: 1.1,
     typicalLatencyMs: 5000,
+    // Route limit: top_provider.context_length (model-wide is 163840).
+    // OpenRouter public catalog, 2026-10-06: https://openrouter.ai/api/v1/models
+    reasoning: { contextWindow: 128000, maxOutputTokens: 16000 },
   },
 
   // OpenRouter — six further families so split-test rotation isn't limited to
