@@ -34,10 +34,11 @@ import type { Provider } from "./types"
 
 export interface QuotaSnapshot {
   provider: Provider
-  // Balance / spend (optional — only providers with a balance API have these)
-  balanceUsd?: number
+  // Key spending limits are not account wallet balances. Null means no limit.
+  keyLimitUsd?: number | null
+  keyAllowanceRemainingUsd?: number | null
+  keyUsageUsd?: number
   spentMonthUsd?: number
-  remainingCreditUsd?: number
   // Rate limits (from `x-ratelimit-*` / `anthropic-ratelimit-*` headers)
   remainingRequests?: number
   requestsPerWindow?: number
@@ -310,12 +311,21 @@ export async function getOpenRouterQuota(signal?: AbortSignal): Promise<QuotaSna
       }
     }
     const data = json.data ?? {}
+    if (
+      !(data.limit === null || (typeof data.limit === "number" && Number.isFinite(data.limit))) ||
+      !(
+        data.limit_remaining === null ||
+        (typeof data.limit_remaining === "number" && Number.isFinite(data.limit_remaining))
+      )
+    ) {
+      throw new Error("OpenRouter key endpoint omitted or invalidated limit and limit_remaining; key allowance unknown")
+    }
     return {
       provider: "openrouter",
       label: data.label,
-      balanceUsd: typeof data.limit === "number" ? data.limit : undefined,
-      remainingCreditUsd: typeof data.limit_remaining === "number" ? data.limit_remaining : undefined,
-      spentMonthUsd: typeof data.usage === "number" ? data.usage : undefined,
+      keyLimitUsd: data.limit,
+      keyAllowanceRemainingUsd: data.limit_remaining,
+      keyUsageUsd: typeof data.usage === "number" ? data.usage : undefined,
       source: "api",
       fetchedAt: new Date().toISOString(),
     }
@@ -485,8 +495,11 @@ function formatNum(n: number): string {
 
 function fmtBalance(s: QuotaSnapshot): string {
   const parts: string[] = []
-  if (s.remainingCreditUsd != null) parts.push(`${fmtUsd(s.remainingCreditUsd)} credit`)
-  else if (s.balanceUsd != null) parts.push(fmtUsd(s.balanceUsd))
+  if (s.keyAllowanceRemainingUsd != null) parts.push(`${fmtUsd(s.keyAllowanceRemainingUsd)} key allowance remaining`)
+  if (s.keyLimitUsd === null) parts.push("no key limit")
+  else if (s.keyLimitUsd !== undefined) parts.push(`${fmtUsd(s.keyLimitUsd)} key limit`)
+  if (s.keyUsageUsd !== undefined) parts.push(`${fmtUsd(s.keyUsageUsd)} key usage`)
+  if (s.provider === "openrouter" && !s.error) parts.push("wallet unknown")
   if (s.spentMonthUsd != null) parts.push(`${fmtUsd(s.spentMonthUsd)}/mo`)
   if (parts.length === 0) {
     if (s.error) return `(${s.error})`
@@ -527,7 +540,7 @@ export function renderQuotaTable(snapshots: QuotaSnapshot[]): string {
     rate: fmtRateLimit(s),
     last: s.source === "api" ? "(live)" : fmtFetchedAt(s.fetchedAt),
   }))
-  const header = { provider: "Provider", balance: "Balance / Used", rate: "Rate Limit", last: "Last Used" }
+  const header = { provider: "Provider", balance: "Allowance / Usage", rate: "Rate Limit", last: "Last Used" }
   const all = [header, ...rows]
   const w = {
     provider: Math.max(...all.map((r) => r.provider.length)),

@@ -770,6 +770,7 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 0.27,
     outputPricePerM: 1.1,
     typicalLatencyMs: 5000,
+    reasoning: { maxOutputTokens: 16000 },
   },
 
   // OpenRouter — six further families so split-test rotation isn't limited to

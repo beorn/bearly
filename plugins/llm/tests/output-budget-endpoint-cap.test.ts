@@ -108,13 +108,13 @@ describe("22972 — the budget is the smallest of every bound that applies", () 
 })
 
 describe("22972 — the registry cannot regain the shape that caused it", () => {
-  it("every SKU declaring a contextWindow also declares its endpoint output cap", () => {
+  it("every OpenRouter SKU and every contextWindow declares its endpoint output cap", () => {
     // This is the arm that catches the NEXT occurrence. Both retirements began
     // with a model entering the registry carrying only a combined window, which
     // reads as complete and silently means "ask for everything".
-    const missing = MODELS.filter((m) => m.reasoning?.contextWindow && m.reasoning.maxOutputTokens === undefined).map(
-      (m) => m.modelId,
-    )
+    const missing = MODELS.filter(
+      (m) => (m.provider === "openrouter" || m.reasoning?.contextWindow) && m.reasoning?.maxOutputTokens === undefined,
+    ).map((m) => m.modelId)
     expect(missing, `add maxOutputTokens (the endpoint's max_completion_tokens) for: ${missing.join(", ")}`).toEqual([])
   })
 

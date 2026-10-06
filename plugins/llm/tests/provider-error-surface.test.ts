@@ -68,6 +68,48 @@ function quotaApiError(): Error {
 }
 
 describe("describeProviderError", () => {
+  // 26799: retain the recorded provider cause through an SDK retry wrapper.
+  // Existing cases classify errors but do not preserve HTTP status/body or
+  // distinguish a retry wrapper's timeout wording from a concrete HTTP 402.
+  it.each([
+    ["deepseek/deepseek-chat", 16000, 8406],
+    ["moonshotai/kimi-k2.7-code", 65536, 1080],
+    ["thinkingmachines/inkling", 32768, 2135],
+  ])("retains a recorded 402 behind timeout wording for %s", (modelId, requested, affordable) => {
+    // Verbatim bodies from Chief's pro-redo2.err, October 5, 2026.
+    const body = `This request requires more credits, or fewer max_tokens. You requested up to ${requested} tokens, but can only afford ${affordable}. To increase, visit https://openrouter.ai/settings/credits and add more credits`
+    const providerError = Object.assign(new Error("request timed out"), {
+      statusCode: 402,
+      responseBody: JSON.stringify({ error: { message: body, code: 402 } }),
+    })
+    const retryError = new Error("retry wrapper timed out", { cause: providerError })
+    const described = describeDispatchFailure(retryError, { provider: "openrouter", modelId })
+    expect(described.kind).toBe("output-budget")
+    expect(described.scope).toBe("call")
+    expect(described.observation).toBeUndefined()
+    expect(described.message).toContain("HTTP 402")
+    expect(described.message).toContain(`can only afford ${affordable}`)
+    expect(described.message).toContain("https://openrouter.ai/settings/credits")
+    expect(described.message).not.toMatch(/too slow|timed out/u)
+  })
+
+  it("keeps an unknown HTTP cause while redacting body credentials", () => {
+    const error = Object.assign(new Error("request rejected"), {
+      statusCode: 400,
+      responseBody: JSON.stringify({
+        error: { code: "route_policy", message: "unsupported request option" },
+        api_key: "sk-secret-fixture",
+        authorization: "Bearer secret-fixture-token",
+      }),
+    })
+    const described = describeDispatchFailure(error, { provider: "openrouter", modelId: "test/model" })
+    expect(described.kind).toBe("unknown")
+    expect(described.message).toContain("HTTP 400")
+    expect(described.message).toContain("route_policy")
+    expect(described.message).toContain("unsupported request option")
+    expect(described.message).not.toMatch(/sk-secret-fixture|secret-fixture-token/u)
+  })
+
   it("keeps the legacy message while exposing the shared provider-scoped observation", () => {
     const error = quotaStreamError()
     const described = describeDispatchFailure(error, { provider: "openai" })

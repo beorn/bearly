@@ -13,7 +13,7 @@
  *      buildPerCallQuota (per-call --quota field).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 /**
  * @reach fs-walk <fixture-only: cacheDir is a mkdtempSync directory under tmpdir>
  */
@@ -31,6 +31,7 @@ import {
   buildPerCallQuota,
   buildQuotaEnvelope,
   renderQuotaTable,
+  getOpenRouterQuota,
   _setCachePathForTesting,
   type QuotaSnapshot,
 } from "../src/lib/quota"
@@ -43,12 +44,51 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   _setCachePathForTesting(undefined)
   try {
     rmSync(cacheDir, { recursive: true, force: true })
   } catch {
     /* swallow */
   }
+})
+
+// 26799: the current-key API reports spending allowance, not wallet balance.
+// Existing table/cache cases do not exercise the API reader or nullable limits.
+describe("OpenRouter key allowance", () => {
+  it.each([
+    [100, 48.5],
+    [0, 0],
+    [null, null],
+  ] as const)("labels key limit %s and remaining allowance %s without inventing a wallet", async (limit, remaining) => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          data: { limit, limit_remaining: remaining, usage: 12 },
+        }),
+      ),
+    )
+    const snapshot = await getOpenRouterQuota()
+    expect(snapshot).toMatchObject({ keyLimitUsd: limit, keyAllowanceRemainingUsd: remaining, keyUsageUsd: 12 })
+    expect(snapshot).not.toHaveProperty("balanceUsd")
+    expect(snapshot).not.toHaveProperty("remainingCreditUsd")
+    expect(snapshot).not.toHaveProperty("spentMonthUsd")
+    const table = renderQuotaTable([snapshot!])
+    expect(table).toContain("wallet unknown")
+    expect(table).toContain(limit === null ? "no key limit" : "key limit")
+    expect(table).toContain(limit === null ? "no key limit" : "key allowance remaining")
+    expect(table).not.toContain("/mo")
+  })
+
+  it("reports missing required key-limit fields rather than treating them as no limit", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: { label: "incomplete" } })))
+    const snapshot = await getOpenRouterQuota()
+    expect(snapshot?.error).toMatch(/limit.*limit_remaining/u)
+  })
 })
 
 describe("parseOpenAIStyleRateLimitHeaders", () => {
@@ -205,7 +245,7 @@ describe("cache I/O (atomic write)", () => {
   it("round-trips snapshots via saveQuotaCache + loadQuotaCache", () => {
     const snap: QuotaSnapshot = {
       provider: "openrouter",
-      remainingCreditUsd: 48.5,
+      keyAllowanceRemainingUsd: 48.5,
       source: "api",
       fetchedAt: "2026-04-27T07:00:00Z",
     }
@@ -220,13 +260,13 @@ describe("cache I/O (atomic write)", () => {
     })
     updateQuotaCache({
       provider: "openrouter",
-      remainingCreditUsd: 10,
+      keyAllowanceRemainingUsd: 10,
       source: "api",
       fetchedAt: "2026-04-27T02:00:00Z",
     })
     const loaded = loadQuotaCache()
     expect(loaded.openai).toBeDefined()
-    expect(loaded.openrouter!.remainingCreditUsd).toBe(10)
+    expect(loaded.openrouter!.keyAllowanceRemainingUsd).toBe(10)
   })
 
   it("doesn't leak temp files on success", () => {
@@ -274,7 +314,7 @@ describe("buildQuotaEnvelope", () => {
     const env = buildQuotaEnvelope([
       {
         provider: "openrouter",
-        remainingCreditUsd: 48.5,
+        keyAllowanceRemainingUsd: 48.5,
         source: "api",
         fetchedAt: "2026-04-27T07:00:00Z",
       },
@@ -294,7 +334,7 @@ describe("renderQuotaTable", () => {
     const rows = renderQuotaTable([
       {
         provider: "openrouter",
-        remainingCreditUsd: 48,
+        keyAllowanceRemainingUsd: 48,
         source: "api",
         fetchedAt: "2026-04-27T07:00:00Z",
       },
@@ -309,7 +349,7 @@ describe("renderQuotaTable", () => {
     expect(rows).toContain("OpenRouter")
     expect(rows).toContain("Anthropic")
     expect(rows).toContain("Provider")
-    expect(rows).toContain("Balance / Used")
+    expect(rows).toContain("Allowance / Usage")
   })
 })
 

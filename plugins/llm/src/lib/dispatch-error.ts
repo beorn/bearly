@@ -179,7 +179,7 @@ function refusing(
 }
 
 /** Pure owner of provider/model/call failure classification and rendering. */
-export function describeDispatchFailure(
+function classifyDispatchFailure(
   error: unknown,
   target: DispatchFailureTarget,
   now = Date.now(),
@@ -194,17 +194,6 @@ export function describeDispatchFailure(
   if (message.endsWith("partial results will be reported.")) {
     return { kind: "timeout", scope: "call", message }
   }
-  if (/\btimed?[ -]?out\b/iu.test(blob)) {
-    const rendered = target.modelId
-      ? `${providerDisplayName(target.provider)} (${target.modelId}) was too slow for the time it was given — not a credentials problem; retry with more time, or use a faster model.`
-      : `${providerDisplayName(target.provider)} dispatch timed out — not a credentials problem; retry with more time, or use a faster model.`
-    return {
-      kind: "timeout",
-      scope: "call",
-      message: rendered,
-      remedy: "retry with more time, or use a faster model",
-    }
-  }
   // A 402 from a credit-metered route is a BUDGET refusal, not a credentials
   // one. OpenRouter prices `max_tokens` as a RESERVATION, so an over-large
   // output budget is refused once `requested × outputPrice` exceeds the
@@ -217,6 +206,8 @@ export function describeDispatchFailure(
   // other model in the same dispatch, so this must never mark the PROVIDER
   // refusing. It is a property of this request's parameters. Bead 22972.
   if (responseStatus === 402 || /requires more credits|can only afford|fewer max_tokens/iu.test(blob)) {
+    const upstream =
+      error && typeof error === "object" && "responseBody" in error ? stringify(error.responseBody) : message
     const requested = /requested up to (\d+) tokens/iu.exec(blob)?.[1]
     const affordable = /can only afford (\d+)/iu.exec(blob)?.[1]
     const amounts =
@@ -230,8 +221,19 @@ export function describeDispatchFailure(
       message:
         `${who} refused this request's OUTPUT BUDGET (402) — this is NOT a credentials problem.${amounts} ` +
         `Lower the max output tokens for this model: set \`reasoning.maxOutputTokens\` on its SKU to the ` +
-        `endpoint's advertised \`max_completion_tokens\`. Upstream said: ${message}`,
+        `endpoint's advertised \`max_completion_tokens\`. Upstream said: ${upstream}`,
       remedy: "lower this model's max output tokens to the endpoint's advertised ceiling",
+    }
+  }
+  if (responseStatus === undefined && /\btimed?[ -]?out\b/iu.test(blob)) {
+    const rendered = target.modelId
+      ? `${providerDisplayName(target.provider)} (${target.modelId}) was too slow for the time it was given — not a credentials problem; retry with more time, or use a faster model.`
+      : `${providerDisplayName(target.provider)} dispatch timed out — not a credentials problem; retry with more time, or use a faster model.`
+    return {
+      kind: "timeout",
+      scope: "call",
+      message: rendered,
+      remedy: "retry with more time, or use a faster model",
     }
   }
   if (/insufficient[_ -]?(?:quota|credits)|billing hard limit|exceeded (?:your )?(?:current )?quota/iu.test(blob)) {
@@ -319,3 +321,46 @@ export function describeDispatchFailure(
 }
 
 export type DispatchFailureModelTarget = Pick<Model, "displayName" | "modelId" | "provider">
+
+/** Render retained HTTP evidence through the existing query/Pro error string. */
+export function describeDispatchFailure(
+  error: unknown,
+  target: DispatchFailureTarget,
+  now = Date.now(),
+): DispatchFailureDescription {
+  let source = error
+  const seen = new Set<unknown>()
+  for (let depth = 0; depth < 8 && source && typeof source === "object"; depth++) {
+    if (seen.has(source) || responseStatusFromError(source) !== undefined) break
+    seen.add(source)
+    const nested = source as { cause?: unknown; lastError?: unknown; error?: unknown }
+    const next = nested.cause ?? nested.lastError ?? nested.error
+    if (!next || typeof next !== "object") break
+    source = next
+  }
+  const described = classifyDispatchFailure(source, target, now)
+  const status = responseStatusFromError(source)
+  if (status === undefined) return described
+  const item = source as { responseBody?: unknown; data?: unknown }
+  const body =
+    item.responseBody !== undefined
+      ? stringify(item.responseBody)
+      : item.data !== undefined
+        ? stringify(item.data)
+        : rawErrorMessage(source)
+  // Redact before bounding so a partial credential cannot escape truncation.
+  const redact = (text: string): string =>
+    text
+      .replace(
+        /("(?:api[_-]?key|access[_-]?token|token|authorization|password|secret)"\s*:\s*")[^"]*/giu,
+        "$1[REDACTED]",
+      )
+      .replace(/\bBearer\s+[^\s"',}]+/giu, "Bearer [REDACTED]")
+      .replace(/\bsk-[a-zA-Z0-9_-]+/gu, "[REDACTED]")
+      .replace(/([?&](?:api[_-]?key|token|access[_-]?token)=)[^&\s]+/giu, "$1[REDACTED]")
+  const bounded = (text: string): string => {
+    const safe = redact(text).replace(/\s+/gu, " ")
+    return safe.length > 1_000 ? safe.slice(0, 1_000) + " [truncated]" : safe
+  }
+  return { ...described, message: `${bounded(described.message)} | HTTP ${status}; body: ${bounded(body)}` }
+}
