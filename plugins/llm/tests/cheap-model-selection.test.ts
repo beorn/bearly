@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { getCheapModels, getModel, MODELS } from "../src/lib/types"
+import { getCheapModels, getEndpoint, getModel, MODELS } from "../src/lib/types"
 import { selectModels, type ProviderAvailabilityFact } from "../src/index"
 
 // Regression coverage for the "cheap tier picks a slow reasoning model"
@@ -15,7 +15,12 @@ describe("getCheapModels — reasoning-vs-non-reasoning selection", () => {
     const models = getCheapModels(Number.MAX_SAFE_INTEGER)
     const openrouterPick = models.find((m) => m.provider === "openrouter")
     expect(openrouterPick?.modelId).toBe("deepseek/deepseek-chat")
-    expect(openrouterPick?.reasoning).toBeUndefined()
+    // Capacity metadata does not enable thinking; retain both route limits.
+    expect(getEndpoint("deepseek/deepseek-chat")?.reasoningParam).toEqual({
+      kind: "deepseek-thinking",
+      defaultEnabled: false,
+    })
+    expect(openrouterPick?.reasoning).toMatchObject({ maxOutputTokens: 16000, contextWindow: 128000 })
   })
 
   it("never picks a reasoning-declaring SKU when a non-reasoning 'low' SKU exists for the same provider", () => {

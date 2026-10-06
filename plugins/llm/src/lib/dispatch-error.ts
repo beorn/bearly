@@ -319,6 +319,19 @@ function classifyDispatchFailure(
       `${target.provider} transport failure during dispatch`,
     )
   }
+  // Unowned timeout wording gives retry advice, without certifying elapsed
+  // budget or credential health. Concrete evidence above keeps precedence.
+  if (/timed? out|timeout/iu.test(blob)) {
+    const who = target.modelId
+      ? `${providerDisplayName(target.provider)} (${target.modelId})`
+      : providerDisplayName(target.provider)
+    return {
+      kind: "unknown",
+      scope: "call",
+      message: `${who} reported a timeout; retry with more time, or use a faster model.`,
+      remedy: "retry with more time, or use a faster model",
+    }
+  }
   const targetDescription = target.modelId ? ` for model ${target.modelId}` : ""
   return {
     kind: "unknown",

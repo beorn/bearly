@@ -1055,7 +1055,11 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
     capabilities: NO_CAPS,
     reasoningParam: { kind: "deepseek-thinking", defaultEnabled: true },
   },
-  "deepseek/deepseek-chat": { provider: "openrouter", capabilities: NO_CAPS },
+  "deepseek/deepseek-chat": {
+    provider: "openrouter",
+    capabilities: NO_CAPS,
+    reasoningParam: { kind: "deepseek-thinking", defaultEnabled: false },
+  },
   "qwen/qwen3.7-flash": { provider: "openrouter", capabilities: NO_CAPS },
   "google/gemini-3.6-flash": { provider: "openrouter", capabilities: NO_CAPS },
   "google/gemini-3-flash-preview": { provider: "openrouter", capabilities: NO_CAPS },
@@ -1312,7 +1316,7 @@ export function getCheapModel(): Model | undefined {
  * `costTier` is a PRICE label with no latency dimension — a heavy reasoning
  * model (Kimi K2.6: `reasoning: {...}`, `typicalLatencyMs: 15000`, burns
  * ~178 reasoning tokens to say "hi") and a fast non-reasoning model
- * (DeepSeek Chat V3: no `reasoning` field, `typicalLatencyMs: 5000`) can
+ * (DeepSeek Chat V3: explicit thinking disabled, `typicalLatencyMs: 5000`) can
  * both be "low" cost, and array order alone used to decide which one wins
  * for a provider — hiding the non-reasoning option behind pure accident of
  * registration order, structurally unreachable for latency-sensitive
@@ -1329,8 +1333,16 @@ export function getCheapModel(): Model | undefined {
  * Claude Haiku 4.5 — for a few hundred ms, a regression nobody asked for).
  */
 function isBetterCheapPick(candidate: Model, current: Model): boolean {
-  const candidateReasons = candidate.reasoning !== undefined
-  const currentReasons = current.reasoning !== undefined
+  const candidateIntent = getEndpoint(candidate.modelId)?.reasoningParam
+  const currentIntent = getEndpoint(current.modelId)?.reasoningParam
+  // Explicit endpoint intent wins; legacy SKU metadata remains the fallback.
+  // Output/context capacity alone must not override disabled thinking.
+  const candidateReasons = candidateIntent
+    ? candidateIntent.kind !== "deepseek-thinking" || candidateIntent.defaultEnabled !== false
+    : candidate.reasoning !== undefined
+  const currentReasons = currentIntent
+    ? currentIntent.kind !== "deepseek-thinking" || currentIntent.defaultEnabled !== false
+    : current.reasoning !== undefined
   return currentReasons && !candidateReasons
 }
 

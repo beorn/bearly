@@ -57,7 +57,8 @@ describe("dual-pro dispatch safety", () => {
       new Error("timed out after 2002ms (given 2000ms)"),
     )
     expect(result).toContain("OpenRouter (moonshotai/kimi-k2.6)")
-    expect(result).toContain("not a credentials problem")
+    // Timeout wording proves neither credential health nor an auth failure.
+    expect(result).not.toMatch(/credentials|API_KEY/u)
     expect(result).toContain("retry with more time, or use a faster model")
   })
 
