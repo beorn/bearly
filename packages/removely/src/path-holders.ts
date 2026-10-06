@@ -11,6 +11,12 @@
 import { execFile } from "node:child_process"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
 import { basename, dirname, resolve, sep } from "node:path"
+import {
+  parseProcessArgv,
+  classifyProcessLink,
+  classifyProcessSourceError,
+  summarizeProcessFileDescriptors,
+} from "@bearly/process-sources"
 import { linuxBootTimeMs, procStatStartTicks, startTicksToMs } from "./pid-identity.ts"
 import { darwinProcessCwds, type ProcessCwdRow } from "./process-census.ts"
 
@@ -976,11 +982,11 @@ async function observeSource<T>(
     }
     return { availability: "readable", value: answer.value, issues: [] }
   } catch (error) {
-    const code = errorCode(error)
-    const availability =
-      code === "ENOENT" || code === "ESRCH" ? "missing" : code === "EACCES" || code === "EPERM" ? "denied" : undefined
+    const failure = classifyProcessSourceError(error)
+    const code = failure.code
+    const availability = failure.reason === "vanished" ? "missing" : failure.reason === "denied" ? "denied" : undefined
     if (availability === undefined) {
-      throw new Error(`path-holder observation failed at '${resource}': ${errorDetail(error)}`, { cause: error })
+      throw new Error(`path-holder observation failed at '${resource}': ${failure.detail}`, { cause: error })
     }
     return {
       availability,
@@ -997,11 +1003,7 @@ async function observeProcessLink(
   const observed = await observeSource(deadline, path, () => read(path), undefined)
   // A link that names no path, other than a socket, pipe or anonymous inode, is ambiguous whatever the target; a path
   // that may lie under one root is judged by that root's projection.
-  if (
-    observed.value !== undefined &&
-    !observed.value.startsWith("/") &&
-    !/^(?:socket|pipe):\[\d+\]$|^anon_inode:/u.test(observed.value)
-  ) {
+  if (observed.value !== undefined && classifyProcessLink(observed.value) === "malformed") {
     return { ...observed, availability: "ambiguous", issues: [{ resource: path, reason: "ambiguous" }] }
   }
   return observed
@@ -1040,10 +1042,7 @@ async function readProcessArgv(
 ): Promise<SourceObservation<string[]>> {
   const observed = await observeSource(undefined, path, () => read(path), "")
   if (observed.availability !== "readable") return { ...observed, value: [] }
-  const value = observed.value.split("\0")
-  // The final NUL terminates the vector; other empty fields are real arguments.
-  if (value.at(-1) === "") value.pop()
-  return { ...observed, value }
+  return { ...observed, value: [...parseProcessArgv(observed.value)] }
 }
 async function observeProcessMaps(deadline: CensusDeadline, path: string): Promise<SourceObservation<string[]>> {
   const observed = await observeSource(deadline, path, () => readFile(path, "utf8"), "")
@@ -1088,9 +1087,9 @@ async function observeProcessDescriptors(
   return {
     availability,
     issues,
-    value: links.flatMap(({ name, observed }) =>
-      observed.value === undefined ? [] : [{ name, target: observed.value }],
-    ),
+    value: summarizeProcessFileDescriptors(
+      links.map(({ name, observed }) => ({ name, target: observed.value })),
+    ).targets.map(({ name, target }) => ({ name, target })),
   }
 }
 
@@ -1149,9 +1148,6 @@ async function observeProcessIdentity(
   }
 }
 
-function errorCode(error: unknown): string | undefined {
-  return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined
-}
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

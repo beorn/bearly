@@ -61,5 +61,8 @@
       "src/cli.ts"
     ],
     "format": "esm"
+  },
+  "dependencies": {
+    "@bearly/process-sources": "^0.1.0"
   }
 }

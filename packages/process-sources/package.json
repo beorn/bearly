@@ -1,0 +1,15 @@
+{
+  "name": "@bearly/process-sources",
+  "version": "0.1.0",
+  "description": "Pure interpretation of process argv, links, acquisition errors and descriptor outcomes",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/beorn/bearly.git", "directory": "packages/process-sources" },
+  "files": ["dist", "README.md"],
+  "exports": { ".": "./src/index.ts" },
+  "publishConfig": { "access": "public", "exports": { ".": { "types": "./dist/index.d.mts", "import": "./dist/index.mjs" } } },
+  "scripts": { "build": "tsdown", "typecheck": "tsc --noEmit", "prepublishOnly": "bun run build" },
+  "devDependencies": { "tsdown": "0.22.13" },
+  "tsdown": { "clean": true, "dts": true, "entry": ["src/index.ts"], "format": "esm" },
+  "engines": { "node": ">=20", "bun": ">=1.3.13" }
+}
