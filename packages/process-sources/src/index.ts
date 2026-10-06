@@ -53,3 +53,15 @@ export function summarizeProcessFileDescriptors(links: readonly ProcessFdLink[])
   }
   return { entryCount: links.length, targets, unreadableCount }
 }
+
+/** Interpret the soft RLIMIT_NOFILE value; absent or malformed evidence is not a zero limit. */
+export function parseProcessOpenFileLimit(contents: string): number | "unlimited" | undefined {
+  const rows = contents.split(/\r?\n/u).filter((line) => /^Max open files(?:[ \t]|$)/u.test(line))
+  if (rows.length !== 1) return undefined
+  const match = rows[0]?.match(/^Max open files[ \t]+(\S+)[ \t]+(?:\d+|unlimited)[ \t]+files[ \t]*$/u)
+  const soft = match?.[1]
+  if (soft === "unlimited") return "unlimited"
+  if (soft === undefined || !/^\d+$/u.test(soft)) return undefined
+  const value = Number(soft)
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
