@@ -497,7 +497,9 @@ export async function runProDual(options: {
     // it rethrows -- so it still carries a "check <ENV>" cure, which the rewrite
     // strips rather than smuggling the wrong cure into the corrected message.
     const rawText = raw === undefined ? undefined : raw instanceof Error ? raw.message : String(raw)
-    const errRaw = described?.message
+    // queryModel already rendered and redacted this failure. Reclassifying
+    // its string for presentation would discard the retained HTTP evidence.
+    const errRaw = response?.error ?? described?.message
     const ok = !errRaw && !!response?.content && response.content.trim().length > 0
     const error = errRaw ?? (response && !ok ? "empty content" : undefined)
     return {

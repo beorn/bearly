@@ -78,7 +78,7 @@ describe("describeProviderError", () => {
   ])("retains a recorded 402 behind timeout wording for %s", (modelId, requested, affordable) => {
     // Verbatim bodies from Chief's pro-redo2.err, October 5, 2026.
     const body = `This request requires more credits, or fewer max_tokens. You requested up to ${requested} tokens, but can only afford ${affordable}. To increase, visit https://openrouter.ai/settings/credits and add more credits`
-    const providerError = Object.assign(new Error("provider request rejected"), {
+    const providerError = Object.assign(new Error("request timed out"), {
       statusCode: 402,
       responseBody: JSON.stringify({ error: { message: body, code: 402 } }),
     })
