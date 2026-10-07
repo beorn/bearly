@@ -66,6 +66,8 @@ denied is resolved by one exit proof: the process directory gone, or another
 start time, counts it exited, and a one-thread zombie holds nothing. A denied
 source with no reading is then read once more, a retry for a process that
 denied its `/proc` entries for a moment; a reading is never taken away.
+If that retry remains unreadable, the same exit proof runs once more without
+another retry, since the process may have disappeared during the read.
 
 `inspectProcessSources(pid, options)` reads only that PID's selected `argv`
 and/or `cwd` (both by default), without a census. It shares source parsing with

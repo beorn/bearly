@@ -537,6 +537,7 @@ async function resolveUnreadSources(
   identity: ProcessIdentity,
   bootedAtMs: number | undefined,
   sources: Partial<Record<SourceName, SourceObservation<unknown>>>,
+  allowRetry = true,
 ): Promise<void> {
   const unread = (reason: "missing" | "denied") =>
     (Object.keys(sources) as SourceName[]).filter((source) =>
@@ -570,6 +571,7 @@ async function resolveUnreadSources(
     }
   }
   if (exited || presence.availability !== "readable" || (after !== undefined && heldNothingAsZombie(after))) return
+  if (!allowRetry) return
   const retry = denied.filter((source) => {
     const observation = sources[source]
     return observation !== undefined && gaveNoReading(observation)
@@ -580,6 +582,9 @@ async function resolveUnreadSources(
     const second = again[source]
     if (second !== undefined && second.availability !== "unanswered") sources[source] = second
   }
+  // The process can disappear during the retry itself. Reuse the same proof,
+  // without another retry, before retaining its final unreadable observation.
+  await resolveUnreadSources(deadline, proc, identity, bootedAtMs, sources, false)
 }
 
 /**

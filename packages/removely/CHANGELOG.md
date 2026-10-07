@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Recheck the existing Linux exit proof after a denied-source retry remains
+  unreadable. A process that disappears during that retry counts as exited;
+  a surviving process with a missing source remains unreadable. The same
+  census deadline applies, with no additional source retry.
+
 ## 0.4.0
 
 Minor, with one breaking removal.
