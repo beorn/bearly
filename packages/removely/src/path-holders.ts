@@ -1093,7 +1093,8 @@ async function observeProcessDescriptors(
     availability,
     issues,
     value: summarizeProcessFileDescriptors(
-      links.map(({ name, observed }) => ({ name, target: observed.value })),
+      // An unavailable link has no target: omit the key rather than pass `target: undefined` to the optional field.
+      links.map(({ name, observed }) => (observed.value === undefined ? { name } : { name, target: observed.value })),
     ).targets.map(({ name, target }) => ({ name, target })),
   }
 }
