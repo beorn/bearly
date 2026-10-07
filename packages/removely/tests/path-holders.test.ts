@@ -1225,6 +1225,30 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
     })
   })
 
+  // A missing source on the denied-read retry needs the same exit proof as its first read.
+  // Existing disappearance cases remove the process before the first presence recheck.
+  test.each([true, false])(
+    "a cwd lost during its retry counts as exited only if its process is gone (%s)",
+    async (gone) => {
+      const probe = processFixture("bun\0")
+      const resource = join(probe.processRoot, "cwd")
+      const readlink = fsPromises.readlink
+      let reads = 0
+      vi.spyOn(fsPromises, "readlink").mockImplementation((async (path: string) => {
+        if (path === resource) {
+          if (++reads === 1) throw Object.assign(new Error("cwd denied while exiting"), { code: "EACCES" })
+          if (gone) safeRemoveSync(probe.processRoot, { within: probe.procRoot })
+          else unlinkSync(resource)
+        }
+        return readlink(path)
+      }) as typeof fsPromises.readlink)
+      const census = await inspectProcessCensusInProc(probe.procRoot, { scope: "same-uid", sources: ["cwd"] })
+      expect(census.coverage.complete).toBe(gone)
+      expect(census.coverage.sources.cwd?.unavailable).toMatchObject({ exited: gone ? 1 : 0, missing: gone ? 0 : 1 })
+      expect(census.coverage.unreadable?.length ?? 0).toBe(gone ? 0 : 1)
+    },
+  )
+
   test("clearedByIdentity clears the four carried identities on a denied same-uid entry, and nothing else", () => {
     const identity = { uid: 3001 }
     const denied = (comm: string, argv: string[], extra: Partial<UnreadableProcess> = {}): UnreadableProcess => ({
