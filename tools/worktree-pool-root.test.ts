@@ -1,53 +1,102 @@
 /**
  * Configurable worktree pool root (km bead 20888-contained-worktree-pool).
  *
- * The pool of persistent slots (`<repo>-wtN`) historically lives as SIBLINGS
- * of the repo (`<repoParent>/<repo>-wtN`), which sprawls the parent dir. The
+ * The persistent slot pool (`<repo>-wtN`) historically lives as SIBLINGS of
+ * the repo (`<repoParent>/<repo>-wtN`), which sprawls the parent dir. The
  * `worktree.poolRoot` git config key relocates the pool — typically to a
  * contained, git-ignored dir inside the repo (`<repo>/.worktrees/<repo>-wtN`).
  *
- * Contract:
- *   - unset            → sibling parent (historic behavior, zero change)
- *   - relative value   → resolved under the repo root (contained pool)
- *   - absolute value   → used as-is
- *   - empty value      → loud config error (never a silent fallback)
+ * The chain — repo `worktree.poolRoot` > `HH_WORKTREE_HOME` >
+ * `DEFAULT_WORKTREE_HOME` — now lives in ONE place, git-super's
+ * `worktreeHomeRoot` (@i/26-environments/worktree-create-and-in; @cto
+ * ebf2cc43), and `resolvePoolRoot` delegates to it. There is no sibling tier:
+ * an undeclared path falls to the env home, then the default.
  *
  * Existing slots are found in BOTH locations (configured pool first, then the
  * legacy sibling), so flipping the config never orphans a live slot.
  */
 
-import { describe, expect, test } from "vitest"
-import { isCanonicalSlotPath, resolvePoolRoot, resolveWorktreeTargetPath, slotPathCandidates } from "./worktree.ts"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import {
+  isCanonicalSlotPath,
+  POOL_ROOT_CONFIG_KEY,
+  resolvePoolRoot,
+  resolveWorktreeTargetPath,
+  slotPathCandidates,
+} from "./worktree.ts"
 
 const GIT_ROOT = "/Users/dev/Code/hh"
 const CONTAINED = "/Users/dev/Code/hh/.worktrees"
+const NON_REPO = "/no/such/repo/anywhere"
 
-describe("resolvePoolRoot — worktree.poolRoot config semantics", () => {
-  test("unset config keeps the historic sibling parent", () => {
-    expect(resolvePoolRoot(GIT_ROOT, () => undefined)).toBe("/Users/dev/Code")
+const scratch: string[] = []
+
+function git(cwd: string, args: readonly string[]): void {
+  execFileSync("git", args as string[], { cwd, stdio: ["ignore", "pipe", "pipe"] })
+}
+
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "bearly-pool-root-"))
+  scratch.push(dir)
+  git(dir, ["init", "-q", "-b", "main"])
+  git(dir, ["config", "user.email", "t@example.test"])
+  git(dir, ["config", "user.name", "t"])
+  writeFileSync(join(dir, "seed.txt"), "seed\n")
+  git(dir, ["add", "seed.txt"])
+  git(dir, ["commit", "-qm", "seed"])
+  return dir
+}
+
+afterEach(() => {
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+describe("resolvePoolRoot — the one declaration chain (git-super worktreeHomeRoot)", () => {
+  let home: string
+  let prior: string | undefined
+
+  beforeEach(() => {
+    prior = process.env.HH_WORKTREE_HOME
+    home = mkdtempSync(join(tmpdir(), "bearly-pool-home-"))
+    process.env.HH_WORKTREE_HOME = home
   })
 
-  test("relative value is a contained pool under the repo root", () => {
-    expect(resolvePoolRoot(GIT_ROOT, () => ".worktrees")).toBe(CONTAINED)
+  afterEach(() => {
+    if (prior === undefined) delete process.env.HH_WORKTREE_HOME
+    else process.env.HH_WORKTREE_HOME = prior
+    rmSync(home, { recursive: true, force: true })
   })
 
-  test("absolute value is used as-is", () => {
-    expect(resolvePoolRoot(GIT_ROOT, () => "/mnt/pool")).toBe("/mnt/pool")
+  test("an undeclared path (no .git) falls to HH_WORKTREE_HOME, never a sibling", () => {
+    expect(resolvePoolRoot(NON_REPO)).toBe(home)
   })
 
-  test("trailing slash normalizes", () => {
-    expect(resolvePoolRoot(GIT_ROOT, () => ".worktrees/")).toBe(CONTAINED)
+  test("a declared repo returns its declaration", () => {
+    const repo = makeRepo()
+    git(repo, ["config", POOL_ROOT_CONFIG_KEY, "/mnt/pool"])
+    expect(resolvePoolRoot(repo)).toBe("/mnt/pool")
   })
 
-  test("empty value fails loud — misconfiguration is never a silent sibling fallback", () => {
-    expect(() => resolvePoolRoot(GIT_ROOT, () => "")).toThrow(/worktree\.poolRoot/)
-    expect(() => resolvePoolRoot(GIT_ROOT, () => "   ")).toThrow(/worktree\.poolRoot/)
+  test("a relative declaration resolves against the repo's main worktree root", () => {
+    const repo = makeRepo()
+    git(repo, ["config", POOL_ROOT_CONFIG_KEY, ".worktrees"])
+    expect(resolvePoolRoot(repo)).toBe(join(repo, ".worktrees"))
   })
 
-  test("a path with no .git entry has no config surface — resolves to the sibling default", () => {
-    // Pure path math on non-repos (fake roots in tests, derived candidates):
-    // the default reader answers "unset", never an error.
-    expect(resolvePoolRoot("/no/such/repo/anywhere")).toBe("/no/such/repo")
+  test("a trailing slash normalizes", () => {
+    const repo = makeRepo()
+    git(repo, ["config", POOL_ROOT_CONFIG_KEY, ".worktrees/"])
+    expect(resolvePoolRoot(repo)).toBe(join(repo, ".worktrees"))
+  })
+
+  test("empty value fails loud — misconfiguration is never a silent fallback", () => {
+    const repo = makeRepo()
+    git(repo, ["config", POOL_ROOT_CONFIG_KEY, ""])
+    expect(() => resolvePoolRoot(repo)).toThrow(/worktree\.poolRoot/)
   })
 })
 

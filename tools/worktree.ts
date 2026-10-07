@@ -51,6 +51,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve, sep } from "path"
 import { $ } from "bun"
+import { worktreeHomeRoot } from "git-super"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
@@ -311,55 +312,27 @@ export async function getWorktreeStatus(
 // contained, git-ignored directory inside the repo
 // (`<repo>/.worktrees/<repo>-wtN`). km bead 20888-contained-worktree-pool.
 //
-//   unset          → sibling parent (historic behavior, zero change)
-//   relative value → resolved under the repo root (contained pool)
-//   absolute value → used as-is
-//   empty value    → loud config error (never a silent sibling fallback)
+// The chain — repo `worktree.poolRoot` > `HH_WORKTREE_HOME` >
+// `DEFAULT_WORKTREE_HOME` — lives in ONE place, git-super's `worktreeHomeRoot`
+// (@i/26-environments/worktree-create-and-in; @cto ebf2cc43), and
+// `resolvePoolRoot` is a thin delegate to it so `bun worktree` and every other
+// reader cannot disagree about where a slot lives. A path with no `.git` entry
+// has no config surface, so it falls to the next tier. A relative declaration
+// resolves against the MAIN worktree root; a set-but-empty value is a loud
+// error, never a silent fall to another tier.
 //
 // Existing slots are FOUND in both locations (configured pool first, then the
 // legacy sibling), so setting the config never orphans a live slot; creates
-// always land at the configured pool.
+// always land at the resolved pool.
 
-/** Git config key that relocates the worktree pool. */
-export const POOL_ROOT_CONFIG_KEY = "worktree.poolRoot"
-
-/**
- * Read `worktree.poolRoot` from the repo's git config. A path with no `.git`
- * entry has no config surface at all — that is the defined "unset" answer
- * (pure path math on non-repos, e.g. in tests), not an error. For a real
- * repo, `git config --get` exits 1 for "unset" (normal); any other failure
- * throws — a broken git invocation must never silently fall back to the
- * sibling pool.
- */
-export function readPoolRootConfig(gitRoot: string): string | undefined {
-  if (!existsSync(join(gitRoot, ".git"))) return undefined
-  const result = spawnSync("git", ["-C", gitRoot, "config", "--get", POOL_ROOT_CONFIG_KEY], { encoding: "utf8" })
-  if (result.status === 0) return (result.stdout ?? "").trim()
-  const stderr = (result.stderr ?? "").trim()
-  if (result.status === 1 && stderr === "") return undefined
-  throw new Error(`git config --get ${POOL_ROOT_CONFIG_KEY} failed in ${gitRoot}: ${stderr || `exit ${result.status}`}`)
-}
+export { POOL_ROOT_CONFIG_KEY } from "git-super"
 
 /**
- * Resolve the pool root directory for a repo. See the section comment for the
- * config contract. `readValue` is injectable for tests; the default reads the
- * repo's git config (shared across linked worktrees, so a config set once on
- * the main checkout applies pool-wide).
+ * Resolve the pool root directory for a repo. Delegates to git-super's one
+ * reader (`worktreeHomeRoot`) — see the section comment for the chain.
  */
-export function resolvePoolRoot(
-  gitRoot: string,
-  readValue: (gitRoot: string) => string | undefined = readPoolRootConfig,
-): string {
-  const raw = readValue(gitRoot)
-  if (raw === undefined) return dirname(gitRoot)
-  const value = raw.trim().replace(/\/+$/, "")
-  if (value === "") {
-    throw new Error(
-      `${POOL_ROOT_CONFIG_KEY} is set but empty — set a pool path (e.g. .worktrees) or unset it: ` +
-        `git -C ${gitRoot} config --unset ${POOL_ROOT_CONFIG_KEY}`,
-    )
-  }
-  return isAbsolute(value) ? value : join(gitRoot, value)
+export function resolvePoolRoot(gitRoot: string): string {
+  return worktreeHomeRoot({ repo: gitRoot })
 }
 
 /** Slot directory name inside a pool: `<repoName>-<name>`, unless already prefixed. */
