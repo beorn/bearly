@@ -557,6 +557,102 @@ describe("24533 — a dispatch error never blames a credential that is working i
   }, 20_000)
 })
 
+describe("27977 — a context-length refusal is never reported as a credential problem", () => {
+  /**
+   * 27977. The 2026-10-07 08:2x specimen that cost @dev/6 the DeepSeek leg of
+   * pro run 0581. OpenRouter answers HTTP 200 with a body that reports the
+   * failure itself, and the route refused at 32768 while the registry and the
+   * live catalog both said 128000. Nothing matched the context patterns, the
+   * request echo carried a phrase of the prompt, and the auth branch claimed
+   * the call — so the run rewrote it to "This is NOT a credentials problem ...
+   * the route or the model id is the suspect", pointing the reader at a
+   * credential Kimi had just proved worked. That rewrite is only reached on an
+   * auth/quota verdict, so this test pins BOTH ends: the report must name the
+   * context length and the two token counts, and it must never carry the
+   * credential-rewrite wording.
+   */
+  it("reports a context-length refusal as context length, never as a credential verdict", async () => {
+    const env = makeTestEnv()
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
+      model,
+      content: "leg A answer",
+      responseId: "resp_a",
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      durationMs: 10,
+    }))
+    const body = {
+      id: "gen-1791386814-5dmODBSHZJaNasXykcJF",
+      object: "response",
+      model: "deepseek/deepseek-chat",
+      status: "failed",
+      output: [],
+      error: {
+        code: "invalid_prompt",
+        message:
+          "Upstream error from DeepInfra: The sum of prompt length (34094.0), query length (0) should not exceed max_num_tokens (32768)",
+      },
+      error_type: "invalid_request",
+    }
+    generateTextMock.mockReset()
+    let legCalls = 0
+    generateTextMock.mockImplementation(async (args: Parameters<typeof promptText>[0]) => {
+      if (promptText(args).includes("STRICT JSON")) {
+        return {
+          text: JUDGE_JSON,
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 200, outputTokens: 80 },
+        }
+      }
+      legCalls += 1
+      // Slot order is a,b,c; the openai mainstay takes the background path, so
+      // the second generateText leg is the deepseek challenger named in the body.
+      if (legCalls === 2) {
+        throw Object.assign(new Error("openrouter request failed"), {
+          statusCode: 200,
+          responseBody: JSON.stringify(body),
+          data: body,
+        })
+      }
+      return {
+        text: "sibling openrouter answer",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }
+    })
+
+    vi.resetModules()
+    process.argv = [
+      "node",
+      "cli.ts",
+      "pro",
+      "-y",
+      "--full-paths",
+      "--challenger",
+      "deepseek/deepseek-chat",
+      "which storage layer?",
+    ]
+    const mod = await import("../src/cli")
+    try {
+      await mod.main()
+    } catch (e) {
+      if (!/^__exit_/.test((e as Error).message)) throw e
+    }
+    const jsonLine = env.stdout.find((l) => l.trim().startsWith("{") && l.includes('"file"'))
+    expect(jsonLine, "pro must emit its output envelope").toBeDefined()
+    const report = readFileSync((JSON.parse(jsonLine!) as { file: string }).file, "utf-8")
+
+    expect(report, "the cause is named as a context length").toMatch(/rejected this request's CONTEXT LENGTH/)
+    expect(report, "with the prompt tokens the provider counted").toContain("34094")
+    expect(report, "and the limit it enforced").toContain("32768")
+    expect(report, "never as an auth failure").not.toMatch(/auth failed/iu)
+    expect(report, "and never with the credential rewrite reached only on an auth/quota verdict").not.toMatch(
+      /The route or the model id is the suspect/,
+    )
+    expect(report).not.toMatch(/check OPENROUTER_API_KEY/)
+  }, 20_000)
+})
+
 describe("24533 — the cost estimate is derived from the models actually selected", () => {
   /**
    * DEFECT 4. `totalEstStr` was a tier band: `~$5-15` whenever fewer than two

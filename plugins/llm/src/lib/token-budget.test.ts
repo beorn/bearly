@@ -179,4 +179,34 @@ describe("computeMaxOutputTokens — combined-limit provider budget", () => {
     const messages = [{ role: "user", content: "Hello" }]
     expect(computeMaxOutputTokens(staticModel, messages)).toBe(64000)
   })
+
+  // 27977 row 3 / 26799's promise, "clearly oversized input stops before
+  // dispatch". The guard in computeMaxOutputTokens is the only pre-dispatch
+  // stop a leg has — `ask()` calls it before generateText/streamText, inside
+  // the same try — and nothing exercised the throw until now. The specimen
+  // that cost 27727 its leg (pro run 0581) did not trip it; the pair below
+  // pins both sides of the boundary so nobody reads the guarantee as
+  // stronger than the estimator can support.
+  test("refuses input beyond the registry window and its uncertainty band", () => {
+    const narrow: Model = { ...k26Model, reasoning: { contextWindow: 32768, maxOutputTokens: 16000 } }
+    // 140000 chars → 40000 estimated tokens > 1.15 × 32768 (37683).
+    const messages = [{ role: "user", content: "x".repeat(140_000) }]
+    expect(() => computeMaxOutputTokens(narrow, messages)).toThrow(
+      /Estimated input 40000 tokens exceeds openrouter \(moonshotai\/kimi-k2\.6\) registry context window 32768 tokens beyond estimator uncertainty/,
+    )
+  })
+
+  test("does not refuse the 0581 payload — inside the band is not proof of overflow", () => {
+    // The measured specimen: 118553 chars (118223-char context + ~310-char
+    // question) → 33873 estimated tokens. The provider counted 34094 for the
+    // same text, so the estimate sat within 1% of truth, yet the live route
+    // refused at 32768 while the registry and the live OpenRouter catalog both
+    // said 128000. The ±15% band is wider than that 4% overflow by design: an
+    // estimator that may overcount 15% must not refuse a leg on a guess, so
+    // the static endpoint ceiling stands alone and the provider's refusal is
+    // what reports — classified as context-length since 27977, never auth.
+    const narrow: Model = { ...k26Model, reasoning: { contextWindow: 32768, maxOutputTokens: 16000 } }
+    const messages = [{ role: "user", content: "x".repeat(118_553) }]
+    expect(computeMaxOutputTokens(narrow, messages)).toBe(16000)
+  })
 })

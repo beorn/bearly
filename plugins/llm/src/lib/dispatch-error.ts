@@ -10,6 +10,7 @@ export type DispatchFailureKind =
   | "model-unavailable"
   | "timeout"
   | "output-budget"
+  | "context-length"
   | "unknown"
 
 export interface DispatchFailureDescription {
@@ -62,7 +63,18 @@ function oneLineError(error: unknown): string {
 }
 
 function errorBlob(error: unknown): string {
-  const parts = [rawErrorMessage(error), stringify(error)]
+  // The request echo is NEVER evidence about the provider's cause (27977). `APICallError` carries
+  // `requestBodyValues` — the whole prompt — as an own enumerable property, so `JSON.stringify(error)`
+  // reproduces the user's text verbatim. Matching a provider pattern against it means a prompt that
+  // merely mentions "auth failed", "unauthorized" or "permission" turns any failure of that call into an
+  // auth refusal (measured 2026-10-07), and a panel whose own reported text quotes such a phrase poisons
+  // every later leg that receives it as context. The response side — the error's message, its body and
+  // its data — is the only thing that can name what the provider refused.
+  const echo =
+    error && typeof error === "object"
+      ? stringify({ ...(error as Record<string, unknown>), requestBodyValues: undefined, requestBody: undefined })
+      : stringify(error)
+  const parts = [rawErrorMessage(error), echo]
   if (error && typeof error === "object") {
     const item = error as { responseBody?: unknown; data?: unknown; cause?: unknown }
     if (typeof item.responseBody === "string") parts.push(item.responseBody)
@@ -224,20 +236,36 @@ function classifyDispatchFailure(
       remedy: `lower max output tokens${affordable ? ` below ${affordable}` : ""}, or top up credits`,
     }
   }
-  if (
-    ((responseStatus === 400 || responseStatus === 413) &&
-      /context.{0,30}(?:length|window)|maximum.{0,30}context|prompt.{0,30}too long/iu.test(blob)) ||
-    /^Estimated input \d+ tokens exceeds /u.test(message)
-  ) {
+  // A context-length refusal is a property of THIS request, and providers deliver it in three shapes.
+  // The documented one is 400/413 with a "context length" body. The one that cost 27727 its leg is an
+  // HTTP 200 envelope whose body reports the failure itself (`status: "failed"`, `error.code:
+  // "invalid_prompt"`, "The sum of prompt length (34094.0) … should not exceed max_num_tokens (32768)"
+  // — OpenRouter in front of DeepInfra, measured 2026-10-07 in pro run 0581). A status gate of
+  // 400/413 alone missed it, the wording matched none of the old patterns, and the request-echo blob
+  // handed the leg to the auth branch below. The third shape is our own pre-dispatch estimate.
+  const contextBody =
+    /context.{0,30}(?:length|window)|maximum.{0,30}context|prompt.{0,30}too long/iu.test(blob) ||
+    /invalid_prompt/iu.test(blob) ||
+    /(?:prompt|input|query).{0,60}(?:should|must|may|can)\s+not\s+exceed/iu.test(blob) ||
+    /max(?:imum)?[_ ]?(?:num_)?tokens/iu.test(blob)
+  if (/^Estimated input \d+ tokens exceeds /u.test(message) || (responseStatus !== undefined && contextBody)) {
     const who = target.modelId
       ? `${providerDisplayName(target.provider)} (${target.modelId})`
       : providerDisplayName(target.provider)
+    const promptTokens = /prompt length \((\d+(?:\.\d+)?)\)/iu.exec(blob)?.[1]
+    const limit =
+      /max(?:imum)?[_ ]?(?:num_)?tokens\D{0,12}?\((\d+)\)/iu.exec(blob)?.[1] ??
+      /maximum context length is (\d+)/iu.exec(blob)?.[1]
+    const amounts =
+      promptTokens !== undefined && limit !== undefined
+        ? ` The prompt is ${Math.floor(Number(promptTokens))} tokens; this route's limit is ${limit}.`
+        : ""
     return {
-      kind: "unknown",
+      kind: "context-length",
       scope: "call",
       message: /^Estimated input /u.test(message)
         ? message
-        : `${who} rejected this request's context length. Trim the context or pick a model whose context window fits.`,
+        : `${who} rejected this request's CONTEXT LENGTH — this is NOT a credentials problem.${amounts} Trim the context or pick a model whose context window fits.`,
       remedy: "trim the context or pick a model whose context window fits",
     }
   }

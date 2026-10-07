@@ -214,6 +214,63 @@ describe("describeProviderError", () => {
     expect(described).not.toHaveProperty("observation")
   })
 
+  // 27977: OpenRouter answers a context-length refusal with HTTP 200 and a body that reports the failure
+  // itself. The old gate fired only on 400/413, the wording matched none of the patterns, and the
+  // request-echo blob handed the leg to the auth branch below it — so the operator was told to probe a
+  // credential that worked in the same run. The body is the 2026-10-07 pro run 0581 response, verbatim.
+  it("classifies the 0581 HTTP 200 failed-body context refusal, naming the model and the token limits", () => {
+    const body = {
+      id: "gen-1791386814-5dmODBSHZJaNasXykcJF",
+      object: "response",
+      model: "deepseek/deepseek-chat",
+      status: "failed",
+      output: [],
+      error: {
+        code: "invalid_prompt",
+        message:
+          "Upstream error from DeepInfra: The sum of prompt length (34094.0), query length (0) should not exceed max_num_tokens (32768)",
+      },
+      error_type: "invalid_request",
+    }
+    const error = Object.assign(new Error("openrouter request failed"), {
+      statusCode: 200,
+      responseBody: JSON.stringify(body),
+      data: body,
+    })
+    const described = describeDispatchFailure(error, {
+      provider: "openrouter",
+      modelId: "deepseek/deepseek-chat",
+      displayName: "DeepSeek Chat V3",
+    })
+
+    expect(described.kind).toBe("context-length")
+    expect(described.scope).toBe("call")
+    expect(described.message).toContain("deepseek/deepseek-chat")
+    expect(described.message).toContain("34094")
+    expect(described.message).toContain("32768")
+    expect(described.message).toContain("HTTP 200")
+    expect(described.message).toMatch(/context length/iu)
+    expect(described.message).not.toMatch(/auth failed/iu)
+    expect(described).not.toHaveProperty("observation")
+  })
+
+  // 27977: `APICallError` carries `requestBodyValues` — the whole prompt — as an own enumerable
+  // property, so JSON.stringify(error) reproduces the user's text. A prompt that merely mentions "auth
+  // failed" turned that call's failure into an auth refusal, and a panel whose reported text quotes the
+  // phrase poisons every later leg that receives it as context. The request echo is not evidence.
+  it("never reads the request echo as the provider's cause", () => {
+    const error = Object.assign(new Error("request rejected"), {
+      statusCode: 400,
+      responseBody: JSON.stringify({ error: { code: "route_policy", message: "unsupported request option" } }),
+      requestBodyValues: { input: "the leg said openrouter auth failed | unauthorized | permission" },
+    })
+    const described = describeDispatchFailure(error, { provider: "openrouter", modelId: "test/model" })
+
+    expect(described.kind).toBe("unknown")
+    expect(described.message).toContain("route_policy")
+    expect(described.message).not.toMatch(/auth failed/iu)
+  })
+
   it("points model discovery at the shipped CLI surface", () => {
     const described = describeDispatchFailure(new Error("model new-name does not exist"), {
       provider: "openrouter",

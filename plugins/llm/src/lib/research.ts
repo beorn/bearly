@@ -120,6 +120,18 @@ export function estimateTokens(text: string): number {
 
 // The estimator overcounts English by ~14%; refuse only beyond that
 // uncertainty rather than treating an approximate token count as exact.
+//
+// The band is the whole guarantee, measured (bead 27977 row 3). On the 0581
+// specimen — 118553 chars (118223 context + ~310 question) — the estimate was
+// 33873 tokens against a provider count of 34094 (DeepSeek) / 33031 (Kimi):
+// inside ±1% of truth, yet over the live route's real 32768 limit by only 4%,
+// so this guard deliberately did not fire. The refusal threshold it compares
+// against, 1.15 × the REGISTRY window, is what a route-level limit escapes:
+// the same run's route refused at 32768 while both the registry and the live
+// OpenRouter catalog said 128000. A pre-dispatch estimator cannot see a limit
+// reported 4× larger than the one enforced, so 26799's promise holds only for
+// input clearly over (beyond the band) — input marginally over is caught by
+// the provider and now reported as context-length, never as auth.
 const INPUT_ESTIMATE_REFUSAL_RATIO = 1.15
 
 /** Compute the output-token cap for a query. Returns `undefined` for
@@ -214,7 +226,12 @@ export function computeMaxOutputTokens(
     const dynamicCap = reasoning.contextWindow - estimatedInput - SAFETY
     // A non-positive value means the input alone fills the window; adding it
     // as a bound would clamp every model to nonsense, so the static ceiling
-    // (if any) stands alone and the caller reports the overflow downstream.
+    // (if any) stands alone and the request goes out. That is deliberate: the
+    // estimator may overcount by up to the ratio above, so an input inside the
+    // band is not proof of overflow, and a bad guess must not refuse a leg that
+    // would have fit. It is not silent either — the provider's refusal reaches
+    // describeDispatchFailure, which names the model, the prompt tokens and the
+    // limit since 27977.
     if (dynamicCap > 0) bounds.push(dynamicCap)
   }
   if (bounds.length === 0) return undefined
