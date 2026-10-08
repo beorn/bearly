@@ -30,6 +30,9 @@ let originalPoolSlots: string | undefined
 async function initRepo(path: string): Promise<void> {
   mkdirSync(path, { recursive: true })
   await $`cd ${path} && git init -q -b main && git config user.email t@t && git config user.name t`.quiet()
+  // These rows assume the sibling layout (<sandbox>/<repo>-<slot>). Since the pool root has one resolver
+  // (4a6775fe, @cto ebf2cc43) an undeclared repo falls to HH_WORKTREE_HOME, so the layout is declared here.
+  await $`cd ${path} && git config worktree.poolRoot ..`.quiet()
 }
 
 async function commitAll(path: string, message: string): Promise<void> {
