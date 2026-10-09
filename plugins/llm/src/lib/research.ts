@@ -15,6 +15,11 @@ import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } f
 import { describeDispatchFailure, type DispatchFailureDescription } from "./dispatch-error"
 import { missingApiKeyError } from "./env-preflight"
 import {
+  decideOpenRouterRoutePin,
+  openRouterContextLengthRefusal,
+  type OpenRouterProviderPin,
+} from "./openrouter-route-pin"
+import {
   createProviderObservationStore,
   recordProviderObservation,
   type ProviderObservationStore,
@@ -353,8 +358,6 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     return finishQuery(observationStore, model, response)
   }
 
-  const languageModel = getLanguageModel(model)
-
   // Build user message content — text or multimodal (text + image)
   let userContent: UserContent = question
   if (options.imagePath) {
@@ -371,6 +374,35 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   const messages: ModelMessage[] = [{ role: "user", content: userContent }]
   const promptOptions = { messages, ...(systemPrompt ? { instructions: systemPrompt } : {}) }
+
+  let openRouterPin: OpenRouterProviderPin | undefined
+  if (model.provider === "openrouter" && process.env.LLM_SKIP_MODEL_LIVENESS !== "1") {
+    const decision = await decideOpenRouterRoutePin(
+      model.modelId,
+      estimateTokens([systemPrompt ?? "", question].join("")),
+    )
+    if (decision.kind === "refuse") {
+      const refusal = openRouterContextLengthRefusal(model.modelId, decision.promptTokens, decision.routeWindow)
+      return finishQuery(
+        observationStore,
+        model,
+        {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: refusal,
+        },
+        {
+          kind: "context-length",
+          scope: "call",
+          message: refusal,
+          remedy: "trim the context or pick a model whose context window fits",
+        },
+      )
+    }
+    if (decision.kind === "pin") openRouterPin = decision.pin
+  }
+  const languageModel = getLanguageModel(model, { openRouterProviderPin: openRouterPin })
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
@@ -447,6 +479,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         break
       }
     }
+  }
+  if (openRouterPin) {
+    providerOptions.openrouter = { provider: { ...openRouterPin, only: [...openRouterPin.only] } }
   }
   const hasProviderOptions = Object.keys(providerOptions).length > 0
 

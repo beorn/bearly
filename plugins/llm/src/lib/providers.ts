@@ -19,6 +19,7 @@ import type { LanguageModel } from "ai"
 import type { Provider, Model } from "./types"
 import { getEndpoint } from "./types"
 import { missingApiKeyError, ensureProviderKeysLoaded } from "./env-preflight"
+import { injectOpenRouterProviderPin, type OpenRouterProviderPin } from "./openrouter-route-pin"
 
 // Provider instances (lazy-initialized)
 let openaiProvider: ReturnType<typeof createOpenAI> | undefined
@@ -129,7 +130,10 @@ function getOpenRouter() {
  * SKUs not in the registry) won't have an endpoint entry, so `id` falls back
  * to the SKU's own `modelId`.
  */
-export function getLanguageModel(model: Model): LanguageModel {
+export function getLanguageModel(
+  model: Model,
+  options?: { openRouterProviderPin?: OpenRouterProviderPin },
+): LanguageModel {
   const endpoint = getEndpoint(model.modelId)
   const id = endpoint?.apiModelId ?? model.modelId
   switch (model.provider) {
@@ -143,8 +147,22 @@ export function getLanguageModel(model: Model): LanguageModel {
       return getXai()(id)
     case "perplexity":
       return getPerplexity()(id)
-    case "openrouter":
-      return getOpenRouter()(id)
+    case "openrouter": {
+      const pin = options?.openRouterProviderPin
+      if (!pin) return getOpenRouter()(id)
+      ensureProviderKeysLoaded()
+      const apiKey = process.env.OPENROUTER_API_KEY
+      if (!apiKey) throw missingApiKeyError("OPENROUTER_API_KEY")
+      return createOpenAI({
+        apiKey,
+        baseURL: "https://openrouter.ai/api/v1",
+        headers: {
+          "HTTP-Referer": "https://github.com/beorn/bearly",
+          "X-Title": "bearly-llm",
+        },
+        fetch: injectOpenRouterProviderPin(pin),
+      })(id)
+    }
     case "ollama":
       throw new Error("Ollama does not use Vercel AI SDK — handle via ollamaChat() directly")
     default:
