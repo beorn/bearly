@@ -661,9 +661,21 @@ export async function runProDual(options: {
           rubric: cfg.rubric,
         })
         try {
-          const raw = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
-          const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
-          const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
+          const askJudge = async (text: string) => {
+            const raw = await ask(text, "quick", { modelOverride: judgeModel.modelId, stream: false })
+            const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
+            const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
+            return { raw, cost, parsed }
+          }
+          let { raw, cost, parsed } = await askJudge(prompt)
+          if (!parsed.ok && parsed.kind === "schema") {
+            const retry = await askJudge(
+              `${prompt}\n\nPREVIOUS JSON FAILED SCHEMA VALIDATION:\n${parsed.message}\nRe-emit STRICT JSON only, including every required field named in that error.`,
+            )
+            cost += retry.cost
+            raw = retry.raw
+            parsed = retry.parsed
+          }
           if (parsed.ok) return { id: pairId, result: parsed.value, cost }
           const artifactPath = `${outputFile}.judge-${pairId}.json`
           // ModelResponse is the complete normalized response available here;

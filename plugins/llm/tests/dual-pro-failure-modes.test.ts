@@ -152,7 +152,7 @@ describe("dual-pro failure modes", () => {
         finalStep: { reasoningText: undefined },
         usage: { inputTokens: 10, outputTokens: 20 },
       })
-      generateTextMock.mockResolvedValueOnce({
+      generateTextMock.mockResolvedValue({
         text: content,
         finalStep: { reasoningText: undefined },
         usage: { inputTokens: 50, outputTokens: 60 },
@@ -253,5 +253,70 @@ describe("dual-pro failure modes", () => {
     } finally {
       delete process.env.LLM_DUAL_PRO_B
     }
+  }, 10_000)
+
+  // Specimen /hh/var/@dev6/1179-pro-logging-report.txt.judge-ab.json:
+  // Gemini omitted scoreA.scores.correctness (wrote "output" instead).
+  // AC1: retry once with that validation error named; a second miss fails
+  // naming the field and keeps both opinions.
+  it("retries a schema-miss judge once naming the missing field, then keeps both opinions", async () => {
+    const env = makeTestEnv()
+    process.env.LLM_JUDGE_MODEL = "gemini-3-flash-preview"
+    const outputFile = join(env.tmpDir, "review.txt")
+    const specimenJudge = JSON.stringify({
+      scoreA: {
+        scores: { specificity: 4, actionability: 3, output: 3, depth: 3 },
+        total: 13,
+      },
+      scoreB: {
+        scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 },
+        total: 20,
+      },
+      winner: "B",
+      reasoning:
+        "Response B provides concrete code primitives, a systematic trade-off table, and a deep architectural understanding of the logging durability requirements requested.",
+    })
+    queryBackgroundMock.mockReset()
+    queryBackgroundMock.mockResolvedValueOnce({
+      model: { displayName: "GPT-5.4 Pro" },
+      content: "first unranked opinion",
+      responseId: "resp_opinion",
+      durationMs: 10,
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+    })
+    generateTextMock.mockReset()
+    generateTextMock.mockResolvedValueOnce({
+      text: "second unranked opinion",
+      finalStep: { reasoningText: undefined },
+      usage: { inputTokens: 10, outputTokens: 20 },
+    })
+    generateTextMock.mockResolvedValue({
+      text: specimenJudge,
+      finalStep: { reasoningText: undefined },
+      usage: { inputTokens: 50, outputTokens: 60 },
+    })
+
+    await runDualPro(outputFile)
+
+    const judgeCalls = generateTextMock.mock.calls.filter((call) => {
+      const text = JSON.stringify(call[0] ?? {})
+      return text.includes("STRICT JSON") || text.includes("Score each response")
+    })
+    expect(judgeCalls).toHaveLength(2)
+    expect(JSON.stringify(judgeCalls[1]?.[0] ?? {})).toContain("scoreA.scores.correctness")
+    const report = readFileSync(outputFile, "utf8")
+    expect(report).toContain("first unranked opinion")
+    expect(report).toContain("second unranked opinion")
+    expect(report).toContain("scoreA.scores.correctness")
+    const ab = JSON.parse(readFileSync(abProLogPath(env.homeDir), "utf8").trim()) as {
+      judge: { error: string; winner?: string }
+      a: { content: string }
+      b: { content: string }
+    }
+    expect(ab.judge.error).toContain("scoreA.scores.correctness")
+    expect(ab.judge.winner).toBeUndefined()
+    expect(ab.a.content).toBe("first unranked opinion")
+    expect(ab.b.content).toBe("second unranked opinion")
+    expect(env.exitCodes).toContain(1)
   }, 10_000)
 })
