@@ -39,7 +39,7 @@ export type PathHolder = Readonly<{
 }>
 export type SourceName = "cwd" | "exe" | "root" | "argv" | "maps" | "fd"
 export type PathHolderUnavailableCoverage = Readonly<{
-  /** The process proved gone (its directory absent, or another start time) after its source was missing or denied. */
+  /** The process proved gone (its directory absent, another start time, or its cwd link ENOENT/ESRCH) after its source was missing or denied. */
   exited: number
   denied: number
   /** A source disappeared while process exit could not be established. */
@@ -450,7 +450,7 @@ async function collectProcessRows(
       const pid = Number(entry.name)
       const proc = `${procRoot}/${entry.name}`
       const metadata = await observeSource(deadline, proc, () => stat(proc), undefined)
-      // A missing process DIRECTORY is exit evidence; a missing child is not.
+      // A missing process DIRECTORY is exit evidence; a missing cwd link is too (@cto bfbbecad). Other missing children are not.
       if (metadata.availability === "missing") {
         counts.exited += 1
         return undefined
@@ -522,10 +522,13 @@ function gaveNoReading(observation: SourceObservation<unknown>): boolean {
 }
 
 /**
- * The one exit proof (hh 26990, @cto 2e553d4c and 6eef7d1e), entered for a source that went missing or was denied.
+ * The one exit proof (hh 26990, @cto 2e553d4c, 6eef7d1e, and bfbbecad), entered for a source that went missing or was denied.
  * What it clears is the absence of a reading, never a reading: a holder, a value or an ambiguous target stands.
  * - The process directory answering ENOENT to a stat proves exit. A denied or unanswered re-stat proves nothing.
  * - A start time read both times and different proves the first process exited.
+ * - A cwd link answering ENOENT or ESRCH holds no working directory: the census is a non-atomic proc view, and a
+ *   process that ends before the read is the same accepted class as one that starts after the listing (@cto bfbbecad).
+ *   EACCES and EPERM on cwd stay denied. Other missing children (exe, fd, maps, root) still need the directory proof.
  * - A zombie with one thread holds nothing; an executable a kernel thread lacks is not applicable.
  * - Otherwise a denied source that gave no reading is read once more, as a retry for a process that denied its /proc
  *   entries for a moment. A second read that does not answer by the census deadline changes nothing.
@@ -567,6 +570,8 @@ async function resolveUnreadSources(
       else if (after !== undefined && heldNothingAsZombie(after)) resolve(source, reason, "notApplicable")
       else if (reason === "missing" && source === "exe" && after?.kernelThread === true) {
         resolve(source, reason, "notApplicable")
+      } else if (reason === "missing" && source === "cwd") {
+        resolve(source, reason, "exited")
       }
     }
   }

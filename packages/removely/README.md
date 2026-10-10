@@ -43,8 +43,9 @@ written, never resolved: an element that reaches the target through a symlink
 is not seen, and resolving it at census time would name whatever the link
 points at then. `coverage.processes` counts the
 processes with each reason (`sourceDenied`, `sourceUnanswered`, `sourceMissing`,
-`sourceAmbiguous`) ahead of the per-source table. An individual missing source
-does not prove its process exited. `holders: []` alone never establishes absence.
+`sourceAmbiguous`) ahead of the per-source table. An individual missing source other than cwd
+does not prove its process exited. A cwd link answering ENOENT or ESRCH holds no
+working directory and counts as exited. `holders: []` alone never establishes absence.
 
 A complete census describes a non-atomic observation of its stated scope.
 It cannot exclude later producers, translate mount aliases or establish inode
@@ -62,8 +63,9 @@ argv; `clearedByIdentity(entry)` clears four identities of the current uid
 other entry is for the caller to refuse on.
 `maps` is read after `cmdline` and never once `cmdline` has not answered, so one
 process stuck on its mmap lock pins one I/O-pool thread. A source that went missing or was
-denied is resolved by one exit proof: the process directory gone, or another
-start time, counts it exited, and a one-thread zombie holds nothing. A denied
+denied is resolved by one exit proof: the process directory gone, another
+start time, or a cwd link answering ENOENT or ESRCH, counts it exited, and a
+one-thread zombie holds nothing. A denied
 source with no reading is then read once more, a retry for a process that
 denied its `/proc` entries for a moment; a reading is never taken away.
 If that retry remains unreadable, the same exit proof runs once more without

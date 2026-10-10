@@ -1225,10 +1225,35 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
     })
   })
 
-  // A missing source on the denied-read retry needs the same exit proof as its first read.
-  // Existing disappearance cases remove the process before the first presence recheck.
+  /**
+   * @failure A listed bun/tsc pid whose cwd link is ENOENT/ESRCH refuses the whole Yrd env-close round (21122 P4: 3907 rows).
+   * @level l2
+   * @consumer Yrd processCwdCoverage via inspectProcessCwds
+   * A pid whose /proc directory or cwd link is gone holds no cwd (@cto bfbbecad). exe/fd/maps missing under a live pid stay incomplete.
+   */
+  test.each(["ENOENT", "ESRCH"] as const)(
+    "a listed pid whose cwd link answers %s holds no cwd and does not refuse the census",
+    async (code) => {
+      const probe = processFixture("bun\0")
+      const resource = join(probe.processRoot, "cwd")
+      const readlink = fsPromises.readlink
+      vi.spyOn(fsPromises, "readlink").mockImplementation((async (path: string) => {
+        if (path === resource) throw Object.assign(new Error(`cwd ${code}`), { code })
+        return readlink(path)
+      }) as typeof fsPromises.readlink)
+      const cwds = await inspectProcessCwdsInProc(probe.procRoot)
+      expect(cwds).toEqual({ rows: [], complete: true, unreadable: [], mechanism: "proc" })
+      const census = await inspectProcessCensusInProc(probe.procRoot, { scope: "same-uid", sources: ["cwd"] })
+      expect(census.coverage.complete).toBe(true)
+      expect(census.coverage.sources.cwd?.unavailable).toMatchObject({ exited: 1, missing: 0, denied: 0 })
+      expect(census.coverage).not.toHaveProperty("unreadable")
+    },
+  )
+
+  // A missing cwd on the denied-read retry is the same exit proof as a first-read ENOENT (@cto bfbbecad).
+  // Process-directory gone vs cwd-link gone both count as exited; a live process that still denies cwd does not.
   test.each([true, false])(
-    "a cwd lost during its retry counts as exited only if its process is gone (%s)",
+    "a cwd lost during its retry counts as exited whether or not its process directory remains (%s)",
     async (gone) => {
       const probe = processFixture("bun\0")
       const resource = join(probe.processRoot, "cwd")
@@ -1243,9 +1268,9 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
         return readlink(path)
       }) as typeof fsPromises.readlink)
       const census = await inspectProcessCensusInProc(probe.procRoot, { scope: "same-uid", sources: ["cwd"] })
-      expect(census.coverage.complete).toBe(gone)
-      expect(census.coverage.sources.cwd?.unavailable).toMatchObject({ exited: gone ? 1 : 0, missing: gone ? 0 : 1 })
-      expect(census.coverage.unreadable?.length ?? 0).toBe(gone ? 0 : 1)
+      expect(census.coverage.complete).toBe(true)
+      expect(census.coverage.sources.cwd?.unavailable).toMatchObject({ exited: 1, missing: 0 })
+      expect(census.coverage.unreadable?.length ?? 0).toBe(0)
     },
   )
 

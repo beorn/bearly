@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+- A listed pid whose `/proc/<pid>/cwd` link answers ENOENT or ESRCH holds no
+  working directory: the census counts it `exited` and stays complete, the same
+  as a process directory that is already gone. Other missing sources (exe, fd,
+  maps, root) still need the directory or start-time proof. EACCES and EPERM on
+  cwd stay denied and unreadable.
 - Recheck the existing Linux exit proof after a denied-source retry remains
   unreadable. A process that disappears during that retry counts as exited;
-  a surviving process with a missing source remains unreadable. The same
+  a surviving process with a missing non-cwd source remains unreadable. The same
   census deadline applies, with no additional source retry.
 
 ## 0.4.0
