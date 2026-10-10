@@ -29,6 +29,28 @@ const ENDPOINTS_TTL_MS = 60 * 60 * 1_000
 const ENDPOINTS_TIMEOUT_MS = 10_000
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "bearly-llm")
 
+/**
+ * OpenRouter `/endpoints` `context_length` is not the enforced prompt window.
+ * Specimen 27977 and 28425: DeepInfra lists 128000–163840 for
+ * `deepseek/deepseek-chat` and then rejects at `max_num_tokens` 32768.
+ * Clamp at pin time; the cache still stores the catalog bytes.
+ */
+const OBSERVED_PROMPT_CEILINGS: ReadonlyArray<{
+  readonly modelId: string
+  readonly providerSlug: string
+  readonly maxPromptTokens: number
+}> = [{ modelId: "deepseek/deepseek-chat", providerSlug: "DeepInfra", maxPromptTokens: 32_768 }]
+
+function clampObservedPromptCeilings(modelId: string, routes: readonly OpenRouterRoute[]): OpenRouterRoute[] {
+  return routes.map((route) => {
+    const observed = OBSERVED_PROMPT_CEILINGS.find(
+      (row) => row.modelId === modelId && row.providerSlug === route.providerSlug,
+    )
+    if (!observed) return route
+    return { providerSlug: route.providerSlug, contextLength: Math.min(route.contextLength, observed.maxPromptTokens) }
+  })
+}
+
 export function pinOpenRouterRoutesForPrompt(
   promptTokens: number,
   routes: readonly OpenRouterRoute[],
@@ -199,7 +221,10 @@ export async function decideOpenRouterRoutePin(
   const routes = await readOpenRouterRoutes(modelId, options)
   if (!routes || routes.length === 0) return { kind: "unknown" }
   try {
-    return { kind: "pin", pin: pinOpenRouterRoutesForPrompt(promptTokens, routes) }
+    return {
+      kind: "pin",
+      pin: pinOpenRouterRoutesForPrompt(promptTokens, clampObservedPromptCeilings(modelId, routes)),
+    }
   } catch (error) {
     if (error instanceof OpenRouterRouteTooSmallError) {
       return { kind: "refuse", promptTokens: error.promptTokens, routeWindow: error.routeWindow }

@@ -1,7 +1,9 @@
 /**
  * @failure OpenRouter load-balances a 117k DeepSeek /pro prompt onto a DeepInfra
  *   route whose window is 32768, so the DeepSeek opinion is lost even though the
- *   CLI advertises the model's 128k registry window.
+ *   CLI advertises the model's 128k registry window. Recurrence: live catalog
+ *   lists DeepInfra at 163840, so the pin *selects* that provider for a 128846
+ *   token prompt and the 32k route still fires.
  * @level l1 — queryModel dispatch over a recorded token/window pair and a stubbed
  *   OpenRouter endpoints list
  * @consumer bun llm pro DeepSeek legs (ask → queryModel → OpenRouter)
@@ -21,6 +23,10 @@ import { makeTestEnv } from "./helpers"
 const SPECIMEN_PROMPT_TOKENS = 117_114
 const SPECIMEN_ROUTE_WINDOW = 32_768
 const FITTING_WINDOW = 128_000
+/** Live OpenRouter endpoints cache 2026-10-10T00:20:17Z — `/hh/var/@dev13/28425/live-endpoints-cache.json`. */
+const LIVE_CATALOG_STREAMLAKE = 128_000
+const LIVE_CATALOG_DEEPINFRA = 163_840
+const RECURRENCE_PROMPT_TOKENS = 128_846
 
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
@@ -46,6 +52,10 @@ function resetMocksToOk() {
 /** `estimateTokens` is ceil(chars / 3.5); this length is exactly 117114 tokens. */
 function promptOfRecordedTokenCount(): string {
   return "x".repeat(Math.round(SPECIMEN_PROMPT_TOKENS * 3.5))
+}
+
+function promptOfRecurrenceTokenCount(): string {
+  return "x".repeat(Math.round(RECURRENCE_PROMPT_TOKENS * 3.5))
 }
 
 function endpointsBody(routes: ReadonlyArray<{ provider_name: string; context_length: number }>): string {
@@ -136,6 +146,33 @@ describe("28425 — OpenRouter must not send a 117k prompt to a 32k route", () =
     expect(response.error).toMatch(/CONTEXT LENGTH/)
     expect(response.error).toContain(String(SPECIMEN_PROMPT_TOKENS))
     expect(response.error).toContain(String(SPECIMEN_ROUTE_WINDOW))
+    expect(response.error).not.toMatch(/check OPENROUTER_API_KEY/)
+  })
+
+  it("refuses a 128846-token prompt when the live catalog lists DeepInfra at 163840", async () => {
+    makeTestEnv()
+    delete process.env.LLM_SKIP_MODEL_LIVENESS
+    stubEndpointsFetch([
+      { provider_name: "StreamLake", context_length: LIVE_CATALOG_STREAMLAKE },
+      { provider_name: "DeepInfra", context_length: LIVE_CATALOG_DEEPINFRA },
+    ])
+    vi.resetModules()
+
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+
+    const { response } = await queryModel({
+      question: promptOfRecurrenceTokenCount(),
+      model: getModel("deepseek/deepseek-chat")!,
+      observationStore: null,
+    })
+
+    expect(
+      generateTextMock,
+      "live catalog DeepInfra 163840 must not receive the 128846-token prompt",
+    ).not.toHaveBeenCalled()
+    expect(response.error).toMatch(/CONTEXT LENGTH/)
+    expect(response.error).toContain(String(RECURRENCE_PROMPT_TOKENS))
     expect(response.error).not.toMatch(/check OPENROUTER_API_KEY/)
   })
 })
