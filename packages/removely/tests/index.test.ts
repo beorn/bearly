@@ -567,10 +567,12 @@ describe("safeRemoveSync — same predicate, no await", () => {
 })
 
 describe("git's repository-local environment (hh 26003)", () => {
-  test("is git's own --local-env-vars list minus config, so a git that adds one fails here", () => {
+  test("is git's local routing list minus config and the legacy internal super-prefix", () => {
     const listed = execFileSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" })
       .split("\n")
-      .filter((name) => name.length > 0 && !name.startsWith("GIT_CONFIG"))
+      // Older Git also lists its retired internal --super-prefix variable.
+      // Keep checking every other name so an unknown routing variable still fails.
+      .filter((name) => name.length > 0 && !name.startsWith("GIT_CONFIG") && name !== "GIT_INTERNAL_SUPER_PREFIX")
     expect([...GIT_REPOSITORY_LOCAL_ENV_VARS].sort()).toEqual(listed.sort())
   })
 
