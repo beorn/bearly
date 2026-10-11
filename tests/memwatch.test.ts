@@ -289,18 +289,24 @@ describe("logLine", () => {
 // ---------------------------------------------------------------------------
 
 describe("panic", () => {
-  test("writes snapshot file with recent samples", () => {
+  test("writes snapshot file with recent samples", async () => {
     const dir = mkTmp("panic-snap")
+    // SIGUSR2 may terminate only a child owned by this test, never the host/container init.
+    const target = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 60000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
     try {
+      expect(target.pid).toBeGreaterThan(1)
       const logPath = join(dir, "memwatch.log")
       const opts = defaultOpts({
-        targetPid: process.pid, // safe — we'll trySignal ourselves later
+        targetPid: target.pid,
         snapshotDir: dir,
         logPath,
       })
       const samples = [fullSample({ ts: Date.now() - 1000 }), fullSample({ ts: Date.now() })]
-      // Use a non-existent target pid so SIGUSR2 fails harmlessly.
-      const action = panic("target", 5000, 4096, { ...opts, targetPid: 1 }, null, samples)
+      const action = panic("target", 5000, 4096, opts, null, samples)
+      expect(action.sigusr2Sent).toBe(true)
       expect(existsSync(action.snapshotPath)).toBe(true)
       const snap = readFileSync(action.snapshotPath, "utf8")
       expect(snap).toContain("# memwatch panic snapshot")
@@ -309,6 +315,8 @@ describe("panic", () => {
       const log = readFileSync(logPath, "utf8")
       expect(log).toMatch(/PANIC: target RSS = 5000MB exceeds threshold 4096MB/)
     } finally {
+      target.kill()
+      await target.exited
       rmSync(dir, { recursive: true, force: true })
     }
   })
@@ -337,14 +345,22 @@ describe("panic", () => {
     }
   })
 
-  test("does NOT send SIGINT to parent without --allow-kill-parent", () => {
+  test("does NOT send SIGINT to parent without --allow-kill-parent", async () => {
     const dir = mkTmp("panic-noparent")
+    const target = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 60000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
     try {
+      expect(target.pid).toBeGreaterThan(1)
       const logPath = join(dir, "memwatch.log")
-      const opts = defaultOpts({ targetPid: 1, snapshotDir: dir, logPath, allowKillParent: false })
+      const opts = defaultOpts({ targetPid: target.pid, snapshotDir: dir, logPath, allowKillParent: false })
       const action = panic("parent", 9000, 8192, opts, 99999, [fullSample()])
+      expect(action.sigusr2Sent).toBe(true)
       expect(action.sigintParentSent).toBe(false)
     } finally {
+      target.kill()
+      await target.exited
       rmSync(dir, { recursive: true, force: true })
     }
   })
