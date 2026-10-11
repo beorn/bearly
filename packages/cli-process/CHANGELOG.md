@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Bun 1.4.3 no longer drops the tail of an unrouted `console.log` on a slow pipe. The control test is now a canary
-  that fails if the drop returns; `routeConsoleToStreams()` stays for consumers on an older Bun (hh 27071).
+- Bun 1.4.3 no longer drops the tail of an unrouted `console.log` on a slow pipe. The control test reads the
+  running Bun: before 1.4.3 it proves the drop, and from 1.4.3 it fails if the drop returns. `routeConsoleToStreams()`
+  stays for consumers on an older Bun (hh 27071).
 
 ## 0.1.0
 

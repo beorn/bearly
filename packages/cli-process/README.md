@@ -9,7 +9,8 @@ When a CLI writes to a pipe, two things lose output without a word:
 - **`console.log` on a non-blocking pipe.** Under Bun, once anything uses the `process.stdout` stream, stdout's pipe is
   non-blocking for the whole process. `console.log` writes the descriptor directly and, when the pipe fills, drops the
   rest of its text. A slow reader received 65,536 of 314,509 bytes. Bun 1.4.3 fixed this; `routeConsoleToStreams()`
-  still protects a consumer on an older Bun, and the package's control test fails if the drop comes back.
+  still protects a consumer on an older Bun. The package's control test proves the drop on an older Bun and fails
+  if it comes back on 1.4.3 or later.
 
 ## Install
 
