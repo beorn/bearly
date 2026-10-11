@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Bun 1.4.3 no longer drops the tail of an unrouted `console.log` on a slow pipe. The control test is now a canary
+  that fails if the drop returns; `routeConsoleToStreams()` stays for consumers on an older Bun (hh 27071).
+
 ## 0.1.0
 
 - `runCliProcess(name, main, argv?)`: run a CLI's body, set its exit code and let stdout and stderr drain; a reader
