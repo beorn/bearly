@@ -57,8 +57,6 @@ import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
 import { superStatus, type ConsultedRepository } from "git-super/status"
 import { remoteContainsCommit } from "git-super/push"
-import { readPrivateSubmodulePaths } from "git-super/commit-graph"
-import { createLocalGitProcess } from "git-super/process"
 import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
@@ -96,7 +94,10 @@ export function worktreeAddEnvironment(environment: NodeJS.ProcessEnv = process.
  * Transitional pool lifecycle/policy adapter over git-super mechanics.
  * Delete it with the worktree pool when @hab/22614 moves every caller to Hab bays.
  */
-function poolWorktreeMechanics(gitRoot: string, environment: NodeJS.ProcessEnv = process.env) {
+function poolWorktreeMechanics(
+  gitRoot: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): ReturnType<typeof createLocalGitWorktreeStore> {
   return createLocalGitWorktreeStore({ repo: gitRoot, env: environment })
 }
 
@@ -2055,9 +2056,7 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     }
   }
 
-  const declaredPrivate = await readPrivateSubmodulePaths(createLocalGitProcess(), gitRoot, "HEAD")
-  const excludedSubmodules = [...new Set([...(options.excludedSubmodules ?? []), ...declaredPrivate])]
-  for (const path of declaredPrivate) info(`${path}: not compared (declared private)`)
+  const excludedSubmodules = [...new Set(options.excludedSubmodules ?? [])]
 
   // Get submodules list (used in multiple checks)
   const inventory = superStatus({ repo: gitRoot, excludedSubmodules })
