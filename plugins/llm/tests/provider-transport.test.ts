@@ -45,13 +45,18 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(new URL(url).pathname).toBe(pathname)
   })
 
-  it("preserves Grok chat reasoning, billed usage, and rate-limit headers", async () => {
+  /**
+   * @failure A library bound disappears when the model has no declared output ceiling.
+   * @consumer Library callers constraining a provider's reservation without reasoning metadata.
+   * CLI budget coverage uses a model with declared limits; assert this distinct case on real HTTP mapping.
+   */
+  it("preserves caller budget, Grok chat reasoning, billed usage, and rate-limit headers", async () => {
     const env = makeTestEnv()
     vi.stubEnv("LLM_NO_ENV_AUTOLOAD", "1")
     vi.stubEnv("XAI_API_KEY", "test-only-key")
     vi.stubEnv("XDG_CACHE_HOME", env.tmpDir)
     const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL) =>
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response(
           JSON.stringify({
             id: "chatcmpl-test",
@@ -85,8 +90,9 @@ describe("provider transport across AI SDK upgrades", () => {
 
     const { queryModel } = await import("../src/lib/research")
     const { getModel } = await import("../src/lib/types")
-    const model = getModel("grok-4-1-fast-reasoning")!
-    const { response } = await queryModel({ question: "probe", model })
+    const model = { ...getModel("grok-4-1-fast-reasoning")!, reasoning: undefined }
+    const options = { question: "probe", model, maxOutputTokens: 4096 }
+    const { response } = await queryModel(options)
 
     expect(response.error).toBeUndefined()
     expect(response).toMatchObject({
@@ -99,6 +105,8 @@ describe("provider transport across AI SDK upgrades", () => {
     const input = fetchMock.mock.calls[0]![0]
     const url = input instanceof Request ? input.url : String(input)
     expect(new URL(url).pathname).toBe("/v1/chat/completions")
+    const init = fetchMock.mock.calls[0]![1]
+    expect(JSON.parse(String(init?.body))).toMatchObject({ max_tokens: 4096 })
     const { totalResponseCost } = await import("../src/lib/format")
     expect(totalResponseCost([response])).toBe((20 * 0.2 + 12 * 0.5) / 1_000_000)
   })

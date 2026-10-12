@@ -65,25 +65,29 @@ describe("22972 — the context-exceeded retry clamps like the first attempt", (
     vi.restoreAllMocks()
   })
 
-  it("retries with the endpoint ceiling, not the whole remaining window", async () => {
+  it.each([
+    { callerBound: undefined, expectedCap: 32_768 },
+    { callerBound: 4096, expectedCap: 4096 },
+  ])("keeps the $expectedCap ceiling on both attempts", async ({ callerBound, expectedCap }) => {
     generateTextMock.mockRejectedValueOnce(contextExceeded()).mockResolvedValueOnce({
       text: "ok",
       finalStep: { reasoningText: undefined },
       usage: { inputTokens: 1000, outputTokens: 2 },
     })
 
-    await ask("say ok", "standard", { modelObject: model, stream: false })
+    const options = { modelObject: model, stream: false, maxOutputTokens: callerBound }
+    await ask("say ok", "standard", options)
 
     expect(generateTextMock).toHaveBeenCalledTimes(2)
     expect(stderr.filter((line) => line.includes("Retrying with cap="))).toEqual([
-      expect.stringContaining("Retrying with cap=32768."),
+      expect.stringContaining(`Retrying with cap=${expectedCap}.`),
     ])
     const retryCap = generateTextMock.mock.calls[1]?.[0]?.maxOutputTokens
 
     // Unclamped this would be 1048576 − 1000 − 4096 = 1043480: the same
     // over-ask that 402s an expensive model and retired two mainstays.
     expect(retryCap).not.toBe(1_043_480)
-    expect(retryCap).toBe(32_768)
+    expect(generateTextMock.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual([expectedCap, expectedCap])
     expect(retryCap).toBeLessThanOrEqual(MAX_USEFUL_OUTPUT_TOKENS)
   })
 })
