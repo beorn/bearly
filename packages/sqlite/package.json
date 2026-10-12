@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "One shared single-statement assertion for native SQLite SQL text",
   "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git",

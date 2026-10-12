@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Pure interpretation of process argv, links, acquisition errors and descriptor outcomes",
   "license": "MIT",
+  "author": "Bjørn Stabell <bjorn@stabell.org>",
   "repository": {
     "type": "git",
     "url": "https://github.com/beorn/bearly.git",
