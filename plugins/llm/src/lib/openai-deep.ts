@@ -49,6 +49,8 @@ function resolveApiModelId(model: Model): string {
 export interface DeepResearchOptions {
   topic: string
   model: Model
+  /** Optional caller ceiling; intersected with model and context limits. */
+  maxOutputTokens?: number
   stream?: boolean
   onToken?: (token: string) => void
   /** Use background mode for resilience (default: true for streaming) */
@@ -79,6 +81,8 @@ export interface DeepResearchOptions {
 export interface BackgroundQueryOptions {
   prompt: string
   model: Model
+  /** Optional caller ceiling; intersected with model and context limits. */
+  maxOutputTokens?: number
   /** Topic line stored with the partial for recovery UIs (default: first 80 chars of prompt). */
   topic?: string
   /**
@@ -137,8 +141,27 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
   const { topic, model, stream = false, onToken, noPersist = false, context } = options
   const background = options.background ?? stream
   const startTime = Date.now()
-  const openai = getClient()
   const researchPrompt = buildResearchPrompt(topic, context)
+  let maxOutputTokens: number | undefined
+  if (options.maxOutputTokens !== undefined) {
+    try {
+      const { computeMaxOutputTokens } = await import("./research")
+      maxOutputTokens = computeMaxOutputTokens(
+        model,
+        [{ role: "user", content: researchPrompt }],
+        undefined,
+        options.maxOutputTokens,
+      )
+    } catch (error) {
+      return {
+        model,
+        content: "",
+        durationMs: Date.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+  const openai = getClient()
 
   try {
     // Non-background path: single synchronous create. Used when caller explicitly
@@ -148,6 +171,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       const response = await openai.responses.create({
         model: resolveApiModelId(model),
         input: researchPrompt,
+        ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
         tools: [{ type: "web_search_preview" }],
         background: false,
       })
@@ -172,6 +196,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     const initialResponse = await openai.responses.create({
       model: resolveApiModelId(model),
       input: researchPrompt,
+      ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
       tools: [{ type: "web_search_preview" }],
       stream: false,
       background: true,
@@ -297,6 +322,25 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
 export async function queryOpenAIBackground(options: BackgroundQueryOptions): Promise<ModelResponse> {
   const { prompt, model, onToken, noPersist = false } = options
   const startTime = Date.now()
+  let maxOutputTokens: number | undefined
+  if (options.maxOutputTokens !== undefined) {
+    try {
+      const { computeMaxOutputTokens } = await import("./research")
+      maxOutputTokens = computeMaxOutputTokens(
+        model,
+        [{ role: "user", content: prompt }],
+        undefined,
+        options.maxOutputTokens,
+      )
+    } catch (error) {
+      return {
+        model,
+        content: "",
+        durationMs: Date.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
   const openai = getClient()
   const topic = options.topic ?? prompt.slice(0, 80)
 
@@ -307,6 +351,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     const initialResponse = await openai.responses.create({
       model: resolveApiModelId(model),
       input: prompt,
+      ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
       stream: false,
       background: true,
       store: true,

@@ -28,6 +28,8 @@ function getApiKey(): string {
 }
 
 export interface GeminiDeepResearchOptions {
+  /** Explicit bounds are refused until the agent API supports an output ceiling. */
+  maxOutputTokens?: number
   topic: string
   model: Model
   stream?: boolean
@@ -143,6 +145,16 @@ Please provide:
 5. Sources and references (if available)`
 
   try {
+    if (options.maxOutputTokens !== undefined) {
+      const { computeMaxOutputTokens } = await import("./research")
+      computeMaxOutputTokens(model, [{ role: "user", content: researchPrompt }], undefined, options.maxOutputTokens)
+      // Interactions generation_config.max_output_tokens applies only to model
+      // interactions; Deep Research uses agent and has no verified output bound.
+      // https://ai.google.dev/api/interactions-api
+      throw new Error(
+        `${model.displayName} (${model.modelId}): Gemini Deep Research agent cannot honor maxOutputTokens=${options.maxOutputTokens}; request refused before dispatch.`,
+      )
+    }
     // Streaming is disabled pending verification of the SSE event shape.
     // The current parser speculates on `content.delta` / `delta.text`, which
     // don't match the Gemini Interactions API (that API emits {candidates:[…]}

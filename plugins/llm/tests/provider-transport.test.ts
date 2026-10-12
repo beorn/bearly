@@ -111,6 +111,64 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(totalResponseCost([response])).toBe((20 * 0.2 + 12 * 0.5) / 1_000_000)
   })
 
+  // Native HTTP adapters have independent serialization/refusal risks from AI SDK transports.
+  it.each([
+    [4096, 4096],
+    [100000, 65536],
+    [undefined, undefined],
+  ])("maps Ollama explicit bound %s without inventing an unbounded default", async (maxOutputTokens, expected) => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ message: { content: "answer" } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const { ollamaChat } = await import("../src/lib/ollama")
+    const response = await ollamaChat({ model: "local-test", question: "probe", stream: false, maxOutputTokens })
+    expect(response.content).toBe("answer")
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      options?: { num_predict: number }
+    }
+    if (maxOutputTokens === undefined) expect(body).not.toHaveProperty("options")
+    else expect(body.options?.num_predict).toBe(expected)
+  })
+
+  it.each([0, 1.5, Number.NaN])("refuses invalid bound %s before native HTTP dispatch", async (maxOutputTokens) => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    const { ollamaChat } = await import("../src/lib/ollama")
+    const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
+    const { getModel } = await import("../src/lib/types")
+    const responses = [
+      await ollamaChat({ model: "local-test", question: "probe", maxOutputTokens }),
+      await queryGeminiDeepResearch({
+        topic: "probe",
+        model: getModel("deep-research-pro-preview-12-2025")!,
+        maxOutputTokens,
+      }),
+    ]
+    for (const response of responses) expect(response.error).toContain("positive safe integer")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("refuses a Gemini agent bound that the API cannot honor before spending", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
+    const { getModel } = await import("../src/lib/types")
+    const response = await queryGeminiDeepResearch({
+      topic: "probe",
+      model: getModel("deep-research-pro-preview-12-2025")!,
+      maxOutputTokens: 4096,
+    })
+    expect(response.error).toContain("deep-research-pro-preview-12-2025")
+    expect(response.error).toContain("4096")
+    expect(response.error).toContain("cannot honor")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it("requests xAI usage for streams and preserves its billed totals", async () => {
     const env = makeTestEnv()
     vi.stubEnv("LLM_NO_ENV_AUTOLOAD", "1")

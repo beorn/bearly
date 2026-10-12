@@ -99,6 +99,8 @@ export function parseOllamaModel(modelString: string): Model {
 }
 
 export interface OllamaChatOptions {
+  /** Optional caller ceiling; sent as Ollama num_predict. */
+  maxOutputTokens?: number
   model: string
   question: string
   systemPrompt?: string
@@ -142,10 +144,25 @@ export async function ollamaChat(options: OllamaChatOptions): Promise<ModelRespo
   }
 
   try {
+    let maxOutputTokens: number | undefined
+    if (options.maxOutputTokens !== undefined) {
+      const { computeMaxOutputTokens } = await import("./research")
+      maxOutputTokens = computeMaxOutputTokens(
+        ollamaModel,
+        messages as Array<{ role: string; content: unknown }>,
+        undefined,
+        options.maxOutputTokens,
+      )
+    }
     const resp = await fetch(`${host}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages, stream }),
+      body: JSON.stringify({
+        model,
+        messages,
+        stream,
+        ...(maxOutputTokens === undefined ? {} : { options: { num_predict: maxOutputTokens } }),
+      }),
       signal: abortSignal,
     })
 

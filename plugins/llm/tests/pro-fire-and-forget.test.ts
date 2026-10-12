@@ -73,6 +73,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
       prompt: "say hi",
       model: gptPro,
       topic: "greeting",
+      maxOutputTokens: 4096,
     })
 
     expect(result.responseId).toBe(responseId)
@@ -94,6 +95,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     // a mid-call crash loses the work.
     const createArgs = responsesCreateMock.mock.calls[0]![0]
     expect(createArgs.background).toBe(true)
+    expect(createArgs.max_output_tokens).toBe(4096)
     // The string sent to OpenAI is resolved via the endpoint's apiModelId —
     // our internal SKU "gpt-5.4-pro" maps to OpenAI's API ID "gpt-5-pro".
     // (See PROVIDER_ENDPOINTS in types.ts.)
@@ -101,6 +103,48 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     // Responses-API background path should NOT inject the web_search_preview
     // tool — that's for deep research only. Standard pro is a plain completion.
     expect(createArgs.tools).toBeUndefined()
+  })
+
+  // Dedicated deep research adds a wrapper that consumes the same context budget as the topic.
+  it.each([false, true])("budgets the actual deep prompt for background=%s", async (background) => {
+    makeTestEnv()
+    responsesCreateMock.mockResolvedValueOnce({ id: "resp_deep_bound", output: [] })
+    vi.resetModules()
+    const { queryOpenAIDeepResearch } = await import("../src/lib/openai-deep")
+    const { getModel } = await import("../src/lib/types")
+    const model = {
+      ...getModel("o3-deep-research-2025-06-26")!,
+      reasoning: { contextWindow: 5000, maxOutputTokens: 4000 },
+    }
+    await queryOpenAIDeepResearch({
+      topic: "probe",
+      model,
+      background,
+      fireAndForget: true,
+      noPersist: true,
+      maxOutputTokens: 3000,
+    })
+    const args = responsesCreateMock.mock.calls[0]![0]
+    // Literal independent budget: context less actual serialized prompt estimate and safety margin.
+    expect(args.max_output_tokens).toBe(5000 - Math.ceil(args.input.length / 3.5) - 4096)
+  })
+
+  it.each([0, 1.5, Number.NaN])("refuses invalid native bound %s before OpenAI dispatch", async (maxOutputTokens) => {
+    makeTestEnv()
+    vi.resetModules()
+    const { queryOpenAIBackground, queryOpenAIDeepResearch } = await import("../src/lib/openai-deep")
+    const { getModel } = await import("../src/lib/types")
+    for (const result of [
+      await queryOpenAIBackground({ prompt: "probe", model: getModel("gpt-5.4-pro")!, maxOutputTokens }),
+      await queryOpenAIDeepResearch({
+        topic: "probe",
+        model: getModel("o3-deep-research-2025-06-26")!,
+        maxOutputTokens,
+      }),
+    ]) {
+      expect(result.error).toContain("positive safe integer")
+    }
+    expect(responsesCreateMock).not.toHaveBeenCalled()
   })
 
   it("fire-and-forget returns empty content + responseId, keeps partial on disk", async () => {
@@ -126,6 +170,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     expect(result.content).toBe("")
     // Poll must NOT run in fire-and-forget mode — otherwise we'd block on it.
     expect(responsesRetrieveMock).not.toHaveBeenCalled()
+    expect(responsesCreateMock.mock.calls[0]![0]).not.toHaveProperty("max_output_tokens")
 
     // The partial must be on disk so `bun llm recover <id>` finds it later.
     const partial = findPartialByResponseId(responseId)
