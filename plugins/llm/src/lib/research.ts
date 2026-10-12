@@ -99,6 +99,8 @@ export interface QueryOptions {
   imagePath?: string
   /** AbortSignal to cancel the request */
   abortSignal?: AbortSignal
+  /** Per-call output ceiling; can only lower the model's existing limits. */
+  maxOutputTokens?: number
   /** Explicit provider-evidence sink. `null` intentionally disables recording. */
   observationStore?: ProviderObservationStore | null
 }
@@ -195,12 +197,20 @@ export function computeMaxOutputTokens(
   model: Model,
   messages: Array<{ role: string; content: unknown }>,
   instructions?: string,
+  callerBound?: number,
 ): number | undefined {
   const reasoning = model.reasoning
-  if (!reasoning) return undefined
   const bounds: number[] = []
-  if (reasoning.maxOutputTokens !== undefined) bounds.push(reasoning.maxOutputTokens)
-  if (reasoning.contextWindow) {
+  if (callerBound !== undefined) {
+    if (!Number.isSafeInteger(callerBound) || callerBound <= 0) {
+      throw new Error(
+        `${model.displayName} (${model.modelId}): maxOutputTokens must be a positive safe integer; received ${callerBound}.`,
+      )
+    }
+    bounds.push(callerBound)
+  }
+  if (reasoning?.maxOutputTokens !== undefined) bounds.push(reasoning.maxOutputTokens)
+  if (reasoning?.contextWindow) {
     // 4096-token safety margin (2× the old value). The prior 2048 margin
     // was overrun by ~45 tokens in a 2026-04-20 review when the estimator
     // under-counted code-heavy content by 7%. Even with the tightened
@@ -486,7 +496,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const hasProviderOptions = Object.keys(providerOptions).length > 0
 
   try {
-    maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt)
+    maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt, options.maxOutputTokens)
     if (stream && onToken) {
       // `streamText` does NOT throw on a provider error mid-stream — it ends
       // `textStream` empty and forwards the error to `onError` (whose default
@@ -579,6 +589,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         model.reasoning.contextWindow - capInfo.realInputTokens - SAFETY,
         model.reasoning.maxOutputTokens ?? Number.POSITIVE_INFINITY,
         MAX_USEFUL_OUTPUT_TOKENS,
+        options.maxOutputTokens ?? Number.POSITIVE_INFINITY,
       )
       if (correctedCap > 1024) {
         console.error(
@@ -687,6 +698,8 @@ export async function ask(
     imagePath?: string
     /** Abort signal for cooperative cancellation (e.g. dual-pro wall-clock timeout) */
     abortSignal?: AbortSignal
+    /** Per-call output ceiling, intersected with the selected model's limits. */
+    maxOutputTokens?: number
   } = {},
 ): Promise<ModelResponse> {
   // Get model for level, or use override
@@ -714,6 +727,7 @@ export async function ask(
     onToken: options.onToken,
     imagePath: options.imagePath,
     abortSignal: options.abortSignal,
+    maxOutputTokens: options.maxOutputTokens,
   })
 
   return result.response

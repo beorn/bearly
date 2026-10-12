@@ -104,6 +104,7 @@ export async function runProDual(options: {
   extraExclude?: readonly string[]
   /** Resolve and print the dual-pro fleet without provider calls or writes. */
   dryRun?: boolean
+  maxOutputTokens?: number
 }): Promise<void> {
   const {
     question,
@@ -138,6 +139,7 @@ export async function runProDual(options: {
       modelOverride,
       imagePath,
       streamToken: options.streamToken,
+      maxOutputTokens: options.maxOutputTokens,
       buildContext,
       outputFile,
       sessionTag,
@@ -446,7 +448,8 @@ export async function runProDual(options: {
           abortSignal,
         })
       : ask(enrichedQuestion, "standard", {
-          modelOverride: m.modelId,
+          modelObject: m,
+          maxOutputTokens: options.maxOutputTokens,
           stream: false,
           imagePath,
           abortSignal,
@@ -662,7 +665,11 @@ export async function runProDual(options: {
         })
         try {
           const askJudge = async (text: string) => {
-            const raw = await ask(text, "quick", { modelOverride: judgeModel.modelId, stream: false })
+            const raw = await ask(text, "quick", {
+              modelObject: judgeModel,
+              maxOutputTokens: options.maxOutputTokens,
+              stream: false,
+            })
             const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
             const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
             return { raw, cost, parsed }

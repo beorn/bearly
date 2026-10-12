@@ -121,6 +121,7 @@ const VALUE_FLAGS = [
   "--sample",
   "--limit",
   "--legs",
+  "--max-output-tokens",
 ]
 
 /**
@@ -218,6 +219,14 @@ setJsonMode(hasFlag("--json"))
 // username/hostname/project hashes into CI logs and log aggregators.
 // See km-bearly.llm-path-leakage.
 setFullPaths(hasFlag("--full-paths"))
+const outputBudgetArg = getArg("--max-output-tokens")
+const maxOutputTokens = outputBudgetArg === undefined ? undefined : Number(outputBudgetArg)
+if (
+  (hasFlag("--max-output-tokens") || args.some((arg) => arg.startsWith("--max-output-tokens="))) &&
+  (maxOutputTokens === undefined || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0)
+) {
+  error(`--max-output-tokens requires a positive safe integer; received ${outputBudgetArg ?? "no value"}.`)
+}
 const streamToken = createStreamToken(hasFlag("--verbose"))
 
 /**
@@ -566,6 +575,7 @@ function askOpts(
     // The runtime quota cache (~/.cache/bearly-llm/last-quota-by-provider.json)
     // is updated regardless — `bun llm quota` always sees fresh fallback data.
     includeQuota: hasFlag("--quota"),
+    maxOutputTokens,
     dryRun: hasFlag("--dry-run"),
   }
 }
@@ -811,6 +821,7 @@ export async function main(): Promise<string | undefined> {
         legs: legs != null && Number.isFinite(legs) ? legs : undefined,
         extraExclude: excludeArgs,
         challengerOverride: getArg("--challenger"),
+        maxOutputTokens,
         dryRun: hasFlag("--dry-run"),
         buildContext: (topic: string) => buildContextFromFlags(topic, { includeBead: true }),
       })

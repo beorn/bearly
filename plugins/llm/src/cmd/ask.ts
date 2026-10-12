@@ -27,6 +27,7 @@ export async function askAndFinish(options: {
    *  under `quota`. Cache update is unconditional regardless of this flag. */
   includeQuota?: boolean
   dryRun?: boolean
+  maxOutputTokens?: number
 }): Promise<void> {
   const {
     question,
@@ -116,8 +117,8 @@ export async function askAndFinish(options: {
             abortSignal: signal,
           })
         : ask(enrichedQuestion, level, {
-            modelOverride: model.provider !== "ollama" ? model.modelId : undefined,
-            modelObject: model.provider === "ollama" ? model : undefined,
+            modelObject: model,
+            maxOutputTokens: options.maxOutputTokens,
             stream: true,
             onToken: streamToken,
             imagePath,
