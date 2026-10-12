@@ -352,6 +352,11 @@ export async function finalizeOutput(
   emitJson(envelope)
 }
 
+/** Quote one argument for a POSIX shell, including embedded apostrophes. */
+export function quotePosixArgument(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'"
+}
+
 /** Render one targeted retry using the CLI's parsed invocation, when affordable. */
 export function formatBudgetRetry(
   error: string | undefined,

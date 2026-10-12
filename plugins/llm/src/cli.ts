@@ -38,7 +38,7 @@ import {
   runRecover,
   runAwait,
 } from "./lib/dispatch"
-import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/format"
+import { buildOutputPath, formatRelativeTime, createStreamToken, quotePosixArgument } from "./lib/format"
 import { setJsonMode, setFullPaths, emitJson } from "./lib/output-mode"
 
 import { existsSync, readdirSync, statSync, unlinkSync } from "fs"
@@ -558,7 +558,6 @@ RECOVERY (for interrupted deep research)
 /** Keep the original parsed context and image inputs while retrying one model. */
 function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
   return (model: string, bound: number, retryInstruction?: string, savedReport?: string): string => {
-    const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'"
     const entry =
       process.argv[1] && existsSync(resolve(process.argv[1]))
         ? resolve(process.argv[1])
@@ -590,7 +589,7 @@ function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
     }
     if (savedReport) command.push("--context-file", savedReport)
     command.push(retryInstruction ?? question)
-    return command.map(quote).join(" ")
+    return command.map(quotePosixArgument).join(" ")
   }
 }
 

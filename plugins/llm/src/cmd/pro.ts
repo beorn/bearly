@@ -117,7 +117,7 @@ export async function runProDual(options: {
     skipConfirm,
     dryRun = false,
   } = options
-  const { finalizeOutput, formatBudgetRetry } = await import("../lib/format")
+  const { finalizeOutput, formatBudgetRetry, quotePosixArgument } = await import("../lib/format")
   const dualPro = await import("../lib/dual-pro")
 
   // Explicit --model override bypasses dual mode entirely.
@@ -1097,7 +1097,6 @@ export async function runProDual(options: {
     const judgeState = options.noJudge
       ? "waived"
       : `${judgeReturned.length}/${judgeRequired.length} pairs; failed=${judgeFailed.map((pair) => pair.pair).join(",") || "none"}`
-    const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
     const budgetFlag = options.maxOutputTokens === undefined ? "" : ` --max-output-tokens ${options.maxOutputTokens}`
     const judgeBudgetFollowUps = judgeFailed.flatMap((pair) => {
       const model = getModel(cfg.judge)
@@ -1121,14 +1120,14 @@ export async function runProDual(options: {
                 const affordable = failure.retryOutputTokens
                 if (affordable === undefined) return `${leg.model}: ${failure.remedy}`
                 if (options.retryCommand) return options.retryCommand(leg.model, affordable)
-                return `llm pro --model ${quote(leg.model)} --max-output-tokens ${affordable} --context-file ${quote(outputFile)} ${quote(question)}`
+                return `llm pro --model ${quotePosixArgument(leg.model)} --max-output-tokens ${affordable} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(question)}`
               }
-              return `llm pro --model ${quote(leg.model)}${budgetFlag} --context-file ${quote(outputFile)} ${quote(question)}`
+              return `llm pro --model ${quotePosixArgument(leg.model)}${budgetFlag} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(question)}`
             })
             .join(" ; ")
         : judgeBudgetFollowUps.length > 0
           ? judgeBudgetFollowUps.join(" ; ")
-          : `llm --ask --model ${quote(cfg.judge)}${budgetFlag} --context-file ${quote(outputFile)} ${quote(`Judge only missing pairs ${judgeFailed.map((pair) => pair.pair).join(", ")} from the saved opinions. For each pair return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`)}`
+          : `llm --ask --model ${quotePosixArgument(cfg.judge)}${budgetFlag} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(`Judge only missing pairs ${judgeFailed.map((pair) => pair.pair).join(", ")} from the saved opinions. For each pair return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`)}`
     console.error(
       `[dual-pro] ${status}: ${okLegs.length}/${requestedSlots.length} returned; missing=${missing}; judge=${judgeState}; report=${outputFile}; follow-up=${followUp}; do not rerun the whole paid panel`.replace(
         /\s*\n\s*/g,
