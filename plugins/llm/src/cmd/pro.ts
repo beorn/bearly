@@ -105,7 +105,7 @@ export async function runProDual(options: {
   /** Resolve and print the dual-pro fleet without provider calls or writes. */
   dryRun?: boolean
   maxOutputTokens?: number
-  retryCommand?: (model: string, bound: number, dispatchPrompt?: string) => string
+  retryCommand?: (model: string, bound: number, retryInstruction?: string, savedReport?: string) => string
 }): Promise<void> {
   const {
     question,
@@ -683,7 +683,15 @@ export async function runProDual(options: {
               raw.error = formatBudgetRetry(
                 raw.error,
                 judgeModel,
-                retry ? (model, bound) => retry(model, bound, text) : undefined,
+                retry
+                  ? (model, bound) =>
+                      retry(
+                        model,
+                        bound,
+                        `Judge only pair ${pairId} (${judgeAnchor.model.displayName} versus ${contender.model.displayName}) from the saved opinions. Return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`,
+                        outputFile,
+                      )
+                  : undefined,
               )
             }
             const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
@@ -1110,8 +1118,8 @@ export async function runProDual(options: {
               const outcome = legOutcomes.find((item) => item.id === leg.slot)
               const failure = outcome?.error ? describeDispatchFailure(outcome.error, outcome.model) : undefined
               if (failure?.kind === "output-budget") {
-                const affordable = failure.affordableOutputTokens
-                if (affordable === undefined || affordable < 2048) return `${leg.model}: ${failure.remedy}`
+                const affordable = failure.retryOutputTokens
+                if (affordable === undefined) return `${leg.model}: ${failure.remedy}`
                 if (options.retryCommand) return options.retryCommand(leg.model, affordable)
                 return `llm pro --model ${quote(leg.model)} --max-output-tokens ${affordable} --context-file ${quote(outputFile)} ${quote(question)}`
               }

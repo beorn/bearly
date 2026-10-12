@@ -75,6 +75,7 @@ describe("22972 — a 402 is an output-budget refusal, never a credentials one",
     const result = describeDispatchFailure(error, target)
     expect(result.message).toMatch(/account.balance/i)
     expect(result.message).toContain(String(affordable))
+    expect(result.retryOutputTokens).toBe(affordable >= 2048 ? affordable : undefined)
     if (affordable >= 2048) expect(result.remedy).toContain(`--max-output-tokens ${affordable}`)
     else {
       expect(result.message).toContain("2048")

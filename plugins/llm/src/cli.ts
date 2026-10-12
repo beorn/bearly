@@ -557,7 +557,7 @@ RECOVERY (for interrupted deep research)
 
 /** Keep the original parsed context and image inputs while retrying one model. */
 function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
-  return (model: string, bound: number, dispatchPrompt?: string): string => {
+  return (model: string, bound: number, retryInstruction?: string, savedReport?: string): string => {
     const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'"
     const entry =
       process.argv[1] && existsSync(resolve(process.argv[1]))
@@ -566,15 +566,13 @@ function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
     const command = [
       process.execPath,
       entry,
-      dispatchPrompt !== undefined || mode === "ask" ? "--ask" : mode === "deep" ? "--deep" : "pro",
+      retryInstruction !== undefined || mode === "ask" ? "--ask" : mode === "deep" ? "--deep" : "pro",
       "--model",
       model,
       "--max-output-tokens",
       String(bound),
     ]
-    for (const flag of dispatchPrompt === undefined
-      ? ["--context", "--context-file", "--image", "--bead", "--output"]
-      : []) {
+    for (const flag of retryInstruction === undefined ? ["--context", "--context-file", "--image", "--bead"] : []) {
       for (const value of getAllArgs(flag)) command.push(flag, value)
     }
     for (const flag of [
@@ -590,7 +588,8 @@ function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
     ]) {
       if (hasFlag(flag)) command.push(flag)
     }
-    command.push(dispatchPrompt ?? question)
+    if (savedReport) command.push("--context-file", savedReport)
+    command.push(retryInstruction ?? question)
     return command.map(quote).join(" ")
   }
 }

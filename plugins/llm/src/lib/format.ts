@@ -360,14 +360,10 @@ export function formatBudgetRetry(
 ): string | undefined {
   if (!error || !model.provider || !model.modelId || !retryCommand) return error
   const failure = describeDispatchFailure(error, { provider: model.provider, modelId: model.modelId })
-  if (
-    failure.kind !== "output-budget" ||
-    failure.affordableOutputTokens === undefined ||
-    failure.affordableOutputTokens < 2048
-  ) {
+  if (failure.kind !== "output-budget" || failure.retryOutputTokens === undefined) {
     return error
   }
-  return `${failure.message} Run: ${retryCommand(model.modelId, failure.affordableOutputTokens)}`
+  return `${failure.message} Run: ${retryCommand(model.modelId, failure.retryOutputTokens)}`
 }
 
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */

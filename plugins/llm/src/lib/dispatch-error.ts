@@ -13,6 +13,8 @@ export type DispatchFailureKind =
   | "context-length"
   | "unknown"
 
+export const MIN_USEFUL_OUTPUT_TOKENS = 2048
+
 export interface DispatchFailureDescription {
   kind: DispatchFailureKind
   scope: "provider" | "model" | "call"
@@ -20,6 +22,7 @@ export interface DispatchFailureDescription {
   remedy?: string
   requestedOutputTokens?: number
   affordableOutputTokens?: number
+  retryOutputTokens?: number
   retryAt?: number
   observation?: ProviderObservation
 }
@@ -219,7 +222,10 @@ function classifyDispatchFailure(
   // Scope is "call", deliberately: the same credential and route serve every
   // other model in the same dispatch, so this must never mark the PROVIDER
   // refusing. It is a property of this request's parameters. Bead 22972.
-  if (responseStatus === 402 || /requires more credits|can only afford|fewer max_tokens/iu.test(blob)) {
+  if (
+    responseStatus === 402 ||
+    /requires more credits|can only afford|fewer max_tokens|account-balance limit/iu.test(blob)
+  ) {
     const requestedText = /(?:requested up to|asked for) (\d+)(?: output)? tokens/iu.exec(blob)?.[1]
     const affordableText = /(?:can only afford|balance covers) (\d+)/iu.exec(blob)?.[1]
     const requested = requestedText === undefined ? undefined : Number(requestedText)
@@ -231,17 +237,20 @@ function classifyDispatchFailure(
     const who = target.modelId
       ? `${providerDisplayName(target.provider)} (${target.modelId})`
       : providerDisplayName(target.provider)
+    const retryOutputTokens =
+      affordable !== undefined && affordable >= MIN_USEFUL_OUTPUT_TOKENS ? affordable : undefined
     const remedy =
-      affordable !== undefined && affordable >= 2048
-        ? `Retry only this call with --max-output-tokens ${affordable} (library: maxOutputTokens: ${affordable}).`
+      retryOutputTokens !== undefined
+        ? `Retry only this call with --max-output-tokens ${retryOutputTokens} (library: maxOutputTokens: ${retryOutputTokens}).`
         : affordable !== undefined
-          ? `The affordable output count is below the useful floor of 2048 tokens; no useful smaller retry is available.`
+          ? `The affordable output count is below the useful floor of ${MIN_USEFUL_OUTPUT_TOKENS} tokens; no useful smaller retry is available.`
           : `An affordable output count was not supplied; no exact smaller retry can be calculated.`
     return {
       kind: "output-budget",
       scope: "call",
       requestedOutputTokens: requested,
       affordableOutputTokens: affordable,
+      retryOutputTokens,
       message: `${who} refused this call's output reservation (402) because of the account-balance limit — NOT a credentials problem.${amounts} ${remedy}`,
       remedy,
     }

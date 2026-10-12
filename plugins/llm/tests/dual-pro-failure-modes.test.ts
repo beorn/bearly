@@ -23,7 +23,8 @@
 import { describe, it, expect, vi } from "vitest"
 import { readFileSync, existsSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { makeTestEnv } from "./helpers"
+import { makeTestEnv, runCli } from "./helpers"
+import { execFileSync } from "node:child_process"
 import type { ModelResponse } from "../src/lib/types"
 
 const generateTextMock = vi.fn()
@@ -81,6 +82,67 @@ async function runDualPro(outputFile?: string, maxOutputTokens?: number) {
 }
 
 describe("dual-pro failure modes", () => {
+  /** @failure A targeted retry overwrites the paid panel, or puts long opinions in argv.
+   * @level l1 @consumer Callers recovering one affordable Pro leg or judge pair. */
+  it.each(["opinion", "judge"] as const)("preserves the panel when executing the %s budget retry", async (refused) => {
+    const env = makeTestEnv()
+    process.env.LLM_JUDGE_MODEL = "gemini-3-flash-preview"
+    const outputFile = join(env.tmpDir, "original's panel.txt")
+    const firstOpinion = "SURVIVING_FIRST_OPINION " + "a".repeat(70000)
+    const secondOpinion = "SURVIVING_SECOND_OPINION " + "b".repeat(70000)
+    queryBackgroundMock.mockReset().mockResolvedValue({
+      model: { displayName: "GPT-5.4 Pro" },
+      content: firstOpinion,
+      responseId: "resp_preserved",
+      durationMs: 10,
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+    })
+    const refusal = Object.assign(new Error("You requested up to 65536 tokens, but can only afford 2048."), {
+      statusCode: 402,
+    })
+    generateTextMock.mockReset()
+    if (refused === "judge") {
+      generateTextMock.mockResolvedValueOnce({
+        text: secondOpinion,
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 10, outputTokens: 20 },
+      })
+    }
+    generateTextMock.mockRejectedValue(refusal)
+    await runDualPro(outputFile)
+    const original = readFileSync(outputFile)
+    expect(original.toString()).toContain("SURVIVING_FIRST_OPINION")
+    const followUpLine = env.stderr.find((line) => line.includes("follow-up="))
+    if (!followUpLine) throw new Error("Pro did not emit a targeted follow-up")
+    expect(env.stderr.join("\n")).toContain("account-balance")
+    expect(followUpLine).toContain("2048")
+    const retry = /follow-up=(.*); do not rerun/.exec(followUpLine)?.[1]
+    if (!retry) throw new Error("Pro follow-up did not include its runnable retry")
+    const argv = execFileSync("bash", ["-c", `set -- ${retry}; printf '%s\\0' "$@"`])
+      .toString()
+      .split("\0")
+      .filter(Boolean)
+    expect(argv).not.toContain("--output")
+    expect(argv.every((arg) => Buffer.byteLength(arg) < 32768)).toBe(true)
+    if (refused === "judge") {
+      expect(argv).toContain("--context-file")
+      expect(argv).toContain(outputFile)
+      expect(argv.at(-1)).toMatch(/pair.*ab|pairs.*ab/)
+      expect(argv.at(-1)).toContain("Rubric:")
+      expect(argv.at(-1)).not.toContain("SURVIVING_FIRST_OPINION")
+    }
+    streamTextMock.mockReset().mockImplementation(() => ({
+      textStream: (async function* () {
+        yield "recovered opinion or judge"
+      })(),
+      finalStep: Promise.resolve({ response: undefined }),
+      usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+    }))
+    await runCli(argv.slice(2))
+    expect(streamTextMock.mock.calls.at(-1)![0].maxOutputTokens).toBe(2048)
+    expect(readFileSync(outputFile)).toEqual(original)
+  })
+
   it("empty-content from GPT side is surfaced as failure", async () => {
     const env = makeTestEnv()
 

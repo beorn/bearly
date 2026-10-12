@@ -17,7 +17,7 @@
 
 import { describe, it, expect, vi } from "vitest"
 import { execFileSync } from "node:child_process"
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { listLlmTmpFiles, makeTestEnv, runCli } from "./helpers"
 
@@ -143,8 +143,19 @@ describe("cli-single-fire", () => {
     streamTextMock.mockImplementationOnce(() => {
       throw Object.assign(new Error("You requested up to 65536 tokens, but can only afford 2048."), { statusCode: 402 })
     })
+    const outputFile = join(env.tmpDir, "original report.txt")
     const question = "What is this person's image?"
-    await runCli(["--model", "google/gemini-2.5-pro", "--context-file", contextFile, "--image", imageFile, question])
+    await runCli([
+      "--model",
+      "google/gemini-2.5-pro",
+      "--context-file",
+      contextFile,
+      "--image",
+      imageFile,
+      "--output",
+      outputFile,
+      question,
+    ])
     const envelope = env.stdout
       .filter((line) => line.trimStart().startsWith("{"))
       .map((line) => JSON.parse(line))
@@ -165,6 +176,8 @@ describe("cli-single-fire", () => {
       .toString()
       .split("\0")
       .filter(Boolean)
+    const original = readFileSync(outputFile)
+    expect(argv).not.toContain("--output")
     expect(argv[1]).toMatch(/cli\.ts$/)
     expect(argv).toContain(question)
     expect(argv).toContain(contextFile)
@@ -172,6 +185,7 @@ describe("cli-single-fire", () => {
     await runCli(argv.slice(2))
     expect(streamTextMock.mock.calls.at(-1)![0].maxOutputTokens).toBe(2048)
     expect(JSON.stringify(streamTextMock.mock.calls.at(-1)![0].messages)).toContain("keep this context")
+    expect(readFileSync(outputFile)).toEqual(original)
   })
 
   /**
