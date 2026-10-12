@@ -94,6 +94,49 @@ function lastRunProDualArgs(): Record<string, any> | undefined {
 }
 
 describe("cli argv parsing", () => {
+  /**
+   * @failure A leading budget value changes command routing or leaks into the prompt.
+   * @level l1
+   * @consumer Pro callers using the spaced or equals form of a per-run limit.
+   * Provider-budget tests do not inspect the user's prompt or leading-flag routing.
+   */
+  it.each([
+    { label: "spaced", flags: ["--max-output-tokens", "4096"] },
+    { label: "equals", flags: ["--max-output-tokens=4096"] },
+  ])("consumes the $label output budget before the command", async ({ flags }) => {
+    makeTestEnv()
+    mockOk()
+
+    await runWithArgv([...flags, "pro", "-y", "one opinion"])
+
+    expect(runProDualMock).toHaveBeenCalledOnce()
+    expect(lastRunProDualArgs()).toMatchObject({ question: "one opinion", maxOutputTokens: 4096 })
+    expect(askAndFinishMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * @failure An invalid output bound is ignored and a paid dispatch can start.
+   * @level l1
+   * @consumer CLI callers relying on a positive safe-integer reservation bound.
+   * Successful argv-routing cases do not prove rejection before dispatch.
+   */
+  it.each([
+    { label: "nonpositive", value: ["0"] },
+    { label: "fractional", value: ["1.5"] },
+    { label: "unsafe integer", value: ["9007199254740992"] },
+    { label: "missing", value: [] },
+  ])("rejects $label output budget before dispatch", async ({ value }) => {
+    const env = makeTestEnv()
+    mockOk()
+
+    await runWithArgv(["--model", "google/gemini-2.5-pro", "answer", "--max-output-tokens", ...value])
+
+    expect(env.exitCodes).toEqual([1])
+    expect(env.stderr.join("\n")).toContain("--max-output-tokens")
+    expect(askAndFinishMock).not.toHaveBeenCalled()
+    expect(runProDualMock).not.toHaveBeenCalled()
+  })
+
   it("--image VALUE does not leak into the user prompt", async () => {
     const env = makeTestEnv()
     // cli.ts calls existsSync() on --image path; create a real file so the

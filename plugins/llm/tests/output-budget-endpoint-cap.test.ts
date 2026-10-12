@@ -47,7 +47,7 @@ const target = {
 }
 
 describe("22972 — a 402 is an output-budget refusal, never a credentials one", () => {
-  it("never blames the credential, and names the parameter to change", () => {
+  it("names a supported smaller-budget option without a credit or auth remedy", () => {
     const described = describeDispatchFailure(creditReservation402(), target)
 
     // The whole point: this message existed to stop saying "check the key".
@@ -57,7 +57,10 @@ describe("22972 — a 402 is an output-budget refusal, never a credentials one",
     expect(described.kind).toBe("output-budget")
     expect(described.message).toMatch(/NOT a credentials problem/iu)
     expect(described.message).toMatch(/maxOutputTokens/u)
-    expect(described.remedy).toMatch(/538968/u)
+    // CLI callers need the supported per-run option; a model-metadata clone
+    // was discarded by remote CLI dispatch, and topping up is outside this repair.
+    expect(described.remedy).toMatch(/--max-output-tokens\s+\d+/u)
+    expect(described.remedy).not.toMatch(/top\s*up|add\s+(?:more\s+)?credits|API_KEY|auth/iu)
     // Both numbers, so the reader can size the fix without a second round trip.
     expect(described.message).toContain("943716")
     expect(described.message).toContain("538968")
