@@ -70,6 +70,35 @@ function resetGenerateTextToOk() {
 
 describe("cli-single-fire", () => {
   /**
+   * @failure A CLI caller's smaller output budget is lost before provider dispatch.
+   * @level l1
+   * @consumer Callers fitting one remote opinion within an affordable reservation.
+   * Count/parser coverage permits a successful call that still reserves 65,536 tokens.
+   */
+  it.each([{ mode: [] }, { mode: ["pro", "-y"] }])(
+    "per-run output budget reaches the remote provider ($mode)",
+    async ({ mode }) => {
+      makeTestEnv()
+      resetGenerateTextToOk()
+
+      const result = await runCli([
+        ...mode,
+        "--model",
+        "google/gemini-2.5-pro",
+        "--max-output-tokens",
+        "4096",
+        "Give one short opinion",
+      ])
+
+      expect(result.error).toBeUndefined()
+      expect(result.exited).toBeUndefined()
+      expect(streamTextMock).toHaveBeenCalledOnce()
+      expect(streamTextMock.mock.calls[0]![0].maxOutputTokens).toBe(4096)
+    },
+    10_000,
+  )
+
+  /**
    * @failure Single-model --dry-run spends money or writes a response.
    * @level l1
    * @consumer CLI callers previewing a query before dispatch.
