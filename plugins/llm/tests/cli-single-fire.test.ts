@@ -16,6 +16,9 @@
  */
 
 import { describe, it, expect, vi } from "vitest"
+import { execFileSync } from "node:child_process"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { listLlmTmpFiles, makeTestEnv, runCli } from "./helpers"
 
 // Mock the `ai` package so generateText/streamText don't hit the network. One
@@ -97,6 +100,79 @@ describe("cli-single-fire", () => {
     },
     10_000,
   )
+
+  /** @failure Bounded cache entries bypass the caller's reservation. @level l1
+   * @consumer CLI callers repeating one prompt with different output budgets. */
+  it("separates bounded and unbounded dispatches in the actual response cache", async () => {
+    makeTestEnv()
+    process.env.LLM_NO_CACHE = ""
+    resetGenerateTextToOk()
+    const base = ["--model", "google/gemini-2.5-pro", "cache budget separation"]
+    for (const budget of [[], ["--max-output-tokens", "4096"], [], ["--max-output-tokens", "4096"]]) {
+      await runCli([...base, ...budget])
+    }
+    expect(streamTextMock).toHaveBeenCalledTimes(2)
+    expect(streamTextMock.mock.calls.map((call) => call[0].maxOutputTokens)).toEqual([65536, 4096])
+  })
+
+  /** @failure Unsupported paid admin modes silently discard a caller's bound. @level l1
+   * @consumer CLI callers enforcing a reservation ceiling. */
+  it.each(["--backtest", "--judge-history", "--discover-models"])(
+    "refuses %s with a budget before spend",
+    async (mode) => {
+      const env = makeTestEnv()
+      resetGenerateTextToOk()
+      await runCli(["pro", mode, "--max-output-tokens", "4096", "-y"])
+      expect(env.exitCodes).toEqual([1])
+      expect(env.stderr.join("\n")).toContain("4096")
+      expect(generateTextMock).not.toHaveBeenCalled()
+      expect(queryBackgroundMock).not.toHaveBeenCalled()
+    },
+  )
+
+  /** @failure An advertised retry loses original context/images or reserves too much.
+   * @level l1 @consumer CLI callers recovering one refused opinion without repeating a paid panel.
+   * Shell executes the emitted argv; successful baseline calls miss incorrect quoting. */
+  it("executes the emitted affordable retry with original quoted inputs", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const contextFile = join(env.tmpDir, "context's file.txt")
+    const imageFile = join(env.tmpDir, "image's file.png")
+    writeFileSync(contextFile, "keep this context")
+    writeFileSync(imageFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    streamTextMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error("You requested up to 65536 tokens, but can only afford 2048."), { statusCode: 402 })
+    })
+    const question = "What is this person's image?"
+    await runCli(["--model", "google/gemini-2.5-pro", "--context-file", contextFile, "--image", imageFile, question])
+    const envelope = env.stdout
+      .filter((line) => line.trimStart().startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .find(
+        (entry): entry is { status: "failed"; error: string } =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "status" in entry &&
+          entry.status === "failed" &&
+          "error" in entry &&
+          typeof entry.error === "string",
+      )
+    if (!envelope) throw new Error("CLI did not emit the expected failed envelope with a string error")
+    expect(envelope.error).toContain("Run: ")
+    const retry = envelope.error.split("Run: ")[1]
+    // The shell resolves the runnable command; the existing mock owns provider execution.
+    const argv = execFileSync("bash", ["-c", `set -- ${retry}; printf '%s\\0' "$@"`])
+      .toString()
+      .split("\0")
+      .filter(Boolean)
+    expect(argv[1]).toMatch(/cli\.ts$/)
+    expect(argv).toContain(question)
+    expect(argv).toContain(contextFile)
+    expect(argv).toContain(imageFile)
+    await runCli(argv.slice(2))
+    expect(streamTextMock.mock.calls.at(-1)![0].maxOutputTokens).toBe(2048)
+    expect(JSON.stringify(streamTextMock.mock.calls.at(-1)![0].messages)).toContain("keep this context")
+  })
 
   /**
    * @failure Single-model --dry-run spends money or writes a response.

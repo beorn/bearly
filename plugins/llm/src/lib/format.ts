@@ -1,3 +1,4 @@
+import { describeDispatchFailure } from "./dispatch-error"
 /**
  * Output formatting — file writing, result JSON, research archival, streaming.
  *
@@ -351,10 +352,34 @@ export async function finalizeOutput(
   emitJson(envelope)
 }
 
+/** Render one targeted retry using the CLI's parsed invocation, when affordable. */
+export function formatBudgetRetry(
+  error: string | undefined,
+  model: { modelId?: string; provider?: import("./types").Provider },
+  retryCommand?: (model: string, bound: number) => string,
+): string | undefined {
+  if (!error || !model.provider || !model.modelId || !retryCommand) return error
+  const failure = describeDispatchFailure(error, { provider: model.provider, modelId: model.modelId })
+  if (
+    failure.kind !== "output-budget" ||
+    failure.affordableOutputTokens === undefined ||
+    failure.affordableOutputTokens < 2048
+  ) {
+    return error
+  }
+  return `${failure.message} Run: ${retryCommand(model.modelId, failure.affordableOutputTokens)}`
+}
+
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */
 export async function finishResponse(
   content: string | undefined,
-  model: { displayName: string; inputPricePerM?: number; outputPricePerM?: number },
+  model: {
+    displayName: string
+    modelId?: string
+    provider?: import("./types").Provider
+    inputPricePerM?: number
+    outputPricePerM?: number
+  },
   outputFile: string,
   sessionTag: string,
   usage?: {
@@ -374,9 +399,10 @@ export async function finishResponse(
    *  the generic "silent failure" copy — this is the fix for the misleading
    *  empty-response message on a real provider failure. */
   error?: string,
+  retryCommand?: (model: string, bound: number) => string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
-    const providerError = error?.trim() || undefined
+    const providerError = formatBudgetRetry(error?.trim() || undefined, model, retryCommand)
     // Write error to stderr (visible in interactive mode). Lead with the real
     // provider error when we have one; only fall back to the generic
     // "empty completion" copy when the provider reported no error at all.
@@ -406,7 +432,7 @@ export async function finishResponse(
       `- **Query**: ${query ?? "(none)"}`,
       "",
       providerError
-        ? "Re-run against a different provider with --model, or resolve the issue above."
+        ? "Resolve the call failure described above."
         : "Possible causes: API timeout, content filter, rate limit, model overload. Re-run to retry.",
     ].join("\n")
 

@@ -338,6 +338,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       stream: stream ?? false,
       onToken,
       abortSignal,
+      maxOutputTokens: options.maxOutputTokens,
     })
     return finishQuery(observationStore, model, response)
   }
@@ -351,6 +352,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       onToken,
       context,
       abortSignal,
+      maxOutputTokens: options.maxOutputTokens,
     })
     return finishQuery(observationStore, model, response)
   }
@@ -364,6 +366,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       onToken,
       context,
       abortSignal,
+      maxOutputTokens: options.maxOutputTokens,
     })
     return finishQuery(observationStore, model, response)
   }
@@ -497,6 +500,21 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
 
   try {
     maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt, options.maxOutputTokens)
+    const thinking = providerOptions.anthropic?.thinking as { budgetTokens?: number } | undefined
+    if (
+      options.maxOutputTokens !== undefined &&
+      maxOutputTokens !== undefined &&
+      thinking?.budgetTokens !== undefined &&
+      thinking.budgetTokens >= maxOutputTokens
+    ) {
+      return await finishQuery(observationStore, model, {
+        model,
+        content: "",
+        durationMs: Date.now() - startTime,
+        error: `${model.displayName} (${model.modelId}) cannot apply maxOutputTokens ${options.maxOutputTokens}: effective output bound ${maxOutputTokens} must exceed the configured reasoning budget ${thinking.budgetTokens}; refusing before dispatch.`,
+      })
+    }
+
     if (stream && onToken) {
       // `streamText` does NOT throw on a provider error mid-stream — it ends
       // `textStream` empty and forwards the error to `onError` (whose default
@@ -591,6 +609,19 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         MAX_USEFUL_OUTPUT_TOKENS,
         options.maxOutputTokens ?? Number.POSITIVE_INFINITY,
       )
+      const thinking = providerOptions.anthropic?.thinking as { budgetTokens?: number } | undefined
+      if (
+        options.maxOutputTokens !== undefined &&
+        thinking?.budgetTokens !== undefined &&
+        thinking.budgetTokens >= correctedCap
+      ) {
+        return finishQuery(observationStore, model, {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: `${model.displayName} (${model.modelId}) cannot apply maxOutputTokens ${options.maxOutputTokens}: corrected output bound ${correctedCap} must exceed the configured reasoning budget ${thinking.budgetTokens}; refusing before retry dispatch.`,
+        })
+      }
       if (correctedCap > 1024) {
         console.error(
           `[retry] ${model.displayName} context-exceeded (estimated ${maxOutputTokens} cap, real input ${capInfo.realInputTokens}). Retrying with cap=${correctedCap}.`,
@@ -734,6 +765,7 @@ export async function ask(
 }
 
 export interface ResearchCallOptions {
+  maxOutputTokens?: number
   stream?: boolean
   onToken?: (token: string) => void
   modelOverride?: string
@@ -794,6 +826,7 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       context,
       fireAndForget: options.fireAndForget,
       abortSignal: options.abortSignal,
+      maxOutputTokens: options.maxOutputTokens,
     })
     return response
   }
@@ -807,6 +840,7 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       stream: options.stream,
       onToken: options.onToken,
       abortSignal: options.abortSignal,
+      maxOutputTokens: options.maxOutputTokens,
     })
     return result.response
   }
@@ -830,6 +864,8 @@ Please provide:
     model,
     stream: options.stream,
     onToken: options.onToken,
+    abortSignal: options.abortSignal,
+    maxOutputTokens: options.maxOutputTokens,
   })
 
   return result.response

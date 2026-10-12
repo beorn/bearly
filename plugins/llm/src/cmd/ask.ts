@@ -28,6 +28,7 @@ export async function askAndFinish(options: {
   includeQuota?: boolean
   dryRun?: boolean
   maxOutputTokens?: number
+  retryCommand?: (model: string, bound: number) => string
 }): Promise<void> {
   const {
     question,
@@ -95,7 +96,7 @@ export async function askAndFinish(options: {
   const cacheKey = {
     model: model.modelId,
     prompt: enrichedQuestion,
-    params: { level, modelMode: options.modelMode },
+    params: { level, modelMode: options.modelMode, maxOutputTokens: options.maxOutputTokens },
   }
   let response: ModelResponse
   const cached = cacheable ? readCache<ModelResponse>(cacheKey) : null
@@ -111,6 +112,7 @@ export async function askAndFinish(options: {
     const dispatch = (signal: AbortSignal) =>
       useBackground
         ? queryOpenAIBackground({
+            maxOutputTokens: options.maxOutputTokens,
             prompt: enrichedQuestion,
             model,
             topic: question,
@@ -167,5 +169,6 @@ export async function askAndFinish(options: {
     // Surface the provider error (quota, rate-limit, renamed model) instead of
     // the generic "silent failure" message when the completion came back empty.
     response.error,
+    options.retryCommand,
   )
 }

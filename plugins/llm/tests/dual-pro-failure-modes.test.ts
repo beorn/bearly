@@ -52,7 +52,7 @@ function abProLogPath(home: string): string {
   return join(home, ".claude/projects", encoded, "memory/ab-pro.jsonl")
 }
 
-async function runDualPro(outputFile?: string) {
+async function runDualPro(outputFile?: string, maxOutputTokens?: number) {
   vi.resetModules()
   // --no-challenger keeps these tests focused on the legacy 2-leg failure
   // modes. The 3-leg path (km-bearly.llm-dual-pro-shadow-test) has its own
@@ -68,6 +68,7 @@ async function runDualPro(outputFile?: string) {
     "--no-challenger",
     "--full-paths",
     ...(outputFile ? ["--output", outputFile] : []),
+    ...(maxOutputTokens === undefined ? [] : ["--max-output-tokens", String(maxOutputTokens)]),
     "test question",
   ]
   const mod = await import("../src/cli")
@@ -296,13 +297,16 @@ describe("dual-pro failure modes", () => {
       usage: { inputTokens: 50, outputTokens: 60 },
     })
 
-    await runDualPro(outputFile)
+    await runDualPro(outputFile, 4096)
 
     const judgeCalls = generateTextMock.mock.calls.filter((call) => {
       const text = JSON.stringify(call[0] ?? {})
       return text.includes("STRICT JSON") || text.includes("Score each response")
     })
     expect(judgeCalls).toHaveLength(2)
+    // The caller's reservation covers opinions, pairwise judging, and schema retry.
+    expect(generateTextMock.mock.calls.every((call) => call[0].maxOutputTokens === 4096)).toBe(true)
+    expect(queryBackgroundMock.mock.calls[0]![0].maxOutputTokens).toBe(4096)
     expect(JSON.stringify(judgeCalls[1]?.[0] ?? {})).toContain("scoreA.scores.correctness")
     const report = readFileSync(outputFile, "utf8")
     expect(report).toContain("first unranked opinion")

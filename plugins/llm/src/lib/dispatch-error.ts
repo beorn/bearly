@@ -18,6 +18,8 @@ export interface DispatchFailureDescription {
   scope: "provider" | "model" | "call"
   message: string
   remedy?: string
+  requestedOutputTokens?: number
+  affordableOutputTokens?: number
   retryAt?: number
   observation?: ProviderObservation
 }
@@ -218,22 +220,30 @@ function classifyDispatchFailure(
   // other model in the same dispatch, so this must never mark the PROVIDER
   // refusing. It is a property of this request's parameters. Bead 22972.
   if (responseStatus === 402 || /requires more credits|can only afford|fewer max_tokens/iu.test(blob)) {
-    const upstream =
-      error && typeof error === "object" && "responseBody" in error ? stringify(error.responseBody) : message
-    const requested = /requested up to (\d+) tokens/iu.exec(blob)?.[1]
-    const affordable = /can only afford (\d+)/iu.exec(blob)?.[1]
-    const amounts =
-      requested && affordable ? ` It asked for ${requested} output tokens; the balance covers ${affordable}.` : ""
+    const requestedText = /(?:requested up to|asked for) (\d+)(?: output)? tokens/iu.exec(blob)?.[1]
+    const affordableText = /(?:can only afford|balance covers) (\d+)/iu.exec(blob)?.[1]
+    const requested = requestedText === undefined ? undefined : Number(requestedText)
+    const affordable = affordableText === undefined ? undefined : Number(affordableText)
+    const amounts = [
+      requested === undefined ? "" : ` It asked for ${requested} output tokens.`,
+      affordable === undefined ? "" : ` The balance covers ${affordable}.`,
+    ].join("")
     const who = target.modelId
       ? `${providerDisplayName(target.provider)} (${target.modelId})`
       : providerDisplayName(target.provider)
+    const remedy =
+      affordable !== undefined && affordable >= 2048
+        ? `Retry only this call with --max-output-tokens ${affordable} (library: maxOutputTokens: ${affordable}).`
+        : affordable !== undefined
+          ? `The affordable output count is below the useful floor of 2048 tokens; no useful smaller retry is available.`
+          : `An affordable output count was not supplied; no exact smaller retry can be calculated.`
     return {
       kind: "output-budget",
       scope: "call",
-      message:
-        `${who} refused this request's OUTPUT BUDGET (402) — this is NOT a credentials problem.${amounts} ` +
-        `Lower \`reasoning.maxOutputTokens\`${affordable ? ` below ${affordable}` : ""}, or top up credits. Upstream said: ${upstream}`,
-      remedy: `lower max output tokens${affordable ? ` below ${affordable}` : ""}, or top up credits`,
+      requestedOutputTokens: requested,
+      affordableOutputTokens: affordable,
+      message: `${who} refused this call's output reservation (402) because of the account-balance limit — NOT a credentials problem.${amounts} ${remedy}`,
+      remedy,
     }
   }
   // A context-length refusal is a property of THIS request, and providers deliver it in three shapes.

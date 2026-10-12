@@ -90,8 +90,12 @@ describe("describeProviderError", () => {
     expect(described.message).toContain("HTTP 402")
     expect(described.message).toContain(`can only afford ${affordable}`)
     expect(described.message).toContain("https://openrouter.ai/settings/credits")
-    expect(described.remedy).toContain(String(affordable))
-    expect(described.remedy).toMatch(/top up/iu)
+    if (affordable >= 2048) expect(described.remedy).toContain(`--max-output-tokens ${affordable}`)
+    else {
+      expect(described.remedy).toContain("2048")
+      expect(described.remedy).not.toContain("--max-output-tokens")
+    }
+    expect(described.remedy).not.toMatch(/top up|add credits|API_KEY/iu)
     expect(described.remedy).not.toMatch(/endpoint/iu)
     expect(described.message).not.toMatch(/too slow|timed out/u)
   })
@@ -354,6 +358,21 @@ describe("filterNewModelCandidates — de-noise the auto-discovery banner", () =
 })
 
 describe("queryModel streaming path — the empty-response silent failure fix", () => {
+  /** @failure A low explicit output cap still enables a larger paid reasoning budget.
+   * @level l1 @consumer Library callers bounding an Anthropic reservation. */
+  it("refuses an incompatible Anthropic reasoning budget before dispatch", async () => {
+    makeTestEnv()
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const model = getModel("claude-sonnet-4-6")!
+    expect(model).toBeDefined()
+    generateTextMock.mockReset()
+    const result = await queryModel({ question: "think", model, maxOutputTokens: 2048 })
+    expect(result.response.error).toContain("2048")
+    expect(result.response.error).toMatch(/reasoning budget/)
+    expect(generateTextMock).not.toHaveBeenCalled()
+  })
+
   // 26799: the real dispatch boundary must reject only clearly oversized
   // estimates; uncertainty remains a provider request, with its cause intact.
   it.each([false, true])(

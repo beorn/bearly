@@ -66,6 +66,22 @@ describe("22972 — a 402 is an output-budget refusal, never a credentials one",
     expect(described.message).toContain("538968")
   })
 
+  /** @failure Sub-useful balances print an unusable retry. @level l0
+   * @consumer A caller deciding whether one smaller call is affordable. */
+  it.each([2048, 2047, 0])("uses the useful floor for an affordable count of %i", (affordable) => {
+    const error = Object.assign(new Error(`You requested up to 65536 tokens, but can only afford ${affordable}.`), {
+      statusCode: 402,
+    })
+    const result = describeDispatchFailure(error, target)
+    expect(result.message).toMatch(/account.balance/i)
+    expect(result.message).toContain(String(affordable))
+    if (affordable >= 2048) expect(result.remedy).toContain(`--max-output-tokens ${affordable}`)
+    else {
+      expect(result.message).toContain("2048")
+      expect(result.remedy).not.toMatch(/--max-output-tokens/)
+    }
+  })
+
   it("is scoped to the CALL, so it cannot mark the whole provider refusing", () => {
     // The same credential and route serve every other leg in the same dispatch.
     // A provider-scoped refusal here would take working models down with it —

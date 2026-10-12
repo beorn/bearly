@@ -25,6 +25,8 @@ export async function runDeep(options: {
   sessionTag: string
   skipRecover: boolean
   skipConfirm: boolean
+  maxOutputTokens?: number
+  retryCommand?: (model: string, bound: number) => string
   dryRun: boolean
 }): Promise<void> {
   const { topic, modelOverride, streamToken, outputFile, sessionTag, skipRecover, skipConfirm, dryRun } = options
@@ -94,6 +96,7 @@ export async function runDeep(options: {
   // branch honours Ctrl-C uniformly.
   const response = await withSignalAbort((signal) =>
     research(topic, {
+      maxOutputTokens: options.maxOutputTokens,
       context,
       stream: true,
       onToken: streamToken,
@@ -132,7 +135,19 @@ export async function runDeep(options: {
       return
     }
     // No response ID OR an error is set — write error details to file
-    await finishResponse(undefined, deepModel, outputFile, sessionTag, response.usage, response.durationMs, topic)
+    await finishResponse(
+      undefined,
+      deepModel,
+      outputFile,
+      sessionTag,
+      response.usage,
+      response.durationMs,
+      topic,
+      response.responseId,
+      undefined,
+      response.error,
+      options.retryCommand,
+    )
     return
   }
 
@@ -141,7 +156,19 @@ export async function runDeep(options: {
     log.error?.(`Deep research failed: ${response.error}`)
     if (!response.content || response.content.trim().length === 0) {
       // Genuine failure — finishResponse will write error details to the output file
-      await finishResponse(undefined, deepModel, outputFile, sessionTag, response.usage, response.durationMs, topic)
+      await finishResponse(
+        undefined,
+        deepModel,
+        outputFile,
+        sessionTag,
+        response.usage,
+        response.durationMs,
+        topic,
+        response.responseId,
+        undefined,
+        response.error,
+        options.retryCommand,
+      )
       return
     }
     log.warn?.("Partial content recovered — writing what we have.")

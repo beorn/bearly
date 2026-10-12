@@ -105,6 +105,7 @@ export async function runProDual(options: {
   /** Resolve and print the dual-pro fleet without provider calls or writes. */
   dryRun?: boolean
   maxOutputTokens?: number
+  retryCommand?: (model: string, bound: number, dispatchPrompt?: string) => string
 }): Promise<void> {
   const {
     question,
@@ -116,7 +117,7 @@ export async function runProDual(options: {
     skipConfirm,
     dryRun = false,
   } = options
-  const { finalizeOutput } = await import("../lib/format")
+  const { finalizeOutput, formatBudgetRetry } = await import("../lib/format")
   const dualPro = await import("../lib/dual-pro")
 
   // Explicit --model override bypasses dual mode entirely.
@@ -140,6 +141,7 @@ export async function runProDual(options: {
       imagePath,
       streamToken: options.streamToken,
       maxOutputTokens: options.maxOutputTokens,
+      retryCommand: options.retryCommand,
       buildContext,
       outputFile,
       sessionTag,
@@ -442,6 +444,7 @@ export async function runProDual(options: {
     const useBackground = isOpenAIBackgroundCapable(m) && !imagePath
     return useBackground
       ? queryOpenAIBackground({
+          maxOutputTokens: options.maxOutputTokens,
           prompt: enrichedQuestion,
           model: m,
           topic: question,
@@ -504,7 +507,11 @@ export async function runProDual(options: {
     // its string for presentation would discard the retained HTTP evidence.
     const errRaw = response?.error ?? described?.message
     const ok = !errRaw && !!response?.content && response.content.trim().length > 0
-    const error = errRaw ?? (response && !ok ? "empty content" : undefined)
+    const error = formatBudgetRetry(
+      errRaw ?? (response && !ok ? "empty content" : undefined),
+      slot.model,
+      options.retryCommand,
+    )
     return {
       ...slot,
       response,
@@ -671,6 +678,14 @@ export async function runProDual(options: {
               stream: false,
             })
             const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
+            if (raw.error) {
+              const retry = options.retryCommand
+              raw.error = formatBudgetRetry(
+                raw.error,
+                judgeModel,
+                retry ? (model, bound) => retry(model, bound, text) : undefined,
+              )
+            }
             const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
             return { raw, cost, parsed }
           }
@@ -715,7 +730,11 @@ export async function runProDual(options: {
           } catch (error) {
             evidence = `failed to preserve response at ${artifactPath}: ${error instanceof Error ? error.message : String(error)}`
           }
-          return { id: pairId, cost, error: `${description}; ${metadata}; ${evidence}` }
+          return {
+            id: pairId,
+            cost,
+            error: `${description}; ${metadata}; ${evidence}${raw.error ? `; ${raw.error}` : ""}`,
+          }
         } catch (e) {
           return { id: pairId, cost: 0, error: e instanceof Error ? e.message : String(e) }
         }
@@ -1071,12 +1090,37 @@ export async function runProDual(options: {
       ? "waived"
       : `${judgeReturned.length}/${judgeRequired.length} pairs; failed=${judgeFailed.map((pair) => pair.pair).join(",") || "none"}`
     const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
+    const budgetFlag = options.maxOutputTokens === undefined ? "" : ` --max-output-tokens ${options.maxOutputTokens}`
+    const judgeBudgetFollowUps = judgeFailed.flatMap((pair) => {
+      const model = getModel(cfg.judge)
+      if (!model) return [] // Unknown judge never dispatched; its separate diagnostic is already recorded.
+      const failure = describeDispatchFailure(pair.cause, model)
+      if (failure.kind !== "output-budget") return []
+      const commandAt = pair.cause.lastIndexOf(" Run: ")
+      return [
+        commandAt >= 0
+          ? pair.cause.slice(commandAt + " Run: ".length)
+          : `${cfg.judge}, pair ${pair.pair}: ${failure.remedy}`,
+      ]
+    })
     const followUp =
       completion.missing.length > 0
         ? completion.missing
-            .map((leg) => `llm pro --model ${quote(leg.model)} --context-file ${quote(outputFile)} ${quote(question)}`)
+            .map((leg) => {
+              const outcome = legOutcomes.find((item) => item.id === leg.slot)
+              const failure = outcome?.error ? describeDispatchFailure(outcome.error, outcome.model) : undefined
+              if (failure?.kind === "output-budget") {
+                const affordable = failure.affordableOutputTokens
+                if (affordable === undefined || affordable < 2048) return `${leg.model}: ${failure.remedy}`
+                if (options.retryCommand) return options.retryCommand(leg.model, affordable)
+                return `llm pro --model ${quote(leg.model)} --max-output-tokens ${affordable} --context-file ${quote(outputFile)} ${quote(question)}`
+              }
+              return `llm pro --model ${quote(leg.model)}${budgetFlag} --context-file ${quote(outputFile)} ${quote(question)}`
+            })
             .join(" ; ")
-        : `llm ask --model ${quote(cfg.judge)} --context-file ${quote(outputFile)} ${quote(`Judge only missing pairs ${judgeFailed.map((pair) => pair.pair).join(", ")} from the saved opinions. For each pair return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`)}`
+        : judgeBudgetFollowUps.length > 0
+          ? judgeBudgetFollowUps.join(" ; ")
+          : `llm --ask --model ${quote(cfg.judge)}${budgetFlag} --context-file ${quote(outputFile)} ${quote(`Judge only missing pairs ${judgeFailed.map((pair) => pair.pair).join(", ")} from the saved opinions. For each pair return STRICT JSON with scoreA and scoreB (scores: specificity, actionability, correctness, depth; total), winner A/B/tie, and reasoning. Rubric: ${cfg.rubric}. Keep the existing pair scores.`)}`
     console.error(
       `[dual-pro] ${status}: ${okLegs.length}/${requestedSlots.length} returned; missing=${missing}; judge=${judgeState}; report=${outputFile}; follow-up=${followUp}; do not rerun the whole paid panel`.replace(
         /\s*\n\s*/g,

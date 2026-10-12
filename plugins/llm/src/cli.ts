@@ -41,7 +41,9 @@ import {
 import { buildOutputPath, formatRelativeTime, createStreamToken } from "./lib/format"
 import { setJsonMode, setFullPaths, emitJson } from "./lib/output-mode"
 
-import { readdirSync, statSync, unlinkSync } from "fs"
+import { existsSync, readdirSync, statSync, unlinkSync } from "fs"
+import { fileURLToPath } from "node:url"
+import { resolve } from "node:path"
 
 // Side effects are deferred to initCli() so importing this module from a
 // test or programmatic consumer doesn't fire pricing init, /tmp cleanup, or
@@ -464,6 +466,8 @@ FLAGS
                          (DANGEROUS: large outputs can truncate in Claude Code
                          background tasks — prefer default TTY-only behavior)
   --model <id>           Use specific model (e.g., gpt-5.4-pro, gemini-3-pro-preview)
+  --max-output-tokens N  Optionally lower this run's output reservation; omission
+                         preserves the default. N must be a positive safe integer.
   --no-recover           Skip auto-recovery of incomplete responses
   --with-history         Include relevant context from session history
   --context <text>       Provide explicit context (prepended to topic)
@@ -551,6 +555,46 @@ RECOVERY (for interrupted deep research)
 
 // KEYWORDS is defined above (hoisted for resolveCommand's module-scope call).
 
+/** Keep the original parsed context and image inputs while retrying one model. */
+function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
+  return (model: string, bound: number, dispatchPrompt?: string): string => {
+    const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'"
+    const entry =
+      process.argv[1] && existsSync(resolve(process.argv[1]))
+        ? resolve(process.argv[1])
+        : fileURLToPath(import.meta.url)
+    const command = [
+      process.execPath,
+      entry,
+      dispatchPrompt !== undefined || mode === "ask" ? "--ask" : mode === "deep" ? "--deep" : "pro",
+      "--model",
+      model,
+      "--max-output-tokens",
+      String(bound),
+    ]
+    for (const flag of dispatchPrompt === undefined
+      ? ["--context", "--context-file", "--image", "--bead", "--output"]
+      : []) {
+      for (const value of getAllArgs(flag)) command.push(flag, value)
+    }
+    for (const flag of [
+      "--with-history",
+      "--force",
+      "--quota",
+      "--json",
+      "--verbose",
+      "--no-recover",
+      "--full-paths",
+      "--yes",
+      "-y",
+    ]) {
+      if (hasFlag(flag)) command.push(flag)
+    }
+    command.push(dispatchPrompt ?? question)
+    return command.map(quote).join(" ")
+  }
+}
+
 // --- Shared options for dispatch functions ---
 
 function askOpts(
@@ -576,6 +620,7 @@ function askOpts(
     // is updated regardless — `bun llm quota` always sees fresh fallback data.
     includeQuota: hasFlag("--quota"),
     maxOutputTokens,
+    retryCommand: retryCommandFor(question, modelMode === "pro" ? "pro" : "ask"),
     dryRun: hasFlag("--dry-run"),
   }
 }
@@ -684,6 +729,8 @@ export async function main(): Promise<string | undefined> {
     const outputFile = resolveOutputFile(topic)
     await runDeep({
       topic,
+      maxOutputTokens,
+      retryCommand: retryCommandFor(topic, "deep"),
       modelOverride,
       streamToken,
       buildContext: buildContextFromFlags,
@@ -724,6 +771,14 @@ export async function main(): Promise<string | undefined> {
       break
     }
     case "pro": {
+      if (maxOutputTokens !== undefined) {
+        const unsupported = ["--backtest", "--judge-history", "--discover-models"].find(hasFlag)
+        if (unsupported) {
+          error(
+            `pro ${unsupported} cannot apply --max-output-tokens ${maxOutputTokens}; refusing before paid dispatch.`,
+          )
+        }
+      }
       // Sub-commands inside `pro` (km-bearly.llm-dual-pro-shadow-test):
       //   --leaderboard      Print ab-pro.jsonl leaderboard table
       //   --diagnostics      Speed / failure-rate / cost-distribution surface
@@ -822,12 +877,16 @@ export async function main(): Promise<string | undefined> {
         extraExclude: excludeArgs,
         challengerOverride: getArg("--challenger"),
         maxOutputTokens,
+        retryCommand: retryCommandFor(q, "pro"),
         dryRun: hasFlag("--dry-run"),
         buildContext: (topic: string) => buildContextFromFlags(topic, { includeBead: true }),
       })
       break
     }
     case "debate": {
+      if (maxOutputTokens !== undefined) {
+        error(`debate cannot apply --max-output-tokens ${maxOutputTokens}; refusing before paid dispatch.`)
+      }
       const q = getQuestion()
       if (!q) error("Usage: llm debate <question>")
       const outputFile = resolveOutputFile(q)
