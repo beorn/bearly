@@ -876,8 +876,149 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         .map((line) => line.split(" ")[0])
       expect(reachable, "the working-tree blob is reachable from the preserve ref").toContain(workingBlob)
       expect(reachable, "the staged blob is reachable from the preserve ref").toContain(stagedBlob)
-      // Loud: the ref was printed to the operator.
+      // The staged version is the ref's second parent, parented at HEAD like the preserve commit itself.
+      expect(await $`cd ${mainRepo} && git show ${ref}^2:README.md`.text()).toBe("main\nstaged-A\n")
+      const parents = (await $`cd ${mainRepo} && git rev-list --parents -n 1 ${ref}`.text()).trim().split(" ")
+      expect(parents).toHaveLength(3)
+      expect((await $`cd ${mainRepo} && git rev-parse ${ref}^2^`.text()).trim()).toBe(parents[1])
+      // Loud: the ref and the staged read were printed to the operator.
       expect(loggedRef()).toBeDefined()
+      expect(
+        consoleLogSpy.mock.calls.some((call: unknown[]) =>
+          call
+            .map((a) => String(a))
+            .join(" ")
+            .includes(`git show ${ref.replace("refs/heads/", "")}^2:<path>`),
+        ),
+      ).toBe(true)
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /** @failure a submodule's divergent staged version is lost although the superproject's is kept (29101)
+   * @level l2 @consumer @i/16-work-lifecycle/29101-bearly-preserve-loses-a-divergent-index-version @testonly none */
+  test("removeWorktree --force PRESERVES a submodule's divergent staged version into the MAIN submodule store (29101)", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const slot = "sub-staged"
+    const worktreePath = join(dirname(mainRepo), `main-${slot}`)
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false, base: "HEAD" })
+      const worktreeSub = join(worktreePath, "vendor/sub")
+      writeFileSync(join(worktreeSub, "file.txt"), "staged-A\n")
+      await $`cd ${worktreeSub} && git add file.txt`.quiet()
+      const stagedBlob = (await $`cd ${worktreeSub} && git rev-parse :file.txt`.text()).trim()
+      writeFileSync(join(worktreeSub, "file.txt"), "working-B\n")
+
+      await removeWorktree(slot, { force: true })
+      expect(existsSync(worktreePath)).toBe(false)
+
+      const mainSub = join(mainRepo, "vendor/sub")
+      const subRefs = await preserveRefs(mainSub, slot)
+      expect(subRefs.length).toBe(1)
+      const subRef = subRefs[0]!
+      expect(await $`cd ${mainSub} && git show ${subRef}:file.txt`.text()).toBe("working-B\n")
+      expect(await $`cd ${mainSub} && git show ${subRef}^2:file.txt`.text()).toBe("staged-A\n")
+      const reachable = (await $`cd ${mainSub} && git rev-list --objects ${subRef}`.text())
+        .split("\n")
+        .map((line) => line.split(" ")[0])
+      expect(reachable).toContain(stagedBlob)
+      // The superproject preserve ref still threads its gitlink to the sub preserve commit.
+      const superRefs = await preserveRefs(mainRepo, slot)
+      expect(superRefs.length).toBe(1)
+      const gitlink = (await $`cd ${mainRepo} && git ls-tree ${superRefs[0]!} vendor/sub`.text()).trim()
+      expect(gitlink).toContain((await $`cd ${mainSub} && git rev-parse ${subRef}`.text()).trim())
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /** @failure an ordinary preserve grows a second parent it does not need, changing every recovery ref's shape (29101)
+   * @level l2 @consumer @i/16-work-lifecycle/29101-bearly-preserve-loses-a-divergent-index-version @testonly none */
+  test("a preserve whose index equals the working tree or HEAD keeps the single-parent commit it always had (29101)", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      // Unstaged edit: the index equals HEAD.
+      writeFileSync(join(worktreePath, "README.md"), "main\ndirty-edit\n")
+      const unstaged = await preserveSlotState(worktreePath, slot, mainRepo, {
+        includeAhead: false,
+        label: `${slot}-unstaged`,
+      })
+      expect(unstaged.preserved).toBe(true)
+      expect(unstaged.index).toBeUndefined()
+      expect(
+        (await $`cd ${mainRepo} && git rev-list --parents -n 1 ${unstaged.sha}`.text()).trim().split(" "),
+      ).toHaveLength(2)
+      expect(await $`cd ${mainRepo} && git show ${unstaged.sha}:README.md`.text()).toBe("main\ndirty-edit\n")
+      // Staged edit equal to the working tree: the index equals the working-tree snapshot.
+      await $`cd ${worktreePath} && git add README.md`.quiet()
+      const staged = await preserveSlotState(worktreePath, slot, mainRepo, {
+        includeAhead: false,
+        label: `${slot}-staged`,
+      })
+      expect(staged.preserved).toBe(true)
+      expect(staged.index).toBeUndefined()
+      expect(
+        (await $`cd ${mainRepo} && git rev-list --parents -n 1 ${staged.sha}`.text()).trim().split(" "),
+      ).toHaveLength(2)
+      expect(await $`cd ${mainRepo} && git show ${staged.sha}:README.md`.text()).toBe("main\ndirty-edit\n")
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
+  /** @failure an unmerged index makes the preserve refuse, and a preserve that refuses is a removal that cannot happen (29101)
+   * @level l2 @consumer @i/16-work-lifecycle/29101-bearly-preserve-loses-a-divergent-index-version @testonly none */
+  test("removeWorktree --force still PRESERVES a slot with an unmerged index and names the conflicted path (29101)", async () => {
+    const mainRepo = await buildMain()
+    await $`cd ${mainRepo} && git switch -q -c other`.quiet()
+    writeFileSync(join(mainRepo, "README.md"), "main\nright\n")
+    // A second conflict whose path holds a tab: `ls-files --unmerged -z` separates metadata from the path with the
+    // FIRST tab only, so the whole path must survive (@dev/4's 46e28275 probe).
+    const tabbed = "conflict\tname.txt"
+    writeFileSync(join(mainRepo, tabbed), "right\n")
+    await commitAll(mainRepo, "right")
+    const rightBlob = (await $`cd ${mainRepo} && git rev-parse other:README.md`.text()).trim()
+    const rightTabbedBlob = (await $`cd ${mainRepo} && git rev-parse ${`other:${tabbed}`}`.text()).trim()
+    await $`cd ${mainRepo} && git switch -q main`.quiet()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      writeFileSync(join(worktreePath, "README.md"), "main\nleft\n")
+      writeFileSync(join(worktreePath, tabbed), "left\n")
+      await commitAll(worktreePath, "left")
+      const merge = await $`cd ${worktreePath} && git merge other`.nothrow().quiet()
+      expect(merge.exitCode).not.toBe(0)
+      expect((await $`cd ${worktreePath} && git ls-files --unmerged`.text()).trim()).not.toBe("")
+
+      await removeWorktree(slot, { force: true })
+      expect(existsSync(worktreePath)).toBe(false)
+
+      const refs = await preserveRefs(mainRepo, slot)
+      expect(refs.length).toBe(1)
+      const ref = refs[0]!
+      // The ref's tree holds the working tree as it was, conflict markers included; the index resolved to stage 2,
+      // which here equals HEAD's version, so no second parent.
+      expect(await $`cd ${mainRepo} && git show ${ref}:README.md`.text()).toContain("<<<<<<<")
+      expect((await $`cd ${mainRepo} && git rev-list --parents -n 1 ${ref}`.text()).trim().split(" ")).toHaveLength(2)
+      const log = readFileSync(join(mainRepo, ".git", "worktree-preserve.log"), "utf8")
+      const line = log.split("\n").find((entry) => entry.includes(`ref=${ref.replace("refs/heads/", "")}`))
+      expect(line, log).toBeDefined()
+      expect(line).toContain("unmerged=README.md:")
+      expect(line).toContain(`/${rightBlob}`)
+      // The tabbed path survives whole, with no stage 1 (add/add) and the other side's blob as stage 3.
+      expect(line).toContain(`${tabbed}:-/${rightTabbedBlob}`)
+      expect(await $`cd ${mainRepo} && git show ${`${ref}:${tabbed}`}`.text()).toContain("<<<<<<<")
     } finally {
       process.chdir(origCwd)
     }

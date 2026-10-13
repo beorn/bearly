@@ -2239,6 +2239,8 @@ export interface PreservedSubmodule {
   path: string
   ref: string
   sha: string
+  /** The staged-index snapshot commit, the preserve commit's second parent, when the index differed from the working tree and HEAD (29101). */
+  index?: string
 }
 
 export interface PreserveResult {
@@ -2246,6 +2248,8 @@ export interface PreserveResult {
   ref?: string
   sha?: string
   reason?: "dirty" | "ahead" | "dirty+ahead"
+  /** The root's staged-index snapshot commit, `sha`'s second parent, when the index differed from the working tree and HEAD (29101). */
+  index?: string
   submodules: PreservedSubmodule[]
   notCompared?: RemovalInspection["notCompared"]
 }
@@ -2281,28 +2285,106 @@ async function appendPreserveLog(gitRoot: string, line: string): Promise<void> {
   }
 }
 
+/** What one repository's preserve snapshot produced (29101). */
+interface DirtySnapshot {
+  /** The preserve commit: HEAD plus the working-tree snapshot; `index`, when present, is its second parent. */
+  sha: string
+  /** The staged-index snapshot commit, parented at HEAD, when the index differed from both the working tree and HEAD. */
+  index?: string
+  /** Paths the real index held unmerged: the snapshot took each one's stage-2 entry; the other stages are not durable. */
+  unmerged: UnmergedPath[]
+}
+
+interface UnmergedPath {
+  path: string
+  stage1?: string
+  stage3?: string
+}
+
+/**
+ * The tree of a copy of the real index. `git write-tree` refuses an unmerged index, so each conflicted path is first
+ * resolved to its stage-2 entry in the COPY (never the real index) and the other stages' blob ids are reported for
+ * the log; a preserve never refuses (29101, @cto 589e7c55).
+ */
+async function stagedIndexTree(repoPath: string, env: NodeJS.ProcessEnv, unmerged: UnmergedPath[]): Promise<string> {
+  const first = await safeExec($`cd ${repoPath} && git write-tree 2>&1`.env(env))
+  if (first.exitCode === 0 && first.stdout.trim()) return first.stdout.trim()
+  const listing = await safeExec($`cd ${repoPath} && git ls-files --unmerged -z`.env(env))
+  if (listing.exitCode !== 0 || listing.stdout === "") {
+    throw new Error(`preserve: write-tree of the staged index failed in ${repoPath}: ${first.stdout}`)
+  }
+  const entries = new Map<string, { modes: Record<string, string>; blobs: Record<string, string> }>()
+  for (const entry of listing.stdout.split("\0")) {
+    if (!entry) continue
+    // `<mode> <blob> <stage>\t<path>`: only the first tab separates the metadata, a path may hold more (@dev/4 46e28275).
+    const tab = entry.indexOf("\t")
+    if (tab === -1) throw new Error(`preserve: cannot read unmerged entry in ${repoPath}: ${entry}`)
+    const info = entry.slice(0, tab)
+    const path = entry.slice(tab + 1)
+    const [mode = "", blob = "", stage = ""] = info.split(" ")
+    const known = entries.get(path) ?? { modes: {}, blobs: {} }
+    known.modes[stage] = mode
+    known.blobs[stage] = blob
+    entries.set(path, known)
+  }
+  for (const [path, { modes, blobs }] of entries) {
+    const ours = blobs["2"]
+    const cacheinfo = ours === undefined ? "" : `${modes["2"]},${ours},${path}`
+    const resolve =
+      ours === undefined
+        ? await safeExec($`cd ${repoPath} && git update-index --force-remove -- ${path} 2>&1`.env(env))
+        : await safeExec($`cd ${repoPath} && git update-index --cacheinfo ${cacheinfo} 2>&1`.env(env))
+    if (resolve.exitCode !== 0) {
+      throw new Error(`preserve: cannot resolve unmerged ${path} in ${repoPath}: ${resolve.stdout}`)
+    }
+    const stage1 = blobs["1"]
+    const stage3 = blobs["3"]
+    unmerged.push({ path, ...(stage1 === undefined ? {} : { stage1 }), ...(stage3 === undefined ? {} : { stage3 }) })
+  }
+  const second = await safeExec($`cd ${repoPath} && git write-tree 2>&1`.env(env))
+  const tree = second.stdout.trim()
+  if (second.exitCode !== 0 || !tree) {
+    throw new Error(`preserve: write-tree of the resolved staged index failed in ${repoPath}: ${second.stdout}`)
+  }
+  return tree
+}
+
 /**
  * Snapshot a repo's current index+worktree (all tracked-modified + untracked +
  * deletions) into a commit parented at HEAD, WITHOUT touching the repo's real
  * index. Uses a throwaway index seeded from HEAD. Never uses `git stash`.
  * `gitlinkOverrides` repoints named submodule gitlinks — the superproject
  * snapshot uses it to reference each dirty submodule's own preserve commit.
- * Returns the new commit SHA (written to the shared object store).
+ * A path staged differently from its working tree keeps its staged version
+ * too (29101): the real index, copied before anything is staged, is written as
+ * its own tree, and when that tree differs from both the working-tree snapshot
+ * and HEAD's tree it is committed at HEAD and becomes the preserve commit's
+ * SECOND parent, so `git show <ref>^2:<path>` reads the staged version and one
+ * durable ref reaches both blobs. Returns the commit SHAs (written to the
+ * shared object store).
  */
 async function snapshotDirtyRepo(
   repoPath: string,
   message: string,
   gitlinkOverrides?: Map<string, string>,
   excludedSubmodules: readonly string[] = [],
-): Promise<string> {
+): Promise<DirtySnapshot> {
   const tmpDir = mkdtempSync(join(tmpdir(), "wt-preserve-idx-"))
   const idxEnv = { ...process.env, GIT_INDEX_FILE: join(tmpDir, "index") }
+  const stagedEnv = { ...process.env, GIT_INDEX_FILE: join(tmpDir, "staged-index") }
   try {
+    // The real index is where Git says it is: a linked worktree keeps it in its own gitdir, never under .git/index.
+    const realIndex = (await $`git -C ${repoPath} rev-parse --path-format=absolute --git-path index`.text()).trim()
+    if (!isAbsolute(realIndex)) throw new Error(`preserve: index path is not absolute in ${repoPath}: ${realIndex}`)
+    const unmerged: UnmergedPath[] = []
+    let indexTree: string | undefined
+    if (existsSync(realIndex)) {
+      copyFileSync(realIndex, stagedEnv.GIT_INDEX_FILE)
+      indexTree = await stagedIndexTree(repoPath, stagedEnv, unmerged)
+    }
     if (excludedSubmodules.length > 0) {
       // The real parent index carries staged gitlink metadata; copying it never opens a child store.
-      const index = (await $`git -C ${repoPath} rev-parse --path-format=absolute --git-path index`.text()).trim()
-      if (!isAbsolute(index)) throw new Error(`preserve: parent index path is not absolute in ${repoPath}: ${index}`)
-      copyFileSync(index, idxEnv.GIT_INDEX_FILE)
+      copyFileSync(realIndex, idxEnv.GIT_INDEX_FILE)
     } else {
       const seed = await safeExec($`cd ${repoPath} && git read-tree HEAD 2>&1`.env(idxEnv))
       if (seed.exitCode !== 0) throw new Error(`preserve: read-tree HEAD failed in ${repoPath}: ${seed.stdout}`)
@@ -2322,12 +2404,33 @@ async function snapshotDirtyRepo(
     if (treeRes.exitCode !== 0 || !tree) throw new Error(`preserve: write-tree failed in ${repoPath}`)
     const headRes = await safeExec($`cd ${repoPath} && git rev-parse HEAD`)
     const head = headRes.stdout.trim()
+    const headTreeRes = await safeExec($`cd ${repoPath} && git rev-parse ${"HEAD^{tree}"}`)
+    const headTree = headTreeRes.stdout.trim()
+    if (headTreeRes.exitCode !== 0 || !headTree) throw new Error(`preserve: cannot read HEAD's tree in ${repoPath}`)
+    // The staged index gets its own commit only when it differs from both the working tree and HEAD; an ordinary
+    // preserve stays the single-parent commit it always was.
+    let index: string | undefined
+    if (indexTree !== undefined && indexTree !== tree && indexTree !== headTree) {
+      const indexMessage = `${message} [staged index]`
+      const indexRes = await safeExec(
+        $`cd ${repoPath} && git ${PRESERVE_IDENT} commit-tree ${indexTree} -p ${head} -m ${indexMessage}`,
+      )
+      index = indexRes.stdout.trim()
+      if (indexRes.exitCode !== 0 || !index) {
+        throw new Error(`preserve: commit-tree of the staged index failed in ${repoPath}`)
+      }
+    }
+    const parents = index === undefined ? ["-p", head] : ["-p", head, "-p", index]
+    const commitMessage =
+      index === undefined
+        ? message
+        : `${message}\n\nSecond parent ${index} is the index as it was staged: git show <ref>^2:<path> reads a version staged differently from the working tree (29101).`
     const commitRes = await safeExec(
-      $`cd ${repoPath} && git ${PRESERVE_IDENT} commit-tree ${tree} -p ${head} -m ${message}`,
+      $`cd ${repoPath} && git ${PRESERVE_IDENT} commit-tree ${tree} ${parents} -m ${commitMessage}`,
     )
     const sha = commitRes.stdout.trim()
     if (commitRes.exitCode !== 0 || !sha) throw new Error(`preserve: commit-tree failed in ${repoPath}`)
-    return sha
+    return { sha, ...(index === undefined ? {} : { index }), unmerged }
   } finally {
     rmSync(tmpDir, { recursive: true, force: true })
   }
@@ -2489,7 +2592,9 @@ export async function preserveSlotState(
   const preservedSubs: PreservedSubmodule[] = []
   const overrides = new Map<string, Map<string, string>>()
   const written: { repo: string; sha: string }[] = []
+  const unmergedPaths: ({ repo: string } & UnmergedPath)[] = []
   let sha: string | undefined
+  let rootIndex: string | undefined
   try {
     for (const repo of [...repositories].reverse()) {
       const gitlinks = overrides.get(repo.path)
@@ -2500,14 +2605,17 @@ export async function preserveSlotState(
           : opts.excludedSubmodules
               ?.filter((path) => path.startsWith(`${repo.path}/`))
               .map((path) => path.slice(repo.path.length + 1))
-      const saved =
+      const snapshot =
         repo.dirty || gitlinks !== undefined
           ? await snapshotDirtyRepo(repo.root, `preserve ${refShort} (${repo.path})`, gitlinks, localExclusions)
-          : repo.head
+          : { sha: repo.head, unmerged: [] }
+      const saved = snapshot.sha
+      for (const entry of snapshot.unmerged) unmergedPaths.push({ repo: repo.path, ...entry })
       const refRepo = repo.path === "." ? gitRoot : repo.root
       await writeRecoveryRef(refRepo, ["update-ref", refFull, saved], refFull, saved, written)
       if (repo.path === ".") {
         sha = saved
+        rootIndex = snapshot.index
         continue
       }
       await writeRecoveryRef(
@@ -2524,7 +2632,12 @@ export async function preserveSlotState(
       if ((await preserveGit(repo.primary, ["cat-file", "-t", saved])) !== "commit") {
         throw new Error(`preserve: transferred object ${saved} in ${repo.primary} is not a commit`)
       }
-      preservedSubs.push({ path: repo.path, ref: refShort, sha: saved })
+      preservedSubs.push({
+        path: repo.path,
+        ref: refShort,
+        sha: saved,
+        ...(snapshot.index === undefined ? {} : { index: snapshot.index }),
+      })
       const parentLinks = overrides.get(repo.parent) ?? new Map<string, string>()
       parentLinks.set(repo.parent === "." ? repo.path : repo.path.slice(repo.parent.length + 1), saved)
       overrides.set(repo.parent, parentLinks)
@@ -2551,20 +2664,46 @@ export async function preserveSlotState(
   warn(`Preserved ${reason} state of slot ${recoverySlot} before the destructive step:`)
   console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
   console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
-  for (const s of preservedSubs) {
+  if (rootIndex !== undefined) {
     console.log(
-      CYAN + `    ${s.path} → ${refShort}` + RESET + DIM + `  (${s.sha.slice(0, 12)}, in that submodule)` + RESET,
+      DIM + `    staged: git show ${refShort}^2:<path>   # a version staged differently from the working tree` + RESET,
     )
   }
-  const subLog = preservedSubs.map((s) => `${s.path}@${s.sha.slice(0, 12)}`).join(",")
+  for (const s of preservedSubs) {
+    const staged = s.index === undefined ? "" : `, staged index ${s.index.slice(0, 12)}`
+    console.log(
+      CYAN +
+        `    ${s.path} → ${refShort}` +
+        RESET +
+        DIM +
+        `  (${s.sha.slice(0, 12)}${staged}, in that submodule)` +
+        RESET,
+    )
+  }
+  const subLog = preservedSubs
+    .map((s) => `${s.path}@${s.sha.slice(0, 12)}${s.index === undefined ? "" : `+index:${s.index.slice(0, 12)}`}`)
+    .join(",")
+  const unmergedLog = unmergedPaths
+    .map((u) => `${u.repo === "." ? "" : `${u.repo}/`}${u.path}:${u.stage1 ?? "-"}/${u.stage3 ?? "-"}`)
+    .join(",")
   await appendPreserveLog(
     gitRoot,
     `${new Date().toISOString()} slot=${recoverySlot} ref=${refShort} sha=${sha} reason=${reason}` +
+      (rootIndex === undefined ? "" : ` index=${rootIndex}`) +
       (subLog ? ` submodules=${subLog}` : "") +
+      (unmergedLog ? ` unmerged=${unmergedLog}` : "") +
       ` path=${worktreePath}`,
   )
 
-  return { preserved: true, ref: refShort, sha, reason, submodules: preservedSubs, ...observations }
+  return {
+    preserved: true,
+    ref: refShort,
+    sha,
+    reason,
+    ...(rootIndex === undefined ? {} : { index: rootIndex }),
+    submodules: preservedSubs,
+    ...observations,
+  }
 }
 
 /** A fresh creator never moves a slot ref over commits missing from its chosen base. */
