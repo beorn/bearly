@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
   vi.resetModules()
@@ -136,6 +137,7 @@ describe("provider transport across AI SDK upgrades", () => {
   })
 
   it.each([0, 1.5, Number.NaN])("refuses invalid bound %s before native HTTP dispatch", async (maxOutputTokens) => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
     const fetchMock = vi.fn()
     vi.stubGlobal("fetch", fetchMock)
     const { ollamaChat } = await import("../src/lib/ollama")
@@ -150,10 +152,15 @@ describe("provider transport across AI SDK upgrades", () => {
       }),
     ]
     for (const response of responses) expect(response.error).toContain("positive safe integer")
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining("bearly:llm:gemini"),
+      expect.stringContaining("positive safe integer"),
+    )
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("refuses a Gemini agent bound that the API cannot honor before spending", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
     const fetchMock = vi.fn()
     vi.stubGlobal("fetch", fetchMock)
     const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
@@ -166,6 +173,10 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(response.error).toContain("deep-research-pro-preview-12-2025")
     expect(response.error).toContain("4096")
     expect(response.error).toContain("cannot honor")
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining("bearly:llm:gemini"),
+      expect.stringContaining("cannot honor maxOutputTokens=4096"),
+    )
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
