@@ -839,6 +839,50 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure the preserve snapshot keeps only the working-tree version of a path, so a staged version that differs
+   *          from it has no durable ref and is lost when the worktree's index is removed (29101, from @dev/4's 29073
+   *          finding)
+   * @level l2 @consumer @i/16-work-lifecycle/29101-bearly-preserve-loses-a-divergent-index-version @testonly none */
+  test("removeWorktree --force PRESERVES a divergent staged version alongside the working-tree version (29101)", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt6"
+    const worktreePath = join(sandbox, "main-wt6")
+    const origCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+
+      // Stage version A, then edit the working tree to version B: the index and the working tree diverge.
+      writeFileSync(join(worktreePath, "README.md"), "main\nstaged-A\n")
+      await $`cd ${worktreePath} && git add README.md`.quiet()
+      const stagedBlob = (await $`cd ${worktreePath} && git rev-parse :README.md`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "main\nworking-B\n")
+      const workingBlob = (await $`cd ${worktreePath} && git hash-object README.md`.text()).trim()
+      expect(stagedBlob).not.toBe(workingBlob)
+
+      // Force-remove must preserve and continue; the worktree and its index are gone afterwards.
+      await removeWorktree(slot, { force: true })
+      expect(existsSync(worktreePath)).toBe(false)
+
+      // One preserve ref; the working-tree version is its tree, as before.
+      const refs = await preserveRefs(mainRepo, slot)
+      expect(refs.length).toBe(1)
+      const ref = refs[0]!
+      expect(await $`cd ${mainRepo} && git show ${ref}:README.md`.text()).toBe("main\nworking-B\n")
+
+      // BOTH versions are reachable from the durable ref: the staged blob too, not only the working-tree blob.
+      const reachable = (await $`cd ${mainRepo} && git rev-list --objects ${ref}`.text())
+        .split("\n")
+        .map((line) => line.split(" ")[0])
+      expect(reachable, "the working-tree blob is reachable from the preserve ref").toContain(workingBlob)
+      expect(reachable, "the staged blob is reachable from the preserve ref").toContain(stagedBlob)
+      // Loud: the ref was printed to the operator.
+      expect(loggedRef()).toBeDefined()
+    } finally {
+      process.chdir(origCwd)
+    }
+  }, 60_000)
+
   test("reset --force PRESERVES ahead-of-origin/main commits", async () => {
     const mainRepo = await buildMain()
     const slot = "wt6"
