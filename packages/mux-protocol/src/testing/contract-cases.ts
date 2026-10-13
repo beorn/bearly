@@ -1,6 +1,8 @@
 /**
  * `@bearly/mux-protocol/testing/contract-cases` — the backend-agnostic contract
- * suite. A test kit, kept off the package's production entry.
+ * suite. A test kit, kept off the package's production entry: nothing under
+ * `src/testing/` is a production entry, so a symbol only the tests consume gets
+ * its own `testing/` subpath and is never folded back into `index.ts`.
  *
  * {@link muxContractCases} returns a framework-agnostic list of named cases
  * (each `{ name, run }`) asserting the behavioral invariants ANY

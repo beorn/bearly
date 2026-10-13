@@ -3,7 +3,9 @@
  * `@bearly/mux-protocol/testing/in-memory-mux` — the owner's reference double
  * for {@link MuxBackend}: the behavioral spec the contract suite is validated
  * against, and a zero-dependency mux for any consumer that wants one without
- * spawning a real multiplexer. Kept off the package's production entry.
+ * spawning a real multiplexer. Kept off the package's production entry: nothing
+ * under `src/testing/` is a production entry, so a symbol only the tests consume
+ * gets its own `testing/` subpath and is never folded back into `index.ts`.
  */
 import {
   type MuxBackend,
