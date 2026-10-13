@@ -19,6 +19,21 @@ import {
 } from "./worktree.ts"
 
 describe("planCliInvocation — help interception (the hh---help incident)", () => {
+  test("`preserve` resolves the slot and its --json receipt, and refuses without a slot (29073)", () => {
+    expect(planCliInvocation(["preserve", "wt3", "--json"])).toEqual({
+      action: "preserve",
+      name: "wt3",
+      options: { json: true },
+    })
+    expect(planCliInvocation(["preserve", "wt3"])).toEqual({
+      action: "preserve",
+      name: "wt3",
+      options: { json: false },
+    })
+    expect(planCliInvocation(["preserve"])).toMatchObject({ action: "usage-error" })
+    expect(planCliInvocation(["preserve", "wt3", "--nope"])).toMatchObject({ action: "usage-error" })
+  })
+
   test("`reset --help` is help, not a reset of a worktree named --help", () => {
     expect(planCliInvocation(["reset", "--help"])).toEqual({ action: "help" })
   })

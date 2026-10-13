@@ -122,6 +122,55 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /**
+   * @failure 29073: the `preserve` CLI verb is the ONE preserve across a process boundary — the way
+   *          yrd's `env close --preserve` reaches it without a workspace dependency (a workspace dep
+   *          on bearly from yrd's own workspace stopped the whole queue). It must speak a machine
+   *          receipt on stdout and exit NON-ZERO when it preserves nothing, so a caller never reads a
+   *          no-op as success; a caller reads the receipt, not the exit code.
+   * @level l2 @consumer yrd env close --preserve (subprocess) @testonly none
+   */
+  test("the preserve CLI verb emits a JSON receipt and exits non-zero when there is nothing to preserve (29073)", async () => {
+    const mainRepo = await buildMain()
+    const destination = join(sandbox, "candidate")
+    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    const cli = fileURLToPath(new URL("../tools/worktree.ts", import.meta.url))
+
+    const clean = spawnSync("bun", [cli, "preserve", destination, "--json"], {
+      cwd: mainRepo,
+      encoding: "utf8",
+      timeout: 20_000,
+    })
+    expect(clean.status, `${clean.stdout}\n${clean.stderr}`).toBe(3)
+    expect(JSON.parse(clean.stdout.trim())).toMatchObject({
+      schema: "bearly-worktree-preserve/1",
+      preserved: false,
+      ref: null,
+      sha: null,
+      submodules: [],
+    })
+    expect(clean.stderr).toContain("nothing preserved")
+
+    writeFileSync(join(destination, "dirt.txt"), "preserved across the CLI boundary\n")
+    const dirty = spawnSync("bun", [cli, "preserve", destination, "--json"], {
+      cwd: mainRepo,
+      encoding: "utf8",
+      timeout: 20_000,
+    })
+    expect(dirty.status, `${dirty.stdout}\n${dirty.stderr}`).toBe(0)
+    const receipt = JSON.parse(dirty.stdout.trim()) as { ref: string; sha: string }
+    expect(receipt).toMatchObject({
+      schema: "bearly-worktree-preserve/1",
+      preserved: true,
+      reason: "dirty",
+      submodules: [],
+    })
+    expect(receipt.ref).toMatch(/^wip\//u)
+    expect((await $`git -C ${mainRepo} show ${`${receipt.ref}:dirt.txt`}`.text()).trim()).toBe(
+      "preserved across the CLI boundary",
+    )
+  })
+
   /** @failure reset forwards exclusions to removal but reopens the private reference or initializes its replacement (27058 AC3/AC5)
    * @level l2 @consumer Bearly reset recreation @testonly none */
   test("reset recreation leaves the excluded checkout empty and its common store unchanged", async () => {

@@ -2450,6 +2450,12 @@ export interface PreserveOptions {
    * preserved regardless of this option, as is dirty state (parented at HEAD).
    */
   includeAhead?: boolean
+  /**
+   * Suppress the loud recovery-ref print. The CLI `preserve` verb sets this so
+   * it can emit its own receipt (JSON on `--json`) on stdout with no human block
+   * ahead of it. remove and reset leave it unset and keep the print.
+   */
+  quiet?: boolean
 }
 
 /** Preservation reads and writes must never turn a failed Git command into empty state. */
@@ -2659,26 +2665,30 @@ export async function preserveSlotState(
     )
   }
 
-  // Loud (§ Fail Loud) — print the recovery ref to the operator.
-  console.log("")
-  warn(`Preserved ${reason} state of slot ${recoverySlot} before the destructive step:`)
-  console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
-  console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
-  if (rootIndex !== undefined) {
-    console.log(
-      DIM + `    staged: git show ${refShort}^2:<path>   # a version staged differently from the working tree` + RESET,
-    )
-  }
-  for (const s of preservedSubs) {
-    const staged = s.index === undefined ? "" : `, staged index ${s.index.slice(0, 12)}`
-    console.log(
-      CYAN +
-        `    ${s.path} → ${refShort}` +
-        RESET +
+  if (opts.quiet !== true) {
+    // Loud (§ Fail Loud) — print the recovery ref to the operator.
+    console.log("")
+    warn(`Preserved ${reason} state of slot ${recoverySlot} before the destructive step:`)
+    console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
+    console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
+    if (rootIndex !== undefined) {
+      console.log(
         DIM +
-        `  (${s.sha.slice(0, 12)}${staged}, in that submodule)` +
-        RESET,
-    )
+          `    staged: git show ${refShort}^2:<path>   # a version staged differently from the working tree` +
+          RESET,
+      )
+    }
+    for (const s of preservedSubs) {
+      const staged = s.index === undefined ? "" : `, staged index ${s.index.slice(0, 12)}`
+      console.log(
+        CYAN +
+          `    ${s.path} → ${refShort}` +
+          RESET +
+          DIM +
+          `  (${s.sha.slice(0, 12)}${staged}, in that submodule)` +
+          RESET,
+      )
+    }
   }
   const subLog = preservedSubs
     .map((s) => `${s.path}@${s.sha.slice(0, 12)}${s.index === undefined ? "" : `+index:${s.index.slice(0, 12)}`}`)
@@ -3650,6 +3660,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "--no-hooks": {},
     },
   },
+  preserve: { maxPositionals: 1, flags: { "--json": {} } },
   path: { maxPositionals: 1, flags: {} },
   list: { maxPositionals: 0, flags: {} },
   ls: { maxPositionals: 0, flags: {} },
@@ -3670,6 +3681,11 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
 export type CreatePlanOptions = Required<Omit<CreateOptions, "base" | "destination" | "excludedSubmodules">> &
   Pick<CreateOptions, "base" | "destination" | "excludedSubmodules">
 
+export interface PreservePlanOptions {
+  /** Machine receipt on stdout instead of the human line. */
+  json?: boolean
+}
+
 export type CliPlan =
   | { action: "help" }
   | { action: "default-info" }
@@ -3677,6 +3693,7 @@ export type CliPlan =
   | { action: "create"; name: string; branch: string | undefined; options: CreatePlanOptions }
   | { action: "remove"; name: string; options: RemoveOptions }
   | { action: "reset"; name: string; options: ResetOptions }
+  | { action: "preserve"; name: string; options: PreservePlanOptions }
   | { action: "path"; name: string }
   | { action: "list" }
   | { action: "audit"; options: AuditOptions }
@@ -3819,6 +3836,11 @@ export function planCliInvocation(argv: string[]): CliPlan {
         },
       }
     }
+    case "preserve": {
+      const name = positionals[0]
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree preserve <name> [--json]" }
+      return { action: "preserve", name, options: { json: flags.has("--json") } }
+    }
     case "path": {
       const name = positionals[0]
       if (!name) return { action: "usage-error", message: "Usage: bun worktree path <name>" }
@@ -3866,6 +3888,55 @@ export function planCliInvocation(argv: string[]): CliPlan {
   }
 }
 
+/** `preserve`'s "nothing preserved" ending: non-zero so a caller never reads a no-op as success. */
+export const PRESERVE_NOTHING_EXIT = 3
+
+/**
+ * `preserve <slot>` — expose the ONE worktree preserve (preserveSlotState, the
+ * choke point remove and reset already flow through) across the CLI boundary,
+ * so a consumer outside this workspace (yrd's `env close --preserve`) reaches it
+ * by subprocess instead of a workspace dependency. Never a second snapshot: the
+ * verb is a thin argv-to-function mapping over preserveSlotState.
+ *
+ * `--json` prints a machine receipt (slot, whether anything was preserved, the
+ * reason, the ref, the sha, and each component's ref) and nothing else on
+ * stdout — preserveSlotState's own loud print is suppressed via `quiet`. The
+ * verb exits PRESERVE_NOTHING_EXIT, with the reason on stderr, when it preserves
+ * nothing, so a caller never mistakes a no-op for success.
+ */
+export async function preserveWorktreeState(name: string, options: { json?: boolean } = {}): Promise<void> {
+  const gitRoot = findGitRoot(process.cwd())
+  if (!gitRoot) {
+    error("Not in a git repository")
+    process.exit(1)
+  }
+  const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
+  const slot = slotNameFromResolvedPath(gitRoot, worktreePath)
+  const preserved = await preserveSlotState(worktreePath, slot, gitRoot, { quiet: true })
+  const reason = preserved.reason ?? (existsSync(worktreePath) ? "clean" : "no such worktree")
+  const receipt = {
+    schema: "bearly-worktree-preserve/1",
+    slot,
+    path: worktreePath,
+    preserved: preserved.preserved,
+    reason,
+    ref: preserved.ref ?? null,
+    sha: preserved.sha ?? null,
+    submodules: preserved.submodules.map((entry) => ({ path: entry.path, ref: entry.ref, sha: entry.sha })),
+  }
+  if (options.json === true) console.log(JSON.stringify(receipt))
+  else if (preserved.preserved) {
+    success(
+      `preserved ${reason} state of ${slot}: ${preserved.ref ?? "(no ref)"} (${(preserved.sha ?? "").slice(0, 12)})`,
+    )
+  }
+  if (!preserved.preserved) {
+    // Non-zero with the reason: the exit code alone must never say success for a no-op.
+    error(`worktree preserve: nothing preserved in ${slot}: ${reason}`)
+    process.exit(PRESERVE_NOTHING_EXIT)
+  }
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const plan = planCliInvocation(argv)
   switch (plan.action) {
@@ -3907,6 +3978,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         error(e instanceof Error ? e.message : String(e))
         process.exit(plan.options.admitOnly ? 2 : 1)
       }
+      return
+    case "preserve":
+      await preserveWorktreeState(plan.name, plan.options)
       return
     case "list":
       await listWorktrees(true)
