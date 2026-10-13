@@ -23,7 +23,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
 import { buildResultJson } from "../src/lib/format"
-import { resetOutputMode, setJsonMode, isJsonMode } from "../src/lib/output-mode"
 
 // Mock `ai` so dispatch never hits the network; route both pro legs through
 // the cheap inline mocks (mirrors cli-single-fire.test.ts setup).
@@ -135,13 +134,17 @@ describe("buildResultJson — envelope schema", () => {
 })
 
 describe("output-mode singleton", () => {
-  it("setJsonMode flips isJsonMode", () => {
-    resetOutputMode()
-    expect(isJsonMode()).toBe(false)
-    setJsonMode(true)
-    expect(isJsonMode()).toBe(true)
-    resetOutputMode()
-    expect(isJsonMode()).toBe(false)
+  it("setJsonMode flips isJsonMode, and a fresh module graph starts false", async () => {
+    // A fresh import replaces the deleted resetOutputMode(): the shim's default
+    // DispatchContext starts at jsonMode:false and cannot leak between tests.
+    vi.resetModules()
+    const outputMode = await import("../src/lib/output-mode")
+    expect(outputMode.isJsonMode()).toBe(false)
+    outputMode.setJsonMode(true)
+    expect(outputMode.isJsonMode()).toBe(true)
+    vi.resetModules()
+    const fresh = await import("../src/lib/output-mode")
+    expect(fresh.isJsonMode()).toBe(false)
   })
 })
 

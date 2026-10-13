@@ -409,7 +409,7 @@ export async function finishResponse(
    *  is gated by the caller — pass only when `--quota` was set. */
   quota?: OutputMeta["quota"],
   /** Actionable provider error (quota exhausted, rate-limit, renamed model)
-   *  captured upstream by `queryModel`/`describeProviderError`. When the
+   *  captured upstream by `queryModel`/`describeDispatchFailure`. When the
    *  completion is empty and this is set, it becomes the headline instead of
    *  the generic "silent failure" copy — this is the fix for the misleading
    *  empty-response message on a real provider failure. */

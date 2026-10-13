@@ -12,10 +12,23 @@
  *   - `--full-paths`: restores the absolute path verbatim.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as path from "node:path"
 import { makeTestEnv } from "./helpers"
-import { resetOutputMode, isFullPaths, setFullPaths, formatEnvelopeFile } from "../src/lib/output-mode"
+
+/**
+ * The output-mode shim holds two module-level singletons (`_fullPaths`, and the
+ * default DispatchContext it shares with context.ts). A fresh module graph is
+ * the reset the tests used to get from the deleted `resetOutputMode()`: each
+ * test re-imports the module, so it starts at the defaults and no state leaks
+ * between tests or parallel workers.
+ */
+type OutputMode = typeof import("../src/lib/output-mode")
+let outputMode: OutputMode
+beforeEach(async () => {
+  vi.resetModules()
+  outputMode = await import("../src/lib/output-mode")
+})
 
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
@@ -39,12 +52,8 @@ function resetMocks() {
 }
 
 describe("formatEnvelopeFile — pure relativization helper", () => {
-  beforeEach(() => {
-    resetOutputMode()
-  })
-
   it("returns basename for absolute /tmp path under default mode", () => {
-    const out = formatEnvelopeFile("/tmp/llm-abc12345-something-1234.txt", {
+    const out = outputMode.formatEnvelopeFile("/tmp/llm-abc12345-something-1234.txt", {
       fullPaths: false,
       cwd: "/Users/me/project",
     })
@@ -53,14 +62,20 @@ describe("formatEnvelopeFile — pure relativization helper", () => {
   })
 
   it("returns cwd-relative path when file lives under cwd", () => {
-    const out = formatEnvelopeFile("/Users/me/project/out/llm-x.txt", { fullPaths: false, cwd: "/Users/me/project" })
+    const out = outputMode.formatEnvelopeFile("/Users/me/project/out/llm-x.txt", {
+      fullPaths: false,
+      cwd: "/Users/me/project",
+    })
     // path.relative produces "out/llm-x.txt"
     expect(out).toBe(path.join("out", "llm-x.txt"))
     expect(out.startsWith("/")).toBe(false)
   })
 
   it("returns basename when relative path would escape cwd (../...)", () => {
-    const out = formatEnvelopeFile("/var/folders/abc/llm-foo.txt", { fullPaths: false, cwd: "/Users/me/project" })
+    const out = outputMode.formatEnvelopeFile("/var/folders/abc/llm-foo.txt", {
+      fullPaths: false,
+      cwd: "/Users/me/project",
+    })
     expect(out).toBe("llm-foo.txt")
     expect(out.startsWith("/")).toBe(false)
     expect(out.includes("..")).toBe(false)
@@ -68,32 +83,30 @@ describe("formatEnvelopeFile — pure relativization helper", () => {
 
   it("returns absolute path verbatim when fullPaths=true", () => {
     const abs = "/tmp/llm-abc12345-something-1234.txt"
-    const out = formatEnvelopeFile(abs, { fullPaths: true, cwd: "/Users/me/project" })
+    const out = outputMode.formatEnvelopeFile(abs, { fullPaths: true, cwd: "/Users/me/project" })
     expect(out).toBe(abs)
   })
 
   it("preserves non-absolute input verbatim (already relative)", () => {
-    const out = formatEnvelopeFile("./foo.txt", { fullPaths: false, cwd: "/Users/me/project" })
+    const out = outputMode.formatEnvelopeFile("./foo.txt", { fullPaths: false, cwd: "/Users/me/project" })
     expect(out).toBe("./foo.txt")
   })
 })
 
 describe("setFullPaths / isFullPaths", () => {
-  it("flips correctly and resets", () => {
-    resetOutputMode()
-    expect(isFullPaths()).toBe(false)
-    setFullPaths(true)
-    expect(isFullPaths()).toBe(true)
-    resetOutputMode()
-    expect(isFullPaths()).toBe(false)
+  it("flips on the live module, and a fresh import starts false again", async () => {
+    expect(outputMode.isFullPaths()).toBe(false)
+    outputMode.setFullPaths(true)
+    expect(outputMode.isFullPaths()).toBe(true)
+    // Guard the invariant the deleted reset existed for: a new module graph
+    // starts with the flag off, so no test can inherit another's setting.
+    vi.resetModules()
+    outputMode = await import("../src/lib/output-mode")
+    expect(outputMode.isFullPaths()).toBe(false)
   })
 })
 
 describe("--full-paths CLI flag end-to-end", () => {
-  afterEach(() => {
-    resetOutputMode()
-  })
-
   it("default mode: envelope.file is basename only (no absolute leading slash for /tmp paths)", async () => {
     const env = makeTestEnv()
     resetMocks()

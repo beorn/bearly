@@ -2,8 +2,8 @@
  * Canonical LLM usage/cost substrate (km bead 19899 Phase 0, policy P1–P5).
  *
  * One contract for every cost consumer (/llm commands, /ask prose, external
- * apps): normalize provider usage shapes into an open usage-class map, then
- * resolve a cost with an explicit provenance label.
+ * apps): resolve a cost from an open usage-class map with an explicit
+ * provenance label.
  *
  * SOURCE-SELECTION DECISION (recorded per bead @km/bearly/20798):
  * price data comes from LiteLLM's community-maintained
@@ -22,8 +22,8 @@
  *     `reasoning` is informational — it is a subset of `output` on every
  *     provider that reports it, so it is never priced separately here.
  *  P2 cost precedence: provider-reported > computed > unknown. Unknown is a
- *     first-class result (`source: "unknown"`) and must NEVER render as $0 —
- *     use `formatResolvedCost`, which renders the unknown label.
+ *     first-class result (`source: "unknown"`); display paths render it as the
+ *     unknown label ("—"), never a synthetic "$0".
  *  P3 cache classes are priced at their own rates; a missing cache rate
  *     falls back to the input rate (LiteLLM's own convention).
  */
@@ -37,67 +37,6 @@ export type UsageClass = "input" | "output" | "cache_read" | "cache_write" | "re
 
 /** Open usage map: canonical classes plus any future provider classes. */
 export type UsageMap = Partial<Record<UsageClass, number>> & Record<string, number>
-
-/**
- * Raw provider usage — the union of shapes seen on the wire. All fields
- * optional; `normalizeUsage` sorts out which dialect it is looking at.
- */
-export interface ProviderUsageLike {
-  // OpenAI chat-completions dialect
-  prompt_tokens?: number
-  completion_tokens?: number
-  prompt_tokens_details?: { cached_tokens?: number }
-  completion_tokens_details?: { reasoning_tokens?: number }
-  // OpenAI responses / Anthropic dialect
-  input_tokens?: number
-  output_tokens?: number
-  input_tokens_details?: { cached_tokens?: number }
-  output_tokens_details?: { reasoning_tokens?: number }
-  // Anthropic cache classes (disjoint from input_tokens by API contract)
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-}
-
-/**
- * Normalize a raw provider usage object into the canonical {@link UsageMap}.
- *
- * Dialect semantics (the load-bearing part):
- * - **Anthropic**: `input_tokens` already EXCLUDES cache reads/writes — the
- *   three classes map through disjoint.
- * - **OpenAI (chat + responses)**: `cached_tokens` is a SUBSET of the prompt/
- *   input count — subtract it so `input` means non-cached input everywhere.
- * - **reasoning**: a subset of output on both OpenAI dialects; surfaced as its
- *   own class for display, never priced on top of `output`.
- */
-export function normalizeUsage(raw: ProviderUsageLike): UsageMap {
-  const usage: UsageMap = {}
-
-  const anthropicCacheRead = raw.cache_read_input_tokens
-  const anthropicCacheWrite = raw.cache_creation_input_tokens
-  const isAnthropic = anthropicCacheRead !== undefined || anthropicCacheWrite !== undefined
-
-  const rawInput = raw.input_tokens ?? raw.prompt_tokens
-  const rawOutput = raw.output_tokens ?? raw.completion_tokens
-  const openaiCached = raw.input_tokens_details?.cached_tokens ?? raw.prompt_tokens_details?.cached_tokens
-  const reasoning = raw.output_tokens_details?.reasoning_tokens ?? raw.completion_tokens_details?.reasoning_tokens
-
-  if (rawInput !== undefined) {
-    if (isAnthropic) {
-      usage.input = rawInput
-    } else if (openaiCached !== undefined) {
-      usage.input = Math.max(0, rawInput - openaiCached)
-      usage.cache_read = openaiCached
-    } else {
-      usage.input = rawInput
-    }
-  }
-  if (rawOutput !== undefined) usage.output = rawOutput
-  if (anthropicCacheRead !== undefined) usage.cache_read = anthropicCacheRead
-  if (anthropicCacheWrite !== undefined) usage.cache_write = anthropicCacheWrite
-  if (reasoning !== undefined) usage.reasoning = reasoning
-
-  return usage
-}
 
 // ============================================================================
 // Rates + resolution (P2/P3)
@@ -145,7 +84,7 @@ function classRate(rates: ModelRates, cls: UsageClass): number | undefined {
  * - `reportedUsd` defined (including a genuine 0) → `source: "provider"`.
  * - else `rates` present → `source: "computed"` with a per-class breakdown.
  * - else → `source: "unknown"` — callers must not render `usd` as a dollar
- *   figure (use {@link formatResolvedCost}).
+ *   figure (render the unknown label instead).
  */
 export function resolveCost(opts: { usage: UsageMap; rates?: ModelRates | null; reportedUsd?: number }): ResolvedCost {
   if (opts.reportedUsd !== undefined) {
@@ -167,18 +106,4 @@ export function resolveCost(opts: { usage: UsageMap; rates?: ModelRates | null; 
     return { usd, source: "computed", breakdown }
   }
   return { usd: 0, source: "unknown" }
-}
-
-/** Rendered for a cost with no price source — never a synthetic "$0". */
-export const UNKNOWN_COST_LABEL = "—"
-
-/**
- * Format a resolved cost for display. Unknown renders the unknown label (P2);
- * known values reuse the plugin's ¢/$ conventions.
- */
-export function formatResolvedCost(cost: ResolvedCost): string {
-  if (cost.source === "unknown") return UNKNOWN_COST_LABEL
-  if (cost.usd < 0.01) return `$${(cost.usd * 100).toFixed(2)}¢`
-  if (cost.usd < 1) return `$${cost.usd.toFixed(3)}`
-  return `$${cost.usd.toFixed(2)}`
 }

@@ -7,14 +7,13 @@
  *   - Bundled skills dir present + has expected files (G4)
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 import { getMemoryDir } from "../src/lib/dual-pro"
 import { getOutputDir, buildOutputPath } from "../src/lib/format"
-import { _resetRecallCache, loadRecall } from "../src/lib/recall-optional"
 
 describe("getMemoryDir resolution", () => {
   // Snapshot env keys we mutate so tests don't leak.
@@ -104,24 +103,28 @@ describe("getOutputDir resolution", () => {
 })
 
 describe("optional @bearly/recall integration", () => {
-  beforeEach(() => {
-    _resetRecallCache()
+  // A fresh module graph is the reset the deleted `_resetRecallCache()` gave:
+  // the memoized resolver starts at "not yet tried" (undefined), never carrying
+  // a previous test's answer between cases or parallel workers.
+  let recallOptional: typeof import("../src/lib/recall-optional")
+  beforeEach(async () => {
+    vi.resetModules()
+    recallOptional = await import("../src/lib/recall-optional")
   })
   afterEach(() => {
     delete process.env.BEARLY_LLM_NO_RECALL
-    _resetRecallCache()
   })
 
   it("returns null when BEARLY_LLM_NO_RECALL=1 (explicit opt-out)", async () => {
     process.env.BEARLY_LLM_NO_RECALL = "1"
-    const recall = await loadRecall()
+    const recall = await recallOptional.loadRecall()
     expect(recall).toBeNull()
   })
 
   it("memoizes the resolution across calls (no duplicate import attempts)", async () => {
     process.env.BEARLY_LLM_NO_RECALL = "1"
-    const a = await loadRecall()
-    const b = await loadRecall()
+    const a = await recallOptional.loadRecall()
+    const b = await recallOptional.loadRecall()
     // Same reference (both null is fine; the test asserts memoization either way).
     expect(a).toBe(b)
   })
@@ -134,7 +137,7 @@ describe("optional @bearly/recall integration", () => {
     let result: unknown
     let threw = false
     try {
-      result = await loadRecall()
+      result = await recallOptional.loadRecall()
     } catch {
       threw = true
     }

@@ -95,12 +95,6 @@ export function formatEnvelopeFile(filePath: string, opts: { fullPaths: boolean;
   return rel
 }
 
-/** @deprecated Construct a fresh DispatchContext per test instead. */
-export function resetOutputMode(): void {
-  _setDefaultDispatchContext(createDispatchContext({ jsonMode: false }))
-  _fullPaths = false
-}
-
 /** @deprecated Use `ctx.emit(envelope)` from a passed-in DispatchContext. */
 export function emitJson(envelope: Record<string, unknown>): void {
   _getDefaultDispatchContext().emit(envelope)

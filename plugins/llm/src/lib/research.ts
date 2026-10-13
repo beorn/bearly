@@ -10,7 +10,7 @@ import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
-import type { Model, ModelResponse, Provider, ThinkingLevel } from "./types"
+import type { Model, ModelResponse, ThinkingLevel } from "./types"
 import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
 import { describeDispatchFailure, type DispatchFailureDescription } from "./dispatch-error"
 import { missingApiKeyError } from "./env-preflight"
@@ -24,28 +24,6 @@ import {
   recordProviderObservation,
   type ProviderObservationStore,
 } from "./provider-availability"
-
-/**
- * Turn a provider / AI-SDK error into an actionable one-line message.
- *
- * The top-level `.message` is frequently unhelpful ("Failed after 3 attempts")
- * — the real detail (OpenAI's `insufficient_quota`, a 429, a renamed model
- * id) lives in `responseBody` / `data` / `cause`. We stringify those defensively
- * and pattern-match the common failure shapes, appending a concrete next step
- * (switch provider, check billing, retry). Falls back to the raw message when
- * nothing matches. Exported for tests.
- *
- * This is the fix for the "Model returned empty response... silent failure"
- * class: `streamText` forwards provider errors to `onError` (and ends the text
- * stream empty) rather than throwing, so without capturing them here the CLI
- * only ever saw empty content and printed a generic, misleading message.
- *
- * @deprecated Use describeDispatchFailure(). This wrapper remains for one
- * release and renders the shared description's message.
- */
-export function describeProviderError(error: unknown, provider: Provider): string {
-  return describeDispatchFailure(error, { provider }).message
-}
 
 /**
  * Extract `x-ratelimit-*` / `anthropic-ratelimit-*` headers from a Vercel AI
@@ -545,7 +523,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       // `textStream` empty and forwards the error to `onError` (whose default
       // is a bare console.error dump). Capture it here so an empty completion
       // carries a real, actionable `response.error` instead of looking like a
-      // silent success. See describeProviderError.
+      // silent success. The failure is described by describeDispatchFailure.
       // Single step: no tools or stopWhen, so v7 aggregate usage is this call's usage.
       const result = streamText({
         model: languageModel,

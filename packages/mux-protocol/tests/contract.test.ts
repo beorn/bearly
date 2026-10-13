@@ -6,8 +6,8 @@
  * exercised. Any backend (e.g. @bearly/mux-cmux-adapter) runs this same suite.
  */
 import { describe, test } from "vitest"
-import { ALL_CAPABILITIES, createInMemoryMux } from "../src/index.ts"
-import { muxContractCases } from "../src/contract.ts"
+import { muxContractCases } from "../src/testing/contract-cases.ts"
+import { ALL_CAPABILITIES, createInMemoryMux } from "../src/testing/in-memory-mux.ts"
 
 describe("MuxBackend contract — in-memory reference (full capabilities)", () => {
   for (const c of muxContractCases(() => createInMemoryMux())) test(c.name, c.run)

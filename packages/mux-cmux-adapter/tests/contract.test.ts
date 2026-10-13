@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from "vitest"
 import { MuxRefNotFoundError } from "@bearly/mux-protocol"
-import { muxContractCases } from "@bearly/mux-protocol/contract"
+import { muxContractCases } from "@bearly/mux-protocol/testing/contract-cases"
 import { type CmuxExec, type CmuxExecResult, createCmuxBackend } from "../src/index.ts"
 
 // ── Stateful fake cmux: implements the argv contract the adapter emits ──

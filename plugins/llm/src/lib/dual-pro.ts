@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod"
-import { getModel, getEndpoint, type Model, BEST_MODELS } from "./types"
+import { getModel, getEndpoint, type Model } from "./types"
 import { isProviderAvailable } from "./providers"
 import { createLogger } from "loggily"
 
@@ -732,14 +732,6 @@ Output STRICT JSON, nothing else (no markdown fence, no prose):
 }`
 }
 
-/** Parse a pairwise judge response. Same fence/prose tolerance as
- * `parseJudgeResponse`. Returns undefined on unparseable / schema-mismatched
- * output. */
-export function parsePairwiseJudgeResponse(raw: string): PairwiseJudgeResult | undefined {
-  const parsed = parsePairwiseJudgeResponseDetailed(raw)
-  return parsed.ok ? parsed.value : undefined
-}
-
 /** Internal diagnostic result; the package's public exports are unchanged. */
 export function parsePairwiseJudgeResponseDetailed(
   raw: string,
@@ -776,34 +768,6 @@ export function parsePairwiseJudgeResponseDetailed(
     }
   }
   return { ok: true, value: parsed.data }
-}
-
-/**
- * Synthesize a pairwise result from a v2 N-way judge result + the leg
- * scores. Used by the v2→v3 reader so historical entries surface a uniform
- * `judge.ab` / `judge.ac` shape to consumers (leaderboard, backtest,
- * judge-history). If both leg scores are missing we return undefined so
- * the consumer can short-circuit instead of inventing a verdict.
- */
-export function synthesizePairwiseFromV2(
-  scoreA: JudgeBreakdown | null | undefined,
-  scoreB: JudgeBreakdown | null | undefined,
-  v2Winner: "a" | "b" | "c" | "tie" | undefined,
-  v2WinnerKey: "a" | "b" | "c",
-): PairwiseJudgeResult | undefined {
-  if (!scoreA && !scoreB) return undefined
-  const a = scoreA?.total ?? 0
-  const b = scoreB?.total ?? 0
-  // Map v2's global winner to this pair's verdict only when this pair
-  // contains the global winner. Otherwise infer from the totals (within
-  // 1 point = tie, mirroring the live judge rule).
-  let winner: PairwiseWinner
-  if (v2Winner === "tie") winner = "tie"
-  else if (v2Winner === "a") winner = "A"
-  else if (v2Winner === v2WinnerKey) winner = "B"
-  else if (Math.abs(a - b) <= 1) winner = "tie"
-  else winner = a >= b ? "A" : "B"
-  return { winner, scoreA: scoreA ?? null, scoreB: scoreB ?? null }
 }
 
 // --------------------------------------------------------------------
@@ -1304,35 +1268,6 @@ export async function appendPromotionDecision(entry: {
 // --------------------------------------------------------------------
 // BEST_MODELS-aware helpers
 // --------------------------------------------------------------------
-
-/** Inferred default config from the registry's BEST_MODELS.pro entries. */
-export function inferDefaultsFromRegistry(): DualProConfig {
-  const proIds = BEST_MODELS.pro
-  const m0 = proIds[0] ?? DEFAULT_CONFIG.mainstays[0]
-  const m1 = proIds[1] ?? DEFAULT_CONFIG.mainstays[1]
-  // Split-test pool = remaining BEST_MODELS.pro entries plus a couple of
-  // cross-provider candidates that aren't already a mainstay.
-  const seen = new Set([m0, m1])
-  const pool: string[] = []
-  for (const id of proIds.slice(2)) {
-    if (!seen.has(id)) {
-      pool.push(id)
-      seen.add(id)
-    }
-  }
-  // Pad with diverse picks so a fresh install has a real split-test set.
-  for (const id of ["gemini-2.5-pro", "grok-4", "claude-opus-4-6"]) {
-    if (!seen.has(id) && getModel(id)) {
-      pool.push(id)
-      seen.add(id)
-    }
-  }
-  return {
-    ...DEFAULT_CONFIG,
-    mainstays: [m0, m1],
-    splitTestPool: pool.length > 0 ? pool : DEFAULT_CONFIG.splitTestPool,
-  }
-}
 
 /** Resolve a model ID against MODELS, with friendly null handling. */
 export function resolveModel(id: string | undefined): Model | undefined {

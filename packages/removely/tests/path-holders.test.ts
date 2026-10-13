@@ -29,11 +29,7 @@ import {
   type PathHolder,
   type UnreadableProcess,
 } from "../src/index.ts"
-import {
-  inspectPathHolderCensusInProc,
-  inspectProcessCensusInProc,
-  inspectProcessCwdsInProc,
-} from "../src/path-holders.ts"
+import { inspectProcessCensusInProc, inspectProcessCwdsInProc } from "../src/path-holders.ts"
 
 // Root setup imports Removely before this suite; reload it so the I/O controls
 // below bind to the collector under test rather than its cached real adapters.
@@ -44,6 +40,14 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
 }))
+
+/** The public census carrying this suite's synthetic proc root: the deterministic seam is an
+ *  option now (`inspectPathHolderCensus({ procRoot })`), not a separate export. */
+const censusInProc = <S extends removely.PathHolderScope>(
+  path: string,
+  procRoot: string,
+  options: removely.PathHolderCensusOptions<S>,
+) => inspectPathHolderCensus(path, { ...options, procRoot })
 
 const temporary: string[] = []
 
@@ -88,7 +92,7 @@ describe("inspectPathHolderCensus", () => {
     writeFileSync(join(processRoot, "cmdline"), "")
 
     const kill = vi.spyOn(process, "kill")
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.holders).toEqual([{ pid: 4242, source: "root", target: ownedPath }])
     expect(kill).not.toHaveBeenCalled()
   })
@@ -109,7 +113,7 @@ describe("inspectPathHolderCensus", () => {
     writeFileSync(join(processRoot, "maps"), `7f000000-7f001000 r--p 00000000 00:00 0 ${mappedFile}\n`)
     writeFileSync(join(processRoot, "cmdline"), "")
 
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.holders).toEqual([{ pid: 4242, source: "fd/maps", target: mappedFile }])
   })
 
@@ -132,7 +136,7 @@ describe("inspectPathHolderCensus", () => {
       writeFileSync(join(processRoot, "stat"), "4242 (probe) S 1 0 0 0\n")
       chmodSync(join(processRoot, "maps"), 0o000)
 
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
 
       expect(census.holders).toEqual([])
       expect(census.coverage).toMatchObject({
@@ -188,7 +192,7 @@ describe("inspectPathHolderCensus", () => {
       symlinkSync("relative/target", join(processRoot(4245), "cwd"))
 
       try {
-        const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid", deadlineMs: 300 })
+        const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid", deadlineMs: 300 })
         expect(census.coverage).toMatchObject({
           complete: false,
           processes: { sourceDenied: 1, sourceUnanswered: 1, sourceMissing: 1, sourceAmbiguous: 1 },
@@ -246,7 +250,7 @@ describe("inspectPathHolderCensus", () => {
         chmodSync(join(processRoot, "maps"), 0o000)
       }
 
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
       expect(census.holders).toEqual([])
       // The zombie is counted, never probed, and never listed as unreadable.
       // The live one is the only thing left blocking.
@@ -280,7 +284,7 @@ describe("inspectPathHolderCensus", () => {
       chmodSync(join(processRoot, "maps"), 0o000)
     }
 
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.holders).toEqual([])
     expect(census.coverage).toMatchObject({
       complete: true,
@@ -319,7 +323,7 @@ describe("inspectPathHolderCensus", () => {
     }
 
     try {
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
       expect(census.holders).toEqual([])
       expect(census.coverage).toMatchObject({
         complete: false,
@@ -375,7 +379,7 @@ describe("inspectPathHolderCensus", () => {
       }
 
       try {
-        const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+        const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
         expect(census.coverage).toMatchObject({
           complete: false,
           unreadable: [
@@ -407,7 +411,7 @@ describe("inspectPathHolderCensus", () => {
       // The PID remains alive: a source disappearing is not proof the process exited.
       writeFileSync(join(processRoot, "stat"), "4242 (probe) S 1 0 0 0\n")
 
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
 
       expect(census.holders).toEqual([])
       expect(census.coverage).toMatchObject({
@@ -432,7 +436,7 @@ describe("inspectPathHolderCensus", () => {
 
       const none = { exited: 0, denied: 0, missing: 0, ambiguous: 0, unanswered: 0 }
       const source = { readable: 0, notApplicable: 0, unavailable: none }
-      await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })).resolves.toEqual({
+      await expect(censusInProc(ownedPath, procRoot, { scope: "same-uid" })).resolves.toEqual({
         holders: [],
         coverage: {
           platform: "linux",
@@ -466,7 +470,7 @@ describe("inspectPathHolderCensus", () => {
     const procRoot = join(fixture, "missing-proc")
     mkdirSync(ownedPath)
 
-    await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })).rejects.toThrow(
+    await expect(censusInProc(ownedPath, procRoot, { scope: "same-uid" })).rejects.toThrow(
       `Linux path-holder census requires readable proc root '${procRoot}'`,
     )
   })
@@ -495,7 +499,7 @@ describe("inspectPathHolderCensus", () => {
       const probe = argvFixture()
       const entry = join(probe.ownedPath, "ag", "inhab.ts")
       writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${entry}\0--name\0@dev.5\0`)
-      const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+      const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
       expect(census.holders).toEqual([{ pid: 4242, source: "argv", target: entry }])
       expect(census.coverage).toMatchObject({ complete: true, sources: { argv: { readable: 1 } } })
     })
@@ -508,7 +512,7 @@ describe("inspectPathHolderCensus", () => {
           join(probe.processRoot, "cmdline"),
           `sh\0-c\0cd ${probe.ownedPath} && run\0--config=${probe.ownedPath}/x.json\0`,
         )
-        const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+        const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
         expect(census.holders).toEqual([])
         expect(census.coverage).toMatchObject({ complete: true })
       },
@@ -533,7 +537,7 @@ describe("inspectPathHolderCensus", () => {
         writeFileSync(join(neighbour, "cmdline"), "sh\0")
         try {
           const started = performance.now()
-          const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, {
+          const census = await censusInProc(probe.ownedPath, probe.procRoot, {
             scope: "same-uid",
             deadlineMs: 300,
           })
@@ -572,7 +576,7 @@ describe("inspectPathHolderCensus", () => {
     test.runIf(process.platform === "linux")("an unreadable cmdline is a denial, never an empty argv", async () => {
       const probe = argvFixture()
       chmodSync(join(probe.processRoot, "cmdline"), 0o000)
-      const census = await inspectPathHolderCensusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+      const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
       expect(census.holders).toEqual([])
       expect(census.coverage).toMatchObject({
         complete: false,
@@ -614,7 +618,7 @@ describe("explicit scope and source evidence", () => {
       const resource = join(processRoot, source)
       if (source === "fd") safeRemoveSync(resource, { within: processRoot })
       else unlinkSync(resource)
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
       expect(census.coverage).toMatchObject({
         complete: false,
         sources: { [source]: { unavailable: { exited: 0, missing: 1 } } },
@@ -634,7 +638,7 @@ describe("explicit scope and source evidence", () => {
       }
       return readlink(...args)
     })
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: false,
       sources: { fd: { unavailable: { missing: 1, exited: 0 } } },
@@ -654,7 +658,7 @@ describe("explicit scope and source evidence", () => {
       if (resource === join(processRoot, "fd", "8")) throw Object.assign(new Error("missing fd"), { code: "ENOENT" })
       return readlink(...args)
     })
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: false,
       sources: { fd: { unavailable: { denied: 1, missing: 1, ambiguous: 1, exited: 0 } } },
@@ -679,7 +683,7 @@ describe("explicit scope and source evidence", () => {
     })
     // The absent process directory proves exit for the vanished and the denied descriptor alike, since an exited
     // process holds nothing; the ambiguous name was read and still says what it says (hh 26990).
-    const afterExit = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const afterExit = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(afterExit.coverage).toMatchObject({
       complete: false,
       sources: { fd: { unavailable: { denied: 0, missing: 0, ambiguous: 1 } } },
@@ -711,7 +715,7 @@ describe("explicit scope and source evidence", () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     symlinkSync(ownedPath, join(processRoot, "fd", "7"))
     denyOnce(join(processRoot, "fd"))
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.holders).toEqual([{ pid: 4242, source: "fd/7", target: ownedPath }])
     expect(census.coverage).toMatchObject({ complete: true, sources: { fd: { readable: 1 } } })
     expect(census.coverage).not.toHaveProperty("unreadable")
@@ -720,7 +724,7 @@ describe("explicit scope and source evidence", () => {
   test("a denied source whose process directory has gone by the second read counts as exited", async () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     denyOnce(join(processRoot, "fd"), () => safeRemoveSync(processRoot, { within: procRoot }))
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: true,
       sources: { fd: { unavailable: { denied: 0, exited: 1 } } },
@@ -735,7 +739,7 @@ describe("explicit scope and source evidence", () => {
     denyOnce(join(processRoot, "fd"), () =>
       writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 200 })),
     )
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     // The second read belongs to the new process, which this census never listed, so it holds nothing here.
     expect(census.holders).toEqual([])
     expect(census.coverage).toMatchObject({
@@ -747,7 +751,7 @@ describe("explicit scope and source evidence", () => {
   test("a denied source of a process that is now a one-thread zombie is not applicable", async () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     denyOnce(join(processRoot, "fd"), () => writeFileSync(join(processRoot, "stat"), procStat(4242, "Z")))
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: true,
       sources: { fd: { notApplicable: 1, unavailable: { denied: 0, exited: 0 } } },
@@ -759,7 +763,7 @@ describe("explicit scope and source evidence", () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     writeFileSync(join(processRoot, "stat"), procStat(4242, "S", { startTicks: 100 }))
     denyOnce(join(processRoot, "fd"), () => {}, 2)
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: false,
       sources: { fd: { unavailable: { denied: 1, exited: 0 } } },
@@ -772,7 +776,7 @@ describe("explicit scope and source evidence", () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     writeFileSync(join(processRoot, "stat"), procStat(4242, "Z", { threads: 2 }))
     denyOnce(join(processRoot, "fd"), () => {}, 2)
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: false,
       processes: { zombie: 0, inspected: 1 },
@@ -794,7 +798,7 @@ describe("explicit scope and source evidence", () => {
       if (String(args[0]) === denied && denials++ === 0) throw Object.assign(new Error("denied fd"), { code: "EACCES" })
       return readlink(...args)
     }) as typeof fsPromises.readlink)
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.holders).toEqual([{ pid: 4242, source: "fd/7", target: ownedPath }])
     expect(census.coverage).toMatchObject({
       complete: false,
@@ -811,7 +815,7 @@ describe("explicit scope and source evidence", () => {
       if (String(args[0]) === resource) safeRemoveSync(processRoot, { within: procRoot })
       return readFile(...args)
     })
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: true,
       sources: { maps: { unavailable: { exited: 1, missing: 0 } } },
@@ -824,7 +828,7 @@ describe("explicit scope and source evidence", () => {
     unlinkSync(join(processRoot, "exe"))
     // /proc/PID/stat field 9 is PF_KTHREAD; a bare missing executable has no such proof.
     writeFileSync(join(processRoot, "stat"), "4242 (kworker) S 1 0 0 0 0 2097152 0\n")
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.coverage).toMatchObject({
       complete: true,
       sources: { exe: { notApplicable: 1, unavailable: { exited: 0, missing: 0 } } },
@@ -836,7 +840,7 @@ describe("explicit scope and source evidence", () => {
     const resource = join(processRoot, source)
     chmodSync(resource, 0o000)
     try {
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
       expect(census.coverage).toMatchObject({
         complete: false,
         sources: { [source]: { unavailable: { denied: 1, missing: 0 } } },
@@ -859,14 +863,14 @@ describe("explicit scope and source evidence", () => {
       }
       return result
     })
-    const all = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const all = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(all.holders).toEqual([{ pid: 4242, source: "cwd", target: ownedPath }])
     expect(all.coverage).toMatchObject({
       complete: true,
       scope: "all-visible",
       processes: { enumerated: 1, sameUid: 0, otherUid: 1, admitted: 1, inspected: 1, excluded: 0 },
     })
-    const same = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const same = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(same.holders).toEqual([])
     expect(same.coverage).toMatchObject({
       complete: true,
@@ -874,7 +878,7 @@ describe("explicit scope and source evidence", () => {
       processes: { enumerated: 1, sameUid: 0, otherUid: 1, admitted: 0, inspected: 0, excluded: 1 },
     })
     chmodSync(join(processRoot, "maps"), 0o000)
-    const denied = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const denied = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(denied.coverage).toMatchObject({
       complete: false,
       processes: { otherUid: 1, admitted: 1 },
@@ -892,7 +896,7 @@ describe("explicit scope and source evidence", () => {
       }
       return stat(...args)
     })
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
     expect(census.holders).toEqual([{ pid: 4242, source: "fd/7", target: ownedPath }])
     expect(census.coverage).toMatchObject({
       complete: false,
@@ -914,7 +918,7 @@ describe("explicit scope and source evidence", () => {
           ? `7f000000-7f001000 r--p 00000000 00:00 0 ${join(ownedPath, target.slice("/elsewhere/".length))}\n`
           : `${target}\n`,
       )
-      const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })
+      const census = await censusInProc(ownedPath, procRoot, { scope: "all-visible" })
       expect(census.coverage).toMatchObject({
         complete: false,
         sources: { maps: { unavailable: { ambiguous: 1 } } },
@@ -929,10 +933,10 @@ describe("explicit scope and source evidence", () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     const resource = join(processRoot, "maps")
     writeFileSync(resource, "7f000000-7f001000 rw-s 00000000 00:0e 1234 anon_inode:i915.gem\n")
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.coverage).toMatchObject({ complete: true, sources: { maps: { readable: 1 } } })
     writeFileSync(resource, "7f000000-7f001000 rw-s 00000000 00:0e 1234 relative/mapping\n")
-    const control = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const control = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(control.coverage).toMatchObject({
       complete: false,
       processes: { sourceAmbiguous: 1 },
@@ -947,7 +951,7 @@ describe("explicit scope and source evidence", () => {
       "7f000000-7f001000 r--p 00000000 00:00 0 /elsewhere/file (deleted)\n7f002000-7f003000 r--p 00000000 00:00 0 /elsewhere/file\\012name\n",
     )
     symlinkSync("/elsewhere/fd (deleted)", join(processRoot, "fd", "7"))
-    const census = await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "same-uid" })
+    const census = await censusInProc(ownedPath, procRoot, { scope: "same-uid" })
     expect(census.holders).toEqual([])
     expect(census.coverage).toMatchObject({
       complete: true,
@@ -962,8 +966,8 @@ describe("explicit scope and source evidence", () => {
   test("filesystem root includes descendants while a sibling prefix does not", async () => {
     const { ownedPath, procRoot, processRoot } = fixture()
     symlinkSync(`${ownedPath}-other/file`, join(processRoot, "fd", "7"))
-    expect((await inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })).holders).toEqual([])
-    const census = await inspectPathHolderCensusInProc("/", procRoot, { scope: "all-visible" })
+    expect((await censusInProc(ownedPath, procRoot, { scope: "all-visible" })).holders).toEqual([])
+    const census = await censusInProc("/", procRoot, { scope: "all-visible" })
     expect(census.holders).toContainEqual({ pid: 4242, source: "exe", target: "/bin/sh" })
   })
 
@@ -980,7 +984,7 @@ describe("explicit scope and source evidence", () => {
         return readFile(...args)
       })
     }
-    await expect(inspectPathHolderCensusInProc(ownedPath, procRoot, { scope: "all-visible" })).rejects.toThrow(
+    await expect(censusInProc(ownedPath, procRoot, { scope: "all-visible" })).rejects.toThrow(
       `path-holder observation failed at '${resource}'`,
     )
   })

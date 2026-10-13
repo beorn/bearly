@@ -32,22 +32,24 @@ unit inside it (mirrors cmux's `read-screen --surface`). Backends throw the type
 > `readScreen` on a cadence; nothing consumes cmux's NDJSON event stream), so an
 > event verb would be speculative over-design.
 
-## Reference backend
+## Reference backend (test kit)
 
 `createInMemoryMux(capabilities?)` is a faithful in-memory `MuxBackend` — the
 behavioral spec the contract suite is validated against, and a zero-dependency
-test double. Pass restricted capabilities to exercise negotiation paths:
+test double. It lives with the tests it serves, on its own subpath; this package
+is private today, so these subpaths are internal seams, not a published API.
+Pass restricted capabilities to exercise negotiation paths:
 
 ```ts
-import { createInMemoryMux, ALL_CAPABILITIES } from "@bearly/mux-protocol"
+import { ALL_CAPABILITIES, createInMemoryMux } from "@bearly/mux-protocol/testing/in-memory-mux"
 const noRename = createInMemoryMux({ ...ALL_CAPABILITIES, renameTab: false })
 ```
 
-## Contract suite
+## Contract suite (test kit)
 
 ```ts
 import { test } from "vitest"
-import { muxContractCases } from "@bearly/mux-protocol/contract"
+import { muxContractCases } from "@bearly/mux-protocol/testing/contract-cases"
 for (const c of muxContractCases(makeBackend)) test(c.name, c.run)
 ```
 

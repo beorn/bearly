@@ -19,7 +19,6 @@
 
 import { describe, it, expect, vi } from "vitest"
 import { makeTestEnv, runCli } from "./helpers"
-import { describeProviderError } from "../src/lib/research"
 import { describeDispatchFailure } from "../src/index"
 import { filterNewModelCandidates } from "../src/cmd/pricing"
 
@@ -67,7 +66,7 @@ function quotaApiError(): Error {
   })
 }
 
-describe("describeProviderError", () => {
+describe("describeDispatchFailure — provider error surface", () => {
   // 26799: retain the recorded provider cause through an SDK retry wrapper.
   // Existing cases classify errors but do not preserve HTTP status/body or
   // distinguish a retry wrapper's timeout wording from a concrete HTTP 402.
@@ -117,11 +116,11 @@ describe("describeProviderError", () => {
     expect(described.message).not.toMatch(/sk-secret-fixture|secret-fixture-token/u)
   })
 
-  it("keeps the legacy message while exposing the shared provider-scoped observation", () => {
+  it("exposes the provider-scoped observation behind the actionable message", () => {
     const error = quotaStreamError()
     const described = describeDispatchFailure(error, { provider: "openai" })
 
-    expect(described.message).toBe(describeProviderError(error, "openai"))
+    expect(described.message).toMatch(/insufficient_quota/i)
     expect(described).toMatchObject({
       kind: "quota",
       scope: "provider",
@@ -286,7 +285,7 @@ describe("describeProviderError", () => {
   })
 
   it("surfaces insufficient_quota from the real streamed object (not [object Object])", () => {
-    const msg = describeProviderError(quotaStreamError(), "openai")
+    const msg = describeDispatchFailure(quotaStreamError(), { provider: "openai" }).message
     expect(msg).toMatch(/insufficient_quota/i)
     expect(msg).toMatch(/quota exhausted/i)
     // Points the user at a working provider instead of dead-ending.
@@ -295,26 +294,32 @@ describe("describeProviderError", () => {
   })
 
   it("also surfaces insufficient_quota from an SDK APICallError (detail in responseBody)", () => {
-    const msg = describeProviderError(quotaApiError(), "openai")
+    const msg = describeDispatchFailure(quotaApiError(), { provider: "openai" }).message
     expect(msg).toMatch(/quota exhausted/i)
     expect(msg).not.toBe("Failed after 3 attempts")
   })
 
   it("detects rate limits (429)", () => {
-    expect(describeProviderError(new Error("429 Too Many Requests"), "openai")).toMatch(/rate-limited/i)
+    expect(describeDispatchFailure(new Error("429 Too Many Requests"), { provider: "openai" }).message).toMatch(
+      /rate-limited/i,
+    )
   })
 
   it("detects renamed / unavailable model ids", () => {
-    const msg = describeProviderError(new Error("The model `gemini-x` does not exist"), "google")
+    const msg = describeDispatchFailure(new Error("The model `gemini-x` does not exist"), {
+      provider: "google",
+    }).message
     expect(msg).toMatch(/renamed or unavailable/i)
   })
 
   it("detects auth failures", () => {
-    expect(describeProviderError(new Error("401 invalid_api_key"), "openrouter")).toMatch(/auth failed/i)
+    expect(describeDispatchFailure(new Error("401 invalid_api_key"), { provider: "openrouter" }).message).toMatch(
+      /auth failed/i,
+    )
   })
 
   it("renders a safe transport message without persisting or printing the raw payload", () => {
-    expect(describeProviderError(new Error("socket hang up"), "xai")).toBe(
+    expect(describeDispatchFailure(new Error("socket hang up"), { provider: "xai" }).message).toBe(
       "xai transport failure during dispatch — check the provider endpoint and network, then retry.",
     )
   })

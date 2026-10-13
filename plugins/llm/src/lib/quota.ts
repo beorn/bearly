@@ -19,7 +19,7 @@
  *      `--quota`.
  *
  * Cache file: `~/.cache/bearly-llm/last-quota-by-provider.json` (override
- * via XDG_CACHE_HOME, or `_setCachePathForTesting` for tests). Atomic write
+ * via XDG_CACHE_HOME). Atomic write
  * (temp + rename) so a crash mid-write can't corrupt the cache.
  */
 
@@ -59,23 +59,14 @@ export interface QuotaSnapshot {
 // Cache I/O
 // ============================================================================
 
-let cachePathOverride: string | undefined
-
 /**
  * Resolve the on-disk cache path. Honors XDG_CACHE_HOME so users with custom
- * cache layouts work; falls back to `$HOME/.cache/bearly-llm/`. Tests can
- * pin the path via `_setCachePathForTesting`.
+ * cache layouts work; falls back to `$HOME/.cache/bearly-llm/`.
  */
 export function getCachePath(): string {
-  if (cachePathOverride) return cachePathOverride
   const xdg = process.env.XDG_CACHE_HOME
   const base = xdg && xdg.length > 0 ? xdg : join(process.env.HOME || homedir(), ".cache")
   return join(base, "bearly-llm", "last-quota-by-provider.json")
-}
-
-/** @internal — pin the cache path for the duration of a test. */
-export function _setCachePathForTesting(path: string | undefined): void {
-  cachePathOverride = path
 }
 
 /**

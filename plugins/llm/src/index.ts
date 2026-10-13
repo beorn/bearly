@@ -58,7 +58,7 @@ export { describeDispatchFailure } from "./lib/dispatch-error.ts"
 export type { DispatchFailureDescription, DispatchFailureKind, DispatchFailureTarget } from "./lib/dispatch-error.ts"
 // Canonical usage/cost substrate (bead 19899 P1-P3): open usage-class map,
 // reported > computed > unknown precedence, unknown never renders as $0.
-export { normalizeUsage, resolveCost, formatResolvedCost, UNKNOWN_COST_LABEL } from "./lib/cost.ts"
-export type { UsageMap, UsageClass, ModelRates, ResolvedCost, CostSource, ProviderUsageLike } from "./lib/cost.ts"
+export { resolveCost } from "./lib/cost.ts"
+export type { UsageMap, UsageClass, ModelRates, ResolvedCost, CostSource } from "./lib/cost.ts"
 export { lookupModelRates } from "./lib/pricing.ts"
 export { LITELLM_PRICES_URL, fetchLiteLLMMap, parseLiteLLMMap, matchLiteLLMEntry } from "./lib/litellm.ts"

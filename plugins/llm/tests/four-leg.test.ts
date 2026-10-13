@@ -10,13 +10,12 @@
  *   2. pickSplitTestSlots — slot D = correlated re-test of recent winner
  *   3. pickSplitTestSlots — cold-start (empty history) falls back to round-robin
  *   4. buildPairwiseJudgePrompt — 2 responses, "Response A" + "Response B"
- *   5. parsePairwiseJudgeResponse — well-formed + fence + unparseable
- *   6. synthesizePairwiseFromV2 — v2 entry → judge.ab back-fill
- *   7. 4-leg dispatch fires all 4 legs in parallel
- *   8. 4-leg dispatch runs 3 pairwise judges (ab, ac, ad)
- *   9. --legs flag honored: 2 / 3 / 4 cap leg count
- *   10. v2 ab-pro.jsonl entry still parses (back-compat reader)
- *   11. Aggregate cost stays under typical budget for default fleet
+ *   5. parsePairwiseJudgeResponseDetailed — well-formed + fence + typed causes
+ *   6. 4-leg dispatch fires all 4 legs in parallel
+ *   7. 4-leg dispatch runs 3 pairwise judges (ab, ac, ad)
+ *   8. --legs flag honored: 2 / 3 / 4 cap leg count
+ *   9. v2 ab-pro.jsonl entry still parses (back-compat reader)
+ *   10. Aggregate cost stays under typical budget for default fleet
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
@@ -29,9 +28,7 @@ import {
   normalizeConfig,
   pickSplitTestSlots,
   buildPairwiseJudgePrompt,
-  parsePairwiseJudgeResponse,
   parsePairwiseJudgeResponseDetailed,
-  synthesizePairwiseFromV2,
   buildLeaderboard,
   type AbProEntry,
   type ScoreWeights,
@@ -209,7 +206,7 @@ describe("buildPairwiseJudgePrompt — 2 responses, A vs B", () => {
   })
 })
 
-describe("parsePairwiseJudgeResponse", () => {
+describe("parsePairwiseJudgeResponseDetailed", () => {
   it("parses well-formed pairwise judge JSON", () => {
     const raw = JSON.stringify({
       scoreA: { scores: { specificity: 4, actionability: 4, correctness: 5, depth: 4 }, total: 17 },
@@ -217,71 +214,34 @@ describe("parsePairwiseJudgeResponse", () => {
       winner: "A",
       reasoning: "A had concrete examples.",
     })
-    const r = parsePairwiseJudgeResponse(raw)
-    expect(r).toBeDefined()
-    expect(r!.winner).toBe("A")
-    expect(r!.scoreA!.total).toBe(17)
-    expect(r!.scoreB!.total).toBe(12)
+    const r = parsePairwiseJudgeResponseDetailed(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error(r.message)
+    expect(r.value.winner).toBe("A")
+    expect(r.value.scoreA!.total).toBe(17)
+    expect(r.value.scoreB!.total).toBe(12)
   })
 
   it("strips ```json fences", () => {
     const raw =
       '```json\n{"scoreA":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"scoreB":{"scores":{"specificity":3,"actionability":3,"correctness":3,"depth":3},"total":12},"winner":"tie"}\n```'
-    expect(parsePairwiseJudgeResponse(raw)?.winner).toBe("tie")
+    const r = parsePairwiseJudgeResponseDetailed(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error(r.message)
+    expect(r.value.winner).toBe("tie")
   })
 
-  // Keep the legacy parser contract while giving the CLI the actual failure.
   it.each([
     ["   ", "empty", "empty"],
     ["not json", "no-json-object", "JSON object"],
     ['{"winner":', "malformed-json", "JSON"],
     ['{"winner":"C","scoreA":null,"scoreB":null}', "schema", "winner"],
-  ])("diagnoses %j without changing the legacy undefined result", (raw, kind, detail) => {
-    expect(parsePairwiseJudgeResponse(raw)).toBeUndefined()
+  ])("diagnoses %j with a typed cause and message", (raw, kind, detail) => {
     const parsed = parsePairwiseJudgeResponseDetailed(raw)
     expect(parsed.ok).toBe(false)
     if (parsed.ok) throw new Error("invalid judge response was accepted")
     expect(parsed.kind).toBe(kind)
     expect(parsed.message).toContain(detail)
-  })
-})
-
-// --------------------------------------------------------------------
-// 6. v2 → v3 reader: synthesizePairwiseFromV2
-// --------------------------------------------------------------------
-describe("synthesizePairwiseFromV2 — back-compat reader", () => {
-  const breakdown = (total: number) => ({
-    scores: { specificity: total / 4, actionability: total / 4, correctness: total / 4, depth: total / 4 },
-    total,
-  })
-
-  it("synthesizes a pairwise result from v2 N-way scores", () => {
-    // V2 entry: leg A scored 16, leg B scored 12, leg C scored 20, winner "c".
-    // The AB pair should have winner "A" (16 > 12).
-    const ab = synthesizePairwiseFromV2(breakdown(16), breakdown(12), "c", "b")
-    expect(ab).toBeDefined()
-    expect(ab!.scoreA!.total).toBe(16)
-    expect(ab!.scoreB!.total).toBe(12)
-    // Pair B vs A: global winner is C (not in this pair) → infer from totals.
-    // Margin > 1 → winner is A (16 vs 12).
-    expect(ab!.winner).toBe("A")
-  })
-
-  it("when v2 winner is in the pair, that side wins", () => {
-    // V2 entry: leg A scored 16, leg C scored 20, winner "c". The AC pair
-    // should have winner "B" (the C side, since C is the contender).
-    const ac = synthesizePairwiseFromV2(breakdown(16), breakdown(20), "c", "c")
-    expect(ac!.winner).toBe("B")
-  })
-
-  it("returns undefined when both leg scores are missing (no signal)", () => {
-    expect(synthesizePairwiseFromV2(null, null, "a", "b")).toBeUndefined()
-    expect(synthesizePairwiseFromV2(undefined, undefined, undefined, "b")).toBeUndefined()
-  })
-
-  it("synthesizes tie when totals within 1 point of each other", () => {
-    const ab = synthesizePairwiseFromV2(breakdown(15), breakdown(14.5), undefined, "b")
-    expect(ab!.winner).toBe("tie")
   })
 })
 

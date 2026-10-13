@@ -77,9 +77,3 @@ export async function loadRecall(): Promise<RecallApi | null> {
   cached = null
   return cached
 }
-
-/** Reset the memoized resolver — used by tests to flip between
- * "recall present" / "recall absent" within a single suite. */
-export function _resetRecallCache(): void {
-  cached = undefined
-}

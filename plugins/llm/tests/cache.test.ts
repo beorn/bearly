@@ -10,35 +10,34 @@
  * Lookup scans the directory for a filename starting with `<hash>,`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 /**
- * @reach fs-walk <fixture-only: cacheDir is a mkdtempSync directory under tmpdir>
+ * @reach fs-walk <fixture-only: tmpRoot is a mkdtempSync directory under tmpdir; cacheDir is the responses dir that XDG_CACHE_HOME resolves to inside it>
  */
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import {
-  cacheKeyHash,
-  readCache,
-  writeCache,
-  cacheStats,
-  cacheClear,
-  parseFilename,
-  sanitizeModelSlug,
-  _setCacheDirForTesting,
-  type CacheKey,
-} from "../src/lib/cache"
+import { cacheKeyHash, readCache, writeCache, sanitizeModelSlug, type CacheKey } from "../src/lib/cache"
 
 let cacheDir: string
+let tmpRoot: string
 
 beforeEach(() => {
-  cacheDir = mkdtempSync(join(tmpdir(), "bearly-cache-"))
-  _setCacheDirForTesting(cacheDir)
+  // XDG_CACHE_HOME is the cache's documented override (see getCacheDir); it is
+  // read at call time, so a stubbed tmpdir isolates the suite from the real
+  // ~/.cache/bearly-llm/responses without any test-only setter.
+  tmpRoot = mkdtempSync(join(tmpdir(), "bearly-cache-"))
+  vi.stubEnv("XDG_CACHE_HOME", tmpRoot)
+  cacheDir = join(tmpRoot, "bearly-llm", "responses")
+  // The deleted _setCacheDirForTesting pointed straight at an existing
+  // mkdtemp dir; the XDG override now resolves to this child, so create it to
+  // preserve the "cache dir already exists" premise of the write-path cases.
+  mkdirSync(cacheDir, { recursive: true })
 })
 
 afterEach(() => {
-  _setCacheDirForTesting(undefined)
-  rmSync(cacheDir, { recursive: true, force: true })
+  vi.unstubAllEnvs()
+  rmSync(tmpRoot, { recursive: true, force: true })
 })
 
 describe("cacheKeyHash — content-addressable", () => {
@@ -138,83 +137,12 @@ describe("readCache / writeCache — round-trip", () => {
   })
 })
 
-describe("cacheStats", () => {
-  it("returns 0/0 when cache dir doesn't exist", () => {
-    rmSync(cacheDir, { recursive: true, force: true })
-    const s = cacheStats()
-    expect(s.count).toBe(0)
-    expect(s.bytes).toBe(0)
-    expect(s.byModel).toEqual({})
-  })
-
-  it("counts entries and sums bytes", () => {
-    writeCache({ model: "a", prompt: "1" }, {}, "x")
-    writeCache({ model: "b", prompt: "2" }, {}, "yy")
-    writeCache({ model: "c", prompt: "3" }, {}, "zzz")
-    const s = cacheStats()
-    expect(s.count).toBe(3)
-    expect(s.bytes).toBeGreaterThan(0)
-  })
-
-  it("ignores non-.json files in cache dir", () => {
-    writeCache({ model: "x", prompt: "p" }, {}, "c")
-    writeFileSync(join(cacheDir, "stray.txt"), "not a cache entry")
-    const s = cacheStats()
-    expect(s.count).toBe(1)
-  })
-
-  it("byModel aggregates calls / cost / avg duration / statuses per model", () => {
-    writeCache(
-      { model: "a", prompt: "1" },
-      { model: { modelId: "modelA" }, usage: { estimatedCost: 0.01 }, durationMs: 100 },
-      "x",
-    )
-    writeCache(
-      { model: "a", prompt: "2" },
-      { model: { modelId: "modelA" }, usage: { estimatedCost: 0.02 }, durationMs: 300 },
-      "y",
-    )
-    writeCache(
-      { model: "b", prompt: "3" },
-      { model: { modelId: "modelB" }, usage: { estimatedCost: 0.005 }, durationMs: 50, error: "boom" },
-      "z",
-    )
-    const s = cacheStats()
-    expect(s.byModel.modelA!.calls).toBe(2)
-    expect(s.byModel.modelA!.totalMicroUSD).toBe(30_000) // 0.01 + 0.02 USD = 30000 microUSD
-    expect(s.byModel.modelA!.avgMs).toBe(200) // (100+300)/2
-    expect(s.byModel.modelA!.statuses.ok).toBe(2)
-    expect(s.byModel.modelB!.calls).toBe(1)
-    expect(s.byModel.modelB!.statuses.err).toBe(1)
-  })
-})
-
-describe("cacheClear", () => {
-  it("removes all entries", () => {
-    writeCache({ model: "a", prompt: "1" }, {}, "x")
-    writeCache({ model: "b", prompt: "2" }, {}, "y")
-    expect(cacheStats().count).toBe(2)
-    const result = cacheClear()
-    expect(result.removed).toBe(2)
-    expect(cacheStats().count).toBe(0)
-  })
-
-  it("returns 0 when cache dir doesn't exist", () => {
-    rmSync(cacheDir, { recursive: true, force: true })
-    expect(cacheClear()).toEqual({ removed: 0 })
-  })
-
-  it("returns 0 when cache is empty", () => {
-    expect(cacheClear()).toEqual({ removed: 0 })
-  })
-})
-
 describe("CAS property — cache hit on identical input", () => {
   it("two writes with same key overwrite the same hash (last write wins)", () => {
     const key: CacheKey = { model: "x", prompt: "same" }
     writeCache(key, { v: 1 }, "first")
     writeCache(key, { v: 2 }, "second")
-    expect(cacheStats().count).toBe(1) // same hash → at most one entry
+    expect(readdirSync(cacheDir).filter((f) => f.endsWith(".json"))).toHaveLength(1) // same hash → one entry
     const entry = readCache(key)!
     expect(entry.content).toBe("second") // last write wins
   })
@@ -277,18 +205,15 @@ describe("filename format — <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json
   it("missing usage / durationMs default to 0,0 (parser still accepts)", () => {
     writeCache({ model: "x", prompt: "p" }, { model: { modelId: "x" } }, "c")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
-    const parsed = parseFilename(files[0]!)
-    expect(parsed).not.toBeNull()
-    expect(parsed!.microUSD).toBe(0)
-    expect(parsed!.ms).toBe(0)
-    expect(parsed!.status).toBe("ok")
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/,x,0,0,ok\.json$/)
   })
 
   it("falls back to cache-key model when envelope.model.modelId is absent", () => {
     writeCache({ model: "fallback-model", prompt: "p" }, {}, "c")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
-    const parsed = parseFilename(files[0]!)
-    expect(parsed!.model).toBe("fallback-model")
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/,fallback-model,/)
   })
 })
 
@@ -309,40 +234,6 @@ describe("sanitizeModelSlug — / → _, comma-hostile chars stripped", () => {
   it("strips path-traversal and shell metacharacters", () => {
     expect(sanitizeModelSlug("../../etc/passwd")).toBe(".._.._etc_passwd")
     expect(sanitizeModelSlug("a b c")).toBe("abc")
-  })
-})
-
-describe("parseFilename — round-trip + rejects malformed", () => {
-  it("parses a well-formed filename", () => {
-    const hash = "a".repeat(64)
-    const parsed = parseFilename(`${hash},gpt-5.4,1500,2300,ok.json`)
-    expect(parsed).toEqual({ hash, model: "gpt-5.4", microUSD: 1500, ms: 2300, status: "ok" })
-  })
-
-  it("returns null for non-.json", () => {
-    const hash = "a".repeat(64)
-    expect(parseFilename(`${hash},m,0,0,ok.txt`)).toBeNull()
-  })
-
-  it("returns null for in-flight temp files (.tmp.)", () => {
-    const hash = "a".repeat(64)
-    expect(parseFilename(`${hash},m,0,0,ok.json.tmp.123.456`)).toBeNull()
-  })
-
-  it("returns null when hash isn't 64 hex chars", () => {
-    expect(parseFilename("short,m,0,0,ok.json")).toBeNull()
-    expect(parseFilename(`${"z".repeat(64)},m,0,0,ok.json`)).toBeNull() // non-hex
-  })
-
-  it("returns null for unknown status", () => {
-    const hash = "a".repeat(64)
-    expect(parseFilename(`${hash},m,0,0,bogus.json`)).toBeNull()
-  })
-
-  it("returns null for non-integer cost / duration", () => {
-    const hash = "a".repeat(64)
-    expect(parseFilename(`${hash},m,1.5,0,ok.json`)).toBeNull()
-    expect(parseFilename(`${hash},m,0,abc,ok.json`)).toBeNull()
   })
 })
 

@@ -1,5 +1,6 @@
 /**
- * `@bearly/mux-protocol/contract` — the backend-agnostic contract suite.
+ * `@bearly/mux-protocol/testing/contract-cases` — the backend-agnostic contract
+ * suite. A test kit, kept off the package's production entry.
  *
  * {@link muxContractCases} returns a framework-agnostic list of named cases
  * (each `{ name, run }`) asserting the behavioral invariants ANY
@@ -8,7 +9,7 @@
  *
  * ```ts
  * import { test } from "vitest"
- * import { muxContractCases } from "@bearly/mux-protocol/contract"
+ * import { muxContractCases } from "@bearly/mux-protocol/testing/contract-cases"
  * for (const c of muxContractCases(makeBackend)) test(c.name, c.run)
  * ```
  *
@@ -20,8 +21,9 @@
  * Zero test-framework dependency — assertions use `node:assert/strict`.
  */
 import assert from "node:assert/strict"
-import { type MuxBackend, MuxRefNotFoundError, UnsupportedCapabilityError } from "./index.ts"
+import { type MuxBackend, MuxRefNotFoundError, UnsupportedCapabilityError } from "../index.ts"
 
+/** One behavioral case ANY {@link MuxBackend} must satisfy. */
 export interface ContractCase {
   readonly name: string
   readonly run: () => Promise<void>
@@ -47,8 +49,9 @@ export function muxContractCases(makeBackend: () => MuxBackend): ContractCase[] 
   const spawn1 = async (b: MuxBackend, ws = WS) => b.spawnPane({ workspace: ws, command: "bash" })
   const primarySurface = async (b: MuxBackend, ws: string, paneId: string) => {
     const surfaces = await b.listSurfaces(ws, paneId)
-    assert.ok(surfaces.length >= 1, "spawned pane must expose at least one surface")
-    return surfaces[0]!
+    const [first] = surfaces
+    assert.ok(first !== undefined, "spawned pane must expose at least one surface")
+    return first
   }
 
   return [

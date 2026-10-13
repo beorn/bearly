@@ -24,22 +24,14 @@
  * can't corrupt the cache. Graceful read failure: malformed entries return
  * null, caller falls through to live dispatch.
  *
- * Eviction: none today (single-user, expected <10K entries). `cacheClear`
- * for manual purge; `cacheStats` for inspection. If/when count exceeds
- * a threshold, add LRU eviction at write time — the file mtime is the
+ * Eviction: none today (single-user, expected <10K entries). If/when count
+ * exceeds a threshold, add LRU eviction at write time — the file mtime is the
  * natural last-touch signal.
  */
 
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-
-let cachePathOverride: string | undefined
-
-/** Override cache directory for tests. */
-export function _setCacheDirForTesting(dir: string | undefined): void {
-  cachePathOverride = dir
-}
 
 /** True when caching is suppressed for this process — set LLM_NO_CACHE=1
  * to bypass cache reads + writes (used by tests + as a manual escape hatch). */
@@ -49,7 +41,6 @@ export function isCacheDisabled(): boolean {
 
 /** Response-cache directory. Provider observations use its `providers/` sibling. */
 export function getCacheDir(): string {
-  if (cachePathOverride) return cachePathOverride
   const xdg = process.env.XDG_CACHE_HOME
   const home = process.env.HOME ?? ""
   const base = xdg && xdg.length > 0 ? xdg : `${home}/.cache`
@@ -75,14 +66,6 @@ export interface CacheEntry<E = unknown> {
 }
 
 export type CacheStatus = "ok" | "err" | "abrt" | "trunc"
-
-export interface ParsedFilename {
-  hash: string
-  model: string
-  microUSD: number
-  ms: number
-  status: CacheStatus
-}
 
 /** SHA-256 over canonical JSON of the cache key. */
 export function cacheKeyHash(key: CacheKey): string {
@@ -111,31 +94,6 @@ export function sanitizeModelSlug(model: string): string {
   // Replace path-separator-ish chars with underscore, then strip the rest.
   // Keep [A-Za-z0-9._-] which covers every real model id we ship.
   return model.replace(/\//g, "_").replace(/[^A-Za-z0-9._-]/g, "")
-}
-
-/**
- * Parse a cache filename back into its metadata fields.
- * Returns null for any filename that doesn't match the encoded format —
- * this keeps stray files (e.g. `.tmp.<pid>.<ts>`, leftover `.json` from
- * the old `<sha>.json`-only format) from corrupting stats.
- */
-export function parseFilename(name: string): ParsedFilename | null {
-  if (!name.endsWith(".json")) return null
-  const stem = name.slice(0, -".json".length)
-  // Reject in-flight temp files (`<final>.tmp.<pid>.<ts>`) — they don't
-  // round-trip through this parser even if they happen to end in `.json`.
-  if (stem.includes(".tmp.")) return null
-  const parts = stem.split(",")
-  if (parts.length !== 5) return null
-  const [hash, model, microStr, msStr, status] = parts as [string, string, string, string, string]
-  if (!/^[0-9a-f]{64}$/.test(hash)) return null
-  if (model.length === 0) return null
-  const microUSD = Number(microStr)
-  const ms = Number(msStr)
-  if (!Number.isFinite(microUSD) || !Number.isInteger(microUSD)) return null
-  if (!Number.isFinite(ms) || !Number.isInteger(ms)) return null
-  if (status !== "ok" && status !== "err" && status !== "abrt" && status !== "trunc") return null
-  return { hash, model, microUSD, ms, status }
 }
 
 /**
@@ -176,7 +134,7 @@ export function readCache<E = unknown>(key: CacheKey): CacheEntry<E> | null {
  * Derive filename metadata from an envelope (ModelResponse-shaped).
  * Duck-typed: cache.ts is generic over E, so we read optional fields
  * defensively. Anything missing falls back to a sentinel that still
- * round-trips through `parseFilename`.
+ * produces a well-formed `<hash>,<model>,<microUSD>,<ms>,<status>.json` name.
  */
 function deriveMetadata(
   key: CacheKey,
@@ -212,7 +170,7 @@ export function writeCache<E = unknown>(key: CacheKey, envelope: E, content: str
   const file = path.join(dir, filename)
   // Temp suffix `.tmp.<pid>.<ts>` is chosen so a `<hash>,*` lookup never
   // matches an in-flight write: the temp basename ends with `.tmp.<pid>.<ts>`
-  // (no `.json` suffix, and `parseFilename` rejects `.tmp.` substrings).
+  // (no `.json` suffix, and `.tmp.` substrings are never matched on lookup).
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`
   const entry: CacheEntry<E> = { envelope, content, ts: new Date().toISOString(), key }
   fs.writeFileSync(tmp, JSON.stringify(entry))
@@ -228,75 +186,4 @@ export function writeCache<E = unknown>(key: CacheKey, envelope: E, content: str
     }
   }
   fs.renameSync(tmp, file)
-}
-
-export interface ModelStats {
-  calls: number
-  totalMicroUSD: number
-  avgMs: number
-  statuses: Partial<Record<CacheStatus, number>>
-}
-
-export interface CacheStats {
-  count: number
-  bytes: number
-  dir: string
-  byModel: Record<string, ModelStats>
-}
-
-/** Inspect cache size + entry count, with per-model breakdown. */
-export function cacheStats(): CacheStats {
-  const dir = getCacheDir()
-  const empty: CacheStats = { count: 0, bytes: 0, dir, byModel: {} }
-  if (!fs.existsSync(dir)) return empty
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
-  let count = 0
-  let bytes = 0
-  const byModel: Record<
-    string,
-    { calls: number; totalMicroUSD: number; totalMs: number; statuses: Partial<Record<CacheStatus, number>> }
-  > = {}
-  for (const f of files) {
-    const parsed = parseFilename(f)
-    if (!parsed) continue
-    count++
-    bytes += fs.statSync(path.join(dir, f)).size
-    const m = (byModel[parsed.model] ??= {
-      calls: 0,
-      totalMicroUSD: 0,
-      totalMs: 0,
-      statuses: {},
-    })
-    m.calls++
-    m.totalMicroUSD += parsed.microUSD
-    m.totalMs += parsed.ms
-    m.statuses[parsed.status] = (m.statuses[parsed.status] ?? 0) + 1
-  }
-  const byModelOut: Record<string, ModelStats> = {}
-  for (const [name, m] of Object.entries(byModel)) {
-    byModelOut[name] = {
-      calls: m.calls,
-      totalMicroUSD: m.totalMicroUSD,
-      avgMs: m.calls > 0 ? Math.round(m.totalMs / m.calls) : 0,
-      statuses: m.statuses,
-    }
-  }
-  return { count, bytes, dir, byModel: byModelOut }
-}
-
-/** Purge all cached responses. Returns count removed. */
-export function cacheClear(): { removed: number } {
-  const dir = getCacheDir()
-  if (!fs.existsSync(dir)) return { removed: 0 }
-  const files = fs.readdirSync(dir)
-  let removed = 0
-  for (const f of files) {
-    try {
-      fs.unlinkSync(path.join(dir, f))
-      removed++
-    } catch {
-      // Ignore unlink failures — best-effort purge.
-    }
-  }
-  return { removed }
 }

@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 /**
  * @reach fs-walk <fixture-only: cacheDir is a mkdtempSync directory under tmpdir>
  */
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -32,21 +32,27 @@ import {
   buildQuotaEnvelope,
   renderQuotaTable,
   getOpenRouterQuota,
-  _setCachePathForTesting,
   type QuotaSnapshot,
 } from "../src/lib/quota"
 
 let cacheDir: string
+let cachePath: string
 
 beforeEach(() => {
+  // XDG_CACHE_HOME is the path override getCachePath() documents (and reads at
+  // call time), so a stubbed tmpdir replaces the deleted _setCachePathForTesting.
   cacheDir = mkdtempSync(join(tmpdir(), "bearly-quota-"))
-  _setCachePathForTesting(join(cacheDir, "last-quota.json"))
+  vi.stubEnv("XDG_CACHE_HOME", cacheDir)
+  cachePath = join(cacheDir, "bearly-llm", "last-quota-by-provider.json")
+  // The deleted _setCachePathForTesting pointed at an existing mkdtemp file
+  // dir; the XDG override resolves to this child, so create its directory to
+  // keep the "cache file's directory already exists" premise.
+  mkdirSync(join(cacheDir, "bearly-llm"), { recursive: true })
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
-  _setCachePathForTesting(undefined)
   try {
     rmSync(cacheDir, { recursive: true, force: true })
   } catch {
@@ -237,7 +243,7 @@ describe("cache I/O (atomic write)", () => {
   })
 
   it("returns empty map on corrupt JSON", () => {
-    const path = join(cacheDir, "last-quota.json")
+    const path = cachePath
     writeFileSync(path, "{ this is not valid JSON")
     expect(loadQuotaCache()).toEqual({})
   })
@@ -272,10 +278,10 @@ describe("cache I/O (atomic write)", () => {
   it("doesn't leak temp files on success", () => {
     saveQuotaCache({ openai: { provider: "openai", source: "api", fetchedAt: "x" } })
     // Cache dir should contain exactly the canonical file (atomic rename).
-    const entries = readFileSync(join(cacheDir, "last-quota.json"), "utf-8")
+    const entries = readFileSync(cachePath, "utf-8")
     expect(entries).toContain("openai")
     // No `.last-quota-*.tmp` files left behind.
-    const tmpFiles = readdirSync(cacheDir).filter((f) => f.includes(".tmp"))
+    const tmpFiles = readdirSync(join(cacheDir, "bearly-llm")).filter((f) => f.includes(".tmp"))
     expect(tmpFiles).toEqual([])
   })
 })

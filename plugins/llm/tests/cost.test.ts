@@ -1,50 +1,15 @@
 /**
  * Canonical cost substrate (bead 19899 Phase 0) — the acceptance matrix:
- * OpenAI cached input, Anthropic cache read/write, standard input/output,
- * unknown model/provider, provider-reported cost passthrough, genuine $0,
- * cache-rate fallback, reasoning-not-double-priced.
+ * standard input/output, cache read/write, unknown model/provider,
+ * provider-reported cost passthrough, genuine $0, cache-rate fallback,
+ * reasoning-not-double-priced.
  */
 
 import { describe, it, expect } from "vitest"
-import { normalizeUsage, resolveCost, formatResolvedCost, UNKNOWN_COST_LABEL, type ModelRates } from "../src/lib/cost"
+import { resolveCost, type ModelRates } from "../src/lib/cost"
 import { parseLiteLLMMap, matchLiteLLMEntry } from "../src/lib/litellm"
 
 const RATES: ModelRates = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
-
-describe("normalizeUsage", () => {
-  it("OpenAI chat: cached_tokens is a SUBSET of prompt — input becomes non-cached", () => {
-    const usage = normalizeUsage({
-      prompt_tokens: 10_000,
-      completion_tokens: 500,
-      prompt_tokens_details: { cached_tokens: 8_000 },
-    })
-    expect(usage).toEqual({ input: 2_000, cache_read: 8_000, output: 500 })
-  })
-
-  it("OpenAI responses dialect: input_tokens_details.cached_tokens subset semantics", () => {
-    const usage = normalizeUsage({
-      input_tokens: 6_000,
-      output_tokens: 1_000,
-      input_tokens_details: { cached_tokens: 6_000 },
-      output_tokens_details: { reasoning_tokens: 400 },
-    })
-    expect(usage).toEqual({ input: 0, cache_read: 6_000, output: 1_000, reasoning: 400 })
-  })
-
-  it("Anthropic: input_tokens already excludes cache classes — disjoint mapping", () => {
-    const usage = normalizeUsage({
-      input_tokens: 1_200,
-      output_tokens: 700,
-      cache_read_input_tokens: 50_000,
-      cache_creation_input_tokens: 4_000,
-    })
-    expect(usage).toEqual({ input: 1_200, output: 700, cache_read: 50_000, cache_write: 4_000 })
-  })
-
-  it("plain input/output passes through", () => {
-    expect(normalizeUsage({ prompt_tokens: 500, completion_tokens: 1000 })).toEqual({ input: 500, output: 1000 })
-  })
-})
 
 describe("resolveCost precedence (reported > computed > unknown)", () => {
   it("computes per-class cost with distinct cache rates (write > input > read)", () => {
@@ -75,17 +40,15 @@ describe("resolveCost precedence (reported > computed > unknown)", () => {
     expect(result).toEqual({ usd: 1.23, source: "provider" })
   })
 
-  it("a genuine reported $0 is provider-sourced and renders $0, not unknown", () => {
+  it("a genuine reported $0 is provider-sourced, not unknown", () => {
     const result = resolveCost({ usage: { input: 10 }, reportedUsd: 0 })
     expect(result.source).toBe("provider")
-    expect(formatResolvedCost(result)).toBe("$0.00¢")
+    expect(result.usd).toBe(0)
   })
 
-  it("no rates and no reported cost → unknown; renders the unknown label, never $0", () => {
+  it("no rates and no reported cost → unknown provenance, not a synthetic $0", () => {
     const result = resolveCost({ usage: { input: 500, output: 1000 } })
     expect(result.source).toBe("unknown")
-    expect(formatResolvedCost(result)).toBe(UNKNOWN_COST_LABEL)
-    expect(formatResolvedCost(result)).not.toContain("$")
   })
 
   it("reasoning tokens are informational — never priced on top of output", () => {

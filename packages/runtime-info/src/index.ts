@@ -154,10 +154,6 @@ export function formatRuntimeInfo(info: RuntimeInfo): string {
   return `${info.version}+${info.sha ?? "unknown"}${info.dirty ? "-dirty" : ""}`
 }
 
-export function formatRuntimeInfoLine(name: string, info: RuntimeInfo): string {
-  return `${name} ${formatRuntimeInfo(info)}`
-}
-
 // ─── Workspace install-state ────────────────────────────────────────────────
 //
 // The stale-installed-tree incident class (observed 2026-07-02): a commit

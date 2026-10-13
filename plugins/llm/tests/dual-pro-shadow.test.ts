@@ -44,7 +44,6 @@ import {
   appendBacktestRun,
   appendPromotionDecision,
   filterPoolByCapability,
-  inferDefaultsFromRegistry,
   type DualProConfig,
   type ScoreWeights,
   type BacktestPerQueryResult,
@@ -649,13 +648,6 @@ describe("config + env overrides + persistence", () => {
     const line = JSON.parse(readFileSync(file, "utf-8").trim()) as { schema: string; decision: string }
     expect(line.schema).toBe("dual-pro-promotions/v1")
     expect(line.decision).toBe("keep-watching")
-  })
-
-  it("inferDefaultsFromRegistry matches BEST_MODELS.pro", () => {
-    const inferred = inferDefaultsFromRegistry()
-    expect(inferred.mainstays[0]).toBe("gpt-5.4-pro")
-    expect(inferred.mainstays[1]).toBe("moonshotai/kimi-k2.6")
-    expect(inferred.splitTestPool.length).toBeGreaterThan(0)
   })
 })
 

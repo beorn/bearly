@@ -28,7 +28,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./contract": "./src/contract.ts"
+    "./testing/contract-cases": "./src/testing/contract-cases.ts",
+    "./testing/in-memory-mux": "./src/testing/in-memory-mux.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -37,9 +38,13 @@
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs"
       },
-      "./contract": {
-        "types": "./dist/contract.d.mts",
-        "import": "./dist/contract.mjs"
+      "./testing/contract-cases": {
+        "types": "./dist/testing/contract-cases.d.mts",
+        "import": "./dist/testing/contract-cases.mjs"
+      },
+      "./testing/in-memory-mux": {
+        "types": "./dist/testing/in-memory-mux.d.mts",
+        "import": "./dist/testing/in-memory-mux.mjs"
       }
     }
   },
@@ -60,7 +65,8 @@
     "dts": true,
     "entry": [
       "src/index.ts",
-      "src/contract.ts"
+      "src/testing/contract-cases.ts",
+      "src/testing/in-memory-mux.ts"
     ],
     "format": "esm"
   },

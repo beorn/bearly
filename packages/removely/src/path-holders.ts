@@ -31,6 +31,9 @@ export type PathHolderCensusOptions<S extends PathHolderScope = PathHolderScope>
   scope: S
   /** Wall-clock ms from the census start, shared by every /proc read; default `PATH_HOLDER_CENSUS_DEADLINE_MS`. */
   deadlineMs?: number
+  /** The proc tree the Linux collector reads; default `/proc`. A deterministic seam for a synthetic
+   *  tree, and the only way to run the Linux collector on another platform. */
+  procRoot?: string
 }>
 export type PathHolder = Readonly<{
   pid: number
@@ -136,14 +139,17 @@ export async function inspectPathHolderCensus<S extends PathHolderScope>(
   options: PathHolderCensusOptions<S>,
 ): Promise<PathHolderCensus<S>> {
   validateScope(options)
+  if (process.platform === "linux" || options.procRoot !== undefined) {
+    return pathHolderCensusInProc(path, options.procRoot ?? "/proc", options)
+  }
   const root = await canonicalPath(path)
-  if (process.platform === "linux") return linuxCensusWithDeadline(root, "/proc", options)
   if (process.platform === "darwin" && options.scope === "same-uid") return darwinPathProcessHolderCensus(root)
   throw new Error(`unsupported path-holder scope '${options.scope}' on platform ${process.platform} for '${root}'`)
 }
 
-/** @internal Deterministic seam for the same collector against a synthetic proc tree. */
-export async function inspectPathHolderCensusInProc<S extends PathHolderScope>(
+/** The one path-holder collector, against a caller-supplied proc tree; the public entry passes its
+ *  `procRoot` option through (default `/proc`) and admits nothing else. */
+async function pathHolderCensusInProc<S extends PathHolderScope>(
   path: string,
   procRoot: string,
   options: PathHolderCensusOptions<S>,
@@ -333,7 +339,10 @@ export type ProcessRow = Readonly<{
   /** Every issue of the row, its process-level read included. */
   issues: readonly PathHolderObservationIssue[]
 }>
-export type ProcessCensusOptions<S extends PathHolderScope = PathHolderScope> = PathHolderCensusOptions<S> &
+export type ProcessCensusOptions<S extends PathHolderScope = PathHolderScope> = Omit<
+  PathHolderCensusOptions<S>,
+  "procRoot"
+> &
   Readonly<{
     /** The sources read for each process; default all six. A cwd-only caller skips the fd and maps walks. */
     sources?: readonly SourceName[]

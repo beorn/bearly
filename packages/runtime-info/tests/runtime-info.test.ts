@@ -6,7 +6,6 @@ import { afterAll, describe, expect, test } from "vitest"
 import {
   composeRuntimeInfo,
   formatRuntimeInfo,
-  formatRuntimeInfoLine,
   readGitState,
   readRuntimeSourceReceipt,
   readWorkspaceInstallState,
@@ -18,9 +17,6 @@ describe("@bearly/runtime-info", () => {
   test("formats semver+sha and keeps dirty visible", () => {
     expect(formatRuntimeInfo({ version: "1.2.3", sha: "abc1234", dirty: false })).toBe("1.2.3+abc1234")
     expect(formatRuntimeInfo({ version: "1.2.3", sha: "abc1234", dirty: true })).toBe("1.2.3+abc1234-dirty")
-    expect(formatRuntimeInfoLine("inhab", { version: "1.2.3", sha: "abc1234", dirty: true })).toBe(
-      "inhab 1.2.3+abc1234-dirty",
-    )
   })
 
   test("git unavailable degrades to an explicit unknown SHA", () => {

@@ -1264,7 +1264,7 @@ export function getDeepResearchModels(): Model[] {
  * public call shape is unchanged, but the math routes through `resolveCost`.
  * An unpriced model keeps the historical `0` return for numeric callers
  * (leaderboard sums, thresholds) — DISPLAY paths must not format that 0 as a
- * dollar figure; use `resolveCostForModel` + `formatResolvedCost` instead.
+ * dollar figure; use `resolveCostForModel` and render its `source` first.
  */
 export function estimateCost(model: Model | SkuConfig, inputTokens = 500, outputTokens = 1000): number {
   const resolved = resolveCost({
