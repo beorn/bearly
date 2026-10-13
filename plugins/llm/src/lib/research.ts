@@ -305,6 +305,23 @@ function streamFailureField(
 }
 
 /**
+ * Is this the ai-sdk's evidence-free "the stream produced nothing" wrapper?
+ *
+ * `streamText` reports the real provider error through `onError` and THEN rejects `textStream`
+ * iteration with `NoOutputGeneratedError` ("No output generated. Check the stream for errors.").
+ * Describing that wrapper yields the generic bucket and loses the provider's HTTP status and body,
+ * so `queryModel`'s catch prefers the description captured from `onError` (28886). Matched by class
+ * identity where the sdk exposes it, and by its own wording otherwise — a rename in a future sdk
+ * version must not silently restore the masking.
+ */
+function isSyntheticStreamError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.name === "AI_NoOutputGeneratedError") return true
+  if (error.constructor?.name === "NoOutputGeneratedError") return true
+  return /no output generated|check the stream for errors/iu.test(error.message)
+}
+
+/**
  * Query a single model
  */
 export async function queryModel(options: QueryOptions): Promise<QueryResult> {
@@ -498,6 +515,14 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   }
   const hasProviderOptions = Object.keys(providerOptions).length > 0
 
+  // A provider that fails mid-stream reaches `onError` with its own evidence (HTTP status, response
+  // body) and is described HERE. The `textStream` loop below then throws the ai-sdk's synthetic
+  // `NoOutputGeneratedError` ("No output generated. Check the stream for errors."), whose catch
+  // branch would otherwise re-describe that empty wrapper and discard the real cause — which is how
+  // an invalid Google key and an exhausted OpenAI balance both printed "unclassified provider error"
+  // (28886). Declared out here so the catch can see it.
+  let streamFailure: DispatchFailureDescription | undefined
+
   try {
     maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt, options.maxOutputTokens)
     const thinking = providerOptions.anthropic?.thinking as { budgetTokens?: number } | undefined
@@ -521,7 +546,6 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       // is a bare console.error dump). Capture it here so an empty completion
       // carries a real, actionable `response.error` instead of looking like a
       // silent success. See describeProviderError.
-      let streamFailure: DispatchFailureDescription | undefined
       // Single step: no tools or stopWhen, so v7 aggregate usage is this call's usage.
       const result = streamText({
         model: languageModel,
@@ -596,7 +620,10 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     // underestimates despite the 3.5-chars/token divisor + 4K SAFETY margin
     // (e.g. content dominated by CJK / emoji / unusual tokenizers).
     const errorMsg = error instanceof Error ? error.message : String(error)
-    const describedFailure = describeDispatchFailure(error, model)
+    // `onError` already described the provider's own failure; the thrown error here is the ai-sdk's
+    // evidence-free "no output generated" wrapper. Keep the provider's description (28886).
+    const describedFailure =
+      streamFailure && isSyntheticStreamError(error) ? streamFailure : describeDispatchFailure(error, model)
     const capInfo = parseContextLengthError(errorMsg)
     if (capInfo && model.reasoning?.contextWindow) {
       const SAFETY = 4096

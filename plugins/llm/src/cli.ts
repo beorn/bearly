@@ -23,6 +23,7 @@
  */
 
 import { getAvailableProviders } from "./lib/providers"
+import { deniedProviders } from "./lib/denied-providers"
 import { getModel, MODELS, type Model, type Provider } from "./lib/types"
 import { initializePricing, getStaleWarning } from "./lib/pricing"
 import { loadRecall } from "./lib/recall-optional"
@@ -378,15 +379,51 @@ const PROVIDER_ROWS: ReadonlyArray<{ id: Provider; name: string; env: string; re
   { id: "openrouter", name: "OpenRouter", env: "OPENROUTER_API_KEY", readyHint: "ready (Kimi K2.6, etc.)" },
 ]
 
-function providerStatusLines(available: readonly Provider[]): string {
-  const set = new Set(available)
-  return (
-    PROVIDER_ROWS.map(({ id, name, env, readyHint }) => {
-      const ok = set.has(id)
-      const status = ok ? (readyHint ?? "ready") : `set ${env}`
-      return `  ${ok ? "✓" : "○"} ${name.padEnd(12)}${status}`
-    }).join("\n") + "\n"
-  )
+// Rendered by loadProviderStatuses() before usage(). "ready" is a claim about a live call, so a
+// key being present is not enough to print it: the provider observation cache records the outcome of
+// the last dispatch, and a `refusing` observation means the last call FAILED (28886 — the banner
+// advertised OpenAI and Google as ready for ten days while every call to them failed).
+let providerStatusBlock = ""
+
+/**
+ * Build the PROVIDERS rows from the same facts the dispatcher uses: whether a key is present, the
+ * last recorded observation, and the host's RECALL_LLM_DENY_PROVIDERS exclusions. Async because the
+ * observation store is file-backed; call it before usage().
+ */
+async function loadProviderStatuses(): Promise<void> {
+  const available = new Set(getAvailableProviders())
+  const denied = deniedProviders()
+  const { createProviderObservationStore } = await import("./lib/provider-availability")
+  const store = createProviderObservationStore()
+  const rows: string[] = []
+  for (const { id, name, env, readyHint } of PROVIDER_ROWS) {
+    const keyPresent = available.has(id)
+    const isDenied = denied.has(id)
+    let status: string
+    let ready = false
+    if (isDenied) {
+      status = "excluded by RECALL_LLM_DENY_PROVIDERS"
+    } else if (!keyPresent) {
+      status = `set ${env}`
+    } else {
+      const read = await store.read(id)
+      const observation = read.status === "found" ? read.observation : undefined
+      if (observation?.status === "refusing") {
+        status = `last call failed: ${observation.kind} at ${new Date(observation.observedAt).toISOString()}`
+      } else {
+        status = readyHint ?? "ready"
+        ready = true
+      }
+    }
+    rows.push(`  ${ready ? "✓" : "○"} ${name.padEnd(12)}${status}`)
+  }
+  providerStatusBlock = rows.join("\n") + "\n"
+}
+
+/** Fill the provider facts, then print usage and exit. */
+async function usageAndExit(): Promise<never> {
+  await loadProviderStatuses()
+  usage()
 }
 
 function getQuestion(): string {
@@ -411,8 +448,6 @@ async function checkOllamaStatus(): Promise<void> {
 }
 
 function usage(): never {
-  const available = getAvailableProviders()
-
   console.log(`
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                        LLM - Multi-Model Research CLI                        ║
@@ -536,7 +571,7 @@ LOCAL MODELS
     --model ollama:llava:34b          Multimodal (image support)
 
 PROVIDERS
-${providerStatusLines(available)}  ${ollamaStatus} Ollama      ${ollamaStatusText}
+${providerStatusBlock}  ${ollamaStatus} Ollama      ${ollamaStatusText}
 
 RECOVERY (for interrupted deep research)
   llm recover                       List incomplete/partial responses
@@ -637,7 +672,7 @@ export async function main(): Promise<string | undefined> {
   // the latter equivalent, but resolveCommand tightens the semantics.
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h" || hasFlag("--help")) {
     await checkOllamaStatus()
-    usage()
+    await usageAndExit()
   }
 
   if (command === "list-models") {
@@ -672,7 +707,7 @@ export async function main(): Promise<string | undefined> {
   // Default mode: no keyword, no flag — treat entire args as a question
   if (!isKeyword && !isDeepFlag && !isAskFlag) {
     const question = extractText(true, [])
-    if (!question) usage()
+    if (!question) await usageAndExit()
     const outputFile = resolveOutputFile(question)
 
     // Check history first via @bearly/recall (optional dep). If recall isn't

@@ -300,8 +300,14 @@ function classifyDispatchFailure(
     const rendered = oneLineError(error)
     return refusing("auth", target, rendered, `load ${envVar}`)
   }
+  // Google answers a bad key with HTTP 400 and "API key not valid. Please pass a valid API key."
+  // plus `reason: "API_KEY_INVALID"` — a 400, not a 401, so the status gate missed it and the
+  // wording matched none of the older patterns. It fell through to the terminal branch and printed
+  // the generic bucket for ten days of dead OpenAI/Google calls (28886).
   if (
-    /invalid[_ ]?api[_ ]?key|unauthorized|permission|auth failed|organization not verified/iu.test(blob) ||
+    /invalid[_ ]?api[_ ]?key|api[_ ]?key[_ ]?(?:not[_ ]?valid|invalid)|API_KEY_INVALID|unauthorized|permission|auth failed|organization not verified/iu.test(
+      blob,
+    ) ||
     responseStatus === 401 ||
     responseStatus === 403
   ) {
@@ -380,10 +386,17 @@ function classifyDispatchFailure(
     }
   }
   const targetDescription = target.modelId ? ` for model ${target.modelId}` : ""
+  // 28886: this branch used to answer "unclassified provider error" and nothing else. That named no
+  // class, carried no status, and quoted none of the provider's own words, so an invalid Google key,
+  // an exhausted OpenAI balance and a bare 400 all read as the same dead end. State what was checked
+  // and what evidence exists; `describeDispatchFailure` appends the HTTP status and response body
+  // whenever the provider supplied one, which is where the provider's own message appears.
+  const statusNote = responseStatus === undefined ? "with no HTTP status" : `with HTTP ${responseStatus}`
   return {
     kind: "unknown",
     scope: "call",
-    message: `${providerDisplayName(target.provider)} dispatch failed${targetDescription}: unclassified provider error.`,
+    message: `${providerDisplayName(target.provider)} dispatch failed${targetDescription} ${statusNote}; its error matched none of the known failure classes (auth, quota, model, transport).`,
+    remedy: "run `llm quota` for the provider's latest balance/rate-limit snapshot, or retry with another provider",
   }
 }
 

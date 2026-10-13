@@ -1,4 +1,5 @@
 import { describeDispatchFailure } from "./dispatch-error"
+import { deniedProviders } from "./denied-providers"
 /**
  * Output formatting — file writing, result JSON, research archival, streaming.
  *
@@ -371,6 +372,19 @@ export function formatBudgetRetry(
   return `${failure.message} Run: ${retryCommand(model.modelId, failure.retryOutputTokens)}`
 }
 
+/**
+ * 28886: a provider the host has excluded is not a secret. `RECALL_LLM_DENY_PROVIDERS` names the
+ * providers marked broken on this machine, which is how a call can fail while its key looks fine —
+ * without this the reader has to guess between the credential, the balance and a policy. Appended
+ * at the CLI's human surface only: the classifier's own description, and the observation persisted
+ * from it, keep the provider's real failure so model selection still sees the true cause.
+ */
+function withExclusionNote(message: string | undefined, provider?: import("./types").Provider): string | undefined {
+  if (!message || !provider) return message
+  if (!deniedProviders().has(provider)) return message
+  return `${message} (${provider} is excluded by RECALL_LLM_DENY_PROVIDERS on this host — the error above is the provider's own.)`
+}
+
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */
 export async function finishResponse(
   content: string | undefined,
@@ -403,7 +417,10 @@ export async function finishResponse(
   retryCommand?: (model: string, bound: number) => string,
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
-    const providerError = formatBudgetRetry(error?.trim() || undefined, model, retryCommand)
+    const providerError = withExclusionNote(
+      formatBudgetRetry(error?.trim() || undefined, model, retryCommand),
+      model.provider,
+    )
     // Write error to stderr (visible in interactive mode). Lead with the real
     // provider error when we have one; only fall back to the generic
     // "empty completion" copy when the provider reported no error at all.
