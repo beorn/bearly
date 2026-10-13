@@ -82,14 +82,14 @@ const OK_AGY = [
   // The prompt must arrive on STDIN via stream-json, never as a `-p <prompt>`
   // argv string (which dies with E2BIG past MAX_ARG_STRLEN). PATH is the fake
   // dir ONLY, so no external `cat` — read the single line with the builtin.
-  'IFS= read -r line',
+  "IFS= read -r line",
   'if [ -n "$FAKE_AGY_STDIN" ]; then printf "%s" "$line" > "$FAKE_AGY_STDIN"; fi',
   'echo \'{"event":"result","result":{"status":"SUCCESS","response":"AGY-FAKE-OK","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\'',
   "exit 0",
 ].join("\n")
 
 const FAIL_AGY = [
-  'IFS= read -r line',
+  "IFS= read -r line",
   'echo \'{"event":"result","result":{"status":"ERROR","response":"","error":"not signed in to Antigravity"}}\'',
   "exit 0",
 ].join("\n")

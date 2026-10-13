@@ -131,8 +131,6 @@ export function subscriptionCliEnabled(): boolean {
   return value !== "0" && value !== "false"
 }
 
-
-
 const onPathCache = new Map<string, boolean>()
 
 /** True when `bin` is an executable on this process's PATH. Cached. */
@@ -186,10 +184,7 @@ export function subscriptionCliAvailable(provider: Provider): boolean {
  * cannot serve it). Returns the CLI id or undefined; no I/O beyond the cached
  * PATH probe.
  */
-export function resolveSubscriptionRoute(
-  model: Model,
-  context: { hasImage?: boolean },
-): SubscriptionCliId | undefined {
+export function resolveSubscriptionRoute(model: Model, context: { hasImage?: boolean }): SubscriptionCliId | undefined {
   if (!subscriptionCliEnabled()) return undefined
   if (context.hasImage) return undefined
   // Deep research uses its own Responses/Interactions path with web_search; the
@@ -225,9 +220,7 @@ let codexProfileCache: CodexProfile | undefined
 export function codexProfile(): CodexProfile {
   if (codexProfileCache) return codexProfileCache
   const home =
-    process.env.CODEX_HOME && process.env.CODEX_HOME.length > 0
-      ? process.env.CODEX_HOME
-      : join(homedir(), ".codex")
+    process.env.CODEX_HOME && process.env.CODEX_HOME.length > 0 ? process.env.CODEX_HOME : join(homedir(), ".codex")
   const path = join(home, "config.toml")
   let modelProvider: string | undefined
   try {
@@ -503,14 +496,7 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
     // string: a single argv argument over MAX_ARG_STRLEN (131072 bytes on Linux)
     // dies with E2BIG, and a /pro context file is routinely larger. stream-json
     // also reports token usage, which `-p` does not.
-    const args = [
-      "--model",
-      AGY_SUBSCRIPTION_MODEL,
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-    ]
+    const args = ["--model", AGY_SUBSCRIPTION_MODEL, "--input-format", "stream-json", "--output-format", "stream-json"]
     const input = `${JSON.stringify({
       event: "user",
       message: { role: "user", content: [{ type: "text", text: composePrompt(options) }] },
@@ -551,10 +537,7 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
  * {@link subscriptionCliAvailable}; this throws rather than falling back so a
  * broken route is loud, never a silent switch to another provider.
  */
-export async function querySubscriptionCli(
-  model: Model,
-  options: SubscriptionQueryOptions,
-): Promise<ModelResponse> {
+export async function querySubscriptionCli(model: Model, options: SubscriptionQueryOptions): Promise<ModelResponse> {
   const id = subscriptionCliFor(model.provider)
   if (!id) {
     throw new Error(`No subscription CLI route for provider ${model.provider}`)

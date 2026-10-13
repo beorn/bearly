@@ -325,8 +325,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // The CLI branch below is text-only, so an image attachment disables it and
   // falls back to the key route. The chosen route is always printed — a route
   // is never switched silently.
-  const subscriptionRoute =
-    resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
+  const subscriptionRoute = resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
   if (!isProviderAvailable(model.provider) && !subscriptionRoute) {
     const envVar = getProviderEnvVar(model.provider)
     let error = envVar
