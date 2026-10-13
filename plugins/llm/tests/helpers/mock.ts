@@ -31,6 +31,8 @@
  *   }))
  *
  * NOT imported from source code — tests only.
+ *
+ * @fakes @bearly/llm
  */
 
 import type { Model, ModelResponse } from "../../src/lib/types.ts"
