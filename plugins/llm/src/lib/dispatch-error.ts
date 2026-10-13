@@ -300,6 +300,26 @@ function classifyDispatchFailure(
     const rendered = oneLineError(error)
     return refusing("auth", target, rendered, `load ${envVar}`)
   }
+  const rateLimited = (): DispatchFailureDescription =>
+    refusing(
+      "rate-limited",
+      target,
+      `${target.provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`,
+      "wait and retry, or use another provider",
+      retryAtFromError(error, now),
+    )
+  // 29057: an EXPLICIT 429 outranks every wording-based auth match, and nothing else moves. A
+  // shared-pool 429 is a fact the provider asserted about its own rate limit, while the auth
+  // wording is a guess about a key THIS call never questioned — @dev/6's /pro run on 2026-10-13
+  // 10:22 PDT reported two live models (deepseek/deepseek-chat, moonshotai/kimi-k2.7-code, both
+  // `limit_source: upstream_provider_shared_pool`) as "auth failed — check OPENROUTER_API_KEY" for
+  // an HTTP 429. Deliberately narrow: an explicit 401/403 and the Google 400 API_KEY_INVALID body
+  // stay auth below, even when such a body also mentions a rate limit, and the wording-only
+  // fallback keeps its old position AFTER the auth branch (a statusless error whose text names both
+  // still reads as auth, exactly as before).
+  if (responseStatus === 429) {
+    return rateLimited()
+  }
   // Google answers a bad key with HTTP 400 and "API key not valid. Please pass a valid API key."
   // plus `reason: "API_KEY_INVALID"` — a 400, not a 401, so the status gate missed it and the
   // wording matched none of the older patterns. It fell through to the terminal branch and printed
@@ -311,18 +331,12 @@ function classifyDispatchFailure(
     responseStatus === 401 ||
     responseStatus === 403
   ) {
-    const rendered = `${target.provider} auth failed — check ${envVar}.`
-    return refusing("auth", target, rendered, `check ${envVar}`)
+    return refusing("auth", target, `${target.provider} auth failed — check ${envVar}.`, `check ${envVar}`)
   }
-  if (/rate[ _-]?limit|too many requests|\b429\s+too many requests\b/iu.test(blob) || responseStatus === 429) {
-    const rendered = `${target.provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`
-    return refusing(
-      "rate-limited",
-      target,
-      rendered,
-      "wait and retry, or use another provider",
-      retryAtFromError(error, now),
-    )
+  // The wording-only fallback, in its old position: a body that merely names a rate limit is still
+  // weaker evidence than a credentials wording above, and stronger than the terminal bucket below.
+  if (/rate[ _-]?limit|too many requests|\b429\s+too many requests\b/iu.test(blob)) {
+    return rateLimited()
   }
   if (
     /model.{0,40}(?:not found|does not exist|unavailable|renamed)|no such model|unknown model|invalid model/iu.test(
