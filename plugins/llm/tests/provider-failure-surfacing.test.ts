@@ -216,37 +216,87 @@ describe("streaming failures survive the ai-sdk's synthetic no-output wrapper", 
 })
 
 describe("--help provider readiness", () => {
-  it("prints the last failure class and time instead of 'ready', and marks excluded providers", async () => {
+  function writeObservation(homeDir: string, body: string | Record<string, unknown>): void {
+    const dir = join(homeDir, ".cache", "bearly-llm", "providers")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "google.json"), typeof body === "string" ? body : JSON.stringify(body))
+  }
+
+  function googleObservation(kind: string, observedAt: number, expiresAt: number): Record<string, unknown> {
+    return {
+      version: 1,
+      observation: {
+        provider: "google",
+        status: "refusing",
+        kind,
+        source: "dispatch",
+        reason: "google auth failed — check GOOGLE_GENERATIVE_AI_API_KEY.",
+        observedAt,
+        expiresAt,
+      },
+    }
+  }
+
+  function banner(env: { stdout: string[]; stderr: string[] }): string {
+    return [...env.stdout, ...env.stderr].join("\n")
+  }
+
+  it("prints the last failure class and time for a live refusal, and the exclusion for a denied provider", async () => {
     const env = makeTestEnv()
-    // The observation store is file-backed; LLM_NO_CACHE (set by makeTestEnv) would report it
-    // "disabled" and every row would read ready.
     delete process.env.LLM_NO_CACHE
     process.env.RECALL_LLM_DENY_PROVIDERS = "openai"
-    const providersDir = join(env.homeDir, ".cache", "bearly-llm", "providers")
-    mkdirSync(providersDir, { recursive: true })
-    writeFileSync(
-      join(providersDir, "google.json"),
-      JSON.stringify({
-        version: 1,
-        observation: {
-          provider: "google",
-          status: "refusing",
-          kind: "auth",
-          source: "dispatch",
-          reason: "google auth failed — check GOOGLE_GENERATIVE_AI_API_KEY.",
-          observedAt: Date.parse("2026-10-13T06:16:07.635Z"),
-          expiresAt: Date.parse("2026-10-13T06:46:07.635Z"),
-        },
-      }),
-    )
+    const observedAt = Date.now() - 60_000
+    writeObservation(env.homeDir, googleObservation("auth", observedAt, Date.now() + 30 * 60_000))
 
     await runCli(["--help"])
 
-    const banner = [...env.stdout, ...env.stderr].join("\n")
-    expect(banner).toContain("last call failed: auth at 2026-10-13T06:16:07.635Z")
-    expect(banner).toContain("excluded by RECALL_LLM_DENY_PROVIDERS")
-    // The two providers that have real evidence must not be advertised as ready.
-    expect(banner).not.toMatch(/OpenAI\s+ready/u)
-    expect(banner).not.toMatch(/Google\s+ready/u)
+    expect(banner(env)).toContain(`last call failed: auth at ${new Date(observedAt).toISOString()}`)
+    expect(banner(env)).toContain("excluded by RECALL_LLM_DENY_PROVIDERS")
+    expect(banner(env)).not.toMatch(/OpenAI\s+ready/u)
+    expect(banner(env)).not.toMatch(/Google\s+ready/u)
+  })
+
+  it("still names an expired refusal as historical, never as ready", async () => {
+    const env = makeTestEnv()
+    delete process.env.LLM_NO_CACHE
+    const observedAt = Date.now() - 2 * 60 * 60_000
+    writeObservation(env.homeDir, googleObservation("auth", observedAt, Date.now() - 60 * 60_000))
+
+    await runCli(["--help"])
+
+    expect(banner(env)).toContain(`last call failed: auth at ${new Date(observedAt).toISOString()} (expired`)
+    expect(banner(env)).not.toMatch(/Google\s+ready/u)
+  })
+
+  it("never says ready when the observation store cannot be read", async () => {
+    const env = makeTestEnv()
+    delete process.env.LLM_NO_CACHE
+    writeObservation(env.homeDir, "{ this is not a stored observation")
+
+    await runCli(["--help"])
+
+    expect(banner(env)).toContain("unknown —")
+    expect(banner(env)).toMatch(/unreadable/u)
+    expect(banner(env)).not.toMatch(/Google\s+ready/u)
+  })
+
+  it("never says ready when the observation store is disabled", async () => {
+    const env = makeTestEnv()
+    // makeTestEnv sets LLM_NO_CACHE=1, which is exactly the disabled case.
+    await runCli(["--help"])
+
+    expect(banner(env)).toContain("unknown —")
+    expect(banner(env)).toMatch(/disabled/u)
+    expect(banner(env)).not.toMatch(/Google\s+ready/u)
+  })
+
+  it("never says ready when there is no observation for a keyed provider", async () => {
+    const env = makeTestEnv()
+    delete process.env.LLM_NO_CACHE
+
+    await runCli(["--help"])
+
+    expect(banner(env)).toContain("no provider observation found")
+    expect(banner(env)).not.toMatch(/Google\s+ready/u)
   })
 })

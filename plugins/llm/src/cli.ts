@@ -22,7 +22,6 @@
  *   format.ts   — output formatting, file writing, research archival, streaming
  */
 
-import { getAvailableProviders } from "./lib/providers"
 import { deniedProviders } from "./lib/denied-providers"
 import { getModel, MODELS, type Model, type Provider } from "./lib/types"
 import { initializePricing, getStaleWarning } from "./lib/pricing"
@@ -391,28 +390,34 @@ let providerStatusBlock = ""
  * observation store is file-backed; call it before usage().
  */
 async function loadProviderStatuses(): Promise<void> {
-  const available = new Set(getAvailableProviders())
   const denied = deniedProviders()
-  const { createProviderObservationStore } = await import("./lib/provider-availability")
+  const { createProviderObservationStore, readProviderAvailability } = await import("./lib/provider-availability")
   const store = createProviderObservationStore()
   const rows: string[] = []
-  for (const { id, name, env, readyHint } of PROVIDER_ROWS) {
-    const keyPresent = available.has(id)
-    const isDenied = denied.has(id)
+  for (const { id, name, env: envVar, readyHint } of PROVIDER_ROWS) {
     let status: string
     let ready = false
-    if (isDenied) {
+    if (denied.has(id)) {
       status = "excluded by RECALL_LLM_DENY_PROVIDERS"
-    } else if (!keyPresent) {
-      status = `set ${env}`
     } else {
-      const read = await store.read(id)
-      const observation = read.status === "found" ? read.observation : undefined
-      if (observation?.status === "refusing") {
-        status = `last call failed: ${observation.kind} at ${new Date(observation.observedAt).toISOString()}`
-      } else {
+      // 28886 review: read the SAME fact the dispatcher's model selection reads, so the banner
+      // cannot disagree with it. It already decides credential absence, an unreadable, disabled or
+      // absent store, and an expired observation — and none of those is evidence of availability,
+      // so none of them may print "ready". Only an observation it can certify does.
+      const fact = await readProviderAvailability(id, { store, now: Date.now() })
+      if (fact.status === "available") {
         status = readyHint ?? "ready"
         ready = true
+      } else if (fact.status === "refusing") {
+        status =
+          fact.kind === "credential-missing"
+            ? `set ${envVar}`
+            : `last call failed: ${fact.kind} at ${new Date(fact.observedAt).toISOString()}`
+      } else if (fact.kind !== undefined && fact.observedAt !== undefined) {
+        // A refusal we still know the class of, but which has expired: historical, and said so.
+        status = `last call failed: ${fact.kind} at ${new Date(fact.observedAt).toISOString()} (expired — ${fact.reason})`
+      } else {
+        status = `unknown — ${fact.reason}`
       }
     }
     rows.push(`  ${ready ? "✓" : "○"} ${name.padEnd(12)}${status}`)
