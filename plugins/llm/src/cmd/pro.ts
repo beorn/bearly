@@ -35,8 +35,9 @@
  */
 
 import { ask } from "../lib/research"
-import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
-import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMode } from "../lib/types"
+import { isProviderRoutable, providerRouteLabel, getProviderEnvVar } from "../lib/providers"
+import { resolveSubscriptionRoute } from "../lib/subscription-cli"
+import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMode, type ServedBy } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
@@ -124,7 +125,12 @@ export async function runProDual(options: {
   if (modelOverride) {
     assertDispatchableModelIds([modelOverride.modelId])
     if (dryRun) {
-      const estimate = modelOverride.costTier === "very-high" ? "~$5-15" : "registry-priced single-model call"
+      const onSubscription = resolveSubscriptionRoute(modelOverride, {}) !== undefined
+      const estimate = onSubscription
+        ? "~$0 (subscription CLI)"
+        : modelOverride.costTier === "very-high"
+          ? "~$5-15"
+          : "registry-priced single-model call"
       console.error("[pro] Dry run - would query one model:")
       console.error(`  • Model: ${modelOverride.displayName} (${modelOverride.modelId})`)
       console.error("  • Config: explicit --model override")
@@ -162,8 +168,8 @@ export async function runProDual(options: {
   const [mainstay0Id, mainstay1Id] = cfg.mainstays
   const mainstay0 = getModel(mainstay0Id)
   const mainstay1 = getModel(mainstay1Id)
-  const m0Available = mainstay0 && isProviderAvailable(mainstay0.provider)
-  const m1Available = mainstay1 && isProviderAvailable(mainstay1.provider)
+  const m0Available = mainstay0 && isProviderRoutable(mainstay0.provider)
+  const m1Available = mainstay1 && isProviderRoutable(mainstay1.provider)
 
   // Effective exclude = persistent config + this-call --exclude flag (union).
   const effectiveExclude =
@@ -267,11 +273,10 @@ export async function runProDual(options: {
         console.error(`  • ${leg.id.toUpperCase()} unknown model "${leg.modelId}"${tag}`)
         continue
       }
-      const availability = isProviderAvailable(leg.model.provider)
-        ? "provider key ready"
-        : `${getProviderEnvVar(leg.model.provider)} not set`
+      const availability = providerRouteLabel(leg.model.provider)
+      const subscription = resolveSubscriptionRoute(leg.model, {}) !== undefined
       console.error(
-        `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability})`,
+        `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability}${subscription ? "; ~$0 subscription" : ""})`,
       )
     }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
@@ -285,10 +290,11 @@ export async function runProDual(options: {
     } else {
       const judgeModel = getModel(cfg.judge)
       if (judgeModel) {
-        const availability = isProviderAvailable(judgeModel.provider)
-          ? "provider key ready"
-          : `${getProviderEnvVar(judgeModel.provider)} not set`
-        console.error(`  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability})`)
+        const availability = providerRouteLabel(judgeModel.provider)
+        const subscription = resolveSubscriptionRoute(judgeModel, {}) !== undefined
+        console.error(
+          `  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability}${subscription ? "; ~$0 subscription" : ""})`,
+        )
       } else {
         console.error(`  • Judge: unknown model "${cfg.judge}"`)
       }
@@ -327,10 +333,10 @@ export async function runProDual(options: {
     { cause: "unavailable" | "dropped-before-dispatch"; detail: string }
   >()
   for (const slot of requestedSlots) {
-    if (!isProviderAvailable(slot.model.provider)) {
+    if (!isProviderRoutable(slot.model.provider)) {
       preflightMissing.set(slot.id, {
         cause: "unavailable",
-        detail: `provider key for ${slot.model.provider} is unavailable (${getProviderEnvVar(slot.model.provider)})`,
+        detail: `no route for ${slot.model.provider} (${providerRouteLabel(slot.model.provider)})`,
       })
     }
   }
@@ -584,9 +590,15 @@ export async function runProDual(options: {
   const legC = legOutcomes.find((l) => l.id === "c")
   const legD = legOutcomes.find((l) => l.id === "d")
 
-  // Per-leg cost — failed legs cost zero (no usage payload).
+  // Per-leg cost — failed legs cost zero (no usage payload). A subscription-CLI
+  // leg (bead 29147) spent no per-token money, so it prices at 0 rather than the
+  // SKU's API rates, even though the CLI reported tokens.
   const costForLeg = (l: LegOutcome) =>
-    l.response?.usage ? estimateCost(l.model, l.response.usage.promptTokens, l.response.usage.completionTokens) : 0
+    l.response?.servedBy
+      ? 0
+      : l.response?.usage
+        ? estimateCost(l.model, l.response.usage.promptTokens, l.response.usage.completionTokens)
+        : 0
   const legCosts = new Map<string, number>(legOutcomes.map((l) => [l.id, costForLeg(l)]))
   const totalLegCost = Array.from(legCosts.values()).reduce((s, c) => s + c, 0)
 
@@ -634,8 +646,8 @@ export async function runProDual(options: {
     const judgeModel = getModel(cfg.judge)
     if (!judgeModel) {
       judgeError = `judge model "${cfg.judge}" not found in registry`
-    } else if (!isProviderAvailable(judgeModel.provider)) {
-      judgeError = `judge unavailable: ${getProviderEnvVar(judgeModel.provider)} not set`
+    } else if (!isProviderRoutable(judgeModel.provider)) {
+      judgeError = `judge unavailable: ${providerRouteLabel(judgeModel.provider)}`
     } else {
       judgeModelId = judgeModel.modelId
       // Every surviving leg that is not the anchor is a contender. The pair id
@@ -677,7 +689,13 @@ export async function runProDual(options: {
               maxOutputTokens: options.maxOutputTokens,
               stream: false,
             })
-            const cost = raw.usage ? estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens) : 0
+            // Judge cost is zero when the judge answered over its subscription
+            // CLI (bead 29147) — never the SKU's API rates — else the SKU's
+            // rates from the tokens the SDK reported.
+            const cost =
+              raw.servedBy || !raw.usage
+                ? 0
+                : estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens)
             if (raw.error) {
               const retry = options.retryCommand
               raw.error = formatBudgetRetry(
@@ -955,6 +973,7 @@ export async function runProDual(options: {
     durationMs?: number
     status: "completed" | "failed"
     error?: string
+    servedBy?: ServedBy
   }
   const envelopeLeg = (leg: LegOutcome): EnvelopeLeg => ({
     model: leg.model.displayName,
@@ -969,6 +988,7 @@ export async function runProDual(options: {
     durationMs: leg.response?.durationMs,
     status: leg.ok ? "completed" : "failed",
     error: leg.error,
+    servedBy: leg.response?.servedBy,
   })
   const aLeg = envelopeLeg(legA)
   const bLeg = envelopeLeg(legB)
@@ -1196,6 +1216,7 @@ async function appendAbProLog(entry: {
       chars: l.response?.content?.length,
       content: l.response?.content,
       cost: l.cost,
+      servedBy: l.response?.servedBy,
       score: l.score ?? null,
     })
     const byId = new Map(entry.legs.map((l) => [l.id, l]))

@@ -30,7 +30,7 @@
 
 import { z } from "zod"
 import { getModel, getEndpoint, type Model } from "./types"
-import { isProviderAvailable } from "./providers"
+import { isProviderRoutable } from "./providers"
 import { createLogger } from "loggily"
 
 const log = createLogger("bearly:llm:dual-pro")
@@ -419,7 +419,7 @@ export function modelHasCapability(model: Model, cap: Capability): boolean {
 export function filterPoolByCapability(
   poolIds: readonly string[],
   required: readonly Capability[],
-  isAvailable: (provider: Model["provider"]) => boolean = (p) => isProviderAvailable(p),
+  isAvailable: (provider: Model["provider"]) => boolean = (p) => isProviderRoutable(p),
 ): string[] {
   return poolIds.filter((id) => {
     const m = getModel(id)

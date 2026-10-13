@@ -53,6 +53,10 @@ export interface CacheKey {
   context?: string
   /** Provider/model parameters that affect output (temperature, reasoning level, etc.). */
   params?: Record<string, unknown>
+  /** Route that answers the call — "key" (billing API key) or a subscription
+   *  CLI id. Part of the identity because a CLI answer and a key answer for the
+   *  same SKU are different results (bead 29147). */
+  route?: string
 }
 
 export interface CacheEntry<E = unknown> {
@@ -73,6 +77,7 @@ export function cacheKeyHash(key: CacheKey): string {
     model: key.model,
     prompt: key.prompt,
     context: key.context ?? "",
+    route: key.route ?? "key",
     params: sortObj(key.params ?? {}),
   })
   return createHash("sha256").update(canonical).digest("hex")

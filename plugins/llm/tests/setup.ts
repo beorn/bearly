@@ -13,6 +13,12 @@
 
 import { promises as fsPromises, readFileSync } from "node:fs"
 
+// Subscription CLI routing (bead 29147) must never fire under the test runner:
+// the host's PATH is not part of the test contract, so a stray `codex`/`agy`
+// would make the suite non-hermetic (and shell out to a real provider). Tests
+// that cover the route opt in explicitly by re-setting this variable.
+process.env.LLM_SUBSCRIPTION_CLI ??= "0"
+
 const globalAny = globalThis as unknown as { Bun?: Record<string, unknown> }
 
 if (typeof globalAny.Bun === "undefined") {

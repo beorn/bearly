@@ -50,7 +50,7 @@ export interface ModelRates {
   cacheWritePerM?: number
 }
 
-export type CostSource = "provider" | "computed" | "unknown"
+export type CostSource = "provider" | "computed" | "unknown" | "subscription"
 
 export interface ResolvedCost {
   /** USD. Meaningful only when `source !== "unknown"` (0 there is a default, not a price). */
@@ -106,4 +106,16 @@ export function resolveCost(opts: { usage: UsageMap; rates?: ModelRates | null; 
     return { usd, source: "computed", breakdown }
   }
   return { usd: 0, source: "unknown" }
+}
+
+/**
+ * Cost of an answer served by a SUBSCRIPTION CLI (bead 29147): 0 USD, with a
+ * source that NAMES the subscription. A subscription spends no per-token money,
+ * so pricing such an answer at the SKU's API rates would be a fabricated cost;
+ * the tokens the CLI reported are still carried on the usage object, only the
+ * dollar figure is zero. `source: "subscription"` is distinct from "provider"
+ * so the envelope reads honestly rather than as a $0 provider bill.
+ */
+export function resolveSubscriptionCost(): ResolvedCost {
+  return { usd: 0, source: "subscription" }
 }

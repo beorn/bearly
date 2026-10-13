@@ -10,7 +10,8 @@ import { deniedProviders } from "./denied-providers"
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { estimateCost, formatCost, resolveCostForModel } from "./types"
+import { estimateCost, formatCost, resolveCostForModel, type ServedBy } from "./types"
+import { resolveSubscriptionCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
@@ -27,6 +28,8 @@ export interface LegMeta {
   durationMs?: number
   status?: "completed" | "failed"
   error?: string
+  /** Which mechanism answered this leg (subscription CLI routes, bead 29147). */
+  servedBy?: ServedBy
 }
 
 /** The requested panel and its measured completion, including preflight loss. */
@@ -56,6 +59,12 @@ export interface OutputMeta {
    * the envelope serializer normalizes.
    */
   tokens?: number | { prompt: number; completion: number; total?: number }
+  /** Which mechanism actually answered (subscription CLI routes, bead 29147).
+   *  Carried into the envelope so a CLI substitution is never silent. */
+  servedBy?: ServedBy
+  /** Provenance label for `costUsd` — e.g. "subscription" for a CLI answer that
+   *  spent no per-token money. */
+  costSource?: string
   /** Display-formatted cost string (legacy, kept for the meta-comment header). */
   cost?: string
   /** Numeric cost in USD — preferred for the JSON envelope. */
@@ -199,6 +208,8 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.durationMs) result.durationMs = meta.durationMs
   if (meta?.responseId) result.responseId = meta.responseId
   if (meta?.status) result.status = meta.status
+  if (meta?.servedBy) result.servedBy = meta.servedBy
+  if (meta?.costSource) result.costSource = meta.costSource
   if (meta?.completion) result.completion = meta.completion
   if (meta?.a) result.a = legToEnvelope(meta.a)
   if (meta?.b) result.b = legToEnvelope(meta.b)
@@ -223,6 +234,7 @@ function legToEnvelope(leg: LegMeta): Record<string, unknown> {
   if (leg.cost != null) out.cost = leg.cost
   if (leg.durationMs != null) out.durationMs = leg.durationMs
   if (leg.status) out.status = leg.status
+  if (leg.servedBy) out.servedBy = leg.servedBy
   if (leg.error) out.error = leg.error
   return out
 }
@@ -415,6 +427,9 @@ export async function finishResponse(
    *  empty-response message on a real provider failure. */
   error?: string,
   retryCommand?: (model: string, bound: number) => string,
+  /** Set when a subscription CLI (bead 29147) answered: names the route, the
+   *  CLI and the CLI model, and zeroes the dollar cost with a matching source. */
+  servedBy?: OutputMeta["servedBy"],
 ): Promise<void> {
   if (!content || content.trim().length === 0) {
     const providerError = withExclusionNote(
@@ -488,12 +503,17 @@ export async function finishResponse(
   }
   // Provenance-aware (bead 19899 P2): an unpriced model resolves to source
   // "unknown" and the cost fields are OMITTED — never a synthetic "$0".
-  const resolved = usage
-    ? resolveCostForModel(model as Parameters<typeof resolveCostForModel>[0], {
-        input: usage.promptTokens,
-        output: usage.completionTokens,
-      })
-    : undefined
+  // A subscription CLI answer (bead 29147) spent no per-token money: 0 USD with
+  // a source that NAMES the subscription, never the SKU's API rates — and even
+  // when the CLI reported no usage.
+  const resolved = servedBy
+    ? resolveSubscriptionCost()
+    : usage
+      ? resolveCostForModel(model as Parameters<typeof resolveCostForModel>[0], {
+          input: usage.promptTokens,
+          output: usage.completionTokens,
+        })
+      : undefined
   const cost = resolved !== undefined && resolved.source !== "unknown" ? resolved.usd : undefined
   await finalizeOutput(content, outputFile, sessionTag, {
     query,
@@ -501,6 +521,8 @@ export async function finishResponse(
     tokens: usage
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
       : undefined,
+    ...(servedBy ? { servedBy } : {}),
+    ...(resolved?.source === "subscription" ? { costSource: resolved.source } : {}),
     cost: cost !== undefined ? formatCost(cost) : undefined,
     costUsd: cost,
     durationMs,

@@ -4,7 +4,8 @@
  */
 
 import { ask } from "../lib/research"
-import { isProviderAvailable } from "../lib/providers"
+import { isProviderRoutable } from "../lib/providers"
+import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
@@ -51,7 +52,7 @@ export async function askAndFinish(options: {
   if (modelOverride) {
     model = modelOverride
   } else {
-    const result = getBestAvailableModel(modelMode, isProviderAvailable)
+    const result = getBestAvailableModel(modelMode, isProviderRoutable)
     if (!result.model) {
       const seat = safeCurrentSeat()
       const envFile = declaredHabitatEnvFile()
@@ -93,9 +94,14 @@ export async function askAndFinish(options: {
   // the recovery path stores responseId, not content.
   const cacheable = !useBackground && !imagePath && options.modelMode !== "pro"
   const { readCache, writeCache } = await import("../lib/cache")
+  // The route is part of the cache identity: a subscription-CLI answer and an
+  // API-key answer for the same SKU are different results and must not collide
+  // (bead 29147), and the CLI's model can change independently of the SKU.
+  const route = resolveSubscriptionRoute(model, { hasImage: imagePath !== undefined }) ?? "key"
   const cacheKey = {
     model: model.modelId,
     prompt: enrichedQuestion,
+    route,
     params: { level, modelMode: options.modelMode, maxOutputTokens: options.maxOutputTokens },
   }
   let response: ModelResponse
@@ -170,5 +176,6 @@ export async function askAndFinish(options: {
     // the generic "silent failure" message when the completion came back empty.
     response.error,
     options.retryCommand,
+    response.servedBy,
   )
 }

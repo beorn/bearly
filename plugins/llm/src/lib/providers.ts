@@ -17,9 +17,10 @@ import { createGoogle } from "@ai-sdk/google"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import type { LanguageModel } from "ai"
 import type { Provider, Model } from "./types"
-import { getEndpoint } from "./types"
+import { getEndpoint, getProviderEnvVar } from "./types"
 import { missingApiKeyError, ensureProviderKeysLoaded } from "./env-preflight"
 import { injectOpenRouterProviderPin, type OpenRouterProviderPin } from "./openrouter-route-pin"
+import { subscriptionCliAvailable } from "./subscription-cli"
 
 // Provider instances (lazy-initialized)
 let openaiProvider: ReturnType<typeof createOpenAI> | undefined
@@ -208,6 +209,31 @@ export function getAvailableProviders(): Provider[] {
   // Ollama excluded — it's checked asynchronously via isOllamaAvailable()
   const providers: Provider[] = ["openai", "anthropic", "google", "xai", "perplexity", "openrouter"]
   return providers.filter(isProviderAvailable)
+}
+
+/**
+ * Dispatch availability: a provider is routable when it has a billing API key
+ * (the paid route) OR a subscription CLI that answers for it — `codex` for
+ * `openai`, `agy` for `google` (see ./subscription-cli.ts). This is the
+ * predicate selection and dispatch must use to reach a real answer; the legacy
+ * `isProviderAvailable` stays the pure key-presence check its doc-comment
+ * describes.
+ */
+export function isProviderRoutable(provider: Provider): boolean {
+  return isProviderAvailable(provider) || subscriptionCliAvailable(provider)
+}
+
+/**
+ * One-line route label for dry-run/preflight output: which mechanism would
+ * answer this provider right now. Never reports a route that is not there —
+ * an unavailable provider names the key it is missing.
+ */
+export function providerRouteLabel(provider: Provider): string {
+  // Subscription-first, in the same order dispatch uses: a CLI that is present
+  // (and not disabled) is the route that will be spent, even when a key exists.
+  if (subscriptionCliAvailable(provider)) return "subscription CLI ready"
+  if (isProviderAvailable(provider)) return "provider key ready"
+  return `${getProviderEnvVar(provider)} not set`
 }
 
 // Re-exported from types.ts (single source of truth). The claim that these

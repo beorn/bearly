@@ -5,7 +5,15 @@
  */
 
 import { generateText, streamText, type ModelMessage, type UserContent } from "ai"
-import { getLanguageModel, isProviderAvailable } from "./providers"
+import { getLanguageModel, isProviderAvailable, isProviderRoutable } from "./providers"
+import {
+  querySubscriptionCli,
+  resolveSubscriptionRoute,
+  subscriptionCliAvailable,
+  subscriptionCliFor,
+  subscriptionRouteNote,
+  describeSubscriptionRoute,
+} from "./subscription-cli"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
@@ -256,7 +264,12 @@ async function recordQueryObservation(
           provider: model.provider,
           status: "available" as const,
           source: "dispatch",
-          reason: `successful completion via ${model.modelId}`,
+          // Name the mechanism that answered (bead 29147): a subscription CLI
+          // answer is not the provider API, so the observation says which CLI
+          // and which CLI model produced it.
+          reason: response.servedBy
+            ? `successful completion via ${response.servedBy.cli} CLI model ${response.servedBy.model} (subscription)`
+            : `successful completion via ${model.modelId}`,
         }
   if (observation) await recordProviderObservation(store, observation)
 }
@@ -307,12 +320,29 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   const startTime = Date.now()
   const observationStore = resolveObservationStore(options.observationStore)
 
-  // Check provider availability
-  if (!isProviderAvailable(model.provider)) {
+  // Route gate. A provider is dispatchable when it has a billing API key OR a
+  // subscription CLI that answers for it (codex for OpenAI, agy for Gemini).
+  // The CLI branch below is text-only, so an image attachment disables it and
+  // falls back to the key route. The chosen route is always printed — a route
+  // is never switched silently.
+  const subscriptionRoute =
+    resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
+  if (!isProviderAvailable(model.provider) && !subscriptionRoute) {
     const envVar = getProviderEnvVar(model.provider)
-    const error = envVar
+    let error = envVar
       ? missingApiKeyError(envVar).message
       : `Provider ${model.provider} not available (API key not set)`
+    // Name the route the request itself ruled out, so "no key" is not the only
+    // fact reported when an image is what disabled the CLI route.
+    if (options.imagePath !== undefined && subscriptionCliAvailable(model.provider)) {
+      error += ` — note: the ${subscriptionCliFor(model.provider)} subscription CLI route is text-only, so the attached image skipped it for this request.`
+    } else {
+      // The CLI is on PATH but does not apply (a codex profile that routes to a
+      // gateway, or an OpenAI SKU with no declared codex model): name it beside
+      // the missing key (N5).
+      const note = subscriptionRouteNote(model)
+      if (note) error += ` — note: ${note} — the API-key route is what remains.`
+    }
     return {
       response: {
         model,
@@ -364,6 +394,31 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       maxOutputTokens: options.maxOutputTokens,
     })
     return finishQuery(observationStore, model, response)
+  }
+
+  // Subscription CLI route (codex for OpenAI, agy for Gemini). Answers on the
+  // seat's existing subscription login instead of a billing API key; a broken
+  // or expired CLI login surfaces its own stderr as the response error rather
+  // than silently falling back to another provider.
+  if (subscriptionRoute) {
+    console.error(`🔗 route: ${describeSubscriptionRoute(model)}`)
+    try {
+      const response = await querySubscriptionCli(model, {
+        question,
+        systemPrompt,
+        onToken,
+        abortSignal,
+      })
+      return finishQuery(observationStore, model, response)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return finishQuery(observationStore, model, {
+        model,
+        content: "",
+        durationMs: Date.now() - startTime,
+        error: `subscription CLI route failed for ${model.displayName}: ${message}`,
+      })
+    }
   }
 
   // Build user message content — text or multimodal (text + image)
@@ -749,8 +804,8 @@ export async function ask(
     }
   } else {
     const models = getModelsForLevel(level)
-    // Find first available model
-    model = models.find((m) => isProviderAvailable(m.provider))
+    // Find first routable model (API key or subscription CLI).
+    model = models.find((m) => isProviderRoutable(m.provider))
     if (!model) {
       throw new Error(`No available models for level: ${level}`)
     }

@@ -236,6 +236,17 @@ export const ModelResponseSchema = z.object({
     .optional(),
   durationMs: z.number(),
   error: z.string().optional(),
+  /** Who actually answered, when it differs from the SKU's own provider API —
+   *  today the subscription CLI routes (bead 29147). The SKU stays the slot's
+   *  identity; this says which CLI and which CLI model produced the answer, so
+   *  a CLI substitution is never silent. */
+  servedBy: z
+    .object({
+      route: z.literal("subscription-cli"),
+      cli: z.string(),
+      model: z.string(),
+    })
+    .optional(),
   /** Rate-limit headers from this call (km-bearly.llm-quota-tracking).
    *  Captured opportunistically — `undefined` when the provider didn't
    *  ship `x-ratelimit-*` headers on the response. The CLI exposes this
@@ -253,6 +264,10 @@ export const ModelResponseSchema = z.object({
     .optional(),
 })
 export type ModelResponse = z.infer<typeof ModelResponseSchema>
+/** The `servedBy` shape's ONE home (bead 29147, N4): the zod schema above owns
+ *  it, and every other module references this alias instead of restating the
+ *  literal. */
+export type ServedBy = NonNullable<ModelResponse["servedBy"]>
 
 export const ConsensusResultSchema = z.object({
   level: ThinkingLevelSchema,

@@ -249,6 +249,9 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
         TMPDIR: env.tmpDir,
         CLAUDE_PROJECT_DIR: env.tmpDir,
         OPENROUTER_API_KEY: "native-test-key",
+        // This case simulates a mainstay whose provider has NO route at all, so
+        // the host's subscription CLI (bead 29147) must not count as one.
+        LLM_SUBSCRIPTION_CLI: "0",
         LLM_NO_ENV_AUTOLOAD: "1",
         LLM_SKIP_MODEL_LIVENESS: "1",
         LLM_NO_HISTORY: "1",
