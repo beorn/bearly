@@ -823,6 +823,20 @@ const SKUS_DATA: SkuConfig[] = [
     typicalLatencyMs: 15000,
     reasoning: { contextWindow: 1048576, maxOutputTokens: 65536 },
   },
+  // OpenRouter route for Gemini 4 Argon (released 2026-10-13; 1M input+output,
+  // top_provider max_completion 65536). Live-catalog rates 2026-10-13:
+  // $2/M input, $10/M output. The direct google SKU is unavailable while our
+  // Gemini API key is refused, so this is the reachable /ask route.
+  {
+    modelId: "google/gemini-4-argon",
+    displayName: "Gemini 4 Argon (OpenRouter)",
+    isDeepResearch: false,
+    costTier: "medium",
+    inputPricePerM: 2.0,
+    outputPricePerM: 10.0,
+    typicalLatencyMs: 12000,
+    reasoning: { contextWindow: 1048576, maxOutputTokens: 65536 },
+  },
   {
     modelId: "poolside/laguna-s-2.1",
     displayName: "Laguna S 2.1",
@@ -1064,6 +1078,7 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   "google/gemini-3.6-flash": { provider: "openrouter", capabilities: NO_CAPS },
   "google/gemini-3-flash-preview": { provider: "openrouter", capabilities: NO_CAPS },
   "google/gemini-2.5-pro": { provider: "openrouter", capabilities: NO_CAPS },
+  "google/gemini-4-argon": { provider: "openrouter", capabilities: NO_CAPS },
   "poolside/laguna-s-2.1": { provider: "openrouter", capabilities: NO_CAPS },
   "meituan/longcat-2.0": { provider: "openrouter", capabilities: NO_CAPS },
   "thinkingmachines/inkling": { provider: "openrouter", capabilities: NO_CAPS },
