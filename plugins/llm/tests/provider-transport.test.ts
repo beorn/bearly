@@ -152,6 +152,7 @@ describe("provider transport across AI SDK upgrades", () => {
       }),
     ]
     for (const response of responses) expect(response.error).toContain("positive safe integer")
+    expect(errors).toHaveBeenCalledTimes(1)
     expect(errors).toHaveBeenCalledWith(
       expect.stringContaining("bearly:llm:gemini"),
       expect.stringContaining("positive safe integer"),
@@ -173,6 +174,7 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(response.error).toContain("deep-research-pro-preview-12-2025")
     expect(response.error).toContain("4096")
     expect(response.error).toContain("cannot honor")
+    expect(errors).toHaveBeenCalledTimes(1)
     expect(errors).toHaveBeenCalledWith(
       expect.stringContaining("bearly:llm:gemini"),
       expect.stringContaining("cannot honor maxOutputTokens=4096"),
