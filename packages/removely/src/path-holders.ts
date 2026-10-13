@@ -818,6 +818,8 @@ export type ProcessCwdProjection = Readonly<{
   complete: boolean
   unreadable: readonly UnreadableProcess[]
   mechanism: "proc" | "lsof"
+  /** Original Linux census denominator and gaps. Absent on lsof; consumers needing coverage must report it unavailable. */
+  coverage?: ProcessCensusCoverage<"same-uid">
 }>
 
 export async function inspectProcessCwds(
@@ -844,7 +846,13 @@ export async function inspectProcessCwdsInProc(
     const cwd = row.sources.cwd
     return cwd?.availability === "readable" && cwd.value !== undefined ? [{ pid: row.pid, cwd: cwd.value }] : []
   })
-  return { rows, complete: census.coverage.complete, unreadable: census.coverage.unreadable ?? [], mechanism: "proc" }
+  return {
+    rows,
+    complete: census.coverage.complete,
+    unreadable: census.coverage.unreadable ?? [],
+    mechanism: "proc",
+    coverage: census.coverage,
+  }
 }
 
 /**

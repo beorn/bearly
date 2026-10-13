@@ -61,6 +61,13 @@ cwd and names each process it could not read in `unreadable`, with its uid and
 argv; `clearedByIdentity(entry)` clears four identities of the current uid
 (`systemd` with `--user`, `(sd-pam)`, `sshd-session` and `ssh-agent`), and every
 other entry is for the caller to refuse on.
+On Linux the projection also retains the original `coverage`: enumeration and
+foreign-UID exclusion counts, source readability and gaps, and raw completeness.
+Identity clearing does not change those raw facts. On Darwin/lsof `coverage` is
+absent because enumeration coverage is unmeasured; any consumer that needs it
+must report unavailable, never infer completeness from the missing member.
+`coverage.unreadable` also contains argv for identity checks: reports should
+select safe fields rather than serialize those command lines.
 `maps` is read after `cmdline` and never once `cmdline` has not answered, so one
 process stuck on its mmap lock pins one I/O-pool thread. A source that went missing or was
 denied is resolved by one exit proof: the process directory gone, another

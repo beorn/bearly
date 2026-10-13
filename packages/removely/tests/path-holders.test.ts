@@ -1200,6 +1200,13 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
       denyCwd(probe.processRoot)
       const cwds = await inspectProcessCwdsInProc(probe.procRoot)
       expect(cwds).toMatchObject({ rows: [], complete: false, mechanism: "proc" })
+      // The worktree report needs the original denominator, even after identity clearing (hh 28888).
+      expect(cwds.coverage).toMatchObject({
+        scope: "same-uid",
+        complete: false,
+        processes: { enumerated: 1, sameUid: 1, excluded: 0, sourceDenied: 1 },
+        sources: { cwd: { readable: 0, unavailable: { denied: 1 } } },
+      })
       expect(cwds.unreadable).toEqual([
         expect.objectContaining({
           pid: 4242,
@@ -1222,6 +1229,12 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
       complete: true,
       unreadable: [],
       mechanism: "proc",
+      coverage: expect.objectContaining({
+        scope: "same-uid",
+        complete: true,
+        processes: expect.objectContaining({ enumerated: 1, sameUid: 1, excluded: 0 }),
+        sources: { cwd: { readable: 1, notApplicable: 0, unavailable: expect.objectContaining({ denied: 0 }) } },
+      }),
     })
   })
 
@@ -1242,7 +1255,7 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
         return readlink(path)
       }) as typeof fsPromises.readlink)
       const cwds = await inspectProcessCwdsInProc(probe.procRoot)
-      expect(cwds).toEqual({ rows: [], complete: true, unreadable: [], mechanism: "proc" })
+      expect(cwds).toMatchObject({ rows: [], complete: true, unreadable: [], mechanism: "proc" })
       const census = await inspectProcessCensusInProc(probe.procRoot, { scope: "same-uid", sources: ["cwd"] })
       expect(census.coverage.complete).toBe(true)
       expect(census.coverage.sources.cwd?.unavailable).toMatchObject({ exited: 1, missing: 0, denied: 0 })
