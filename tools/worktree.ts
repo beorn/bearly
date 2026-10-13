@@ -3899,8 +3899,10 @@ export const PRESERVE_NOTHING_EXIT = 3
  * verb is a thin argv-to-function mapping over preserveSlotState.
  *
  * `--json` prints a machine receipt (slot, whether anything was preserved, the
- * reason, the ref, the sha, and each component's ref) and nothing else on
- * stdout — preserveSlotState's own loud print is suppressed via `quiet`. The
+ * reason, the ref, the sha, each component's ref, and — when a path's staged
+ * version diverged — the staged-index commit for the root and each component)
+ * and nothing else on stdout — preserveSlotState's own loud print is suppressed
+ * via `quiet`. The
  * verb exits PRESERVE_NOTHING_EXIT, with the reason on stderr, when it preserves
  * nothing, so a caller never mistakes a no-op for success.
  */
@@ -3922,7 +3924,13 @@ export async function preserveWorktreeState(name: string, options: { json?: bool
     reason,
     ref: preserved.ref ?? null,
     sha: preserved.sha ?? null,
-    submodules: preserved.submodules.map((entry) => ({ path: entry.path, ref: entry.ref, sha: entry.sha })),
+    ...(preserved.index === undefined ? {} : { index: preserved.index }),
+    submodules: preserved.submodules.map((entry) => ({
+      path: entry.path,
+      ref: entry.ref,
+      sha: entry.sha,
+      ...(entry.index === undefined ? {} : { index: entry.index }),
+    })),
   }
   if (options.json === true) console.log(JSON.stringify(receipt))
   else if (preserved.preserved) {

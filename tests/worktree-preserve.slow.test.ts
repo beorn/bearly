@@ -151,14 +151,19 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     })
     expect(clean.stderr).toContain("nothing preserved")
 
+    // A path staged at A, then edited to B in the working tree: the receipt must carry the
+    // staged-index commit additively (cto plan pin 3) and BOTH versions stay recoverable —
+    // B at <ref>:dirt.txt, A at <ref>^2:dirt.txt.
     writeFileSync(join(destination, "dirt.txt"), "preserved across the CLI boundary\n")
+    await $`git -C ${destination} add dirt.txt`.quiet()
+    writeFileSync(join(destination, "dirt.txt"), "the working-tree version\n")
     const dirty = spawnSync("bun", [cli, "preserve", destination, "--json"], {
       cwd: mainRepo,
       encoding: "utf8",
       timeout: 20_000,
     })
     expect(dirty.status, `${dirty.stdout}\n${dirty.stderr}`).toBe(0)
-    const receipt = JSON.parse(dirty.stdout.trim()) as { ref: string; sha: string }
+    const receipt = JSON.parse(dirty.stdout.trim()) as { ref: string; sha: string; index?: string }
     expect(receipt).toMatchObject({
       schema: "bearly-worktree-preserve/1",
       preserved: true,
@@ -166,7 +171,13 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       submodules: [],
     })
     expect(receipt.ref).toMatch(/^wip\//u)
+    expect(receipt.index, "the receipt carries the staged-index commit additively (cto plan pin 3)").toMatch(
+      /^[0-9a-f]{40}$/u,
+    )
     expect((await $`git -C ${mainRepo} show ${`${receipt.ref}:dirt.txt`}`.text()).trim()).toBe(
+      "the working-tree version",
+    )
+    expect((await $`git -C ${mainRepo} show ${`${receipt.ref}^2:dirt.txt`}`.text()).trim()).toBe(
       "preserved across the CLI boundary",
     )
   })
