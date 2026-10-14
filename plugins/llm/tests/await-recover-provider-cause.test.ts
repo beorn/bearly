@@ -92,4 +92,23 @@ describe("29325 a failed stored response keeps its provider cause", () => {
     const emitted = env.stderr.join("\n") + "\n" + env.stdout.join("\n")
     expect(emitted).toContain("credit_balance_exhausted")
   })
+
+  it("(b2) recover --json prints exactly one failed envelope on stdout naming the cause", async () => {
+    const { setJsonMode } = await import("../src/lib/output-mode")
+    setJsonMode(true)
+    const { runRecover } = await import("../src/cmd/recover")
+    await expect(
+      runRecover({ responseId: RESPONSE_ID, clean: false, cleanStale: false, includeAll: false }),
+    ).rejects.toThrow(/__exit_1/)
+    expect(env.exitCodes, "recover --json must exit non-zero on a failed response").toEqual([1])
+    const envelopeLines = env.stdout.filter((line) => line.trim().startsWith("{"))
+    expect(envelopeLines, "recover --json prints exactly one JSON envelope on stdout").toHaveLength(1)
+    // A malformed envelope must fail loudly here rather than be swallowed.
+    const envelope = JSON.parse(envelopeLines[0]!) as Record<string, unknown>
+    expect(envelope.status).toBe("failed")
+    expect(envelope.responseId).toBe(RESPONSE_ID)
+    expect(String(envelope.error)).toContain("Response failed")
+    expect(String(envelope.error)).toContain("credit_balance_exhausted")
+    expect(String(envelope.error)).toContain("no credits remaining")
+  })
 })

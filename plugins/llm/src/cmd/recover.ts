@@ -319,6 +319,15 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
   return true
 }
 
+/**
+ * Emit the one failure envelope both recover terminals share, so a script sees
+ * the same JSON whichever rail reports the failure: `llm await`, the recover
+ * `error` branch, and the recover `failed` branch all print this shape (29325).
+ */
+function emitFailedEnvelope(reason: string, pollStatus: string, responseId: string): void {
+  emitJson({ error: reason, status: "failed", pollStatus, responseId })
+}
+
 /** Run recover/partials command */
 export async function runRecover(options: {
   responseId: string | undefined
@@ -409,8 +418,14 @@ export async function runRecover(options: {
           completePartial(localPartial.path, { delete: true })
           console.error("Cleaned up stale partial file.")
         }
-        // A failed terminal must not read as success. Exit non-zero and name the
-        // provider cause, matching `llm await`'s error envelope (29325).
+        // A failed terminal must not read as success. Emit the same single JSON
+        // envelope as runAwait and the sibling `error` branch, then exit non-zero,
+        // so a script can tell a failed response from a finished one (29325).
+        emitFailedEnvelope(
+          outcome.error ? `Response failed: ${outcome.error}` : "Response failed",
+          outcome.status,
+          responseId,
+        )
         process.exit(1)
       }
       case "stale": {
@@ -439,12 +454,7 @@ export async function runRecover(options: {
           // Match runAwait's error envelope — include responseId + status so
           // scripts and the `bun llm await` caller can reason about the
           // failure without re-deriving context.
-          emitJson({
-            error: `Failed to retrieve: ${outcome.error}`,
-            status: "failed",
-            pollStatus: outcome.status,
-            responseId,
-          })
+          emitFailedEnvelope(`Failed to retrieve: ${outcome.error}`, outcome.status, responseId)
           process.exit(1)
         }
         console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${outcome.error}`)
