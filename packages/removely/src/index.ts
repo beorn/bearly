@@ -8,6 +8,10 @@ import { basename, dirname, join, parse, resolve, sep } from "node:path"
 export { type ProcessCwdRow } from "./process-census.ts"
 
 export {
+  ArgvAliasUnreadableError,
+  argvElementHoldsRoot,
+  argvHoldsRoot,
+  type ArgvAliasCache,
   clearedByIdentity,
   inspectProcessCensus,
   inspectProcessCwds,

@@ -5,6 +5,12 @@ import { isAbsolute } from "node:path"
 export interface ProcessCwdRow {
   readonly pid: number
   readonly cwd: string
+  /**
+   * The process's argv, from `/proc/<pid>/cmdline` on Linux. Absent when that source could not be read and on
+   * the macOS lsof path, which answers cwd only: a reader matching argv must treat an absent argv as unmeasured
+   * for that row, never as "this pid holds no path through argv".
+   */
+  readonly argv?: readonly string[]
 }
 
 /** @internal The macOS lsof run, as a seam so the parse is tested without a Mac. */
