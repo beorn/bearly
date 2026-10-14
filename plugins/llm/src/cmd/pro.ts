@@ -333,10 +333,17 @@ export async function runProDual(options: {
     { cause: "unavailable" | "dropped-before-dispatch"; detail: string }
   >()
   for (const slot of requestedSlots) {
-    if (!isProviderRoutable(slot.model.provider)) {
+    try {
+      if (!isProviderRoutable(slot.model.provider)) {
+        preflightMissing.set(slot.id, {
+          cause: "unavailable",
+          detail: `no route for ${slot.model.provider} (${providerRouteLabel(slot.model.provider)})`,
+        })
+      }
+    } catch (error) {
       preflightMissing.set(slot.id, {
         cause: "unavailable",
-        detail: `no route for ${slot.model.provider} (${providerRouteLabel(slot.model.provider)})`,
+        detail: `route probe failed for ${slot.model.displayName}: ${error instanceof Error ? error.message : String(error)}`,
       })
     }
   }
@@ -644,10 +651,18 @@ export async function runProDual(options: {
   const judgeFailed: { pair: string; cause: string }[] = []
   if (!options.noJudge && okLegs.length >= 2 && judgeAnchor) {
     const judgeModel = getModel(cfg.judge)
+    let judgeAvailable = false
+    if (judgeModel) {
+      try {
+        judgeAvailable = isProviderRoutable(judgeModel.provider)
+      } catch (error) {
+        judgeError = `judge route probe failed for ${judgeModel.displayName}: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
     if (!judgeModel) {
       judgeError = `judge model "${cfg.judge}" not found in registry`
-    } else if (!isProviderRoutable(judgeModel.provider)) {
-      judgeError = `judge unavailable: ${providerRouteLabel(judgeModel.provider)}`
+    } else if (!judgeAvailable) {
+      judgeError ??= `judge unavailable: ${providerRouteLabel(judgeModel.provider)}`
     } else {
       judgeModelId = judgeModel.modelId
       // Every surviving leg that is not the anchor is a contender. The pair id

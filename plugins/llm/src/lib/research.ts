@@ -325,29 +325,42 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // The CLI branch below is text-only, so an image attachment disables it and
   // falls back to the key route. The chosen route is always printed — a route
   // is never switched silently.
-  const subscriptionRoute = resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
-  if (!isProviderAvailable(model.provider) && !subscriptionRoute) {
-    const envVar = getProviderEnvVar(model.provider)
-    let error = envVar
-      ? missingApiKeyError(envVar).message
-      : `Provider ${model.provider} not available (API key not set)`
-    // Name the route the request itself ruled out, so "no key" is not the only
-    // fact reported when an image is what disabled the CLI route.
-    if (options.imagePath !== undefined && subscriptionCliAvailable(model.provider)) {
-      error += ` — note: the ${subscriptionCliFor(model.provider)} subscription CLI route is text-only, so the attached image skipped it for this request.`
-    } else {
-      // The CLI is on PATH but does not apply (a codex profile that routes to a
-      // gateway, or an OpenAI SKU with no declared codex model): name it beside
-      // the missing key (N5).
-      const note = subscriptionRouteNote(model)
-      if (note) error += ` — note: ${note} — the API-key route is what remains.`
+  let subscriptionRoute: boolean
+  try {
+    subscriptionRoute = resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
+    if (!isProviderAvailable(model.provider) && !subscriptionRoute) {
+      const envVar = getProviderEnvVar(model.provider)
+      let error = envVar
+        ? missingApiKeyError(envVar).message
+        : `Provider ${model.provider} not available (API key not set)`
+      // Name the route the request itself ruled out, so "no key" is not the only
+      // fact reported when an image is what disabled the CLI route.
+      if (options.imagePath !== undefined && subscriptionCliAvailable(model.provider)) {
+        error += ` — note: the ${subscriptionCliFor(model.provider)} subscription CLI route is text-only, so the attached image skipped it for this request.`
+      } else {
+        // The CLI is on PATH but does not apply (a codex profile that routes to a
+        // gateway, or an OpenAI SKU with no declared codex model): name it beside
+        // the missing key (N5).
+        const note = subscriptionRouteNote(model)
+        if (note) error += ` — note: ${note} — the API-key route is what remains.`
+      }
+      return {
+        response: {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error,
+        },
+      }
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     return {
       response: {
         model,
         content: "",
         durationMs: Date.now() - startTime,
-        error,
+        error: `subscription CLI availability failed for ${model.displayName}: ${message}`,
       },
     }
   }

@@ -145,8 +145,10 @@ export function cliOnPath(bin: string): boolean {
       accessSync(join(dir, bin), constants.X_OK)
       found = true
       break
-    } catch {
-      // Not here — keep scanning. Absence is the finding, not an error.
+    } catch (error) {
+      // A missing path component or non-executable candidate does not answer this probe.
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES") throw error
     }
   }
   onPathCache.set(bin, found)
@@ -232,9 +234,12 @@ export function codexProfile(): CodexProfile {
     const topLevel = boundary === -1 ? text : text.slice(0, boundary)
     const match = topLevel.match(/^\s*model_provider\s*=\s*"([^"]+)"/mu)
     if (match) modelProvider = match[1]
-  } catch {
-    // No profile file: codex falls back to the default OpenAI provider. Absence
-    // is the finding, not an error.
+  } catch (error) {
+    // Only an absent optional config uses the default OpenAI provider.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (error instanceof Error) error.message += ` (reading ${path})`
+      throw error
+    }
   }
   codexProfileCache = { path, modelProvider, subscription: modelProvider === undefined }
   return codexProfileCache
@@ -406,8 +411,12 @@ async function queryCodex(model: Model, options: SubscriptionQueryOptions): Prom
     try {
       const written = readFileSync(lastMessageFile, "utf8")
       if (written.trim()) content = written
-    } catch {
-      // No -o file (turn failed before any message) — keep the JSONL answer.
+    } catch (error) {
+      // Only an absent -o file (turn failed before any message) permits the JSONL answer.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        if (error instanceof Error) error.message += ` (reading ${lastMessageFile})`
+        throw error
+      }
     }
     if (run.aborted || run.code !== 0 || parsed.failure) {
       const detail = parsed.failure ?? run.stderr.trim().split("\n").slice(-3).join(" | ")
@@ -545,11 +554,6 @@ export async function querySubscriptionCli(model: Model, options: SubscriptionQu
   const response = id === "codex" ? await queryCodex(model, options) : await queryAgy(model, options)
   if (response.content && options.onToken) options.onToken(response.content)
   return response
-}
-
-/** The Antigravity model a Gemini SKU is served by, for reporting. */
-export function agySubscriptionModel(): string {
-  return AGY_SUBSCRIPTION_MODEL
 }
 
 /** Human-readable description of the route a dispatch took, for the loud route line. */

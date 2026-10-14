@@ -19,7 +19,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { chmodSync, mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
 import { safeRemoveSync } from "removely"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -31,8 +31,8 @@ import {
   subscriptionCliAvailable,
   querySubscriptionCli,
   describeSubscriptionRoute,
-  agySubscriptionModel,
   cliOnPath,
+  codexProfile,
   codexSubscriptionRow,
   subscriptionRouteNote,
   resetSubscriptionCliProbe,
@@ -162,7 +162,7 @@ describe("route table", () => {
   it("names the route it will take", () => {
     expect(describeSubscriptionRoute(modelOf("gpt-5.4"))).toContain("codex CLI")
     expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain("agy CLI")
-    expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain(agySubscriptionModel())
+    expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain("gemini-4-argon-high")
   })
 })
 
@@ -185,9 +185,33 @@ describe("PATH probe", () => {
     resetSubscriptionCliProbe()
     expect(cliOnPath("codex")).toBe(false)
   })
+
+  it("reports a PATH symlink loop instead of caching the CLI as absent", () => {
+    symlinkSync("codex", join(fakeDir, "codex"))
+    expect(() => cliOnPath("codex")).toThrow(/ELOOP/)
+  })
 })
 
 describe("provider routing", () => {
+  it.each(["PATH", "profile"])("records a %s probe fault in the model's error result", async (probe) => {
+    if (probe === "PATH") symlinkSync("codex", join(fakeDir, "codex"))
+    else {
+      writeBin("codex", "exit 0")
+      mkdirSync(join(fakeDir, "config.toml"))
+    }
+    const { queryModel } = await import("../src/lib/research")
+    const { response } = await queryModel({ question: "hi", model: modelOf("gpt-5.4"), observationStore: null })
+    expect(response.content).toBe("")
+    expect(response.error).toContain(probe === "PATH" ? "ELOOP" : "EISDIR")
+    expect(response.error).toContain(fakeDir)
+    expect(response.error).toContain("GPT-5.4")
+  })
+
+  it("reports an unreadable profile instead of assuming a ChatGPT login", () => {
+    mkdirSync(join(fakeDir, "config.toml"))
+    expect(() => codexProfile()).toThrow(/EISDIR/)
+  })
+
   it("isProviderRoutable is true for a CLI-backed provider with no key", () => {
     expect(isProviderRoutable("openai")).toBe(false)
     expect(providerRouteLabel("openai")).toBe("OPENAI_API_KEY not set")
@@ -238,6 +262,21 @@ describe("codex route table", () => {
 })
 
 describe("dispatch", () => {
+  it("refuses an unreadable authoritative answer instead of accepting its JSONL mirror", async () => {
+    const bin = join(fakeDir, "codex")
+    writeFileSync(
+      bin,
+      [
+        `#!${process.execPath}`,
+        'const fs = require("node:fs")',
+        'fs.mkdirSync(process.argv[process.argv.indexOf("-o") + 1])',
+        'console.log(JSON.stringify({type: "item.completed", item: {type: "agent_message", text: "must-not-be-the-answer"}}))',
+      ].join("\n"),
+    )
+    chmodSync(bin, 0o755)
+    await expect(querySubscriptionCli(modelOf("gpt-5.4"), { question: "hi" })).rejects.toThrow(/EISDIR/)
+  })
+
   it("answers an OpenAI model through the codex CLI with no API key", async () => {
     const argvFile = join(fakeDir, "codex-argv.txt")
     process.env.FAKE_CODEX_ARGV = argvFile
@@ -288,11 +327,11 @@ describe("dispatch", () => {
     expect(response.servedBy).toEqual({
       route: "subscription-cli",
       cli: "agy",
-      model: agySubscriptionModel(),
+      model: "gemini-4-argon-high",
     })
     const argv = readFileSync(argvFile, "utf8")
     expect(argv).toContain("--model")
-    expect(argv).toContain(agySubscriptionModel())
+    expect(argv).toContain("gemini-4-argon-high")
     expect(argv).toContain("--input-format")
     expect(argv).toContain("stream-json")
     // The prompt travels on stdin, not in argv.
