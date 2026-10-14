@@ -11,6 +11,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./home": {
+      "types": "./src/home.ts",
+      "default": "./src/home.ts"
     }
   }
 }
