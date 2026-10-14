@@ -3048,8 +3048,11 @@ async function assertIgnoredContent(
   if (ignored.length === 0) return inspection
 
   const { generated, packages } = generatedWorktreeOutputs(worktreePath, options)
-  // A changed setup declaration cannot prove what the recreated base will generate.
-  // Direct removal preserves the current inputs, so only reset compares a base.
+  // The generated set comes from THIS checkout's own setup contract -- its
+  // package.json and package dirs -- never from the recreate base. Direct
+  // removal preserves those current inputs, so only reset compares a base, and
+  // a drift there is no evidence about the outputs this checkout's own setup
+  // produced (29302).
   if (base !== undefined && generated.length > 0) {
     const inputs = [
       "package.json",
@@ -3074,14 +3077,18 @@ async function assertIgnoredContent(
         `${verb} cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
       )
     }
-    // 29302: a drifted setup declaration shows the slot is OLD, not that its install/build output is
-    // unrecreatable -- the declaration drift changes WHICH packages exist, never whether their install/build
-    // output (node_modules, dist, .direnv) is disposable. A changed declaration therefore no longer DISCARDS
-    // those outputs; it names them as regenerable instead. Ignored content that is NOT setup output (authored
-    // payload) still has no proof and blocks below, named alone.
+    // 29302: a drifted setup declaration says this slot is OLD, not that its own setup-derived output is
+    // authored payload. node_modules, dist and .direnv are what the checkout's declared setup produced, and a
+    // setup output is disposable on exactly that basis -- whether or not the recreate base would produce the
+    // same paths again: a package this slot carries and the base does not is the base's own removal, not
+    // evidence that this checkout's output was authored. So a changed declaration no longer DISCARDS those
+    // outputs; it names the old setup-derived outputs it treats as disposable instead. Ignored content that is
+    // NOT setup output (authored payload) still has no proof and blocks below, named alone.
     if (sameSetup.exitCode !== 0) {
-      info(`${verb} setup declaration differs from ${base}; the install/build outputs it recreates stay regenerable:`)
-      for (const output of generated) info(`  regenerable: ${relative(worktreePath, output)}`)
+      info(
+        `${verb} setup declaration differs from ${base}; this old checkout's setup-derived install/build outputs are treated as disposable:`,
+      )
+      for (const output of generated) info(`  disposable: ${relative(worktreePath, output)}`)
     }
   }
   // The composing caller proves these independently of the vendor's setup/base.

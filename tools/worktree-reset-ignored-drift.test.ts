@@ -4,20 +4,24 @@
  * `reset` compares a slot's setup inputs (package.json, bun.lock, .envrc and
  * the workspace package dirs) against the recreate base. When those inputs
  * differ — exactly what an old slot looks like — the comparison used to zero
- * the WHOLE regenerable set, so `node_modules/`, each workspace package's
+ * the WHOLE setup-derived set, so `node_modules/`, each workspace package's
  * `node_modules/` and `dist/` were named as unproven ignored payload and the
  * reset was refused. The refusal listed every build output in the slot, hiding
  * any genuinely unprovable row among them.
  *
- * The drift changes WHICH packages exist, never whether their install/build
- * output is disposable. These tests pin that: regenerable setup output stays
- * regenerable across a drifted setup declaration and is NAMED as such, while an
- * authored ignored file is still refused and named ALONE.
+ * The drift changes WHICH packages exist, never whether the output this
+ * checkout's own setup produced is disposable. These tests pin that an old
+ * checkout's setup-derived install/build output is named and admitted across a
+ * drifted declaration, while an authored ignored file is still refused and
+ * named ALONE. The drift here is substantive, not cosmetic: the slot carries a
+ * whole package the recreate base does not have, so the base would never
+ * regenerate that package's output, and it is still disposable.
  *
- * @failure An old slot — setup inputs drifted from the recreate base — is refused a reset over output the
- *          recreated setup regenerates (root and per-workspace-package `node_modules`, a dist-only
- *          package's `dist`), and the refusal names every one of them as unproven ignored payload, so a
- *          genuinely unprovable row is buried in the list (29302; it blocked recycling dev-wt3 2026-10-14).
+ * @failure An old slot — setup inputs drifted from the recreate base — is refused a reset over the
+ *          install/build output its own declared setup produced (root and per-workspace-package
+ *          `node_modules`, a dist-only package's `dist`), and the refusal names every one of them as
+ *          unproven ignored payload, so a genuinely unprovable row is buried in the list (29302; it
+ *          blocked recycling dev-wt3 on 2026-10-14, which had to move every named path aside by hand).
  * @level   l2 — the real reset admission path and bearly's pool mechanics against hermetic git repositories
  * @consumer @i/16-work-lifecycle/29302-worktree-reset-refuses-an-old-slot-over-regenerable-ignored-output
  * @testonly none
@@ -57,7 +61,7 @@ function git(cwd: string, args: readonly string[]): string {
  * A repo shaped like hh's: a lockfile, a `packages/*` workspace, and a
  * dist-only-exports package. A pool slot `wt0` is created at origin/main, then
  * its `package.json` drifts — the old-slot state that triggered the refusal.
- * Its only ignored content is install/build output the recreated setup makes.
+ * Its only ignored content is install/build output its own declared setup made.
  */
 function driftedSlot(): { repo: string; slot: string } {
   const root = mkdtempSync(join(tmpdir(), "bearly-wt-drift-"))
@@ -90,35 +94,47 @@ function driftedSlot(): { repo: string; slot: string } {
   mkdirSync(slotPath, { recursive: true })
   git(repo, ["worktree", "add", "-q", "-B", "wt0", slotPath, "origin/main"])
 
-  // The slot's setup declaration drifts from the base: the old-slot condition.
-  writeFileSync(join(slotPath, "package.json"), '{"name":"repro","private":true,"workspaces":["packages/*"]}\n\n')
+  // The slot drifts from the base substantively, not cosmetically: it carries a
+  // whole workspace package the base does not have. The recreate base would
+  // never produce that package's install/build output, and it is disposable.
+  mkdirSync(join(slotPath, "packages", "legacy"), { recursive: true })
+  writeFileSync(
+    join(slotPath, "packages", "legacy", "package.json"),
+    '{"name":"@repro/legacy","exports":{".":"./dist/index.js"},"scripts":{"build":"true"}}\n',
+  )
   git(slotPath, ["add", "-A"])
   git(slotPath, ["commit", "-qm", "slot drift"])
 
-  // Ignored content the recreated setup regenerates: root and per-package
-  // installs, plus the dist-only package's build output.
+  // Ignored content this checkout's setup produced: root and per-package
+  // installs, plus each dist-only package's build output.
   mkdirSync(join(slotPath, "node_modules"), { recursive: true })
   writeFileSync(join(slotPath, "node_modules", "dep.txt"), "install output\n")
   mkdirSync(join(slotPath, "packages", "dep", "node_modules"), { recursive: true })
   writeFileSync(join(slotPath, "packages", "dep", "node_modules", "dep.txt"), "install output\n")
   mkdirSync(join(slotPath, "packages", "dep", "dist"), { recursive: true })
   writeFileSync(join(slotPath, "packages", "dep", "dist", "index.js"), "built\n")
+  mkdirSync(join(slotPath, "packages", "legacy", "node_modules"), { recursive: true })
+  writeFileSync(join(slotPath, "packages", "legacy", "node_modules", "dep.txt"), "install output\n")
+  mkdirSync(join(slotPath, "packages", "legacy", "dist"), { recursive: true })
+  writeFileSync(join(slotPath, "packages", "legacy", "dist", "index.js"), "built\n")
   return { repo, slot: slotPath }
 }
 
 const RESET = { force: true, install: true, direnv: false, hooks: false, admitOnly: true } as const
 
-describe("reset admits regenerable setup output across a drifted setup declaration (29302)", () => {
-  test("regenerable-only ignored output no longer refuses, and the outputs are named", async () => {
+describe("reset admits old setup-derived output across a drifted setup declaration (29302)", () => {
+  test("setup-output-only ignored content no longer refuses, and the outputs are named", async () => {
     const { repo } = driftedSlot()
 
     process.chdir(repo)
     await expect(resetWorktree("wt0", RESET)).resolves.toBeUndefined()
 
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("regenerable: node_modules")
-    expect(named).toContain("regenerable: packages/dep/node_modules")
-    expect(named).toContain("regenerable: packages/dep/dist")
+    expect(named).toContain("disposable: node_modules")
+    expect(named).toContain("disposable: packages/dep/node_modules")
+    expect(named).toContain("disposable: packages/dep/dist")
+    expect(named).toContain("disposable: packages/legacy/node_modules")
+    expect(named).toContain("disposable: packages/legacy/dist")
   })
 
   test("an authored ignored file is still refused, and named alone", async () => {
@@ -131,6 +147,6 @@ describe("reset admits regenerable setup output across a drifted setup declarati
       (cause: unknown) => String(cause),
     )
     expect(failure).toMatch(/precious\.bin/)
-    expect(failure).not.toMatch(/node_modules|packages\/dep\/dist/)
+    expect(failure).not.toMatch(/node_modules|packages\/dep\/dist|packages\/legacy/)
   })
 })
