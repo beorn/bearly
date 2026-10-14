@@ -1,4 +1,5 @@
 /**
+ * @reach fs-walk <fixture-only: enumerate temporary CLI capture filenames under test tmpdir to verify fake-provider cleanup>
  * Subscription CLI routes (bead 29147).
  *
  * A seat with a ChatGPT-subscribed `codex` login — or an Antigravity `agy`
