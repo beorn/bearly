@@ -1,4 +1,11 @@
 /**
+ * @failure  a failed STORED response loses its provider cause, and `llm recover`
+ *           reports success (exit 0) where `llm await` exits 1, so a caller
+ *           cannot tell a failed response from a finished one.
+ * @level    l1
+ * @consumer @hh/tooling/29325-llm-await-recover-lose-provider-cause
+ * @testonly none
+ *
  * 29325: a failed STORED response loses its provider cause across the
  * await/recover rails, and `recover` exits 0 where `await` exits 1.
  *
