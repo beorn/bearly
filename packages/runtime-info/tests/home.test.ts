@@ -27,13 +27,12 @@ describe("caller home policy", () => {
   test("observes native home independently and reads configured defaults at call time", () => {
     const key = process.platform === "win32" ? "USERPROFILE" : "HOME"
     const original = process.env[key]
-    const native = homedir()
     try {
       process.env[key] = "/first-home"
       expect(userHome()).toBe("/first-home")
       process.env[key] = "/second-home"
       expect(expandHomePath("~/file")).toBe(join("/second-home", "file"))
-      expect(nativeHome()).toBe(native)
+      expect(nativeHome()).toBe(homedir())
     } finally {
       if (original === undefined) delete process.env[key]
       else process.env[key] = original
