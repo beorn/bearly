@@ -7,10 +7,7 @@ export function nativeHome(): string {
 }
 
 /** Resolve the configured home from the caller's environment. */
-export function userHome(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): string {
+export function userHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   const configured = (platform === "win32" ? env.USERPROFILE : env.HOME)?.trim()
   return configured || nativeHome()
 }
