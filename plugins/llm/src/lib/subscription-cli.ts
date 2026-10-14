@@ -147,6 +147,8 @@ export function cliOnPath(bin: string): boolean {
       break
     } catch (error) {
       // A missing path component or non-executable candidate does not answer this probe.
+      // silent-fallback-allow: a missing or non-executable PATH candidate is the
+      // expected miss of a lookup scan, not a swallowed failure.
       const code = (error as NodeJS.ErrnoException).code
       if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES") throw error
     }
@@ -236,6 +238,8 @@ export function codexProfile(): CodexProfile {
     if (match) modelProvider = match[1]
   } catch (error) {
     // Only an absent optional config uses the default OpenAI provider.
+    // silent-fallback-allow: an absent optional codex config means codex uses its
+    // default provider; the absence itself is what sets the route.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       if (error instanceof Error) error.message += ` (reading ${path})`
       throw error
@@ -413,6 +417,8 @@ async function queryCodex(model: Model, options: SubscriptionQueryOptions): Prom
       if (written.trim()) content = written
     } catch (error) {
       // Only an absent -o file (turn failed before any message) permits the JSONL answer.
+      // silent-fallback-allow: an absent -o file only means the turn failed before writing
+      // any message; the JSONL mirror already carries the answer.
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         if (error instanceof Error) error.message += ` (reading ${lastMessageFile})`
         throw error
