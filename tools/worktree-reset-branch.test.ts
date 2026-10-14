@@ -15,10 +15,82 @@
  * `--base <ref>` as the escape hatch).
  */
 
-import { describe, expect, test } from "vitest"
-import { resolveBranchArg, worktreeAddEnvironment } from "./worktree.ts"
+import { execFileSync } from "node:child_process"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { safeRemoveSync } from "removely"
+import { describe, expect, test, vi } from "vitest"
+import { resetWorktree, resolveBranchArg, resolveWorktreeTargetPath, worktreeAddEnvironment } from "./worktree.ts"
 
 const AT_ORIGIN_MAIN = { base: "refs/remotes/origin/main" }
+
+/** @failure Forced reset deletes an unrelated author ref before its owner can archive it,
+ * or stops recutting the same-named slot branch; dirty state must retain preserve-first custody.
+ * @level l2 @consumer hosts composing reset with their own branch-retirement policy
+ * Pure branch-argument coverage never runs removal, preservation or recreation.
+ */
+test.each(["distinct", "same"] as const)(
+  "native forced reset preserves author custody: %s branch",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "bearly-reset-author-"))
+    const repo = join(root, "repo")
+    const origin = join(root, "origin.git")
+    const beforeCwd = process.cwd()
+    const beforePoolSlots = process.env.BEARLY_WORKTREE_POOL_SLOTS
+    const messages: string[] = []
+    using _info = vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+      messages.push(values.map(String).join(" "))
+    })
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim()
+    try {
+      git(root, "init", "-q", "-b", "main", repo)
+      git(root, "init", "-q", "--bare", "-b", "main", origin)
+      git(repo, "config", "user.email", "reset@example.test")
+      git(repo, "config", "user.name", "reset")
+      git(repo, "config", "worktree.poolRoot", ".pool")
+      writeFileSync(join(repo, "package.json"), '{"name":"reset-author","private":true,"workspaces":[]}\n')
+      writeFileSync(join(repo, ".gitignore"), ".pool/\n")
+      writeFileSync(join(repo, "payload.txt"), "base\n")
+      git(repo, "add", ".")
+      git(repo, "commit", "-qm", "base")
+      git(repo, "remote", "add", "origin", origin)
+      git(repo, "push", "-q", "origin", "main")
+      git(repo, "fetch", "-q", "origin", "main")
+      const base = git(repo, "rev-parse", "HEAD")
+      const slot = resolveWorktreeTargetPath(repo, "wt0", { poolRoot: join(repo, ".pool") })
+      mkdirSync(join(repo, ".pool"))
+      git(repo, "worktree", "add", "-q", "-b", "wt0", slot, "HEAD")
+      const branch = mode === "same" ? "wt0" : "topic/author"
+      if (mode === "distinct") git(slot, "checkout", "-q", "-b", branch)
+      writeFileSync(join(slot, "payload.txt"), "committed author work\n")
+      git(slot, "commit", "-qam", "author work")
+      const tip = git(slot, "rev-parse", "HEAD")
+      writeFileSync(join(slot, "payload.txt"), "uncommitted author work\n")
+      process.chdir(repo)
+      process.env.BEARLY_WORKTREE_POOL_SLOTS = JSON.stringify(["wt0"])
+      await resetWorktree("wt0", {
+        force: true,
+        install: false,
+        direnv: false,
+        hooks: false,
+        saveAheadAs: "retirement-proof",
+      })
+      expect(git(slot, "rev-parse", "HEAD")).toBe(base)
+      expect(git(repo, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`)).toBe(
+        mode === "same" ? base : tip,
+      )
+      expect(git(repo, "show", "refs/heads/wip/retirement-proof:payload.txt")).toBe("uncommitted author work")
+      expect(messages).toContainEqual(expect.stringContaining("reset"))
+    } finally {
+      process.chdir(beforeCwd)
+      if (beforePoolSlots === undefined) delete process.env.BEARLY_WORKTREE_POOL_SLOTS
+      else process.env.BEARLY_WORKTREE_POOL_SLOTS = beforePoolSlots
+      safeRemoveSync(root, { within: tmpdir(), allowMissing: true })
+    }
+  },
+  30_000,
+)
 
 describe("worktree-add hook boundary", () => {
   test("the creator suppresses hook-owned submodule cloning before its reference-aware materializer runs", () => {

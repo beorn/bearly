@@ -2936,6 +2936,7 @@ export interface ResetOptions {
    * Proceed past the dirty/ahead safety block and recreate the slot. Work is
    * NOT discarded — removeWorktree preserves it to a durable `wip/…` ref first
    * (L5). Without --force, reset refuses so preservation is an explicit action.
+   * Only the branch being recreated is deleted; distinct author branches survive.
    */
   force?: boolean
   /**
@@ -3248,15 +3249,15 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     await $`git -C ${gitRoot} update-ref refs/remotes/origin/main ${mainBase}`.quiet()
   }
 
-  // Remove the worktree. Under --force, also delete the local branch so the
-  // recreate starts from origin/main (or origin/<branchName>) rather than
-  // picking up the existing ref with its ahead commits.
+  // Remove the worktree. Under --force, delete only the branch being recreated
+  // so it cannot reuse a stale ref. A distinct author branch is not a recreate
+  // input: preserve it for its owner's archive-first retirement after success.
   info(`Resetting worktree ${name}...`)
   await removeWorktreeWithAdmission(
     worktreePath,
     {
       force: true,
-      deleteBranch: force,
+      deleteBranch: force && branchName === recreateBranch,
       preserveLabel: saveAheadAs ?? `${name}-preserve-${preserveStamp()}`,
       regenerates,
       excludedSubmodules: options.excludedSubmodules,
@@ -3560,6 +3561,7 @@ ${BOLD}RESET OPTIONS${RESET}
   --admit                Check admission only: exit 0 admitted, 2 refused; no mutation
   --regenerates <json>    One JSON array of relative outputs recreated by the caller
   -f, --force            Recreate despite dirt/ahead — PRESERVES to wip/… first (never discards)
+                         Retains distinct author branches; recuts only the branch recreated
   --save-ahead-as <slug> Name the preserve ref wip/<slug> instead of wip/<slot>-preserve-<stamp>
   --retarget-origin      Force-push origin/<name> back to origin/main before recreate
   --no-install           Skip dependency install on recreate
