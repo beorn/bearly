@@ -3074,7 +3074,15 @@ async function assertIgnoredContent(
         `${verb} cannot compare setup inputs in ${worktreePath}: ${sameSetup.stderr.toString()}; no worktree was changed`,
       )
     }
-    if (sameSetup.exitCode !== 0) generated.length = 0
+    // 29302: a drifted setup declaration shows the slot is OLD, not that its install/build output is
+    // unrecreatable -- the declaration drift changes WHICH packages exist, never whether their install/build
+    // output (node_modules, dist, .direnv) is disposable. A changed declaration therefore no longer DISCARDS
+    // those outputs; it names them as regenerable instead. Ignored content that is NOT setup output (authored
+    // payload) still has no proof and blocks below, named alone.
+    if (sameSetup.exitCode !== 0) {
+      info(`${verb} setup declaration differs from ${base}; the install/build outputs it recreates stay regenerable:`)
+      for (const output of generated) info(`  regenerable: ${relative(worktreePath, output)}`)
+    }
   }
   // The composing caller proves these independently of the vendor's setup/base.
   generated.push(...regenerates)
