@@ -144,7 +144,7 @@
         "@bearly/process-sources": "^0.1.0",
       },
       "devDependencies": {
-        "@types/node": "^26.6.5",
+        "@types/node": "26.6.5",
         "tsdown": "0.22.13",
       },
     },
