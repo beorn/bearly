@@ -924,6 +924,36 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure preserve skips a storeless child that is clean on its pin but carries a commit on a local ref — a branch,
+   * tag or stash in a store that dies with the slot, which neither its recorded pin nor a remote reaches (29392, @cto 9c3e7f17)
+   * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
+  test("29392: a storeless child clean on its pin with a local branch carrying a commit still refuses by name", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const origin = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${origin}`.quiet()
+    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const originalCwd = process.cwd()
+    const worktreePath = join(sandbox, "main-wt5")
+    const child = join(worktreePath, "vendor/sub")
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { install: false, direnv: false, hooks: false })
+      // A commit on a local branch only: HEAD stays on the recorded pin and the working tree stays clean.
+      const carried = (await $`git -C ${child} commit-tree HEAD^{tree} -p HEAD -m carried`.text()).trim()
+      await $`git -C ${child} update-ref refs/heads/carried ${carried}`.quiet()
+      const childRefs = await $`git -C ${child} show-ref`.text()
+      rmSync(join(mainRepo, "vendor/sub"), { recursive: true, force: true })
+      mkdirSync(join(mainRepo, "vendor/sub"))
+      const attempt = preserveSlotState(worktreePath, "wt5", mainRepo, { quiet: true })
+      await expect(attempt).rejects.toThrow("vendor/sub")
+      await expect(attempt).rejects.toThrow("local refs")
+      expect(await $`git -C ${child} show-ref`.text()).toBe(childRefs)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   test("reset --force PRESERVES uncommitted work to wip/<slot>-preserve-* (does not discard)", async () => {
     const mainRepo = await buildMain()
     const slot = "wt5"
