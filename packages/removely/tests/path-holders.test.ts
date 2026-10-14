@@ -495,6 +495,101 @@ describe("inspectPathHolderCensus", () => {
       return { ownedPath, procRoot, processRoot }
     }
 
+    // 29385: an absent checkout still needs per-target holder evidence. Existing cases only used extant roots;
+    // the consumer regression injected its census and hid realpath's ENOENT before recovery could run.
+    test
+      .runIf(process.platform === "linux")
+      .each(["argv", "empty", "sibling", "symlink-argv", "deleted-cwd", "deleted-fd", "deleted-maps"])(
+      "an explicitly absent target preserves census evidence (%s)",
+      async (mode) => {
+        const probe = argvFixture()
+        const target = join(probe.ownedPath, "missing", "checkout")
+        let requested = target
+        let entry = join(target, "entry.ts")
+        if (mode === "symlink-argv") {
+          const alias = join(dirname(probe.ownedPath), "alias")
+          symlinkSync(probe.ownedPath, alias)
+          requested = join(alias, "missing", "checkout")
+          entry = join(requested, "entry.ts")
+        }
+        writeFileSync(
+          join(probe.processRoot, "cmdline"),
+          mode === "empty" || mode.startsWith("deleted-")
+            ? "bun\0"
+            : `bun\0${mode === "sibling" ? `${target}-other/entry.ts` : entry}\0`,
+        )
+        if (mode === "deleted-fd") {
+          symlinkSync(`${target}/file (deleted)`, join(probe.processRoot, "fd", "7"))
+        } else if (mode === "deleted-cwd") {
+          unlinkSync(join(probe.processRoot, "cwd"))
+          symlinkSync(`${target} (deleted)`, join(probe.processRoot, "cwd"))
+        } else if (mode === "deleted-maps") {
+          writeFileSync(join(probe.processRoot, "maps"), `1000-2000 r--p 00000000 08:01 1 ${target}/file (deleted)\n`)
+        }
+        await expect(censusInProc(requested, probe.procRoot, { scope: "same-uid" })).rejects.toThrow(
+          "requires resolvable target",
+        )
+        const census = await censusInProc(requested, probe.procRoot, { scope: "same-uid", allowMissing: true })
+        if (mode.startsWith("deleted-")) {
+          const source = mode.slice("deleted-".length)
+          expect(census.coverage).toMatchObject({
+            complete: false,
+            sources: { [source]: { unavailable: { ambiguous: 1 } } },
+          })
+        } else {
+          expect(census.holders).toEqual(
+            mode === "empty" || mode === "sibling" ? [] : [{ pid: 4242, source: "argv", target: entry }],
+          )
+          expect(census.coverage.complete).toBe(true)
+        }
+      },
+    )
+
+    // Physical anchoring must not walk past a dangling symlink or treat a file as a directory. Existing containment
+    // tests own containment itself; these cases guard its shared resolver's use through the public census API.
+    test.runIf(process.platform === "linux").each(["dangling-link", "file-ancestor"])(
+      "an absent-target census keeps invalid physical ancestry loud (%s)",
+      async (mode) => {
+        const probe = argvFixture()
+        const blocker = join(probe.ownedPath, "blocker")
+        if (mode === "dangling-link") {
+          symlinkSync(join(probe.ownedPath, "gone"), blocker)
+        } else {
+          writeFileSync(blocker, "a file is not an ancestor directory")
+        }
+        await expect(
+          censusInProc(join(blocker, "checkout"), probe.procRoot, { scope: "same-uid", allowMissing: true }),
+        ).rejects.toThrow(/blocker/u)
+      },
+    )
+
+    // CTO29385: root and dangling argv identities must use the same physical anchor. A denied argv walk is a gap,
+    // not an outside-root value; existing denied-alias tests only exercise realpath of an existing target.
+    test.runIf(process.platform === "linux" && process.getuid?.() !== 0)(
+      "a denied dangling argv anchor leaves the absent-target census incomplete",
+      async () => {
+        const probe = argvFixture()
+        const target = join(probe.ownedPath, "missing")
+        const locked = join(dirname(probe.ownedPath), "locked")
+        mkdirSync(locked)
+        const entry = join(locked, "missing", "entry.ts")
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${entry}\0`)
+        chmodSync(locked, 0o000)
+        try {
+          const census = await censusInProc(target, probe.procRoot, { scope: "same-uid", allowMissing: true })
+          expect(census.coverage.complete).toBe(false)
+          expect(census.coverage.unreadable).toContainEqual(
+            expect.objectContaining({
+              pid: 4242,
+              issues: expect.arrayContaining([{ source: "argv", resource: entry, reason: "denied" }]),
+            }),
+          )
+        } finally {
+          chmodSync(locked, 0o755)
+        }
+      },
+    )
+
     test.runIf(process.platform === "linux")("an argv element under the root holds it", async () => {
       const probe = argvFixture()
       const entry = join(probe.ownedPath, "ag", "inhab.ts")
@@ -1080,6 +1175,22 @@ describe("Node lsof adapter and scope boundary", () => {
       holders: [],
       coverage: { platform: "darwin", mechanism: "lsof", complete: true },
     })
+  })
+  // 29385: enabling permitted absence must preserve existing Darwin targets, while an actually absent target
+  // cannot be certified by directory traversal. These public-API calls guard that platform distinction.
+  test("allowMissing preserves extant Darwin targets and names unsupported absence before lsof", async () => {
+    const spawn = lsofResult(1)
+    await expect(inspectPathHolderCensus("/", { scope: "same-uid", allowMissing: true })).resolves.toEqual({
+      holders: [],
+      coverage: { platform: "darwin", mechanism: "lsof", complete: true },
+    })
+    spawn.mockClear()
+    const fixture = mkdtempSync(join(tmpdir(), "absent-darwin-census-"))
+    temporary.push(fixture)
+    await expect(
+      inspectPathHolderCensus(join(fixture, "absent"), { scope: "same-uid", allowMissing: true }),
+    ).rejects.toThrow("absent target")
+    expect(spawn).not.toHaveBeenCalled()
   })
   test.each([
     [0, "permission denied"],

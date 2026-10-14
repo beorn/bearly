@@ -20,6 +20,7 @@ import {
 } from "@bearly/process-sources"
 import { linuxBootTimeMs, procStatStartTicks, startTicksToMs } from "./pid-identity.ts"
 import { darwinProcessCwds, type ProcessCwdRow } from "./process-census.ts"
+import { splitAtNearestExistingAncestor } from "./physical-path.ts"
 
 /**
  * How long a Linux census waits for /proc before it answers with what it has. Measured normal: the whole census took
@@ -35,6 +36,9 @@ export type PathHolderCensusOptions<S extends PathHolderScope = PathHolderScope>
   /** The proc tree the Linux collector reads; default `/proc`. A deterministic seam for a synthetic
    *  tree, and the only way to run the Linux collector on another platform. */
   procRoot?: string
+  /** Permit an absent target on the Linux collector, physically anchored at its nearest existing ancestor.
+   * Strict resolution remains the default. Does not establish inode identity or authorize removal. */
+  allowMissing?: boolean
 }>
 export type PathHolder = Readonly<{
   pid: number
@@ -130,8 +134,9 @@ export function pathHolderRefusal(holders: readonly PathHolder[]): string | unde
 }
 
 /**
- * Required resources are the target plus /proc on Linux or /usr/sbin/lsof for
- * the Darwin compatibility mechanism. Missing resources/unexpected I/O throw
+ * Required resources are the target (unless allowMissing explicitly permits absence) plus /proc on Linux or
+ * /usr/sbin/lsof for the Darwin compatibility mechanism. Absent targets require the Linux proc collector.
+ * Missing resources/unexpected I/O throw
  * with their location. Incomplete observations return named gaps, never empty
  * success. Scope is mandatory; all-visible currently requires Linux.
  */
@@ -143,7 +148,12 @@ export async function inspectPathHolderCensus<S extends PathHolderScope>(
   if (process.platform === "linux" || options.procRoot !== undefined) {
     return pathHolderCensusInProc(path, options.procRoot ?? "/proc", options)
   }
-  const root = await canonicalPath(path)
+  const { root, anchored } = await canonicalPath(path, options.allowMissing)
+  if (anchored) {
+    throw new Error(
+      `path-holder census cannot inspect absent target '${path}' on platform ${process.platform}; requires the Linux proc collector`,
+    )
+  }
   if (process.platform === "darwin" && options.scope === "same-uid") return darwinPathProcessHolderCensus(root)
   throw new Error(`unsupported path-holder scope '${options.scope}' on platform ${process.platform} for '${root}'`)
 }
@@ -156,19 +166,21 @@ async function pathHolderCensusInProc<S extends PathHolderScope>(
   options: PathHolderCensusOptions<S>,
 ): Promise<PathHolderCensus<S>> {
   validateScope(options)
-  return linuxCensusWithDeadline(await canonicalPath(path), procRoot, options)
+  const { root, anchored } = await canonicalPath(path, options.allowMissing)
+  return linuxCensusWithDeadline(root, procRoot, options, anchored)
 }
 
 async function linuxCensusWithDeadline<S extends PathHolderScope>(
   root: string,
   procRoot: string,
   options: PathHolderCensusOptions<S>,
+  anchoredRoot: boolean,
 ): Promise<PathHolderCensus<S>> {
   // A projection of the process census: every source read, and the one matching rule applied to each row.
   const collected = await withDeadline(options, (deadline) =>
     collectProcessRows(procRoot, options.scope, deadline, SOURCES),
   )
-  const { coverage, holders } = summarizeRows(collected, SOURCES, root)
+  const { coverage, holders } = summarizeRows(collected, SOURCES, root, anchoredRoot)
   return { holders: uniquePathHolders(holders), coverage: coverage as LinuxPathHolderCoverage<S> }
 }
 
@@ -682,6 +694,7 @@ function summarizeRows(
   collected: CollectedRows,
   selected: readonly SourceName[],
   root: string | undefined,
+  anchoredRoot = false,
 ): Readonly<{ coverage: ProcessCensusCoverage; holders: PathHolder[] }> {
   const processCoverage = {
     enumerated: collected.enumerated,
@@ -745,7 +758,7 @@ function summarizeRows(
     // A denied argv alias is a gap in the row's own evidence, so it joins `issues` and the reason counters
     // BEFORE they are folded into coverage: a row whose alias could not be read is incomplete, never
     // "no holder" (29167).
-    const held = root === undefined ? null : rowHolders(row, root, argvAliasCache)
+    const held = root === undefined ? null : rowHolders(row, root, argvAliasCache, anchoredRoot)
     if (held !== null) {
       holders.push(...held.holders)
       for (const issue of held.unreadable) {
@@ -808,13 +821,24 @@ export class ArgvAliasUnreadableError extends Error {
  * argv is RAW TEXT, where a cwd link is kernel-resolved: an element can reach the tree through a symlink alias,
  * as a hook runs `bash /hh/dev-landings/current/tools/...` while the registered root is `/hh/dev-landings/<sha>`.
  * So an absolute element that exists is also compared by its realpath — one realpath per distinct element, cached
- * per census through `aliasCache`. A dangling element stays lexical: nothing resolves it, and it holds nothing. An
- * element whose alias read was DENIED raises {@link ArgvAliasUnreadableError}, never a silent "no holder".
+ * per census through `aliasCache`. Strict mode compares a dangling element lexically only; a dangling alias
+ * under an extant root remains a known limit. When allowMissing actually anchors an absent census root,
+ * dangling argv uses that same existing-ancestor walker before comparison (29385), cached once per element.
+ * An element whose alias/anchor read was DENIED raises {@link ArgvAliasUnreadableError}, never silent "no holder".
  */
 export function argvElementHoldsRoot(element: string, root: string, aliasCache?: ArgvAliasCache): boolean {
+  return argvElementMatchesRoot(element, root, aliasCache, false)
+}
+
+function argvElementMatchesRoot(
+  element: string,
+  root: string,
+  aliasCache: ArgvAliasCache | undefined,
+  anchoredRoot: boolean,
+): boolean {
   if (!element.startsWith("/")) return false
   if (pathWithin(root, element)) return true
-  return pathWithin(root, argvElementRealPath(element, aliasCache) ?? "")
+  return pathWithin(root, argvElementRealPath(element, aliasCache, anchoredRoot) ?? "")
 }
 
 /** Whether any argv element holds `root`. An absent/undefined argv is "not observed", never "no holder". */
@@ -827,11 +851,12 @@ export function argvHoldsRoot(argv: readonly string[] | undefined, root: string,
 }
 
 /**
- * The element's realpath, `null` when the element names nothing (dangling: its raw spelling was already compared),
+ * The element's realpath, or its physical ancestor plus missing suffix when the census root was anchored.
+ * Otherwise `null` when the element names nothing (dangling: its raw spelling was already compared),
  * or a thrown {@link ArgvAliasUnreadableError} when the read was DENIED rather than absent. The denial is cached,
  * so the census stats each element once and re-raises the same error instead of re-reading.
  */
-function argvElementRealPath(element: string, cache?: ArgvAliasCache): string | null {
+function argvElementRealPath(element: string, cache?: ArgvAliasCache, anchoredRoot = false): string | null {
   const cached = cache?.get(element)
   if (cached !== undefined) {
     if (cached instanceof Error) throw cached
@@ -842,6 +867,18 @@ function argvElementRealPath(element: string, cache?: ArgvAliasCache): string | 
     resolved = realpathSync(element)
   } catch (error) {
     if (isDanglingElementError(error)) {
+      if (anchoredRoot && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        try {
+          const { existingAncestor, missingSegments } = splitAtNearestExistingAncestor(element)
+          resolved = resolve(realpathSync(existingAncestor), ...missingSegments)
+          cache?.set(element, resolved)
+          return resolved
+        } catch (cause) {
+          const unreadable = new ArgvAliasUnreadableError(element, cause)
+          cache?.set(element, unreadable)
+          throw unreadable
+        }
+      }
       cache?.set(element, null)
       return null
     }
@@ -863,7 +900,7 @@ function isDanglingElementError(error: unknown): boolean {
 type RowHolders = Readonly<{ holders: PathHolder[]; unreadable: PathHolderObservationIssue[] }>
 
 /** The one matching rule: a row holds `root` through a link, an argv element, a mapped file or a descriptor under it. */
-function rowHolders(row: MutableRow, root: string, aliasCache?: ArgvAliasCache): RowHolders {
+function rowHolders(row: MutableRow, root: string, aliasCache?: ArgvAliasCache, anchoredRoot = false): RowHolders {
   const holders: PathHolder[] = []
   const unreadable: PathHolderObservationIssue[] = []
   const pid = row.pid
@@ -873,7 +910,8 @@ function rowHolders(row: MutableRow, root: string, aliasCache?: ArgvAliasCache):
   }
   for (const element of (row.sources.argv?.value as string[] | undefined) ?? []) {
     try {
-      if (argvElementHoldsRoot(element, root, aliasCache)) holders.push({ pid, source: "argv", target: element })
+      if (argvElementMatchesRoot(element, root, aliasCache, anchoredRoot))
+        holders.push({ pid, source: "argv", target: element })
     } catch (error) {
       if (!(error instanceof ArgvAliasUnreadableError)) throw error
       unreadable.push({ source: "argv", resource: element, reason: "denied" })
@@ -1004,13 +1042,31 @@ function currentIdentity(): Readonly<{ uid: number }> {
   return { uid }
 }
 
-async function canonicalPath(path: string): Promise<string> {
+async function canonicalPath(
+  path: string,
+  allowMissing = false,
+): Promise<Readonly<{ root: string; anchored: boolean }>> {
   if (typeof path !== "string" || path.trim() === "") {
     throw new TypeError("removely: path-holder census requires a non-empty path")
   }
-  return realpath(resolve(path)).catch((error: unknown) => {
+  try {
+    return { root: await realpath(resolve(path)), anchored: false }
+  } catch (error) {
+    if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      try {
+        const { existingAncestor, missingSegments } = splitAtNearestExistingAncestor(resolve(path))
+        return {
+          root: resolve(await realpath(existingAncestor), ...missingSegments),
+          anchored: missingSegments.length > 0,
+        }
+      } catch (cause) {
+        throw new Error(`path-holder census cannot resolve physical anchor for '${path}': ${errorDetail(cause)}`, {
+          cause,
+        })
+      }
+    }
     throw new Error(`path-holder census requires resolvable target '${path}': ${errorDetail(error)}`, { cause: error })
-  })
+  }
 }
 
 function pathWithin(root: string, candidate: string): boolean {
