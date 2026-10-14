@@ -556,11 +556,6 @@ export async function querySubscriptionCli(model: Model, options: SubscriptionQu
   return response
 }
 
-/** The Antigravity model a Gemini SKU is served by, for reporting. */
-export function agySubscriptionModel(): string {
-  return AGY_SUBSCRIPTION_MODEL
-}
-
 /** Human-readable description of the route a dispatch took, for the loud route line. */
 export function describeSubscriptionRoute(model: Model): string {
   const id = subscriptionCliFor(model.provider)

@@ -31,7 +31,6 @@ import {
   subscriptionCliAvailable,
   querySubscriptionCli,
   describeSubscriptionRoute,
-  agySubscriptionModel,
   cliOnPath,
   codexProfile,
   codexSubscriptionRow,
@@ -163,7 +162,7 @@ describe("route table", () => {
   it("names the route it will take", () => {
     expect(describeSubscriptionRoute(modelOf("gpt-5.4"))).toContain("codex CLI")
     expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain("agy CLI")
-    expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain(agySubscriptionModel())
+    expect(describeSubscriptionRoute(modelOf("gemini-2.5-pro"))).toContain("gemini-4-argon-high")
   })
 })
 
@@ -328,11 +327,11 @@ describe("dispatch", () => {
     expect(response.servedBy).toEqual({
       route: "subscription-cli",
       cli: "agy",
-      model: agySubscriptionModel(),
+      model: "gemini-4-argon-high",
     })
     const argv = readFileSync(argvFile, "utf8")
     expect(argv).toContain("--model")
-    expect(argv).toContain(agySubscriptionModel())
+    expect(argv).toContain("gemini-4-argon-high")
     expect(argv).toContain("--input-format")
     expect(argv).toContain("stream-json")
     // The prompt travels on stdin, not in argv.
