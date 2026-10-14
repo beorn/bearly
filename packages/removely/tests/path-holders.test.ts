@@ -504,6 +504,55 @@ describe("inspectPathHolderCensus", () => {
       expect(census.coverage).toMatchObject({ complete: true, sources: { argv: { readable: 1 } } })
     })
 
+    // 29167 (@cto must): argv is raw text, so an element can reach the root through a symlink alias — a hook runs
+    // bash /hh/dev-landings/current/tools/... while the registered root is /hh/dev-landings/<sha>. The raw spelling
+    // is outside the root; its realpath is inside it. A dangling element resolves nothing and stays lexical.
+    test.runIf(process.platform === "linux")(
+      "an argv element reaching the root through a symlink alias holds it; a dangling element does not",
+      async () => {
+        const probe = argvFixture()
+        mkdirSync(join(probe.ownedPath, "ag"), { recursive: true })
+        const inside = join(probe.ownedPath, "ag", "inhab.ts")
+        writeFileSync(inside, "")
+        const alias = join(dirname(probe.ownedPath), "alias")
+        symlinkSync(probe.ownedPath, alias)
+        const aliased = join(alias, "ag", "inhab.ts")
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${aliased}\0`)
+        const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+        expect(census.holders).toEqual([{ pid: 4242, source: "argv", target: aliased }])
+
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${join(alias, "ag", "gone.ts")}\0`)
+        const dangling = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+        expect(dangling.holders).toEqual([])
+      },
+    )
+
+    // 29167 (review2 REVISE): a DENIED alias read is unmeasured, never "no holder". EACCES must leave a coverage
+    // gap that names the argv source, so a caller cannot read the row as proof that nothing holds the tree.
+    test.runIf(process.platform === "linux" && process.getuid?.() !== 0)(
+      "a denied argv alias is a coverage gap, never no-holder",
+      async () => {
+        const probe = argvFixture()
+        const locked = join(dirname(probe.ownedPath), "locked")
+        mkdirSync(locked, { recursive: true })
+        const element = join(locked, "inside.ts")
+        writeFileSync(element, "")
+        chmodSync(locked, 0o000)
+        try {
+          writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${element}\0`)
+          const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+          expect(census.holders).toEqual([])
+          const coverage = census.coverage
+          expect(coverage.complete).toBe(false)
+          if (coverage.platform !== "linux") throw new Error("fixture must run the Linux collector")
+          expect(coverage.processes.sourceDenied).toBeGreaterThan(0)
+          expect(coverage.unreadable?.[0]?.denied).toContain("argv")
+        } finally {
+          chmodSync(locked, 0o700)
+        }
+      },
+    )
+
     test.runIf(process.platform === "linux")(
       "script text or a flag value that mentions the path holds nothing",
       async () => {
@@ -1229,7 +1278,7 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
   test.runIf(process.platform === "linux")("the cwd projection lists every readable same-uid cwd", async () => {
     const probe = processFixture("bun\0")
     expect(await inspectProcessCwdsInProc(probe.procRoot)).toEqual({
-      rows: [{ pid: 4242, cwd: probe.ownedPath }],
+      rows: [{ pid: 4242, cwd: probe.ownedPath, argv: ["bun"] }],
       complete: true,
       unreadable: [],
       mechanism: "proc",
@@ -1237,10 +1286,31 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
         scope: "same-uid",
         complete: true,
         processes: expect.objectContaining({ enumerated: 1, sameUid: 1, excluded: 0 }),
-        sources: { cwd: { readable: 1, notApplicable: 0, unavailable: expect.objectContaining({ denied: 0 }) } },
+        sources: expect.objectContaining({
+          cwd: { readable: 1, notApplicable: 0, unavailable: expect.objectContaining({ denied: 0 }) },
+        }),
       }),
     })
   })
+
+  /**
+   * @failure A holder whose cwd is elsewhere but whose argv names a path inside the tree is invisible to the
+   *   cwd-only holder proof, so a live /hh/dev-landings root reads deletable (29167).
+   * @level l2
+   * @consumer worktree-pool-enforce collectFact, via the processCwd projection.
+   * The projection must carry argv so the consumer can match an argv element against the tree root.
+   */
+  test.runIf(process.platform === "linux")(
+    "the cwd projection carries argv so an argv-only holder is observable",
+    async () => {
+      const holderPath = "/srv/landing/app.js"
+      const probe = processFixture(`bun\0${holderPath}\0--flag=${join(tmpdir(), "elsewhere")}\0`)
+      expect(await inspectProcessCwdsInProc(probe.procRoot)).toMatchObject({
+        rows: [{ pid: 4242, cwd: probe.ownedPath, argv: ["bun", holderPath, `--flag=${join(tmpdir(), "elsewhere")}`] }],
+        mechanism: "proc",
+      })
+    },
+  )
 
   /**
    * @failure A listed bun/tsc pid whose cwd link is ENOENT/ESRCH refuses the whole Yrd env-close round (21122 P4: 3907 rows).

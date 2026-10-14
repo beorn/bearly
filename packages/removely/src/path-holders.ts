@@ -9,6 +9,7 @@
  * fact like a denial, `unanswered`, and no caller waits for it (hh 26947).
  */
 import { execFile } from "node:child_process"
+import { realpathSync } from "node:fs"
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises"
 import { basename, dirname, resolve, sep } from "node:path"
 import {
@@ -706,6 +707,8 @@ function summarizeRows(
   )
   const unreadable: UnreadableProcess[] = []
   const holders: PathHolder[] = []
+  // One realpath per distinct argv element, shared by every row in this census (29167).
+  const argvAliasCache: ArgvAliasCache = new Map()
   for (const row of collected.rows) {
     if (row.kind === "unknownUid") {
       unreadable.push(unreadableProcess(row, row.processIssues))
@@ -739,9 +742,19 @@ function summarizeRows(
       issues.push(...effective.issues.map((issue) => ({ source, ...issue })))
       for (const issue of effective.issues) reasons.add(issue.reason)
     }
+    // A denied argv alias is a gap in the row's own evidence, so it joins `issues` and the reason counters
+    // BEFORE they are folded into coverage: a row whose alias could not be read is incomplete, never
+    // "no holder" (29167).
+    const held = root === undefined ? null : rowHolders(row, root, argvAliasCache)
+    if (held !== null) {
+      holders.push(...held.holders)
+      for (const issue of held.unreadable) {
+        issues.push(issue)
+        reasons.add(issue.reason)
+      }
+    }
     for (const reason of reasons) processCoverage[SOURCE_REASON_COUNTER[reason]] += 1
     if (issues.length > 0) unreadable.push(unreadableProcess(row, issues))
-    if (root !== undefined) holders.push(...rowHolders(row, root))
   }
   // One derivation from the head counters. A head counter is zero exactly when no source records that reason, so this
   // agrees with scanning the per-source table on zero against non-zero; the counts differ, since the head counts
@@ -767,18 +780,104 @@ function summarizeRows(
   }
 }
 
+/**
+ * The per-census realpath memo for {@link argvElementHoldsRoot}: a resolved alias path, `null` for an element
+ * that names nothing (dangling), or the Error that denied the read. Keyed by element, so one realpath serves
+ * every row in one census.
+ */
+export type ArgvAliasCache = Map<string, string | null | Error>
+
+/**
+ * An argv element whose alias could not be read (EACCES and friends). The raw spelling was compared; the alias
+ * itself is UNMEASURED, so this is never "no holder" — the caller records a denied coverage gap (29167).
+ */
+export class ArgvAliasUnreadableError extends Error {
+  readonly element: string
+  constructor(element: string, cause: unknown) {
+    super(`argv alias for ${JSON.stringify(element)} could not be read: ${errorDetail(cause)}`, { cause })
+    this.name = "ArgvAliasUnreadableError"
+    this.element = element
+  }
+}
+
+/**
+ * The one argv rule, shared by the path-holder census and the cwd-argv projection (29167): an element holds
+ * `root` only when it is ITSELF an absolute path under it. Script text such as `sh -c 'cd <path>'` or a
+ * `--flag=<path>` that merely mentions the path pins nothing (hh 26947).
+ *
+ * argv is RAW TEXT, where a cwd link is kernel-resolved: an element can reach the tree through a symlink alias,
+ * as a hook runs `bash /hh/dev-landings/current/tools/...` while the registered root is `/hh/dev-landings/<sha>`.
+ * So an absolute element that exists is also compared by its realpath — one realpath per distinct element, cached
+ * per census through `aliasCache`. A dangling element stays lexical: nothing resolves it, and it holds nothing. An
+ * element whose alias read was DENIED raises {@link ArgvAliasUnreadableError}, never a silent "no holder".
+ */
+export function argvElementHoldsRoot(element: string, root: string, aliasCache?: ArgvAliasCache): boolean {
+  if (!element.startsWith("/")) return false
+  if (pathWithin(root, element)) return true
+  return pathWithin(root, argvElementRealPath(element, aliasCache) ?? "")
+}
+
+/** Whether any argv element holds `root`. An absent/undefined argv is "not observed", never "no holder". */
+export function argvHoldsRoot(argv: readonly string[] | undefined, root: string, aliasCache?: ArgvAliasCache): boolean {
+  if (argv === undefined) return false
+  for (const element of argv) {
+    if (argvElementHoldsRoot(element, root, aliasCache)) return true
+  }
+  return false
+}
+
+/**
+ * The element's realpath, `null` when the element names nothing (dangling: its raw spelling was already compared),
+ * or a thrown {@link ArgvAliasUnreadableError} when the read was DENIED rather than absent. The denial is cached,
+ * so the census stats each element once and re-raises the same error instead of re-reading.
+ */
+function argvElementRealPath(element: string, cache?: ArgvAliasCache): string | null {
+  const cached = cache?.get(element)
+  if (cached !== undefined) {
+    if (cached instanceof Error) throw cached
+    return cached
+  }
+  let resolved: string | null
+  try {
+    resolved = realpathSync(element)
+  } catch (error) {
+    if (isDanglingElementError(error)) {
+      cache?.set(element, null)
+      return null
+    }
+    const unreadable = new ArgvAliasUnreadableError(element, error)
+    cache?.set(element, unreadable)
+    throw unreadable
+  }
+  cache?.set(element, resolved)
+  return resolved
+}
+
+/** ENOENT/ENOTDIR: the element names nothing. Any other errno says the alias exists but could not be read. */
+function isDanglingElementError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code
+  return code === "ENOENT" || code === "ENOTDIR"
+}
+
+/** The holders a row proves, and the argv aliases whose denial leaves that row's evidence incomplete (29167). */
+type RowHolders = Readonly<{ holders: PathHolder[]; unreadable: PathHolderObservationIssue[] }>
+
 /** The one matching rule: a row holds `root` through a link, an argv element, a mapped file or a descriptor under it. */
-function rowHolders(row: MutableRow, root: string): PathHolder[] {
+function rowHolders(row: MutableRow, root: string, aliasCache?: ArgvAliasCache): RowHolders {
   const holders: PathHolder[] = []
+  const unreadable: PathHolderObservationIssue[] = []
   const pid = row.pid
   for (const source of ["cwd", "exe", "root"] as const) {
     const value = row.sources[source]?.value
     if (typeof value === "string" && pathWithin(root, value)) holders.push({ pid, source, target: value })
   }
-  // Judged per element: only an element that is itself a path under the root holds it. Script text such as
-  // `sh -c 'cd <path>'` or a `--flag=<path>` that mentions the path pins nothing (hh 26947).
   for (const element of (row.sources.argv?.value as string[] | undefined) ?? []) {
-    if (element.startsWith("/") && pathWithin(root, element)) holders.push({ pid, source: "argv", target: element })
+    try {
+      if (argvElementHoldsRoot(element, root, aliasCache)) holders.push({ pid, source: "argv", target: element })
+    } catch (error) {
+      if (!(error instanceof ArgvAliasUnreadableError)) throw error
+      unreadable.push({ source: "argv", resource: element, reason: "denied" })
+    }
   }
   for (const mappedFile of (row.sources.maps?.value as string[] | undefined) ?? []) {
     if (pathWithin(root, mappedFile)) holders.push({ pid, source: "fd/maps", target: mappedFile })
@@ -788,7 +887,7 @@ function rowHolders(row: MutableRow, root: string): PathHolder[] {
       holders.push({ pid, source: `fd/${descriptor.name}`, target: descriptor.target })
     }
   }
-  return holders
+  return { holders, unreadable }
 }
 
 function publicRow(row: MutableRow, includeArgv: boolean): ProcessRow {
@@ -848,12 +947,21 @@ export async function inspectProcessCwdsInProc(
 ): Promise<ProcessCwdProjection> {
   const census = await inspectProcessCensusInProc(procRoot, {
     scope: "same-uid",
-    sources: ["cwd"],
+    sources: ["cwd", "argv"],
+    // The projection carries argv so a holder whose cwd is elsewhere but whose argv names a path inside the
+    // tree is observable (29167). Rows are an internal read: no receipt or report serializes them.
+    includeArgv: true,
     ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
   })
   const rows = census.rows.flatMap((row): ProcessCwdRow[] => {
     const cwd = row.sources.cwd
-    return cwd?.availability === "readable" && cwd.value !== undefined ? [{ pid: row.pid, cwd: cwd.value }] : []
+    if (cwd?.availability !== "readable" || cwd.value === undefined) return []
+    const argvSource = row.sources.argv
+    const argv =
+      argvSource?.availability === "readable" && Array.isArray(argvSource.value)
+        ? (argvSource.value as string[])
+        : undefined
+    return [{ pid: row.pid, cwd: cwd.value, ...(argv === undefined ? {} : { argv }) }]
   })
   return {
     rows,
