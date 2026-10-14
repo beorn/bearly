@@ -2502,6 +2502,55 @@ async function writeRecoveryRef(
 }
 
 /**
+ * 29392: shared main has no primary store for a consulted repository (brain8 left the code repository while the
+ * environment's HEAD still pins it). Nothing can be preserved INTO a missing store, so read the repository first:
+ * clean and on the gitlink its consulted parent records, it holds nothing the slot would lose, and the preserve
+ * goes on without it, naming it in the receipt. Anything else refuses by name, before any ref write.
+ */
+async function readStorelessRepository(
+  repo: { path: string; root: string },
+  consulted: ReadonlyArray<{ path: string; root: string }>,
+  gitRoot: string,
+): Promise<SkippedRepository> {
+  const storeless = join(gitRoot, repo.path)
+  if (repo.path === ".") {
+    throw new Error(`preserve: primary repository ${storeless} is not initialized; no worktree was removed`)
+  }
+  const head = await preserveGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"])
+  const dirtyLines = await preserveGit(repo.root, [
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+    "--ignore-submodules=all",
+  ])
+  const parentPath =
+    consulted.findLast(
+      (candidate) =>
+        candidate.path !== "." && candidate.path !== repo.path && repo.path.startsWith(candidate.path + "/"),
+    )?.path ?? "."
+  const parentRoot = consulted.find((candidate) => candidate.path === parentPath)?.root
+  if (parentRoot === undefined) {
+    throw new Error(`preserve: ${repo.path} has no consulted parent repository; no worktree was removed`)
+  }
+  const relative = parentPath === "." ? repo.path : repo.path.slice(parentPath.length + 1)
+  const recorded = await preserveGit(parentRoot, ["rev-parse", "--verify", `HEAD:${relative}`])
+  if (dirtyLines.length === 0 && head === recorded) {
+    return {
+      path: repo.path,
+      head,
+      reason: `no primary store at ${storeless}; clean on its recorded pin ${head.slice(0, 12)}, nothing to preserve`,
+    }
+  }
+  const holds =
+    dirtyLines.length > 0
+      ? `has ${dirtyLines.split("\n").length} uncommitted path(s)`
+      : `is at ${head.slice(0, 12)}, off its recorded pin ${recorded.slice(0, 12)}`
+  throw new Error(
+    `preserve: primary submodule store ${storeless} is not initialized and ${repo.path} ${holds}; no worktree was removed`,
+  )
+}
+
+/**
  * Preserve a live slot's uncommitted (working-tree + submodule) changes and/or
  * root ahead-of-origin/main commits and private child history BEFORE destruction.
  * No-op (`preserved:false`) only after successful inventory/history reads show
@@ -2550,47 +2599,8 @@ export async function preserveSlotState(
   for (const repo of inventory.consultedRepositories) {
     const primary = primaryRepositories.get(repo.path)
     if (primary === undefined) {
-      // 29392: shared main has no primary store for this repository (brain8 left the code repository while the
-      // environment's HEAD still pins it). Nothing can be preserved INTO a missing store, so read the repository
-      // first: clean and on the gitlink its parent records, it holds nothing the slot would lose, and the preserve
-      // goes on without it, naming it in the receipt. Anything else still refuses by name, before any ref write.
-      const storeless = join(gitRoot, repo.path)
-      if (repo.path === ".") {
-        throw new Error(`preserve: primary repository ${storeless} is not initialized; no worktree was removed`)
-      }
-      const head = await preserveGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"])
-      const dirtyLines = await preserveGit(repo.root, [
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-        "--ignore-submodules=all",
-      ])
-      const parentPath =
-        inventory.consultedRepositories.findLast(
-          (candidate) =>
-            candidate.path !== "." && candidate.path !== repo.path && repo.path.startsWith(candidate.path + "/"),
-        )?.path ?? "."
-      const parentRoot = inventory.consultedRepositories.find((candidate) => candidate.path === parentPath)?.root
-      if (parentRoot === undefined) {
-        throw new Error(`preserve: ${repo.path} has no consulted parent repository; no worktree was removed`)
-      }
-      const relative = parentPath === "." ? repo.path : repo.path.slice(parentPath.length + 1)
-      const recorded = await preserveGit(parentRoot, ["rev-parse", "--verify", `HEAD:${relative}`])
-      if (dirtyLines.length === 0 && head === recorded) {
-        skipped.push({
-          path: repo.path,
-          head,
-          reason: `no primary store at ${storeless}; clean on its recorded pin ${head.slice(0, 12)}, nothing to preserve`,
-        })
-        continue
-      }
-      const holds =
-        dirtyLines.length > 0
-          ? `has ${dirtyLines.split("\n").length} uncommitted path(s)`
-          : `is at ${head.slice(0, 12)}, off its recorded pin ${recorded.slice(0, 12)}`
-      throw new Error(
-        `preserve: primary submodule store ${storeless} is not initialized and ${repo.path} ${holds}; no worktree was removed`,
-      )
+      skipped.push(await readStorelessRepository(repo, inventory.consultedRepositories, gitRoot))
+      continue
     }
     const head = await preserveGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"])
     const primaryHead = await preserveGit(primary, ["rev-parse", "--verify", "HEAD^{commit}"])
