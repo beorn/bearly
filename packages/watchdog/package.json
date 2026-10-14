@@ -48,7 +48,7 @@
     "@bearly/flock": "workspace:*"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.3",
     "tsdown": "0.22.13",
     "typescript": "^5.9.3",
     "vitest": "5.0.4"
