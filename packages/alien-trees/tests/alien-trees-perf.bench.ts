@@ -31,6 +31,10 @@ import { test, describe } from "vitest"
 import { signal } from "alien-signals"
 import { createTree, type Traversal } from "../src/index.ts"
 
+// Tinybench 2's defaults (what vitest 4 ran): time 500ms, iterations 10, warmupTime 100ms,
+// warmupIterations 5. vitest 5 ships tinybench 6 (1000/64/250/64) — pin the v4 values (29257).
+const BENCH_V4 = { time: 500, iterations: 10, warmupTime: 100, warmupIterations: 5 }
+
 // ─── Tree fixtures ──────────────────────────────────────────────────────────
 
 /** root → col → [card0..cardN-1]. Canonical "board column" shape. */
@@ -163,172 +167,172 @@ function makeMixedStore(traversal: Traversal) {
 describe("descendants+some read (sparse-backed)", () => {
   for (const size of [1_000, 10_000, 100_000] as const) {
     test(`${size}: empty column read (worst case pre-index)`, async ({ bench }) => {
-  await bench(`${size}: empty column read (worst case pre-index)`, () => {
-      const { traversal } = buildLinearTree(size)
-      const store = makeCursorStore(traversal)
-      store.get("col").cursorDescendant()
-    }).run()
-})
+      await bench(`${size}: empty column read (worst case pre-index)`, () => {
+        const { traversal } = buildLinearTree(size)
+        const store = makeCursorStore(traversal)
+        store.get("col").cursorDescendant()
+      }).run(BENCH_V4)
+    })
     test(`${size}: cursor at end, read col`, async ({ bench }) => {
-  await bench(`${size}: cursor at end, read col`, () => {
-      const { traversal } = buildLinearTree(size)
-      const store = makeCursorStore(traversal)
-      store.get(`card${size - 1}`).cursor(true)
-      store.get("col").cursorDescendant()
-    }).run()
-})
+      await bench(`${size}: cursor at end, read col`, () => {
+        const { traversal } = buildLinearTree(size)
+        const store = makeCursorStore(traversal)
+        store.get(`card${size - 1}`).cursor(true)
+        store.get("col").cursorDescendant()
+      }).run(BENCH_V4)
+    })
   }
 })
 
 describe("cursor move (keystroke simulation)", () => {
   for (const size of [1_000, 10_000, 100_000] as const) {
     test(`${size}: move between two leaves + read col`, async ({ bench }) => {
-  await bench(`${size}: move between two leaves + read col`, () => {
-      const { traversal } = buildLinearTree(size)
-      const store = makeCursorStore(traversal)
-      store.get("card0").cursor(true)
-      store.get("card0").cursor(false)
-      store.get(`card${size - 1}`).cursor(true)
-      store.get("col").cursorDescendant()
-    }).run()
-})
+      await bench(`${size}: move between two leaves + read col`, () => {
+        const { traversal } = buildLinearTree(size)
+        const store = makeCursorStore(traversal)
+        store.get("card0").cursor(true)
+        store.get("card0").cursor(false)
+        store.get(`card${size - 1}`).cursor(true)
+        store.get("col").cursorDescendant()
+      }).run(BENCH_V4)
+    })
   }
 })
 
 describe("ancestors+some read (walk-backed; O(depth))", () => {
   for (const depth of [50, 200, 1_000] as const) {
     test(`${depth}-deep: selectedAncestor read from leaf`, async ({ bench }) => {
-  await bench(`${depth}-deep: selectedAncestor read from leaf`, () => {
-      const { traversal, leaf } = buildDeepChain(depth)
-      const store = makeAncestorStore(traversal)
-      store.get("root").selected(true)
-      store.get(leaf).selectedAncestor()
-    }).run()
-})
+      await bench(`${depth}-deep: selectedAncestor read from leaf`, () => {
+        const { traversal, leaf } = buildDeepChain(depth)
+        const store = makeAncestorStore(traversal)
+        store.get("root").selected(true)
+        store.get(leaf).selectedAncestor()
+      }).run(BENCH_V4)
+    })
   }
 })
 
 describe("write cost on deep chains (sparse walkUp is O(depth))", () => {
   for (const depth of [50, 200, 1_000] as const) {
     test(`${depth}-deep: write cursor at leaf`, async ({ bench }) => {
-  await bench(`${depth}-deep: write cursor at leaf`, () => {
-      const { traversal, leaf } = buildDeepChain(depth)
-      const store = makeCursorStore(traversal)
-      store.get(leaf).cursor(true)
-    }).run()
-})
+      await bench(`${depth}-deep: write cursor at leaf`, () => {
+        const { traversal, leaf } = buildDeepChain(depth)
+        const store = makeCursorStore(traversal)
+        store.get(leaf).cursor(true)
+      }).run(BENCH_V4)
+    })
   }
 })
 
 describe("balanced tree stress (fanout=10, depth=4 ≈ 11K nodes)", () => {
   test("cursor on middle leaf, read root cursorDescendant", async ({ bench }) => {
-  await bench("cursor on middle leaf, read root cursorDescendant", () => {
-    const { traversal, leaves } = buildBalancedTree(10, 4)
-    const store = makeCursorStore(traversal)
-    const target = leaves[Math.floor(leaves.length / 2)]!
-    store.get(target).cursor(true)
-    store.get("root").cursorDescendant()
-  }).run()
-})
+    await bench("cursor on middle leaf, read root cursorDescendant", () => {
+      const { traversal, leaves } = buildBalancedTree(10, 4)
+      const store = makeCursorStore(traversal)
+      const target = leaves[Math.floor(leaves.length / 2)]!
+      store.get(target).cursor(true)
+      store.get("root").cursorDescendant()
+    }).run(BENCH_V4)
+  })
 })
 
 describe("rebind cost (sparse index rebuilds)", () => {
   test("10K column with 100 truthy nodes, rebind same shape", async ({ bench }) => {
-  await bench("10K column with 100 truthy nodes, rebind same shape", () => {
-    const { traversal, ids } = buildLinearTree(10_000)
-    const store = makeCursorStore(traversal)
-    for (let i = 0; i < 100; i++) store.get(ids[i * 100]!).cursor(true)
-    store.rebind(traversal)
-  }).run()
-})
+    await bench("10K column with 100 truthy nodes, rebind same shape", () => {
+      const { traversal, ids } = buildLinearTree(10_000)
+      const store = makeCursorStore(traversal)
+      for (let i = 0; i < 100; i++) store.get(ids[i * 100]!).cursor(true)
+      store.rebind(traversal)
+    }).run(BENCH_V4)
+  })
 
   test("100K column with 0 truthy nodes (fast path)", async ({ bench }) => {
-  await bench("100K column with 0 truthy nodes (fast path)", () => {
-    const { traversal } = buildLinearTree(100_000)
-    const store = makeCursorStore(traversal)
-    store.rebind(traversal)
-  }).run()
-})
+    await bench("100K column with 0 truthy nodes (fast path)", () => {
+      const { traversal } = buildLinearTree(100_000)
+      const store = makeCursorStore(traversal)
+      store.rebind(traversal)
+    }).run(BENCH_V4)
+  })
 
   test("10K column with ALL nodes truthy (pathological)", async ({ bench }) => {
-  await bench("10K column with ALL nodes truthy (pathological)", () => {
-    const { traversal, ids } = buildLinearTree(10_000)
-    const store = makeCursorStore(traversal)
-    for (const id of ids) store.get(id).cursor(true)
-    store.rebind(traversal)
-  }).run()
-})
+    await bench("10K column with ALL nodes truthy (pathological)", () => {
+      const { traversal, ids } = buildLinearTree(10_000)
+      const store = makeCursorStore(traversal)
+      for (const id of ids) store.get(id).cursor(true)
+      store.rebind(traversal)
+    }).run(BENCH_V4)
+  })
 })
 
 describe("sequential write throughput", () => {
   test("1000 cursor toggles on 10K column (single-truthy at a time)", async ({ bench }) => {
-  await bench("1000 cursor toggles on 10K column (single-truthy at a time)", () => {
-    const { traversal, ids } = buildLinearTree(10_000)
-    const store = makeCursorStore(traversal)
-    let prev: string | null = null
-    for (let i = 0; i < 1_000; i++) {
-      if (prev) store.get(prev).cursor(false)
-      const next = ids[i % ids.length]!
-      store.get(next).cursor(true)
-      prev = next
-    }
-  }).run()
-})
+    await bench("1000 cursor toggles on 10K column (single-truthy at a time)", () => {
+      const { traversal, ids } = buildLinearTree(10_000)
+      const store = makeCursorStore(traversal)
+      let prev: string | null = null
+      for (let i = 0; i < 1_000; i++) {
+        if (prev) store.get(prev).cursor(false)
+        const next = ids[i % ids.length]!
+        store.get(next).cursor(true)
+        prev = next
+      }
+    }).run(BENCH_V4)
+  })
 
   test("1000 toggles + read after each (cursor-move-then-render)", async ({ bench }) => {
-  await bench("1000 toggles + read after each (cursor-move-then-render)", () => {
-    const { traversal, ids } = buildLinearTree(10_000)
-    const store = makeCursorStore(traversal)
-    let prev: string | null = null
-    for (let i = 0; i < 1_000; i++) {
-      if (prev) store.get(prev).cursor(false)
-      const next = ids[i % ids.length]!
-      store.get(next).cursor(true)
-      prev = next
-      store.get("col").cursorDescendant()
-    }
-  }).run()
-})
+    await bench("1000 toggles + read after each (cursor-move-then-render)", () => {
+      const { traversal, ids } = buildLinearTree(10_000)
+      const store = makeCursorStore(traversal)
+      let prev: string | null = null
+      for (let i = 0; i < 1_000; i++) {
+        if (prev) store.get(prev).cursor(false)
+        const next = ids[i % ids.length]!
+        store.get(next).cursor(true)
+        prev = next
+        store.get("col").cursorDescendant()
+      }
+    }).run(BENCH_V4)
+  })
 })
 
 describe("multi-aggregate coexistence", () => {
   test("descendants + ancestors on 10K column", async ({ bench }) => {
-  await bench("descendants + ancestors on 10K column", () => {
-    const { traversal, ids } = buildLinearTree(10_000)
-    const store = makeMixedStore(traversal)
-    store.get(ids[5000]!).cursor(true)
-    store.get("col").cursorDescendant()
-    store.get(ids[5000]!).tagAncestor()
-  }).run()
-})
+    await bench("descendants + ancestors on 10K column", () => {
+      const { traversal, ids } = buildLinearTree(10_000)
+      const store = makeMixedStore(traversal)
+      store.get(ids[5000]!).cursor(true)
+      store.get("col").cursorDescendant()
+      store.get(ids[5000]!).tagAncestor()
+    }).run(BENCH_V4)
+  })
 })
 
 describe("ACCOUNTING: traversal call counts", () => {
   test("100K empty: read cursorDescendant", async ({ bench }) => {
-  await bench("100K empty: read cursorDescendant", () => {
-    const { traversal, calls } = buildLinearTree(100_000)
-    const store = makeCursorStore(traversal)
-    calls.children = 0
-    calls.parent = 0
-    store.get("col").cursorDescendant()
-    if (process.env.BENCH_VERBOSE) {
-      process.stderr.write(`100K empty read: children()=${calls.children} parent()=${calls.parent}\n`)
-    }
-  }).run()
-})
+    await bench("100K empty: read cursorDescendant", () => {
+      const { traversal, calls } = buildLinearTree(100_000)
+      const store = makeCursorStore(traversal)
+      calls.children = 0
+      calls.parent = 0
+      store.get("col").cursorDescendant()
+      if (process.env.BENCH_VERBOSE) {
+        process.stderr.write(`100K empty read: children()=${calls.children} parent()=${calls.parent}\n`)
+      }
+    }).run(BENCH_V4)
+  })
 
   test("100K cursor-move write (sparse walkUp)", async ({ bench }) => {
-  await bench("100K cursor-move write (sparse walkUp)", () => {
-    const { traversal, calls, ids } = buildLinearTree(100_000)
-    const store = makeCursorStore(traversal)
-    store.get(ids[50_000]!).cursor(true)
-    calls.children = 0
-    calls.parent = 0
-    store.get(ids[50_000]!).cursor(false)
-    store.get(ids[99_999]!).cursor(true)
-    if (process.env.BENCH_VERBOSE) {
-      process.stderr.write(`100K cursor-move write: children()=${calls.children} parent()=${calls.parent}\n`)
-    }
-  }).run()
-})
+    await bench("100K cursor-move write (sparse walkUp)", () => {
+      const { traversal, calls, ids } = buildLinearTree(100_000)
+      const store = makeCursorStore(traversal)
+      store.get(ids[50_000]!).cursor(true)
+      calls.children = 0
+      calls.parent = 0
+      store.get(ids[50_000]!).cursor(false)
+      store.get(ids[99_999]!).cursor(true)
+      if (process.env.BENCH_VERBOSE) {
+        process.stderr.write(`100K cursor-move write: children()=${calls.children} parent()=${calls.parent}\n`)
+      }
+    }).run(BENCH_V4)
+  })
 })
