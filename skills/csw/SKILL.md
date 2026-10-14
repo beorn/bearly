@@ -61,7 +61,7 @@ Collect: existing code, prior decisions, constraints, user preferences, related 
 
 ### Phase 2: Enumerate ALL Options (minimum 4; about 20 for a one-way-door or operator-questioned decision)
 
-For a decision that is a one-way door, or that the operator has questioned, enumerate about 20 candidates before narrowing (operator 2026-10-14, id 1321018: *"did you do a deep dive into 20 options and analyze each?"*).
+For a decision that is a one-way door, or that the operator has questioned, enumerate about 20 candidates before narrowing (operator 2026-10-14, id 1321018: _"did you do a deep dive into 20 options and analyze each?"_).
 
 Generate options broadly before evaluating. Include:
 
