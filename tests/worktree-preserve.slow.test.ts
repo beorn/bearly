@@ -862,6 +862,68 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     60_000,
   )
 
+  /** @failure preserve refuses a slot whose child has NOTHING to preserve only because shared main lost the child's primary
+   * store (brain8 left the code repository), so a dirty environment can never close with --preserve (29392)
+   * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
+  test("29392: a child clean on its recorded pin with no primary store is skipped and named; the root dirt is still preserved", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const origin = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${origin}`.quiet()
+    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const originalCwd = process.cwd()
+    const worktreePath = join(sandbox, "main-wt5")
+    const child = join(worktreePath, "vendor/sub")
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { install: false, direnv: false, hooks: false })
+      writeFileSync(join(worktreePath, "README.md"), "root dirt to preserve\n")
+      const childHead = (await $`git -C ${child} rev-parse HEAD`.text()).trim()
+      const childRefs = await $`git -C ${child} show-ref`.text()
+      // The primary store leaves shared main; the child is clean and on the pin its parent records.
+      rmSync(join(mainRepo, "vendor/sub"), { recursive: true, force: true })
+      mkdirSync(join(mainRepo, "vendor/sub"))
+      const result = await preserveSlotState(worktreePath, "wt5", mainRepo, { quiet: true })
+      expect(result.preserved).toBe(true)
+      expect(result.reason).toBe("dirty")
+      expect(result.skipped).toEqual([expect.objectContaining({ path: "vendor/sub", head: childHead })])
+      expect(result.skipped?.[0]?.reason).toContain("no primary store")
+      expect(result.submodules).toEqual([])
+      expect(await $`git -C ${mainRepo} show ${result.ref ?? ""}:README.md`.text()).toBe("root dirt to preserve\n")
+      expect(await $`git -C ${child} show-ref`.text()).toBe(childRefs)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure preserve skips a storeless child that carries a commit its parent does not record, losing it with the slot (29392)
+   * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
+  test("29392: a child off its recorded pin with no primary store still refuses by name", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const origin = join(sandbox, "origin.git")
+    await $`git init --bare -q -b main ${origin}`.quiet()
+    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
+    await $`git -C ${mainRepo} push -q origin main`.quiet()
+    const originalCwd = process.cwd()
+    const worktreePath = join(sandbox, "main-wt5")
+    const child = join(worktreePath, "vendor/sub")
+    try {
+      process.chdir(mainRepo)
+      await createWorktree("wt5", undefined, { install: false, direnv: false, hooks: false })
+      writeFileSync(join(child, "ahead.txt"), "a commit the parent does not record\n")
+      await commitAll(child, "child-ahead")
+      const childRefs = await $`git -C ${child} show-ref`.text()
+      rmSync(join(mainRepo, "vendor/sub"), { recursive: true, force: true })
+      mkdirSync(join(mainRepo, "vendor/sub"))
+      const attempt = preserveSlotState(worktreePath, "wt5", mainRepo, { quiet: true })
+      await expect(attempt).rejects.toThrow("vendor/sub")
+      await expect(attempt).rejects.toThrow("recorded pin")
+      expect(await $`git -C ${child} show-ref`.text()).toBe(childRefs)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   test("reset --force PRESERVES uncommitted work to wip/<slot>-preserve-* (does not discard)", async () => {
     const mainRepo = await buildMain()
     const slot = "wt5"
