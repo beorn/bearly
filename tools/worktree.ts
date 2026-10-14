@@ -2534,7 +2534,13 @@ async function readStorelessRepository(
   }
   const relative = parentPath === "." ? repo.path : repo.path.slice(parentPath.length + 1)
   const recorded = await preserveGit(parentRoot, ["rev-parse", "--verify", `HEAD:${relative}`])
-  if (dirtyLines.length === 0 && head === recorded) {
+  // The child's store lives under the slot's admin dir and dies with it (@cto 9c3e7f17): a branch, tag or stash
+  // carrying a commit that neither the recorded pin nor a remote reaches is lost even when HEAD is clean on the pin.
+  const unreached =
+    dirtyLines.length === 0 && head === recorded
+      ? await preserveGit(repo.root, ["rev-list", "-n", "1", "--all", "--not", "--remotes", recorded])
+      : null
+  if (unreached === "") {
     return {
       path: repo.path,
       head,
@@ -2544,7 +2550,9 @@ async function readStorelessRepository(
   const holds =
     dirtyLines.length > 0
       ? `has ${dirtyLines.split("\n").length} uncommitted path(s)`
-      : `is at ${head.slice(0, 12)}, off its recorded pin ${recorded.slice(0, 12)}`
+      : head !== recorded
+        ? `is at ${head.slice(0, 12)}, off its recorded pin ${recorded.slice(0, 12)}`
+        : `holds commits on local refs that neither its recorded pin nor a remote reaches (${unreached?.slice(0, 12)})`
   throw new Error(
     `preserve: primary submodule store ${storeless} is not initialized and ${repo.path} ${holds}; no worktree was removed`,
   )
