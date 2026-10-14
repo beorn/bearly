@@ -1,5 +1,6 @@
 import {
   closeSync,
+  constants,
   existsSync,
   fstatSync,
   fsyncSync,
@@ -42,7 +43,19 @@ export function createNativeFlockRuntime(platform: NodeJS.Platform = process.pla
         mkdirSync(dirname(path), { recursive: true, mode })
       },
       exists: existsSync,
-      open: (path, mode) => openSync(path, "a+", mode),
+      open: (path, mode, noFollow) => {
+        if (!noFollow) return openSync(path, "a+", mode)
+        // A no-follow open is a hard requirement: on a platform that cannot express
+        // O_NOFOLLOW, refuse loudly rather than silently following the symlink.
+        const noFollowFlag = constants.O_NOFOLLOW as number | undefined
+        if (noFollowFlag === undefined) {
+          throw new Error(`flock: noFollow is not supported on this platform (no O_NOFOLLOW): ${path}`)
+        }
+        // Same access as "a+" (append, create, read/write), plus O_NOFOLLOW so a
+        // symlink at the final component fails the open instead of being followed.
+        const flags = constants.O_APPEND | constants.O_CREAT | constants.O_RDWR | noFollowFlag
+        return openSync(path, flags, mode)
+      },
       identity(fd) {
         const stat = fstatSync(fd, { bigint: true })
         return `${String(stat.dev)}:${String(stat.ino)}`

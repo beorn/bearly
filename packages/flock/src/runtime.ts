@@ -1,7 +1,7 @@
 export interface FlockIo {
   readonly createParent: (path: string, mode: number) => void
   readonly exists: (path: string) => boolean
-  readonly open: (path: string, mode: number) => number
+  readonly open: (path: string, mode: number, noFollow: boolean) => number
   readonly identity: (fd: number) => string
   readonly pathIdentity: (path: string) => string
   readonly flock: (
@@ -30,6 +30,13 @@ export interface FlockOpenOptions {
   readonly fileMode?: number
   readonly createParent?: boolean
   readonly parentMode?: number
+  /**
+   * Refuse to open through a symlink: the path's final component must be a real
+   * file, so a symlink there fails the open (ELOOP) instead of locking — and a
+   * body write truncating — whatever it points at. Opt in for a lock path an
+   * attacker or an unrelated tool could replace with a symlink.
+   */
+  readonly noFollow?: boolean
 }
 
 export interface FlockHandle {
@@ -146,7 +153,7 @@ interface Candidate {
 
 function openCandidate(io: FlockIo, path: string, options: FlockOpenOptions): Candidate {
   if (options.createParent !== false) io.createParent(path, options.parentMode ?? 0o700)
-  const fd = io.open(path, options.fileMode ?? 0o600)
+  const fd = io.open(path, options.fileMode ?? 0o600, options.noFollow === true)
   try {
     return { fd, identity: io.identity(fd), path }
   } catch (error) {

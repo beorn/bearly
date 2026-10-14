@@ -5,7 +5,7 @@
  * @testonly none
  */
 import { afterEach, describe, expect, test } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { spawn, type StdioOptions } from "node:child_process"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -56,6 +56,19 @@ describe("@bearly/flock", () => {
       holder.kill("SIGKILL")
       await holder.exited
     }
+  })
+
+  test("noFollow refuses a symlinked lock path (ELOOP) and never touches the link or its target", () => {
+    const root = tempRoot()
+    const target = join(root, "target.txt")
+    writeFileSync(target, "keep-me")
+    const link = join(root, "link.lock")
+    symlinkSync(target, link)
+    // The open itself refuses the symlink: nothing is followed, so no body write can
+    // truncate the target, and the link stays a link.
+    expect(() => tryAcquireFlock(link, { noFollow: true })).toThrow(/ELOOP/)
+    expect(readFileSync(target, "utf8")).toBe("keep-me")
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
   })
 
   test("a stale diagnostic pathname is not ownership", () => {
@@ -445,7 +458,7 @@ function fakeIo(overrides: Partial<FlockIo> = {}): {
   const io: FlockIo = {
     createParent() {},
     exists: () => true,
-    open: (path) => {
+    open: (path, _mode, _noFollow) => {
       openedPaths.push(path)
       return nextFd++
     },
