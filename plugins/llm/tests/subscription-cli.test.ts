@@ -1,4 +1,11 @@
 /**
+ * @failure A subscription CLI route falls back silently, or a broken CLI login is not reported, so a second
+ *          opinion is answered by an unauthenticated or wrong CLI instead of failing loud.
+ * @level l2 — bearly's real route table and PATH probe over faked CLIs
+ * @consumer bearly LLM subscription CLI routing (bead 29147)
+ * @reach fs-walk <fixture-only: temporary fake CLI directories placed on PATH; nothing here scans a source tree>
+ * @testonly none
+ *
  * Subscription CLI routes (bead 29147).
  *
  * A seat with a ChatGPT-subscribed `codex` login — or an Antigravity `agy`
