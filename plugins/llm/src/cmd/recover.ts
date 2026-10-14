@@ -275,7 +275,9 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
           break
         }
         case "failed": {
-          console.error(`    ❌ Response ${outcome.status} — removing stale partial`)
+          console.error(
+            `    ❌ Response ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""} — removing stale partial`,
+          )
           completePartial(partial.path, { delete: true })
           break
         }
@@ -402,12 +404,14 @@ export async function runRecover(options: {
         break
       }
       case "failed": {
-        console.error(`\nResponse ${outcome.status}`)
+        console.error(`\nResponse ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}`)
         if (localPartial) {
           completePartial(localPartial.path, { delete: true })
           console.error("Cleaned up stale partial file.")
         }
-        break
+        // A failed terminal must not read as success. Exit non-zero and name the
+        // provider cause, matching `llm await`'s error envelope (29325).
+        process.exit(1)
       }
       case "stale": {
         console.error(`\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`)

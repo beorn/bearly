@@ -605,6 +605,10 @@ export async function retrieveResponse(responseId: string): Promise<{
   try {
     const response = await openai.responses.retrieve(responseId)
     const usage = response.usage
+    // A stored response can come back "failed" with the provider's own cause in
+    // `response.error`. Without this the normalized return carries no reason and
+    // `llm await`/`llm recover` can only say "Response failed" (29325).
+    const providerError = response.error
     return {
       status: response.status ?? "unknown",
       content: extractText(response),
@@ -615,6 +619,7 @@ export async function retrieveResponse(responseId: string): Promise<{
             totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
           }
         : undefined,
+      error: providerError ? `${providerError.code}: ${providerError.message}` : undefined,
     }
   } catch (error) {
     return {
