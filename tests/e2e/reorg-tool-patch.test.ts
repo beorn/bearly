@@ -8,6 +8,7 @@
  *
  * The load-bearing assertion is bead-safety: the @km bead markdown must be BYTE-IDENTICAL after
  * all three operations run.
+ * @source-grep the reads are this test's own hermetic mkdtemp fixture (the package.json and apps-tree .ts paths it wrote), never production source; the v0.7 reorg tool patch (20187) proves dep-rename + @km bead-safe exclusion + dir-move compose with the bead byte-identical
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest"
