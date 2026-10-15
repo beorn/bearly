@@ -155,6 +155,30 @@ describe("dispatch failure classes on recorded provider responses", () => {
     expect(described.message).toContain("auth, quota, model, transport")
     expect(described.message).toContain("unsupported request option")
   })
+
+  // 29473: a subscription CLI route fails with no HTTP status, so there is no body to append, and the unmatched
+  // branch said only that nothing matched. Recall's planner reported "Google dispatch failed … with no HTTP status"
+  // for two hours while the agy one-shot was being aborted by the planner's 8 s budget.
+  it.each([
+    [
+      "agy CLI (Antigravity Ultra subscription (agy)) failed for Gemini 2.0 Flash Lite (aborted): no stderr",
+      "google",
+      "Google dispatch through the agy CLI one-shot failed for Gemini 2.0 Flash Lite (aborted: the caller's time budget or signal stopped it).",
+    ],
+    [
+      "codex CLI (codex CLI login (ChatGPT subscription or the seat's CODEX_HOME provider)) failed for GPT-5 nano (exit 1): prompt=private-text sk-test-123",
+      "openai",
+      "OpenAI dispatch through the codex CLI one-shot failed for GPT-5 nano (exit 1).",
+    ],
+  ])(
+    "a subscription CLI failure names its route and outcome, never its raw detail: %s",
+    (error, provider, expected) => {
+      const described = describeDispatchFailure(new Error(error), { provider, modelId: "m" })
+
+      expect(described).toMatchObject({ kind: "unknown", scope: "call", message: expected })
+      expect(described.message).not.toMatch(/private-text|sk-test-123|no stderr|matched none/)
+    },
+  )
 })
 
 describe("streaming failures survive the ai-sdk's synthetic no-output wrapper", () => {
