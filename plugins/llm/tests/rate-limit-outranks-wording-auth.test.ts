@@ -1,5 +1,13 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { describeDispatchFailure, type DispatchFailureTarget } from "../src/lib/dispatch-error"
+import { createProviderObservationStore, readProviderAvailability, recordProviderObservation } from "../src/index"
+import {
+  describeDispatchFailure,
+  type DispatchFailureTarget,
+  UPSTREAM_SHARED_POOL_RETRY_MS,
+} from "../src/lib/dispatch-error"
 
 const openrouter: DispatchFailureTarget = {
   provider: "openrouter",
@@ -118,5 +126,60 @@ describe("a 429's refusal record keeps the head of the upstream body (29495, @ct
     )
     expect(observation?.status).toBe("refusing")
     expect(observation?.reason).not.toContain("upstream body")
+  })
+})
+
+describe("a 429 from an upstream provider's shared pool is held for seconds, not the provider's 10 minutes (29534)", () => {
+  const now = Date.parse("2026-10-15T18:34:10Z")
+  const sharedPool = (extra: object = {}) =>
+    Object.assign(new Error("Provider returned error"), {
+      status: 429,
+      responseBody: sharedPool429Body("deepseek/deepseek-chat", "StreamLake"),
+      ...extra,
+    })
+
+  it("holds the refusal until now + UPSTREAM_SHARED_POOL_RETRY_MS when no Retry-After is given", () => {
+    const described = describeDispatchFailure(sharedPool(), openrouter, now)
+    expect(described.kind).toBe("rate-limited")
+    expect(described.retryAt).toBe(now + UPSTREAM_SHARED_POOL_RETRY_MS)
+    expect(described.observation?.retryAt).toBe(now + UPSTREAM_SHARED_POOL_RETRY_MS)
+    expect(described.observation?.reason).toContain('"limit_source":"upstream_provider_shared_pool"')
+  })
+
+  it("the shared store's record expires at that retryAt, so every process stops refusing within seconds", async () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), "bearly-shared-pool-"))
+    try {
+      const store = createProviderObservationStore({ cacheRoot })
+      const { observation } = describeDispatchFailure(sharedPool(), openrouter, now)
+      if (observation?.status !== "refusing") throw new Error("expected a refusal record")
+      const recorded = await recordProviderObservation(store, { ...observation, observedAt: now })
+      expect(recorded.expiresAt).toBe(now + UPSTREAM_SHARED_POOL_RETRY_MS)
+      const env = { OPENROUTER_API_KEY: "configured" }
+      expect((await readProviderAvailability("openrouter", { store, now: now + 29_000, env })).status).toBe("refusing")
+      expect((await readProviderAvailability("openrouter", { store, now: now + 31_000, env })).status).not.toBe(
+        "refusing",
+      )
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves an account-level 429, one naming no upstream shared pool, to the provider's default hold", () => {
+    const account = Object.assign(new Error("Rate limit exceeded"), {
+      status: 429,
+      responseBody: '{"error":{"message":"Rate limit exceeded: free-models-per-day","code":429}}',
+    })
+    const described = describeDispatchFailure(account, openrouter, now)
+    expect(described.kind).toBe("rate-limited")
+    expect(described.retryAt).toBeUndefined()
+  })
+
+  it("lets a Retry-After the provider sent win over the shared-pool hold", () => {
+    const described = describeDispatchFailure(
+      sharedPool({ responseHeaders: { "retry-after": "120" } }),
+      openrouter,
+      now,
+    )
+    expect(described.retryAt).toBe(now + 120_000)
   })
 })

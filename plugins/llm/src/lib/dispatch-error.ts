@@ -249,6 +249,16 @@ function noStatusFailureClass(error: unknown): { said: string; remedy: string } 
   return undefined
 }
 
+/**
+ * 29534: how long a 429 from an upstream provider's shared pool holds its refusal when the response names no
+ * Retry-After. OpenRouter marks it with metadata.limit_source "upstream_provider_shared_pool". Measured 2026-10-15
+ * (@cto 80f17a10): StreamLake refused deepseek-chat on 7 of 30 calls 20 s apart, every refusal at :10 past a minute,
+ * and 7 of 7 cleared within 20 s (/hh/var/@dev12/29534/probe-run1.jsonl). The default rate-limited record refuses the
+ * whole provider, for every process on the host, for 10 minutes; an account-level 429 still does.
+ */
+export const UPSTREAM_SHARED_POOL_RETRY_MS = 30_000
+const UPSTREAM_SHARED_POOL = /"limit_source"\s*:\s*"upstream_provider_shared_pool"/u
+
 /** Pure owner of provider/model/call failure classification and rendering. */
 function classifyDispatchFailure(
   error: unknown,
@@ -360,7 +370,8 @@ function classifyDispatchFailure(
       target,
       `${target.provider} rate-limited (429) — wait and retry, or use another provider: ${alt}.`,
       "wait and retry, or use another provider",
-      retryAtFromError(error, now),
+      retryAtFromError(error, now) ??
+        (UPSTREAM_SHARED_POOL.test(blob) ? now + UPSTREAM_SHARED_POOL_RETRY_MS : undefined),
     )
   // 29057: an EXPLICIT 429 outranks every wording-based auth match, and nothing else moves. A
   // shared-pool 429 is a fact the provider asserted about its own rate limit, while the auth
