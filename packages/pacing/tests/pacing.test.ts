@@ -6,7 +6,44 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { additiveJitter, awaitReady, decorrelatedJitter, fullJitter, type RandomUnit } from "../src/index.ts"
+import {
+  additiveJitter,
+  awaitReady,
+  decorrelatedJitter,
+  fullJitter,
+  parseDuration,
+  type RandomUnit,
+} from "../src/index.ts"
+
+describe("duration grammar", () => {
+  // A shared grammar must preserve precision and keep bare-unit policy with the caller.
+  test.each([
+    ["1.5", "s", 1500],
+    ["1.5", "ms", 1.5],
+    ["0s", null, 0],
+    ["0.25ms", null, 0.25],
+    ["6m0s", null, 360_000],
+    [" 1H 30 m 0.5S ", null, 5_400_500],
+    ["1d", null, 86_400_000],
+    ["1W2d", null, 777_600_000],
+  ] as const)("reads %s with bare policy %s", (text, bareUnit, ms) => {
+    expect(parseDuration(text, bareUnit)).toEqual({ ok: true, ms })
+  })
+
+  test.each([
+    ["  ", "empty"],
+    ["1.5", "bare-unit-required"],
+    ["1m30", "invalid-duration"],
+    ["1us", "invalid-duration"],
+    ["1ns", "invalid-duration"],
+    ["-1s", "invalid-duration"],
+    ["NaN", "invalid-duration"],
+    ["1e3s", "invalid-duration"],
+    ["9".repeat(400) + "s", "non-finite"],
+  ] as const)("names a refused duration %s", (text, reason) => {
+    expect(parseDuration(text, null)).toEqual({ ok: false, reason, text })
+  })
+})
 
 /** Deterministic uniform numbers in [0, 1): a mulberry32 stream. */
 function seeded(seed: number): RandomUnit {

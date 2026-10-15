@@ -9,6 +9,43 @@
 /** A source of uniform numbers in [0, 1). Defaults to Math.random; tests pass a seeded one. */
 export type RandomUnit = () => number
 
+export type DurationParseResult =
+  | { readonly ok: true; readonly ms: number }
+  | {
+      readonly ok: false
+      readonly reason: "empty" | "bare-unit-required" | "invalid-duration" | "non-finite"
+      readonly text: string
+    }
+
+const DURATION_UNIT_MS = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 } as const
+
+/** One duration grammar; callers own rounding, positivity and diagnostics. */
+export function parseDuration(text: string, bareUnit: "ms" | "s" | null): DurationParseResult {
+  const raw = text.trim()
+  const refused = (reason: Extract<DurationParseResult, { ok: false }>["reason"]): DurationParseResult => ({
+    ok: false,
+    reason,
+    text,
+  })
+  if (raw.length === 0) return refused("empty")
+  let ms = 0
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    if (bareUnit === null) return refused("bare-unit-required")
+    ms = Number(raw) * DURATION_UNIT_MS[bareUnit]
+  } else {
+    const groups = /\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w)\s*/giy
+    let consumed = 0
+    for (let match = groups.exec(raw); match !== null; match = groups.exec(raw)) {
+      const unit = match[2]
+      if (unit === undefined) return refused("invalid-duration")
+      ms += Number(match[1]) * DURATION_UNIT_MS[unit.toLowerCase() as keyof typeof DURATION_UNIT_MS]
+      consumed = groups.lastIndex
+    }
+    if (consumed !== raw.length) return refused("invalid-duration")
+  }
+  return Number.isFinite(ms) ? { ok: true, ms } : refused("non-finite")
+}
+
 function requireFinite(name: string, value: number): void {
   if (!Number.isFinite(value)) throw new RangeError(`${name} must be a finite number, got ${value}`)
 }
