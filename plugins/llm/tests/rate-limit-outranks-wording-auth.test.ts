@@ -83,3 +83,40 @@ describe("an explicit 429 outranks a wording-based auth match (29057)", () => {
     expect(described.kind).toBe("quota")
   })
 })
+
+describe("a 429's refusal record keeps the head of the upstream body (29495, @cto e60d240d)", () => {
+  const refusalReason = (error: Error): string => {
+    const { observation } = describeDispatchFailure(error, openrouter)
+    if (observation?.status !== "refusing") throw new Error(`expected a refusal record, got ${String(observation)}`)
+    return observation.reason
+  }
+
+  it("names whose limit refused, beside bearly's own text", () => {
+    const body = sharedPool429Body("deepseek/deepseek-chat", "StreamLake")
+    const reason = refusalReason(
+      Object.assign(new Error("Provider returned error"), { status: 429, responseBody: body }),
+    )
+    expect(reason).toMatch(/^openrouter rate-limited \(429\)/u)
+    expect(reason).toContain('upstream body: {"error":{"message":"Provider returned error","code":429')
+    expect(reason).toContain('"provider_name":"StreamLake"')
+    expect(reason).toContain('"limit_source":"upstream_provider_shared_pool"')
+  })
+
+  it("keeps at most 512 characters of the body, redacted before it is cut", () => {
+    const body = `{"api_key":"sk-live-secret","error":{"message":"${"x".repeat(2_000)}"}}`
+    const reason = refusalReason(Object.assign(new Error("rate limited"), { status: 429, responseBody: body }))
+    const head = reason.slice(reason.indexOf("upstream body: ") + "upstream body: ".length)
+    expect(head).toHaveLength(512)
+    expect(reason).toContain('"api_key":"[REDACTED]"')
+    expect(reason).not.toContain("sk-live-secret")
+  })
+
+  it("leaves another refusal's record as it was", () => {
+    const { observation } = describeDispatchFailure(
+      Object.assign(new Error("upstream unavailable"), { status: 503, responseBody: '{"error":"overloaded"}' }),
+      openrouter,
+    )
+    expect(observation?.status).toBe("refusing")
+    expect(observation?.reason).not.toContain("upstream body")
+  })
+})
