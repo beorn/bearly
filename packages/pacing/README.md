@@ -1,6 +1,6 @@
 # @bearly/pacing
 
-Pure pacing policy for reconnect and restart loops: when to try again, and when a dependency is ready.
+Pure duration parsing and pacing policy for reconnect and restart loops: how long to wait, when to try again, and when a dependency is ready.
 
 Nothing here owns a clock, a timer, a socket or a process. You pass `now`, `sleep`, your probe and, in tests, a seeded
 random source. The module holds the common jitter patterns and a readiness gate in one place, so every loop can use the
@@ -17,7 +17,10 @@ bun add @bearly/pacing
 ## Use
 
 ```ts
-import { additiveJitter, awaitReady, decorrelatedJitter, fullJitter } from "@bearly/pacing"
+import { additiveJitter, awaitReady, decorrelatedJitter, fullJitter, parseDuration } from "@bearly/pacing"
+
+const duration = parseDuration("1h 30m", null) // { ok: true, ms: 5_400_000 }
+const interval = parseDuration("30", "s") // Bare numbers use the caller's unit; null requires a suffix.
 
 // Full jitter: uniform in [0, min(cap, base * 2 ** attempt)]. A plain spread over a window is base = cap = window.
 const delay = fullJitter(250, 30_000, attempt)
@@ -51,7 +54,7 @@ spread from zero, and decorrelated jitter when peers pace from their previous de
 the gate past its timeout, forever. Give every probe its own timeout, shorter than `timeoutMs`: a call timeout on the
 socket, or an `AbortSignal.timeout` on the fetch.
 
-Every function throws `RangeError` when its bounds name no delay (a negative base, a cap below base, a fractional
+Pacing functions throw `RangeError` when their bounds name no delay (a negative base, a cap below base, a fractional
 attempt, an additive ratio outside [0, 1], or a bound that is not a finite number).
 
 ## Guarantees
