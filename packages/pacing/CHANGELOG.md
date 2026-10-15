@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Add `parseDuration(text, bareUnit)` and `DurationParseResult` at the package root. Callers explicitly choose
+  milliseconds, seconds or no unit for bare numbers, and retain their own rounding, positivity and diagnostics.
+- Read decimal groups in `ms`, `s`, `m`, `h`, `d` and `w`, including mixed case and inner whitespace. Preserve
+  zero and fractional milliseconds; name malformed or non-finite results without owning a clock or performing I/O.
+- Accumulate decimal digits exactly before conversion to a number, so whole-millisecond values such as `1.001s`
+  return `1001` without floating multiplication noise.
+
 ## 0.2.0
 
 - Add `additiveJitter(base, cap, attempt, ratio, random?)` for retries that must keep their capped exponential delay
