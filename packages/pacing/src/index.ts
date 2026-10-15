@@ -28,21 +28,35 @@ export function parseDuration(text: string, bareUnit: "ms" | "s" | null): Durati
     text,
   })
   if (raw.length === 0) return refused("empty")
-  let ms = 0
+  let total = 0n
+  let places = 0
+  const add = (decimal: string, unitMs: number): void => {
+    const point = decimal.indexOf(".")
+    const precision = point < 0 ? 0 : decimal.length - point - 1
+    const digits = BigInt(decimal.replace(".", "")) * BigInt(unitMs)
+    if (precision > places) {
+      total *= 10n ** BigInt(precision - places)
+      places = precision
+    }
+    total += digits * 10n ** BigInt(places - precision)
+  }
   if (/^\d+(?:\.\d+)?$/.test(raw)) {
     if (bareUnit === null) return refused("bare-unit-required")
-    ms = Number(raw) * DURATION_UNIT_MS[bareUnit]
+    add(raw, DURATION_UNIT_MS[bareUnit])
   } else {
     const groups = /\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w)\s*/giy
     let consumed = 0
     for (let match = groups.exec(raw); match !== null; match = groups.exec(raw)) {
+      const decimal = match[1]
       const unit = match[2]
-      if (unit === undefined) return refused("invalid-duration")
-      ms += Number(match[1]) * DURATION_UNIT_MS[unit.toLowerCase() as keyof typeof DURATION_UNIT_MS]
+      if (decimal === undefined || unit === undefined) return refused("invalid-duration")
+      add(decimal, DURATION_UNIT_MS[unit.toLowerCase() as keyof typeof DURATION_UNIT_MS])
       consumed = groups.lastIndex
     }
     if (consumed !== raw.length) return refused("invalid-duration")
   }
+  const digits = total.toString().padStart(places + 1, "0")
+  const ms = Number(places === 0 ? digits : `${digits.slice(0, -places)}.${digits.slice(-places)}`)
   return Number.isFinite(ms) ? { ok: true, ms } : refused("non-finite")
 }
 
