@@ -1,6 +1,6 @@
 Read when `/big decide` selects the decision branch. Start the user-facing answer with `Branch: decide`.
 
-# /csw — Complete Staff Work
+# Decision protocol — complete staff work (`/big decide`)
 
 The former `/csw` command is now the `/big decide` branch. Keep this option-analysis output distinct from `/big`'s reframe output.
 

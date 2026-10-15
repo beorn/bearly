@@ -1,6 +1,6 @@
 Read when `/big unstuck` selects the unstuck branch. Start the user-facing answer with `Branch: unstuck`.
 
-# /fresh — Fresh Perspective on a Stuck Problem
+# Unstuck protocol — fresh perspective on a stuck problem (`/big unstuck`)
 
 The former `/fresh` command is now the `/big unstuck` branch. Keep this research-packet output distinct from `/big`'s reframe output.
 
