@@ -245,6 +245,11 @@ export const ModelResponseSchema = z.object({
       route: z.literal("subscription-cli"),
       cli: z.string(),
       model: z.string(),
+      /** agy only (29475): the conversation agy persisted for this one-shot and what became of it —
+       *  `removed` (brain directory and conversation db gone), `absent` (nothing to remove),
+       *  `no-conversation-id` (the stream named none) or `failed: <why>`. A one-shot keeps no
+       *  conversation; this says so per call instead of leaving a silent leftover. */
+      oneShot: z.object({ conversationId: z.string().nullable(), cleanup: z.string() }).optional(),
     })
     .optional(),
   /** Rate-limit headers from this call (km-bearly.llm-quota-tracking).

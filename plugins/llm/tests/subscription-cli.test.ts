@@ -19,7 +19,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync, readdirSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs"
 import { safeRemoveSync } from "removely"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -37,6 +47,8 @@ import {
   subscriptionRouteNote,
   resetSubscriptionCliProbe,
   resolveSubscriptionRoute,
+  agyConversationPaths,
+  removeAgyConversation,
 } from "../src/lib/subscription-cli"
 import { isProviderRoutable, providerRouteLabel } from "../src/lib/providers"
 
@@ -91,7 +103,11 @@ const OK_AGY = [
   // dir ONLY, so no external `cat` — read the single line with the builtin.
   "IFS= read -r line",
   'if [ -n "$FAKE_AGY_STDIN" ]; then printf "%s" "$line" > "$FAKE_AGY_STDIN"; fi',
-  'echo \'{"event":"result","result":{"status":"SUCCESS","response":"AGY-FAKE-OK","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\'',
+  'if [ -n "$FAKE_AGY_CWD" ]; then pwd -P > "$FAKE_AGY_CWD"; fi',
+  // The real agy (1.3.5) names the conversation it persists on `init` and again on `result` (29475). The id here is
+  // format-valid and reserved for this test: nothing of that name exists under any agy home.
+  'echo \'{"event":"init","conversation_id":"00000000-0000-4000-8000-000000029475","init":{"model":"gemini-4-argon-high"}}\'',
+  'echo \'{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000029475","status":"SUCCESS","response":"AGY-FAKE-OK","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\'',
   "exit 0",
 ].join("\n")
 
@@ -129,6 +145,7 @@ afterEach(() => {
   delete process.env.FAKE_CODEX_ARGV
   delete process.env.FAKE_AGY_ARGV
   delete process.env.FAKE_AGY_STDIN
+  delete process.env.FAKE_AGY_CWD
   resetSubscriptionCliProbe()
   safeRemoveSync(fakeDir, { within: tmpdir(), allowMissing: true })
 })
@@ -320,6 +337,8 @@ describe("dispatch", () => {
     writeBin("agy", OK_AGY)
     resetSubscriptionCliProbe()
 
+    const cwdFile = join(fakeDir, "agy-cwd.txt")
+    process.env.FAKE_AGY_CWD = cwdFile
     const response = await querySubscriptionCli(modelOf("gemini-2.5-pro"), { question: "hello" })
     expect(response.error).toBeUndefined()
     expect(response.content).toBe("AGY-FAKE-OK")
@@ -328,7 +347,15 @@ describe("dispatch", () => {
       route: "subscription-cli",
       cli: "agy",
       model: "gemini-4-argon-high",
+      // 29475: the one-shot names the conversation agy persisted and what became of it. The reserved id exists
+      // under no agy home, so the only honest answer here is `absent`.
+      oneShot: { conversationId: "00000000-0000-4000-8000-000000029475", cleanup: "absent" },
     })
+    // 29475: the run's cwd is the one-shot's own scratch directory (agy records its cwd as the conversation's
+    // workspace), never the caller's checkout — and that directory is gone after the run.
+    const cwd = readFileSync(cwdFile, "utf8").trim()
+    expect(cwd.startsWith(join(realpathSync(tmpdir()), "llm-agy-")), cwd).toBe(true)
+    expect(existsSync(cwd), "the scratch cwd is removed after the run").toBe(false)
     const argv = readFileSync(argvFile, "utf8")
     expect(argv).toContain("--model")
     expect(argv).toContain("gemini-4-argon-high")
@@ -492,6 +519,50 @@ describe("queryModel wiring", () => {
       expect(response.error).toContain("no declared model for OpenAI SKU gpt-4o")
     } finally {
       errSpy.mockRestore()
+    }
+  })
+})
+
+describe("29475: an agy one-shot keeps no conversation", () => {
+  // agy persists every print-mode run under its home: brain/<id>/.system_generated/logs/transcript.jsonl (which
+  // `ag transcript list` catalogs and recall indexes as a session) and conversations/<id>.db. agy 1.3.5 has no flag
+  // to skip or mark that, so the caller removes what it created and says so by name.
+  const ID = "c7ad3161-61e2-46bf-b24f-31ab84967b56"
+
+  it("names the two artifacts under the home and refuses a non-UUID id (nothing else is ever removed)", () => {
+    expect(agyConversationPaths("/home/x/.gemini/antigravity-cli", ID)).toEqual({
+      brain: `/home/x/.gemini/antigravity-cli/brain/${ID}`,
+      conversation: `/home/x/.gemini/antigravity-cli/conversations/${ID}.db`,
+    })
+    expect(() => agyConversationPaths("/home/x/.gemini/antigravity-cli", "../brain")).toThrow(/not a UUID/)
+    expect(() => agyConversationPaths("/home/x/.gemini/antigravity-cli", "")).toThrow(/not a UUID/)
+  })
+
+  it("removes the brain directory and the conversation db of the id agy named, and only those", () => {
+    const home = mkdtempSync(join(tmpdir(), "llm-agy-home-"))
+    const other = "0ba45abc-f907-4c97-8b6c-c0698fb2d8a3"
+    for (const id of [ID, other]) {
+      mkdirSync(join(home, "brain", id, ".system_generated", "logs"), { recursive: true })
+      writeFileSync(join(home, "brain", id, ".system_generated", "logs", "transcript.jsonl"), "{}\n")
+      mkdirSync(join(home, "conversations"), { recursive: true })
+      writeFileSync(join(home, "conversations", `${id}.db`), "")
+    }
+    writeFileSync(join(home, "history.jsonl"), "")
+    try {
+      expect(removeAgyConversation(home, ID)).toBe("removed")
+      expect(existsSync(join(home, "brain", ID))).toBe(false)
+      expect(existsSync(join(home, "conversations", `${ID}.db`))).toBe(false)
+      const otherTranscript = join(home, "brain", other, ".system_generated", "logs", "transcript.jsonl")
+      expect(existsSync(otherTranscript), "another conversation is untouched").toBe(true)
+      expect(existsSync(join(home, "conversations", `${other}.db`))).toBe(true)
+      expect(existsSync(join(home, "history.jsonl")), "the interactive history is untouched").toBe(true)
+      expect(removeAgyConversation(home, ID), "a second removal finds nothing").toBe("absent")
+      expect(removeAgyConversation(home, undefined), "a stream that named no conversation is said").toBe(
+        "no-conversation-id",
+      )
+      expect(removeAgyConversation(home, "../../etc")).toMatch(/^failed: agy conversation id is not a UUID/)
+    } finally {
+      safeRemoveSync(home, { within: tmpdir(), allowMissing: true })
     }
   })
 })
