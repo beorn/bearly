@@ -1,21 +1,15 @@
----
-name: fresh
-effort: max
-description: "When stuck on a specific problem, stop coding, gather context, and ask /deep or /pro for a fresh perspective."
-# prettier-ignore
-triggers: ["/fresh", "stuck", "fresh perspective", "step back", "rethink", "going in circles", "each fix breaks something", "tried everything"]
-argument-hint: [<topic>]
-benefits-from: [recall, tent, gbrain]
----
+Read when `/big unstuck` selects the unstuck branch. Start the user-facing answer with `Branch: unstuck`.
 
 # /fresh — Fresh Perspective on a Stuck Problem
 
+The former `/fresh` command is now the `/big unstuck` branch. Keep this research-packet output distinct from `/big`'s reframe output.
+
 **This is a meta-protocol, not an LLM tool.** It calls `/deep` (or `/pro`) internally — its value is the structured "stop, gather, frame the question" workflow, not the model call itself.
 
-**When to use /fresh vs /big vs /ask vs /pro vs /deep:**
+**When to use `/big unstuck` vs bare `/big` vs `/ask` vs `/pro` vs `/deep`:**
 
-- `/fresh` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
-- `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. **`/big` subsumes `/fresh`** — if you need both, use `/big`.
+- `/big unstuck` — _meta-protocol._ You're stuck on a **specific problem**. Each fix breaks something else. Structured protocol: gather context → reflect → call /deep.
+- Bare `/big` — _meta-protocol._ The problem feels **deeper than a bug** — the fix feels like a patch, or the same area keeps breaking. 10-20 hypotheses, 2 rounds, reframe. If you need both, start with the reframe branch and then run `/big unstuck` for the remaining implementation question.
 - `/ask` — Direct: single-model quick question (cheap tier).
 - `/pro "question"` — Direct: multi-leg dispatch + judge for hard problems. Use its documented cost controls when a smaller review is enough.
 - `/deep` — Direct: web-search research with citations (moderate tier, 2-15 min).
@@ -24,7 +18,7 @@ Use when you've been iterating on a problem and each fix breaks something else. 
 
 ## Resolver
 
-Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+Follow [[../../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
 
 ### Always Read
 
@@ -45,6 +39,8 @@ Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep ro
 **Before touching any code**, write a self-assessment for the user:
 
 ```
+Branch: unstuck
+
 ## Fresh Perspective: [topic]
 
 **Goal**: [What I'm trying to achieve — user-facing, 1-2 sentences]
@@ -83,7 +79,7 @@ need to understand the system, not just the code you think is broken.
 | Related code (callers/callees)               | Full files or large sections                 | Required     |
 | Passing tests your changes fix               | Shows what WORKS, constrains solutions       | Recommended  |
 | Architecture docs / CLAUDE.md                | System overview the researcher can reference | Recommended  |
-| Session history                              | `bun recall "<topic>"` — summarize findings  | If available |
+| Session history                              | `@in -- bun recall "<topic>"` — summarize findings  | If available |
 
 **Context budget**: 20-50KB is the sweet spot. Deep research handles large contexts well.
 Don't trim code to save space — trim prose instead. The researcher needs to see how
@@ -196,9 +192,9 @@ cat path/to/your/render-phase.ts >> /tmp/fresh-context.md
 
 ```bash
 # Fire-and-forget — exits in ~5s after printing response ID
-bun llm --deep -y --no-recover --context-file /tmp/fresh-context.md "problem description"
+@in -- bun llm --deep -y --no-recover --context-file /tmp/fresh-context.md "problem description"
 # → Response ID: resp_...
-# Recover later (15-30 min): bun llm recover resp_...
+# Recover later (15-30 min): @in -- bun llm recover resp_...
 ```
 
 **IMPORTANT**: Always use `--no-recover` to avoid getting stale recovered responses from prior
@@ -206,7 +202,7 @@ unrelated deep research calls. Always use `--context-file` (not `--context "$(ca
 context includes source code — shell quoting breaks on backticks and `$(...)` in code.
 
 The command exits immediately after printing the response ID. Deep research runs server-side
-at OpenAI — recover the result later with `bun llm recover <id>`. See `/deep` for details.
+at OpenAI — recover the result later with `@in -- bun llm recover <id>`. See `/deep` for details.
 
 ### Phase 5: Present and Decide
 
@@ -214,7 +210,7 @@ Follow `/deep` presentation protocol (comprehensive ~40 line report). Then:
 
 1. **Key insight**: What did the researcher identify that you missed?
 2. **Concrete plan**: Specific changes based on the advice
-3. **Ask user**: "Implement this approach, or discuss further?"
+3. **Act within authority**: Continue the authorized reversible work from the concrete plan. Ask the user only when a real approval boundary or missing outcome-changing information requires it.
 
 If a bead is active, update its notes with the findings.
 
@@ -231,14 +227,14 @@ If a bead is active, update its notes with the findings.
 | Ask confirmation questions               | "Is my X correct?" anchors on your model          |
 | Describe code instead of including it    | "It uses a pipeline" vs showing the pipeline code |
 | Lead with your diagnosis                 | Anchors the researcher — lead with symptoms       |
-| Rush to implement                        | Present advice first, get user buy-in             |
+| Rush past the finding                    | Present the advice and name the action before implementing it |
 | Forget `--no-recover`                    | Stale recovered responses waste a moderate spend  |
 
 ## Wave-loop fan-out
 
-Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a stuck problem — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
+Phase 2 context-gathering is [JIT bead-context completion](../../tent/SKILL.md#jit-bead-context-completion) applied to a stuck problem — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
 
-/fresh's domain legs — each spawned at task tier `routine`, in ONE message:
+The unstuck branch's domain legs — each spawned at task tier `routine`, in ONE message:
 
 - One `routine` leg per related-bug area (recall + km bd query for prior beads in this scope)
 - One `routine` leg per cited file: recent commits + comment headers + call sites
@@ -248,4 +244,4 @@ Phase 2 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-
 
 State the leg count before you spawn — width must be bounded — then assemble the returns in-seat into a complete context bundle to hand to /deep or /pro.
 
-Cost tiers in this skill (cheap ≈ cents · moderate ≈ low single dollars · expensive ≈ $5+ class) are qualitative. Live per-model rates come from the canonical /llm pricing substrate (LiteLLM map; refresh with `bun llm update-pricing`); each `bun llm` run prints its actual cost.
+Cost tiers in this skill (cheap ≈ cents · moderate ≈ low single dollars · expensive ≈ $5+ class) are qualitative. Live per-model rates come from the canonical /llm pricing substrate (LiteLLM map; refresh with `@in -- bun llm update-pricing`); each `@in -- bun llm` run prints its actual cost.

@@ -1,9 +1,10 @@
 ---
 name: big
 effort: max
-description: "Reframe recurring or wrong-shaped problems into a design where the bug cannot happen."
-triggers: ["/big", "think bigger", "reframe", "fix feels wrong", "same area keeps breaking"]
-argument-hint: [problem or area]
+description: "Route structural reframing, decision option analysis, and stuck-work research through distinct branches."
+# prettier-ignore
+triggers: ["/big", "think bigger", "reframe", "fix feels wrong", "same area keeps breaking", "complete staff work", "options", "analysis", "decision", "tradeoffs", "compare", "which approach", "how should we", "stuck", "fresh perspective", "step back", "rethink", "going in circles", "each fix breaks something", "tried everything"]
+argument-hint: "[decide <question> | unstuck <problem> | <problem to reframe>]"
 benefits-from: [recall, tent, gbrain]
 escalate-to:
   { arch: "reframing reveals missing abstraction or layer", silvery: "root cause is in the rendering pipeline design" }
@@ -11,13 +12,20 @@ escalate-to:
 
 # /big - Reframe Before Fixing
 
-`/big` is for wrong-shaped fixes, recurring bugs, and patches that feel like they preserve the failure mode. It is not an LLM tool and not "think longer"; it is a compact evidence loop: frame, generate, validate, synthesize, act.
+`/big` has three distinct branches: structural reframing, decision option analysis, and stuck-work research. It is not an LLM tool. Choose the branch before following a protocol.
+
+## Branch selection
+
+1. Explicit `/big decide <question>` reads [the decision protocol](references/decision.md) and returns its option matrix. Explicit `/big unstuck <problem>` reads [the unstuck protocol](references/unstuck.md) and returns its research packet. Bare `/big` runs the reframe loop below.
+2. Without an explicit command, select `decide` for unambiguous option-analysis intent and `unstuck` for unambiguous stuck-implementation intent. If both fit, ask which output the user needs before running either. Otherwise use the reframe loop.
+3. Start the user-facing answer with exactly `Branch: decide`, `Branch: unstuck`, or `Branch: reframe`, so the chosen protocol is visible.
 
 ## Resolver
 
 ### Always Read
 
-- [[#Operating Loop]] - the required reframe loop.
+- [[#Branch selection]] - select one output protocol before work.
+- [[#Operating Loop]] - the required reframe loop for the reframe branch.
 - [[#Final Shape]] - the required synthesis format.
 - [[../agent-system/references/resolver|resolver quality plateau]] - use when this reframe changes routing or ownership.
 
@@ -25,13 +33,15 @@ escalate-to:
 
 - [[#Fan Out]] - use when many hypotheses can be checked independently.
 - [[#External Review]] - use before trusting your own frame.
-- [[#Big Vs Fresh]] - use when choosing between design reframe and implementation unsticking.
+- [Decision protocol](references/decision.md) - read for the `decide` branch.
+- [Unstuck protocol](references/unstuck.md) - read for the `unstuck` branch.
+- [[#Reframe Vs Unstuck]] - use when choosing between design reframe and implementation unsticking.
 
 ## Problem
 
 $ARGUMENTS
 
-If no arguments are supplied, infer the problem from the recent conversation: what kept breaking, what felt fragile, or what the user just rejected. Do not ask what to think about.
+For the reframe branch, if no arguments are supplied, infer the problem from the recent conversation: what kept breaking, what felt fragile, or what the user just rejected. Do not ask what to think about.
 
 ## Principles
 
@@ -50,7 +60,7 @@ Write 1-2 sentences for each:
 1. User words: what they literally saw or said.
 2. System invariant: what state transition or guarantee failed.
 3. Architecture: which layer boundary leaked, crossed, or was missing.
-4. History: run `bun recall "<keywords>"`; summarize recurrence and prior attempts.
+4. History: run `@in -- bun recall "<keywords>"`; summarize recurrence and prior attempts.
 5. Counterfactual: in a well-designed system, why would this problem be impossible?
 
 ### 2. Generate Round 1
@@ -72,7 +82,7 @@ Get at least one outside view unless the user explicitly said not to or the tool
 - `/pro` - design review with multiple legs and a judge.
 - `/ask` - quick prior art or second opinion.
 - `/deep` - web/prior-art research with citations.
-- `/csw` - internal option matrix when no external call is warranted.
+- `/big decide` - internal option matrix when no external call is warranted.
 
 For silvery/km/ag topics, include `/hh/docs/silvery-positioning-brief.md` in `/pro`, `/ask`, or `/deep` context.
 
@@ -105,6 +115,8 @@ Use the L0-L5 rubric from [[../../../hub/quality-rubric]] rather than percentage
 Return this:
 
 ```markdown
+Branch: reframe
+
 ### Reframing: <problem>
 
 **The real problem is**: <one sentence>
@@ -135,12 +147,12 @@ Hypothesis: <H>. Validate against the codebase by grepping <paths> and reading <
 
 Integrate wave 1 into a ranking; send wave 2 only for the top 2-3 questions.
 
-## Big Vs Fresh
+## Reframe Vs Unstuck
 
-- `/big`: the frame or design is suspect; output is a reframe plus DO/ASK actions.
-- `/fresh`: implementation is stuck; output is an external second opinion plus a concrete plan.
+- Bare `/big`: the frame or design is suspect; output is a reframe plus DO/ASK actions.
+- `/big unstuck`: implementation is stuck; output is an external second opinion plus a concrete plan.
 
-Use `/big` when the problem should not need to exist. Use `/fresh` when the problem is that you are stuck implementing.
+Use the reframe branch when the problem should not need to exist. Use the unstuck branch when the problem is that you are stuck implementing.
 
 ## Anti-Patterns
 
@@ -153,4 +165,4 @@ Use `/big` when the problem should not need to exist. Use `/fresh` when the prob
 
 ## References
 
-[[../why/SKILL|/why]], [[../trouble/SKILL|/trouble]], [[../fresh/SKILL|/fresh]], [[../pro/SKILL|/pro]], [[../ask/SKILL|/ask]], [[../deep/SKILL|/deep]], [[../csw/SKILL|/csw]], [[../../../hub/quality-rubric]].
+[[../why/SKILL|/why]], [[../trouble/SKILL|/trouble]], [decision protocol](references/decision.md), [unstuck protocol](references/unstuck.md), [[../pro/SKILL|/pro]], [[../ask/SKILL|/ask]], [[../deep/SKILL|/deep]], [[../../../hub/quality-rubric]].

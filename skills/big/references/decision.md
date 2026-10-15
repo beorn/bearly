@@ -1,19 +1,14 @@
----
-name: csw
-effort: max
-description: "Analyze a decision end-to-end: gather context, compare options, score tradeoffs, and present one clear recommendation."
-# prettier-ignore
-triggers: ["/csw", "csw", "complete staff work", "options", "analysis", "decision", "tradeoffs", "compare", "which approach", "how should we"]
-argument-hint: <topic or question to analyze>
----
+Read when `/big decide` selects the decision branch. Start the user-facing answer with `Branch: decide`.
 
 # /csw — Complete Staff Work
+
+The former `/csw` command is now the `/big decide` branch. Keep this option-analysis output distinct from `/big`'s reframe output.
 
 A military/executive decision protocol: don't just describe the problem — present it with ALL context, ALL options analyzed, and a clear recommendation. The decision-maker says "approved" or picks an option. Nothing left to research.
 
 ## Resolver
 
-Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
+Follow [[../../agent-system/references/resolver|resolver quality plateau]]: keep routing MECE, concrete, and boundary-aware.
 
 ### Always Read
 
@@ -35,7 +30,7 @@ Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep ro
 - Product/process decisions with multiple viable paths
 - Any question where "it depends" isn't good enough — enumerate what it depends ON
 
-**Not for**: Quick questions (just answer), debugging (use /tests debug), getting unstuck (use /fresh).
+**Not for**: Quick questions (just answer), debugging (use /tests debug), getting unstuck (use `/big unstuck`).
 
 ## Process
 
@@ -48,8 +43,8 @@ Before forming ANY opinion, understand the full picture:
 # Grep for patterns, types, usages, prior art
 
 # Search session history for prior discussions
-bun recall "<topic keywords>"
-bun recall "<related terms>" --raw
+@in -- bun recall "<topic keywords>"
+@in -- bun recall "<related terms>" --raw
 
 # Check related beads
 km bd query "<topic>"
@@ -130,6 +125,8 @@ Update the analysis with any corrections. If the recommendation changes, that's 
 Present the analysis **directly in the conversation** — do not write it to a file. Only persist to a bead if the user explicitly asks. The decision-maker reads it inline and says "approved" or picks an option.
 
 ````markdown
+Branch: decide
+
 ## CSW: <topic>
 
 ### Context
@@ -190,7 +187,7 @@ Present the analysis **directly in the conversation** — do not write it to a f
 
 ## Wave-loop fan-out
 
-Phase 1 context-gathering is [JIT bead-context completion](../tent/SKILL.md#jit-bead-context-completion) applied to a decision instead of a bead — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
+Phase 1 context-gathering is [JIT bead-context completion](../../tent/SKILL.md#jit-bead-context-completion) applied to a decision instead of a bead — that canonical section owns the mechanics: one narrow question per leg, explicit task tier `routine`, synthesis in-seat, and stated width before spawning.
 
 CSW's domain legs — each spawned at task tier `routine`, in ONE message:
 
@@ -198,7 +195,7 @@ CSW's domain legs — each spawned at task tier `routine`, in ONE message:
 - One `routine` leg per constraint named in the prompt (verify constraint still holds)
 - One `routine` leg for prior-art: similar decisions in this repo or industry
 - One `routine` leg for blast-radius: who/what depends on the area this decision touches
-- One `routine` leg for "what did past sessions decide on adjacent questions?" (`bun recall`)
+- One `routine` leg for "what did past sessions decide on adjacent questions?" (`@in -- bun recall`)
 
 State the leg count before you spawn — width must be bounded, not "no hard cap" — then synthesize the comparative evidence in-seat. Returns: trade-offs per option the user can call.
 ```
