@@ -170,7 +170,7 @@ Order: types/interfaces first, then core logic, then tests, then callers.]
 
 ### Phase 4: Execute
 
-Build a context file, then launch in background:
+Build a context file:
 
 ```bash
 # Build context file — preamble first, then append source files
@@ -190,23 +190,13 @@ cat path/to/your/render-phase.ts >> /tmp/fresh-context.md
 # ... etc — include ALL relevant files
 ```
 
-```bash
-# Fire-and-forget — exits in ~5s after printing response ID
-@in -- bun llm --deep -y --no-recover --context-file /tmp/fresh-context.md "problem description"
-# → Response ID: resp_...
-# Recover later (15-30 min): @in -- bun llm recover resp_...
-```
-
-**IMPORTANT**: Always use `--no-recover` to avoid getting stale recovered responses from prior
-unrelated deep research calls. Always use `--context-file` (not `--context "$(cat ...)"`) when
-context includes source code — shell quoting breaks on backticks and `$(...)` in code.
-
-The command exits immediately after printing the response ID. Deep research runs server-side
-at OpenAI — recover the result later with `@in -- bun llm recover <id>`. See `/deep` for details.
+Follow [/deep](../../deep/SKILL.md) to launch with `/tmp/fresh-context.md`
+and your problem description, capture the response ID and recover the server-side result.
+Its context-file, fresh-call and normal-launch requirements apply.
 
 ### Phase 5: Present and Decide
 
-Follow `/deep` presentation protocol (comprehensive ~40 line report). Then:
+Follow [/deep’s presentation protocol](../../deep/SKILL.md#presenting-results). Then:
 
 1. **Key insight**: What did the researcher identify that you missed?
 2. **Concrete plan**: Specific changes based on the advice
@@ -244,4 +234,4 @@ The unstuck branch's domain legs — each spawned at task tier `routine`, in ONE
 
 State the leg count before you spawn — width must be bounded — then assemble the returns in-seat into a complete context bundle to hand to /deep or /pro.
 
-Cost tiers in this skill (cheap ≈ cents · moderate ≈ low single dollars · expensive ≈ $5+ class) are qualitative. Live per-model rates come from the canonical /llm pricing substrate (LiteLLM map; refresh with `@in -- bun llm update-pricing`); each `@in -- bun llm` run prints its actual cost.
+Follow [/deep](../../deep/SKILL.md) for cost tiers and live pricing; each run reports its actual cost.
