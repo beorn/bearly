@@ -515,7 +515,23 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
   }
 
   const unlinkLeaf = isSymlinkLeaf
-  const targetReal = resolveContainedPathForCaller(raw, withinRaw, { followLeaf: !unlinkLeaf }, caller)
+  let targetReal: ContainedPath
+  try {
+    targetReal = resolveContainedPathForCaller(raw, withinRaw, { followLeaf: !unlinkLeaf }, caller)
+  } catch (error) {
+    // A sibling cleanup can remove the physical anchor between its lstat and
+    // realpath. Only a fresh missing leaf is expected absence: a dangling
+    // symlink still has an entry, and permission/containment failures stay loud.
+    if (
+      options.allowMissing === true &&
+      error instanceof Error &&
+      (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT" &&
+      lstatOrNull(absoluteRaw) === null
+    ) {
+      return null
+    }
+    throw error
+  }
   return { path: targetReal, kind: unlinkLeaf ? "symlink-leaf" : "recursive" }
 }
 

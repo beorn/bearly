@@ -23,7 +23,7 @@ import { afterEach, describe, expect, test, vi } from "vitest"
 
 // Root setup imports Removely before this suite; reload it so `rm` binds to the mock below.
 vi.hoisted(() => vi.resetModules())
-const vanish = vi.hoisted(() => ({ pending: 0 }))
+const vanish = vi.hoisted(() => ({ pending: 0, target: "", probes: 0, error: "", dangling: false }))
 
 function rootEnoent(path: string): NodeJS.ErrnoException {
   return Object.assign(new Error(`ENOENT: no such file or directory, rm '${path}'`), {
@@ -37,6 +37,18 @@ vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>()
   return {
     ...real,
+    lstatSync: (...args: Parameters<typeof real.lstatSync>) => {
+      const result = real.lstatSync(...args)
+      if (args[0] === vanish.target && ++vanish.probes === 2) {
+        // Initial presence was checked; this is the containment anchor's probe.
+        const target = vanish.target
+        vanish.target = ""
+        if (vanish.error !== "") throw Object.assign(new Error(vanish.error), { code: vanish.error })
+        safeRemoveSync(target, { within: base })
+        if (vanish.dangling) real.symlinkSync("missing-target", target, "dir")
+      }
+      return result
+    },
     rmSync: (path: string, options?: import("node:fs").RmOptions) => {
       if (vanish.pending > 0) {
         vanish.pending--
@@ -76,6 +88,10 @@ function fixture(): string {
 
 afterEach(() => {
   vanish.pending = 0
+  vanish.target = ""
+  vanish.probes = 0
+  vanish.error = ""
+  vanish.dangling = false
   if (root !== "" && existsSync(root)) safeRemoveSync(root, { within: base })
   root = ""
 })
@@ -98,4 +114,54 @@ describe("ENOENT on a root that still exists", () => {
     else await expect(safeRemove(target, options)).rejects.toThrow(/still exists after removal.*ENOENT/su)
     expect(existsSync(target)).toBe(true)
   })
+})
+
+describe("absence during containment validation", () => {
+  test.each([
+    { synchronous: true, allowMissing: true },
+    { synchronous: false, allowMissing: true },
+    { synchronous: true, allowMissing: false },
+    { synchronous: false, allowMissing: false },
+  ])("sync=$synchronous, allowMissing=$allowMissing", async ({ synchronous, allowMissing }) => {
+    const target = fixture()
+    vanish.target = target
+    // Unlike the retries getter in the after-validation suite, the second
+    // lstat removes the anchor BEFORE realpath can resolve it (#28672).
+    if (synchronous) {
+      if (allowMissing) expect(() => safeRemoveSync(target, { within: base, allowMissing })).not.toThrow()
+      else expect(() => safeRemoveSync(target, { within: base, allowMissing })).toThrow(/containment/u)
+    } else if (allowMissing) {
+      await expect(safeRemove(target, { within: base, allowMissing })).resolves.toBeUndefined()
+    } else {
+      await expect(safeRemove(target, { within: base, allowMissing })).rejects.toThrow(/containment/u)
+    }
+    expect(vanish.probes).toBe(2)
+    expect(existsSync(target)).toBe(false)
+  })
+
+  test.each([true, false])("permission errors stay loud (sync=%s)", async (synchronous) => {
+    const target = fixture()
+    vanish.target = target
+    vanish.error = "EACCES"
+    if (synchronous) expect(() => safeRemoveSync(target, { within: base, allowMissing: true })).toThrow(/EACCES/u)
+    else await expect(safeRemove(target, { within: base, allowMissing: true })).rejects.toThrow(/EACCES/u)
+    expect(vanish.probes).toBe(2)
+    expect(existsSync(target)).toBe(true)
+  })
+})
+
+test.each([true, false])("a raced-in dangling symlink stays loud (sync=%s)", async (synchronous) => {
+  const target = fixture()
+  vanish.target = target
+  vanish.dangling = true
+  try {
+    if (synchronous) expect(() => safeRemoveSync(target, { within: base, allowMissing: true })).toThrow(/containment/u)
+    else await expect(safeRemove(target, { within: base, allowMissing: true })).rejects.toThrow(/containment/u)
+    expect(vanish.probes).toBe(2)
+    // existsSync follows links, so the fresh entry check must use lstat.
+    const entry = await (await import("node:fs/promises")).lstat(target)
+    expect(entry.isSymbolicLink()).toBe(true)
+  } finally {
+    safeRemoveSync(target, { within: base, symlinkLeaf: "unlink", allowMissing: true })
+  }
 })
