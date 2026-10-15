@@ -910,8 +910,9 @@ function rowHolders(row: MutableRow, root: string, aliasCache?: ArgvAliasCache, 
   }
   for (const element of (row.sources.argv?.value as string[] | undefined) ?? []) {
     try {
-      if (argvElementMatchesRoot(element, root, aliasCache, anchoredRoot))
+      if (argvElementMatchesRoot(element, root, aliasCache, anchoredRoot)) {
         holders.push({ pid, source: "argv", target: element })
+      }
     } catch (error) {
       if (!(error instanceof ArgvAliasUnreadableError)) throw error
       unreadable.push({ source: "argv", resource: element, reason: "denied" })

@@ -577,6 +577,9 @@ describe("inspectPathHolderCensus", () => {
         chmodSync(locked, 0o000)
         try {
           const census = await censusInProc(target, probe.procRoot, { scope: "same-uid", allowMissing: true })
+          if (census.coverage.platform !== "linux") {
+            throw new Error("the explicit proc fixture must report Linux coverage")
+          }
           expect(census.coverage.complete).toBe(false)
           expect(census.coverage.unreadable).toContainEqual(
             expect.objectContaining({
