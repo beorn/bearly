@@ -113,7 +113,18 @@ const OK_AGY = [
 
 const FAIL_AGY = [
   "IFS= read -r line",
+  // 29475: a failed run still names a conversation; this one is not a UUID, so its removal is refused before any
+  // filesystem target — the refusal must reach the caller on the error envelope.
+  'echo \'{"event":"init","conversation_id":"not-a-uuid","init":{"model":"gemini-4-argon-high"}}\'',
   'echo \'{"event":"result","result":{"status":"ERROR","response":"","error":"not signed in to Antigravity"}}\'',
+  "exit 0",
+].join("\n")
+
+// 29475: a run that answers nothing is an error, and its one-shot still had a conversation to remove.
+const EMPTY_AGY = [
+  "IFS= read -r line",
+  'echo \'{"event":"init","conversation_id":"00000000-0000-4000-8000-000000029475","init":{"model":"gemini-4-argon-high"}}\'',
+  'echo \'{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000029475","status":"SUCCESS","response":"   "}}\'',
   "exit 0",
 ].join("\n")
 
@@ -393,6 +404,30 @@ describe("dispatch", () => {
     expect(response.error).toContain("agy CLI")
     expect(response.error).toContain("not signed in to Antigravity")
     expect(response.error).toContain("status ERROR")
+    // 29475: the one-shot's cleanup outcome is carried on the error envelope too, so a refused or failed removal
+    // after a failed run is never silently lost.
+    expect(response.servedBy).toEqual({
+      route: "subscription-cli",
+      cli: "agy",
+      model: "gemini-4-argon-high",
+      oneShot: {
+        conversationId: "not-a-uuid",
+        cleanup: expect.stringMatching(/^failed: agy conversation id is not a UUID/),
+      },
+    })
+  })
+
+  it("an empty agy answer is an error that still carries the one-shot's cleanup outcome", async () => {
+    writeBin("agy", EMPTY_AGY)
+    resetSubscriptionCliProbe()
+
+    const response = await querySubscriptionCli(modelOf("gemini-2.5-pro"), { question: "hello" })
+    expect(response.content).toBe("")
+    expect(response.error).toContain("returned an empty answer")
+    expect(response.servedBy?.oneShot).toEqual({
+      conversationId: "00000000-0000-4000-8000-000000029475",
+      cleanup: "absent",
+    })
   })
 
   it("refuses an OpenAI SKU with no declared codex model, by name, before spawn", async () => {

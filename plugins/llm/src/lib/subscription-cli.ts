@@ -572,8 +572,15 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
     // one-shot has no business recording the caller's checkout as one.
     const run = await runCli(SPECS.agy.bin, args, input, options.abortSignal, workdir)
     const parsed = parseAgyStreamJson(run.stdout)
-    // The one-shot keeps no conversation: remove what agy persisted for it, answer or error alike (29475).
+    // The one-shot keeps no conversation: remove what agy persisted for it, answer or error alike (29475). The
+    // outcome is built here, before any return, so a failed run or an empty answer still reports it.
     const cleanup = removeAgyConversation(defaultAgyHome(), parsed.conversationId)
+    const servedBy: ServedBy = {
+      route: "subscription-cli",
+      cli: "agy",
+      model: AGY_SUBSCRIPTION_MODEL,
+      oneShot: { conversationId: parsed.conversationId ?? null, cleanup },
+    }
     const failedStatus = parsed.status !== undefined && parsed.status !== "SUCCESS"
     if (run.aborted || run.code !== 0 || failedStatus) {
       const detail = parsed.error ?? run.stderr.trim().split("\n").slice(-3).join(" | ")
@@ -585,6 +592,7 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
         content: "",
         durationMs: Date.now() - startedAt,
         error: `agy CLI (${SPECS.agy.subscription}) failed for ${model.displayName}${exit}: ${detail || "no stderr"}`,
+        servedBy,
       }
     }
     const content = parsed.text.trim()
@@ -594,13 +602,8 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
         content: "",
         durationMs: Date.now() - startedAt,
         error: `agy CLI (${SPECS.agy.subscription}) returned an empty answer for ${model.displayName}`,
+        servedBy,
       }
-    }
-    const servedBy: ServedBy = {
-      route: "subscription-cli",
-      cli: "agy",
-      model: AGY_SUBSCRIPTION_MODEL,
-      oneShot: { conversationId: parsed.conversationId ?? null, cleanup },
     }
     return { model, content, usage: parsed.usage, durationMs: Date.now() - startedAt, servedBy }
   } finally {
