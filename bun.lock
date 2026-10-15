@@ -119,7 +119,7 @@
     },
     "packages/pacing": {
       "name": "@bearly/pacing",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@types/bun": "1.4.3",
         "tsdown": "0.22.13",

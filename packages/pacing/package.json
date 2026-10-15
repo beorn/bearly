@@ -1,9 +1,10 @@
 {
   "name": "@bearly/pacing",
-  "version": "0.2.0",
-  "description": "Pure pacing policy: full, additive and decorrelated jitter, and a readiness gate",
+  "version": "0.3.0",
+  "description": "Pure duration parsing and pacing policy: jitter and readiness",
   "keywords": [
     "backoff",
+    "duration",
     "jitter",
     "readiness",
     "retry",
