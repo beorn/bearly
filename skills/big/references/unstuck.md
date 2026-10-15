@@ -68,18 +68,18 @@ The researcher has no IDE, no codebase access, no ability to browse around. Ever
 need to reason about must be in the context file. Include **all the background code** they'd
 need to understand the system, not just the code you think is broken.
 
-| Context                                      | How                                          | Priority     |
-| -------------------------------------------- | -------------------------------------------- | ------------ |
-| Full source files (current)                  | Append entire files to context               | **Required** |
-| Full source files (original, before changes) | `git show <commit>:<path>`                   | **Required** |
-| Git diff of changes                          | `git diff <base-commit> HEAD -- <files>`     | Required     |
-| Failing test code                            | Full test functions, not names               | Required     |
-| Exact error output                           | Copy-paste from test runner                  | Required     |
-| Type definitions / interfaces                | Full type files the code depends on          | Required     |
-| Related code (callers/callees)               | Full files or large sections                 | Required     |
-| Passing tests your changes fix               | Shows what WORKS, constrains solutions       | Recommended  |
-| Architecture docs / CLAUDE.md                | System overview the researcher can reference | Recommended  |
-| Session history                              | `@in -- bun recall "<topic>"` — summarize findings  | If available |
+| Context                                      | How                                                | Priority     |
+| -------------------------------------------- | -------------------------------------------------- | ------------ |
+| Full source files (current)                  | Append entire files to context                     | **Required** |
+| Full source files (original, before changes) | `git show <commit>:<path>`                         | **Required** |
+| Git diff of changes                          | `git diff <base-commit> HEAD -- <files>`           | Required     |
+| Failing test code                            | Full test functions, not names                     | Required     |
+| Exact error output                           | Copy-paste from test runner                        | Required     |
+| Type definitions / interfaces                | Full type files the code depends on                | Required     |
+| Related code (callers/callees)               | Full files or large sections                       | Required     |
+| Passing tests your changes fix               | Shows what WORKS, constrains solutions             | Recommended  |
+| Architecture docs / CLAUDE.md                | System overview the researcher can reference       | Recommended  |
+| Session history                              | `@in -- bun recall "<topic>"` — summarize findings | If available |
 
 **Context budget**: 20-50KB is the sweet spot. Deep research handles large contexts well.
 Don't trim code to save space — trim prose instead. The researcher needs to see how
@@ -216,19 +216,19 @@ If a bead is active, update its notes with the findings.
 
 ## Anti-Patterns
 
-| Don't                                    | Why                                               |
-| ---------------------------------------- | ------------------------------------------------- |
-| Skip Phase 1                             | The self-assessment often reveals the answer      |
-| Send code snippets instead of full files | Researcher can't see how functions interact       |
-| Trim "irrelevant" code aggressively      | What YOU think is irrelevant may be the key       |
-| Paraphrase error messages                | Exact messages matter for diagnosis               |
-| Omit type definitions                    | Researcher needs types to understand the code     |
-| Omit failed approaches                   | They constrain the solution space                 |
-| Ask confirmation questions               | "Is my X correct?" anchors on your model          |
-| Describe code instead of including it    | "It uses a pipeline" vs showing the pipeline code |
-| Lead with your diagnosis                 | Anchors the researcher — lead with symptoms       |
+| Don't                                    | Why                                                           |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| Skip Phase 1                             | The self-assessment often reveals the answer                  |
+| Send code snippets instead of full files | Researcher can't see how functions interact                   |
+| Trim "irrelevant" code aggressively      | What YOU think is irrelevant may be the key                   |
+| Paraphrase error messages                | Exact messages matter for diagnosis                           |
+| Omit type definitions                    | Researcher needs types to understand the code                 |
+| Omit failed approaches                   | They constrain the solution space                             |
+| Ask confirmation questions               | "Is my X correct?" anchors on your model                      |
+| Describe code instead of including it    | "It uses a pipeline" vs showing the pipeline code             |
+| Lead with your diagnosis                 | Anchors the researcher — lead with symptoms                   |
 | Rush past the finding                    | Present the advice and name the action before implementing it |
-| Forget `--no-recover`                    | Stale recovered responses waste a moderate spend  |
+| Forget `--no-recover`                    | Stale recovered responses waste a moderate spend              |
 
 ## Wave-loop fan-out
 
