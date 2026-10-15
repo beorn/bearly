@@ -467,12 +467,14 @@ interface AgyResultEvent {
     status?: string
     response?: string
     error?: string
+    denied_actions?: { action: string; display_name?: string }[]
     usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
   }
 }
 
 interface AgyParse {
   text: string
+  deniedActions: string[]
   status?: string
   error?: string
   usage?: ModelResponse["usage"]
@@ -521,6 +523,7 @@ export function removeAgyConversation(home: string, conversationId: string | und
 /** Parse `agy --input-format stream-json --output-format stream-json` NDJSON. */
 function parseAgyStreamJson(ndjson: string): AgyParse {
   let text = ""
+  let deniedActions: string[] = []
   let status: string | undefined
   let error: string | undefined
   let usage: ModelResponse["usage"]
@@ -539,6 +542,9 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
     if (typeof event.result.conversation_id === "string") conversationId = event.result.conversation_id
     status = event.result.status
     text = event.result.response ?? ""
+    deniedActions = (event.result.denied_actions ?? []).map(({ action, display_name }) =>
+      display_name ? `${action} (${display_name})` : action,
+    )
     error = event.result.error
     const u = event.result.usage
     if (u) {
@@ -552,7 +558,7 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
       }
     }
   }
-  return { text, status, error, usage, ...(conversationId === undefined ? {} : { conversationId }) }
+  return { text, deniedActions, status, error, usage, ...(conversationId === undefined ? {} : { conversationId }) }
 }
 
 async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promise<ModelResponse> {
@@ -582,8 +588,11 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
       oneShot: { conversationId: parsed.conversationId ?? null, cleanup },
     }
     const failedStatus = parsed.status !== undefined && parsed.status !== "SUCCESS"
+    // Keep the provider's cause, without turning its permission-grant advice into our remedy.
+    const detail = (parsed.error ?? run.stderr.trim().split("\n").slice(-3).join(" | "))
+      .replace(/(?:Add an allow-rule|Alternatively, re-run with --dangerously-skip-permissions)[\s\S]*$/u, "")
+      .trim()
     if (run.aborted || run.code !== 0 || failedStatus) {
-      const detail = parsed.error ?? run.stderr.trim().split("\n").slice(-3).join(" | ")
       const exit = run.aborted
         ? " (aborted)"
         : ` (exit ${run.code ?? "signal"}${failedStatus ? `, status ${parsed.status}` : ""})`
@@ -597,11 +606,12 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
     }
     const content = parsed.text.trim()
     if (!content) {
+      const denial = parsed.deniedActions.length ? ` (denied: ${parsed.deniedActions.join(", ")})` : ""
       return {
         model,
         content: "",
         durationMs: Date.now() - startedAt,
-        error: `agy CLI (${SPECS.agy.subscription}) returned an empty answer for ${model.displayName}`,
+        error: `agy CLI (${SPECS.agy.subscription}) returned an empty answer for ${model.displayName}${denial}${detail ? `: ${detail}` : ""}`,
         servedBy,
       }
     }

@@ -430,6 +430,52 @@ describe("dispatch", () => {
     })
   })
 
+  it.each([
+    {
+      name: "denial with the CLI diagnostic",
+      denied: true,
+      diagnostic:
+        "jetski: no output produced — command permission was auto-denied. Add an allow-rule under permissions.allow. Alternatively, re-run with --dangerously-skip-permissions.",
+      reason: "command permission was auto-denied",
+    },
+    { name: "denial without stderr", denied: true, diagnostic: "", reason: "RunCommand" },
+    {
+      name: "provider diagnostic without a denial",
+      denied: false,
+      diagnostic: "provider produced no content",
+      reason: "provider produced no content",
+    },
+  ])("an empty agy answer retains $name without bypass advice", async ({ denied, diagnostic, reason }) => {
+    // The native exit-0/SUCCESS denial must survive at the public response boundary, even without stderr.
+    const result = {
+      conversation_id: "00000000-0000-4000-8000-000000029475",
+      status: "SUCCESS",
+      response: "",
+      ...(denied ? { denied_actions: [{ action: "command", display_name: "RunCommand" }] } : {}),
+    }
+    writeBin(
+      "agy",
+      [
+        "IFS= read -r line",
+        `echo '${JSON.stringify({ event: "result", result })}'`,
+        `echo '${diagnostic}' >&2`,
+        "exit 0",
+      ].join("\n"),
+    )
+    resetSubscriptionCliProbe()
+
+    const response = await querySubscriptionCli(modelOf("gemini-2.5-pro"), { question: "hello" })
+    expect(response.content).toBe("")
+    expect(response.error).toContain(reason)
+    if (denied) {
+      expect(response.error).toContain("command")
+      expect(response.error).toContain("RunCommand")
+    }
+    expect(response.error).not.toContain("Add an allow-rule")
+    expect(response.error).not.toContain("--dangerously-skip-permissions")
+    expect(response.servedBy?.oneShot?.cleanup).toBe("absent")
+  })
+
   it("refuses an OpenAI SKU with no declared codex model, by name, before spawn", async () => {
     writeBin("codex", OK_CODEX)
     resetSubscriptionCliProbe()
