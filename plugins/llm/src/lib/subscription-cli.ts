@@ -30,7 +30,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { accessSync, constants, mkdtempSync, readFileSync } from "node:fs"
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { safeRemoveSync } from "removely"
 import { homedir, tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
@@ -283,10 +283,16 @@ interface CliRunResult {
   aborted: boolean
 }
 
-/** Run a CLI to completion, feeding `prompt` on stdin. */
-function runCli(bin: string, args: string[], prompt: string, abortSignal?: AbortSignal): Promise<CliRunResult> {
+/** Run a CLI to completion, feeding `prompt` on stdin; `cwd` is the one-shot's own scratch directory when given. */
+function runCli(
+  bin: string,
+  args: string[],
+  prompt: string,
+  abortSignal?: AbortSignal,
+  cwd?: string,
+): Promise<CliRunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], ...(cwd === undefined ? {} : { cwd }) })
     let stdout = ""
     let stderr = ""
     let aborted = false
@@ -454,7 +460,10 @@ async function queryCodex(model: Model, options: SubscriptionQueryOptions): Prom
 
 interface AgyResultEvent {
   event?: string
+  /** `init` names the conversation agy persists for this run; `result` repeats the id (agy 1.3.5). */
+  conversation_id?: string
   result?: {
+    conversation_id?: string
     status?: string
     response?: string
     error?: string
@@ -467,6 +476,46 @@ interface AgyParse {
   status?: string
   error?: string
   usage?: ModelResponse["usage"]
+  /** The conversation agy persisted for this one-shot, from `init` or `result`; absent when neither named one. */
+  conversationId?: string
+}
+
+/** Where agy persists every print-mode run (29475): the transcript `ag transcript` catalogs, and the conversation store. */
+export function defaultAgyHome(): string {
+  return join(homedir(), ".gemini", "antigravity-cli")
+}
+
+const AGY_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+
+/** The two artifacts a one-shot leaves that outlive it: the brain directory (its transcript) and the conversation db. */
+export function agyConversationPaths(home: string, conversationId: string): { brain: string; conversation: string } {
+  if (!AGY_CONVERSATION_ID.test(conversationId)) {
+    throw new Error(`agy conversation id is not a UUID: ${JSON.stringify(conversationId)}`)
+  }
+  return {
+    brain: join(home, "brain", conversationId),
+    conversation: join(home, "conversations", `${conversationId}.db`),
+  }
+}
+
+export type AgyOneShotCleanup = "removed" | "absent" | "no-conversation-id" | `failed: ${string}`
+
+/**
+ * A one-shot keeps no conversation (29475): agy offers no flag to skip persisting a print-mode run, so the caller
+ * removes the conversation it created. Says what happened by name and never throws past the answer; the result
+ * travels on `servedBy.oneShot` so a leftover is visible per call, not silent.
+ */
+export function removeAgyConversation(home: string, conversationId: string | undefined): AgyOneShotCleanup {
+  if (conversationId === undefined) return "no-conversation-id"
+  try {
+    const paths = agyConversationPaths(home, conversationId)
+    const present = [paths.brain, paths.conversation].filter((path) => existsSync(path))
+    if (present.length === 0) return "absent"
+    for (const path of present) safeRemoveSync(path, { within: home, allowedRoots: [home], allowMissing: true })
+    return "removed"
+  } catch (error) {
+    return `failed: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 /** Parse `agy --input-format stream-json --output-format stream-json` NDJSON. */
@@ -475,6 +524,7 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
   let status: string | undefined
   let error: string | undefined
   let usage: ModelResponse["usage"]
+  let conversationId: string | undefined
   for (const line of ndjson.split("\n")) {
     const trimmed = line.trim()
     if (!trimmed) continue
@@ -484,7 +534,9 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
     } catch {
       continue // Non-JSON chatter (banners) is not the answer; ignore.
     }
+    if (event.event === "init" && typeof event.conversation_id === "string") conversationId = event.conversation_id
     if (event.event !== "result" || !event.result) continue
+    if (typeof event.result.conversation_id === "string") conversationId = event.result.conversation_id
     status = event.result.status
     text = event.result.response ?? ""
     error = event.result.error
@@ -500,7 +552,7 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
       }
     }
   }
-  return { text, status, error, usage }
+  return { text, status, error, usage, ...(conversationId === undefined ? {} : { conversationId }) }
 }
 
 async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promise<ModelResponse> {
@@ -516,8 +568,19 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
       event: "user",
       message: { role: "user", content: [{ type: "text", text: composePrompt(options) }] },
     })}\n`
-    const run = await runCli(SPECS.agy.bin, args, input, options.abortSignal)
+    // The scratch workdir is the run's cwd (29475): agy records its cwd as the conversation's workspace, and a
+    // one-shot has no business recording the caller's checkout as one.
+    const run = await runCli(SPECS.agy.bin, args, input, options.abortSignal, workdir)
     const parsed = parseAgyStreamJson(run.stdout)
+    // The one-shot keeps no conversation: remove what agy persisted for it, answer or error alike (29475). The
+    // outcome is built here, before any return, so a failed run or an empty answer still reports it.
+    const cleanup = removeAgyConversation(defaultAgyHome(), parsed.conversationId)
+    const servedBy: ServedBy = {
+      route: "subscription-cli",
+      cli: "agy",
+      model: AGY_SUBSCRIPTION_MODEL,
+      oneShot: { conversationId: parsed.conversationId ?? null, cleanup },
+    }
     const failedStatus = parsed.status !== undefined && parsed.status !== "SUCCESS"
     if (run.aborted || run.code !== 0 || failedStatus) {
       const detail = parsed.error ?? run.stderr.trim().split("\n").slice(-3).join(" | ")
@@ -529,6 +592,7 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
         content: "",
         durationMs: Date.now() - startedAt,
         error: `agy CLI (${SPECS.agy.subscription}) failed for ${model.displayName}${exit}: ${detail || "no stderr"}`,
+        servedBy,
       }
     }
     const content = parsed.text.trim()
@@ -538,9 +602,9 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
         content: "",
         durationMs: Date.now() - startedAt,
         error: `agy CLI (${SPECS.agy.subscription}) returned an empty answer for ${model.displayName}`,
+        servedBy,
       }
     }
-    const servedBy: ServedBy = { route: "subscription-cli", cli: "agy", model: AGY_SUBSCRIPTION_MODEL }
     return { model, content, usage: parsed.usage, durationMs: Date.now() - startedAt, servedBy }
   } finally {
     safeRemoveSync(workdir, { within: tmpdir(), allowMissing: true })
