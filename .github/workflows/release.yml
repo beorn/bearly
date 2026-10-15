@@ -1,4 +1,4 @@
-# vendor-kit: release@ab80b7b0acc7 — generated; edit km/packages/km-infra/vendor-kit/templates/release.yml in km, then re-sync
+# vendor-kit: release@618c8242a7b3 — generated; edit km/packages/km-infra/vendor-kit/templates/release.yml in km, then re-sync
 name: Release
 
 on:
@@ -114,6 +114,10 @@ jobs:
           writeFileSync(join(process.env.RUNNER_TEMP, 'release-plan.json'), JSON.stringify(plan))
           NODE
 
+      # This standalone checkout has no flake.nix or Nix files; a parent workspace environment cannot reach this runner.
+      # Refactor discovery requires ripgrep, so declare the CI dependency here.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: bun install --frozen-lockfile
       - run: bun run test
       - run: mkdir "$RUNNER_TEMP/verified-tarballs"

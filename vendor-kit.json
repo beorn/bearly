@@ -2,7 +2,8 @@
   "modules": ["release", "format-check", "oxfmt", "source-siblings"],
   "vars": {
     "bunVersion": "1.4.2",
-    "buildStep": ""
+    "buildStep": "",
+    "setupStep": "      # This standalone checkout has no flake.nix or Nix files; a parent workspace environment cannot reach this runner.\n      # Refactor discovery requires ripgrep, so declare the CI dependency here.\n      - name: Install ripgrep\n        run: sudo apt-get update && sudo apt-get install -y ripgrep\n"
   },
   "tiers": {
     "retired": {
