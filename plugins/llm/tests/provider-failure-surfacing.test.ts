@@ -170,6 +170,13 @@ describe("dispatch failure classes on recorded provider responses", () => {
       "openai",
       "OpenAI dispatch through the codex CLI one-shot failed for GPT-5 nano (exit 1).",
     ],
+    // agy's own result status is unvalidated output (subscription-cli.ts), so it never reaches the message
+    // (@dev/review2 4dfed9da).
+    [
+      "agy CLI (Antigravity Ultra subscription (agy)) failed for Gemini 2.0 Flash Lite (exit 0, status FAILED prompt=private-text sk-test-123): no stderr",
+      "google",
+      "Google dispatch through the agy CLI one-shot failed for Gemini 2.0 Flash Lite (exit 0, a non-success status).",
+    ],
   ])(
     "a subscription CLI failure names its route and outcome, never its raw detail: %s",
     (error, provider, expected) => {
