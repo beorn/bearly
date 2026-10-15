@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `inspectPathHolderCensus` accepts explicit `allowMissing` on the Linux proc
+  collector. An absent target and dangling argv are physically anchored with
+  the shared existing-ancestor walker; matching and incomplete coverage remain
+  unchanged. Strict mode stays the default. Darwin reports an absent target as
+  unsupported instead of treating missing directory traversal as empty evidence.
+
 - A listed pid whose `/proc/<pid>/cwd` link answers ENOENT or ESRCH holds no
   working directory: the census counts it `exited` and stays complete, the same
   as a process directory that is already gone. Other missing sources (exe, fd,

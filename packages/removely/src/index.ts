@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process"
 import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, parse, resolve, sep } from "node:path"
+import { splitAtNearestExistingAncestor } from "./physical-path.ts"
 
 export { type ProcessCwdRow } from "./process-census.ts"
 
@@ -414,31 +415,6 @@ function resolveContainedPathForCaller(
     )
   }
   return resolvedTarget as ContainedPath
-}
-
-function pathEntryExists(path: string): boolean {
-  try {
-    lstatSync(path)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
-    throw error
-  }
-}
-
-function splitAtNearestExistingAncestor(path: string): {
-  existingAncestor: string
-  missingSegments: string[]
-} {
-  const missingSegments: string[] = []
-  let existingAncestor = path
-  for (;;) {
-    if (pathEntryExists(existingAncestor)) return { existingAncestor, missingSegments }
-    const parent = dirname(existingAncestor)
-    if (parent === existingAncestor) return { existingAncestor, missingSegments }
-    missingSegments.unshift(basename(existingAncestor))
-    existingAncestor = parent
-  }
 }
 
 function realpathExistingEntry(path: string, requested: string, caller: string): string {

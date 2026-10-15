@@ -31,6 +31,12 @@ scope is required:
   establish same-UID or host-wide coverage. Darwin rejects `all-visible`.
 
 The target and platform inspection resources must exist and be readable.
+The Linux collector accepts `allowMissing: true` to inspect an absent target:
+its nearest existing ancestor is physically resolved and the missing suffix is
+appended. Dangling argv paths use the same physical anchor when the census root
+was anchored. Existing dangling symlinks and unreadable ancestors remain errors.
+Strict resolution remains the default. Darwin's directory-based lsof mechanism
+cannot inspect an absent target and reports that unsupported case.
 Missing required resources and unexpected I/O errors throw with their location.
 Denied, missing or ambiguous observations make Linux `coverage.complete` false
 and name the affected process, source and resource. A Linux census answers by a
@@ -39,9 +45,10 @@ wall clock from its start, shared by every `/proc` read): a read still pending
 then is `unanswered`, which is incomplete too. A read given up on keeps running
 in the runtime and may keep the process alive until the kernel answers it, so a
 one-shot caller exits explicitly once it has the census. argv is compared as
-written, never resolved: an element that reaches the target through a symlink
-is not seen, and resolving it at census time would name whatever the link
-points at then. `coverage.processes` counts the
+written and, for existing elements, by its current realpath to recognize aliases.
+Strict mode leaves dangling aliases lexical; an unresolved alias under an
+extant root is a known limit. Resolution observes current paths, not historical
+inode identity. `coverage.processes` counts the
 processes with each reason (`sourceDenied`, `sourceUnanswered`, `sourceMissing`,
 `sourceAmbiguous`) ahead of the per-source table. An individual missing source other than cwd
 does not prove its process exited. A cwd link answering ENOENT or ESRCH holds no
