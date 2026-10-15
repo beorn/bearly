@@ -20,7 +20,7 @@ bun add @bearly/pacing
 import { additiveJitter, awaitReady, decorrelatedJitter, fullJitter, parseDuration } from "@bearly/pacing"
 
 const duration = parseDuration("1h 30m", null) // { ok: true, ms: 5_400_000 }
-const interval = parseDuration("30", "s")    // Bare numbers use the caller's unit; null requires a suffix.
+const interval = parseDuration("30", "s") // Bare numbers use the caller's unit; null requires a suffix.
 
 // Full jitter: uniform in [0, min(cap, base * 2 ** attempt)]. A plain spread over a window is base = cap = window.
 const delay = fullJitter(250, 30_000, attempt)
