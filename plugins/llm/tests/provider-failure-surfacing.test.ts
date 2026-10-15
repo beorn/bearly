@@ -159,7 +159,7 @@ describe("dispatch failure classes on recorded provider responses", () => {
   // 29473: a subscription CLI route fails with no HTTP status, so there is no body to append, and the unmatched
   // branch said only that nothing matched. Recall's planner reported "Google dispatch failed … with no HTTP status"
   // for two hours while the agy one-shot was being aborted by the planner's 8 s budget.
-  it.each([
+  it.each<[string, "google" | "openai", string]>([
     [
       "agy CLI (Antigravity Ultra subscription (agy)) failed for Gemini 2.0 Flash Lite (aborted): no stderr",
       "google",
