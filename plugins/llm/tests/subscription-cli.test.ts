@@ -98,6 +98,9 @@ const FAIL_CODEX = [
 
 const OK_AGY = [
   'if [ -n "$FAKE_AGY_ARGV" ]; then printf "%s" "$*" > "$FAKE_AGY_ARGV"; fi',
+  'if [ -n "$FAKE_AGY_AGENT_FILE" ] && [ -f .agents/agents/bearly-llm-text/agent.md ]; then',
+  '  while IFS= read -r agent_line; do printf "%s\\n" "$agent_line"; done < .agents/agents/bearly-llm-text/agent.md > "$FAKE_AGY_AGENT_FILE"',
+  "fi",
   // The prompt must arrive on STDIN via stream-json, never as a `-p <prompt>`
   // argv string (which dies with E2BIG past MAX_ARG_STRLEN). PATH is the fake
   // dir ONLY, so no external `cat` — read the single line with the builtin.
@@ -157,6 +160,7 @@ afterEach(() => {
   delete process.env.FAKE_AGY_ARGV
   delete process.env.FAKE_AGY_STDIN
   delete process.env.FAKE_AGY_CWD
+  delete process.env.FAKE_AGY_AGENT_FILE
   resetSubscriptionCliProbe()
   safeRemoveSync(fakeDir, { within: tmpdir(), allowMissing: true })
 })
@@ -340,11 +344,13 @@ describe("dispatch", () => {
     expect(argv).toContain("model_reasoning_effort=high")
   })
 
-  it("answers a Gemini model through agy stream-json with the Antigravity model", async () => {
+  it("answers a Gemini model through the isolated question-only agy agent", async () => {
     const argvFile = join(fakeDir, "agy-argv.txt")
     const stdinFile = join(fakeDir, "agy-stdin.txt")
     process.env.FAKE_AGY_ARGV = argvFile
     process.env.FAKE_AGY_STDIN = stdinFile
+    const agentFile = join(fakeDir, "agy-agent.md")
+    process.env.FAKE_AGY_AGENT_FILE = agentFile
     writeBin("agy", OK_AGY)
     resetSubscriptionCliProbe()
 
@@ -372,6 +378,12 @@ describe("dispatch", () => {
     expect(argv).toContain("gemini-4-argon-high")
     expect(argv).toContain("--input-format")
     expect(argv).toContain("stream-json")
+    // This boundary proves delivery of the config whose capability effect is checked with the real CLI.
+    expect(argv).toContain("--agent bearly-llm-text")
+    const agent = readFileSync(agentFile, "utf8")
+    expect(agent).toContain("name: bearly-llm-text")
+    expect(agent).toContain("excludeDefaultComponents: true")
+    expect(agent).toContain("tools: []")
     // The prompt travels on stdin, not in argv.
     expect(argv).not.toContain("hello")
     const stdin = readFileSync(stdinFile, "utf8")

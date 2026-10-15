@@ -30,7 +30,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { safeRemoveSync } from "removely"
 import { homedir, tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
@@ -565,11 +565,36 @@ async function queryAgy(model: Model, options: SubscriptionQueryOptions): Promis
   const startedAt = Date.now()
   const workdir = mkdtempSync(join(tmpdir(), "llm-agy-"))
   try {
+    // Question-only one-shots have no workspace work to perform; keep their agent config inside this call's cwd.
+    const agentDir = join(workdir, ".agents", "agents", "bearly-llm-text")
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, "agent.md"),
+      `---
+name: bearly-llm-text
+description: Answer a supplied question from its supplied context without workspace tools.
+mainAgent: true
+subagent: false
+excludeDefaultComponents: true
+tools: []
+---
+Answer the user question directly using the supplied context. If context is insufficient, say what is missing. Do not inspect files or invoke tools.
+`,
+    )
     // The prompt travels on STDIN via stream-json, NOT as a `-p <prompt>` argv
     // string: a single argv argument over MAX_ARG_STRLEN (131072 bytes on Linux)
     // dies with E2BIG, and a /pro context file is routinely larger. stream-json
     // also reports token usage, which `-p` does not.
-    const args = ["--model", AGY_SUBSCRIPTION_MODEL, "--input-format", "stream-json", "--output-format", "stream-json"]
+    const args = [
+      "--model",
+      AGY_SUBSCRIPTION_MODEL,
+      "--agent",
+      "bearly-llm-text",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+    ]
     const input = `${JSON.stringify({
       event: "user",
       message: { role: "user", content: [{ type: "text", text: composePrompt(options) }] },
