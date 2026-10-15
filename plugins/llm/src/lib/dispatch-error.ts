@@ -195,6 +195,33 @@ function refusing(
   }
 }
 
+// 29473: a subscription CLI route fails with no HTTP status, in a sentence bearly writes itself
+// (subscription-cli.ts): "<cli> CLI (<subscription>) failed for <model> (<aborted | exit N[, status S]>): <detail>".
+// Name the route and its outcome; only "aborted", a numeric exit or a signal is rendered. The CLI's own status S is
+// its unvalidated output, so it is reduced to "a non-success status", and the detail after the colon stays out, like
+// any other raw payload. Before this, recall's planner said only "dispatch failed … matched none" while agy was being
+// aborted by its 8 s budget.
+function subscriptionCliFailure(
+  message: string,
+  target: DispatchFailureTarget,
+): DispatchFailureDescription | undefined {
+  const cli = /^(agy|codex) CLI \(.+?\) failed for (.+?) \((aborted|exit (?:\d+|signal))(, status [^)]*)?\)/u.exec(
+    message,
+  )
+  if (!cli) return undefined
+  const [, bin, model, ending, status] = cli
+  const aborted = ending === "aborted"
+  const outcome = aborted
+    ? "aborted: the caller's time budget or signal stopped it"
+    : `${ending}${status ? ", a non-success status" : ""}`
+  return {
+    kind: "unknown",
+    scope: "call",
+    message: `${providerDisplayName(target.provider)} dispatch through the ${bin} CLI one-shot failed for ${model} (${outcome}).`,
+    remedy: aborted ? "give the call more time, or use a faster route" : `run the ${bin} CLI by hand to see its error`,
+  }
+}
+
 /** Pure owner of provider/model/call failure classification and rendering. */
 function classifyDispatchFailure(
   error: unknown,
@@ -386,30 +413,8 @@ function classifyDispatchFailure(
       `${target.provider} transport failure during dispatch`,
     )
   }
-  // 29473: a subscription CLI route fails with no HTTP status, in a sentence bearly writes itself
-  // (subscription-cli.ts): "<cli> CLI (<subscription>) failed for <model> (<aborted | exit N[, status S]>): <detail>".
-  // Name the route and its outcome; only "aborted", a numeric exit or a signal is rendered. The CLI's own status S is
-  // its unvalidated output, so it is reduced to "a non-success status", and the detail after the colon stays out, like
-  // any other raw payload. Before this, recall's planner said only "dispatch failed … matched none" while agy was being
-  // aborted by its 8 s budget.
-  const cli = /^(agy|codex) CLI \(.+?\) failed for (.+?) \((aborted|exit (?:\d+|signal))(, status [^)]*)?\)/u.exec(
-    message,
-  )
-  if (cli) {
-    const [, bin, model, ending, status] = cli
-    const aborted = ending === "aborted"
-    const outcome = aborted
-      ? "aborted: the caller's time budget or signal stopped it"
-      : `${ending}${status ? ", a non-success status" : ""}`
-    return {
-      kind: "unknown",
-      scope: "call",
-      message: `${providerDisplayName(target.provider)} dispatch through the ${bin} CLI one-shot failed for ${model} (${outcome}).`,
-      remedy: aborted
-        ? "give the call more time, or use a faster route"
-        : `run the ${bin} CLI by hand to see its error`,
-    }
-  }
+  const cli = subscriptionCliFailure(message, target)
+  if (cli) return cli
   // Unowned timeout wording gives retry advice, without certifying elapsed
   // budget or credential health. Concrete evidence above keeps precedence.
   if (/timed? out|timeout/iu.test(blob)) {
