@@ -521,5 +521,14 @@ export function describeDispatchFailure(
     const safe = redact(text).replace(/\s+/gu, " ")
     return safe.length > 1_000 ? safe.slice(0, 1_000) + " [truncated]" : safe
   }
-  return { ...described, message: `${bounded(described.message)} | HTTP ${status}; body: ${bounded(body)}` }
+  const message = `${bounded(described.message)} | HTTP ${status}; body: ${bounded(body)}`
+  // 29495 (@cto e60d240d): a 429's refusal record keeps the head of the upstream body beside bearly's own text. The
+  // record outlives the call and refuses every model of the provider for its window, so it must show whose limit
+  // refused (OpenRouter names it in `limit_source` and `provider_name`). Measurement only: the key stays the provider.
+  if (described.observation?.status !== "refusing" || described.observation.kind !== "rate-limited") {
+    return { ...described, message }
+  }
+  const head = redact(body).replace(/\s+/gu, " ").slice(0, 512)
+  const reason = `${described.observation.reason} | HTTP ${status}; upstream body: ${head}`
+  return { ...described, message, observation: { ...described.observation, reason } }
 }
