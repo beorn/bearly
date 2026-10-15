@@ -529,7 +529,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
   /** @failure ignored dependency output is discarded without selected regeneration, or blocks a regenerating reset
    * @level l2 @consumer #26139 reset setup @testonly none */
   test.each(["lockfile", "workspace-only", "unnamed-workspace"] as const)(
-    "reset admits ignored %s output only when its setup regenerates it",
+    "reset classifies ignored %s output using the checkout’s setup",
     async (setup) => {
       const mainRepo = await buildMain()
       writeFileSync(join(mainRepo, ".gitignore"), "node_modules/\ndist/\n")
@@ -584,8 +584,8 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           name: "local-fixture",
         })
         if (setup === "workspace-only") {
-          // The cached origin/main still declares generation, while the actual
-          // next base no longer does. Admission must use the recreated base.
+          // 29302: this checkout’s own setup makes its output disposable,
+          // even when the refreshed recreate base no longer has that workspace.
           const publisher = join(sandbox, "publisher")
           await $`git clone -q ${join(sandbox, "origin.git")} ${publisher}`.quiet()
           await $`git -C ${publisher} config user.email t@t`.quiet()
@@ -594,14 +594,11 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           await commitAll(publisher, "stop generating workspace output")
           await $`git -C ${publisher} push -q origin main`.quiet()
           writeFileSync(oldOutput, "keep until regeneration is proven\n")
-          const refsBefore = await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()
-          await expect(
-            resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false }),
-          ).rejects.toThrow("ignored")
-          expect(readFileSync(oldOutput, "utf8")).toBe("keep until regeneration is proven\n")
-          expect(await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(
-            refsBefore,
-          )
+          const refsBefore = await preserveRefs(mainRepo, "wt5")
+          await resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false })
+          expect(existsSync(oldOutput)).toBe(false)
+          expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("disposable: node_modules")
+          expect(await preserveRefs(mainRepo, "wt5")).toEqual(refsBefore)
         }
       } finally {
         process.chdir(origCwd)
@@ -617,6 +614,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     ["reset", "submodule"],
     ["reset", "uninitialized"],
     ["reset", "changed-submodule-setup"],
+    ["reset", "changed-submodule-output"],
     ["remove", "root"],
     ["remove", "submodule"],
     ["remove", "uninitialized"],
@@ -624,7 +622,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     ["remove-admit", "submodule"],
     ["remove-admit", "uninitialized"],
   ] as const)(
-    "%s refuses ignored %s payload with repository and path, preserving bytes and refs",
+    "%s classifies ignored %s payload without losing authored work",
     async (operation, location) => {
       const mainRepo = await buildMain()
       let source = mainRepo
@@ -633,8 +631,11 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         await initRepo(source)
         writeFileSync(join(source, "file.txt"), "submodule\n")
       }
-      const changedSetup = location === "changed-submodule-setup"
-      const payload = changedSetup ? "packages/local/dist/private notes\n.env" : "private notes\n.env"
+      const disposableOutput = location === "changed-submodule-output"
+      const changedSetup = location === "changed-submodule-setup" || disposableOutput
+      const payload = changedSetup
+        ? join("packages/local", ...(disposableOutput ? ["dist"] : []), "private notes\n.env")
+        : "private notes\n.env"
       writeFileSync(join(source, ".gitignore"), "*.env\n")
       if (changedSetup) {
         mkdirSync(join(source, "packages/local"), { recursive: true })
@@ -674,7 +675,8 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         }
         mkdirSync(dirname(join(repository, payload)), { recursive: true })
         writeFileSync(join(repository, payload), "precious ignored bytes\n")
-        // A premature preserveSlotState call would create a wip ref for this dirt.
+        // A refused admission must not create a wip ref for this dirt.
+        // An admitted reset must preserve it before disposing of setup output.
         writeFileSync(join(destination, "README.md"), "tracked dirt before admission\n")
         if (location === "uninitialized") rmSync(join(repository, ".git"))
         const refs = await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
@@ -682,6 +684,23 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           location === "uninitialized"
             ? undefined
             : await $`cd ${repository} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()
+        if (disposableOutput) {
+          const authoredPackage = readFileSync(join(repository, "packages/local/package.json"), "utf8")
+          await resetWorktree("wt5", { destination, force: true, install: true, direnv: false, hooks: false })
+          expect(existsSync(join(repository, payload))).toBe(false)
+          expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain("disposable: vendor/sub/packages/local/dist")
+          const rootPreserved = await preserveRefs(mainRepo, "wt5")
+          const childPreserved = await preserveRefs(join(mainRepo, "vendor/sub"), "wt5")
+          expect(rootPreserved).toHaveLength(1)
+          expect(childPreserved).toHaveLength(1)
+          expect(await $`git -C ${mainRepo} show ${rootPreserved[0]! + ":README.md"}`.text()).toBe(
+            "tracked dirt before admission\n",
+          )
+          expect(
+            await $`git -C ${join(mainRepo, "vendor/sub")} show ${childPreserved[0]! + ":packages/local/package.json"}`.text(),
+          ).toBe(authoredPackage)
+          return
+        }
         const attempt =
           operation !== "reset"
             ? removeWorktree(destination, {
@@ -701,7 +720,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         await expect(attempt).rejects.toThrow(repository)
         if (location !== "uninitialized") {
           // Native Git groups this fully ignored subtree as a directory.
-          await expect(attempt).rejects.toThrow(JSON.stringify(changedSetup ? "packages/local/dist/" : payload))
+          await expect(attempt).rejects.toThrow(JSON.stringify(payload))
         }
         expect(readFileSync(join(repository, payload), "utf8")).toBe("precious ignored bytes\n")
         expect(await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname) %(objectname)"}`.text()).toBe(refs)
