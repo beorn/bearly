@@ -26,7 +26,7 @@ escalate-to:
 
 - [[#Branch selection]] - select one output protocol before work.
 - [[#Operating Loop]] - the required reframe loop for the reframe branch.
-- [[#Final Shape]] - the required synthesis format.
+- [[#Final Shape]] - the required synthesis format for the reframe branch.
 - [[../agent-system/references/resolver|resolver quality plateau]] - use when this reframe changes routing or ownership.
 
 ### By Intent
