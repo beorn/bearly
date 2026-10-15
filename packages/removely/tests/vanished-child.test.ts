@@ -43,7 +43,12 @@ vi.mock("node:fs", async (importOriginal) => {
         // Initial presence was checked; this is the containment anchor's probe.
         const target = vanish.target
         vanish.target = ""
-        if (vanish.error !== "") throw Object.assign(new Error(vanish.error), { code: vanish.error })
+        if (vanish.error !== "") {
+          safeRemoveSync(target, { within: base })
+          throw new Error(`${vanish.error} during containment`, {
+            cause: Object.assign(new Error(vanish.error), { code: vanish.error }),
+          })
+        }
         safeRemoveSync(target, { within: base })
         if (vanish.dangling) real.symlinkSync("missing-target", target, "dir")
       }
@@ -146,7 +151,7 @@ describe("absence during containment validation", () => {
     if (synchronous) expect(() => safeRemoveSync(target, { within: base, allowMissing: true })).toThrow(/EACCES/u)
     else await expect(safeRemove(target, { within: base, allowMissing: true })).rejects.toThrow(/EACCES/u)
     expect(vanish.probes).toBe(2)
-    expect(existsSync(target)).toBe(true)
+    expect(existsSync(target)).toBe(false)
   })
 })
 
