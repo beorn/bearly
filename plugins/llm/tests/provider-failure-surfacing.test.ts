@@ -186,6 +186,47 @@ describe("dispatch failure classes on recorded provider responses", () => {
       expect(described.message).not.toMatch(/private-text|sk-test-123|no stderr|matched none/)
     },
   )
+
+  // 29483: on an HTTP route, a failure with no HTTP status still read "matched none of the known failure classes":
+  // an OpenRouter planner call aborted by its caller's 8 s deadline did (@dev/11 9253b5bf, 2026-10-15 09:12Z), and so
+  // does a socket reset. The class comes from the error's own name or code, never its message text, and it is a fact
+  // about the call: no provider refusal is recorded, so one reset never marks the provider refusing.
+  const reset = (code: string) => Object.assign(new Error(`read ${code} private-text sk-test-123`), { code })
+  it.each<[string, unknown, string]>([
+    [
+      "an abort by its caller",
+      new DOMException("This operation was aborted", "AbortError"),
+      "OpenRouter dispatch failed for model deepseek/deepseek-chat with no HTTP status: aborted by its caller (its time budget or signal).",
+    ],
+    [
+      "a socket reset",
+      reset("ECONNRESET"),
+      "OpenRouter dispatch failed for model deepseek/deepseek-chat with no HTTP status: error code ECONNRESET.",
+    ],
+    [
+      "a socket code under a fetch wrapper's cause",
+      Object.assign(new TypeError("terminated"), {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      }),
+      "OpenRouter dispatch failed for model deepseek/deepseek-chat with no HTTP status: error code UND_ERR_SOCKET.",
+    ],
+  ])("a no-status failure names its class from the error's name or code: %s", (_, error, expected) => {
+    const described = describeDispatchFailure(error, { provider: "openrouter", modelId: "deepseek/deepseek-chat" })
+
+    expect(described).toMatchObject({ kind: "unknown", scope: "call", message: expected })
+    expect(described.observation).toBeUndefined()
+    expect(described.message).not.toMatch(/private-text|sk-test-123|other side closed|matched none/)
+  })
+
+  it("a code that is not code-shaped is never rendered: the failure stays unmatched", () => {
+    const described = describeDispatchFailure(Object.assign(new Error("boom"), { code: "private text sk-test-123" }), {
+      provider: "openrouter",
+      modelId: "deepseek/deepseek-chat",
+    })
+
+    expect(described.message).toContain("matched none of the known failure classes")
+    expect(described.message).not.toMatch(/private text|sk-test-123/)
+  })
 })
 
 describe("streaming failures survive the ai-sdk's synthetic no-output wrapper", () => {

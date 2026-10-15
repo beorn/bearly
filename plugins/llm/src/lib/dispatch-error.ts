@@ -222,6 +222,33 @@ function subscriptionCliFailure(
   }
 }
 
+/** An error code names a class and carries no payload: uppercase letters, digits and underscores only. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,40}$/u
+
+/**
+ * 29483: the class of a failure that arrived with no HTTP status, read from the error's own name or code, on the
+ * error or on its cause (a fetch wrapper keeps the socket's code there), never from its message text. Undefined when
+ * neither names one, so the failure stays unmatched. It describes the call: no provider refusal is recorded, so one
+ * reset never marks a provider refusing.
+ */
+function noStatusFailureClass(error: unknown): { said: string; remedy: string } | undefined {
+  const cause = error && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined
+  for (const layer of [error, cause]) {
+    if (!layer || typeof layer !== "object") continue
+    const { name, code } = layer as { name?: unknown; code?: unknown }
+    if (name === "AbortError") {
+      return {
+        said: "aborted by its caller (its time budget or signal)",
+        remedy: "give the call more time, or use a faster route",
+      }
+    }
+    if (typeof code === "string" && ERROR_CODE.test(code)) {
+      return { said: `error code ${code}`, remedy: "retry; if it repeats, check the provider endpoint and network" }
+    }
+  }
+  return undefined
+}
+
 /** Pure owner of provider/model/call failure classification and rendering. */
 function classifyDispatchFailure(
   error: unknown,
@@ -434,6 +461,15 @@ function classifyDispatchFailure(
   // an exhausted OpenAI balance and a bare 400 all read as the same dead end. State what was checked
   // and what evidence exists; `describeDispatchFailure` appends the HTTP status and response body
   // whenever the provider supplied one, which is where the provider's own message appears.
+  const noStatus = responseStatus === undefined ? noStatusFailureClass(error) : undefined
+  if (noStatus) {
+    return {
+      kind: "unknown",
+      scope: "call",
+      message: `${providerDisplayName(target.provider)} dispatch failed${targetDescription} with no HTTP status: ${noStatus.said}.`,
+      remedy: noStatus.remedy,
+    }
+  }
   const statusNote = responseStatus === undefined ? "with no HTTP status" : `with HTTP ${responseStatus}`
   return {
     kind: "unknown",
