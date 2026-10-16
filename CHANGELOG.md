@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `worktree create` now accepts the existing repeatable `--exclude-submodule <path>` selector. Excluded declared components remain unmaterialized and are reported; creation without the flag keeps its existing behavior.
+- `@bearly/github` declares an explicit exports map: only `./package.json` is exported. The plugin still launches by path, unchanged; deep imports of its files no longer resolve.
 
 ## [0.8.0] - 2026-03-31
 
