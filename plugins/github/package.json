@@ -9,6 +9,7 @@
     "directory": "plugins/github"
   },
   "files": [
+    "index.mjs",
     "server.ts",
     "skills",
     "README.md",
@@ -17,7 +18,7 @@
   ],
   "type": "module",
   "exports": {
-    "./package.json": "./package.json"
+    ".": "./index.mjs"
   },
   "scripts": {
     "start": "bun install --no-summary && bun server.ts"

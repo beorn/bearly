@@ -3,7 +3,7 @@
 ## Unreleased
 
 - `worktree create` now accepts the existing repeatable `--exclude-submodule <path>` selector. Excluded declared components remain unmaterialized and are reported; creation without the flag keeps its existing behavior.
-- `@bearly/github` declares an explicit exports map: only `./package.json` is exported. The plugin still launches by path, unchanged; deep imports of its files no longer resolve.
+- `@bearly/github` declares an explicit exports map: only `"."` → `./index.mjs` (a side-effect-free module). The plugin still launches by path, unchanged; deep imports of its files no longer resolve. The previous `./package.json` subpath is not importable by Node 22+ without JSON import attributes, which made verify-publishable fail the whole repository (Release 38979712814).
 
 ## [0.8.0] - 2026-03-31
 
