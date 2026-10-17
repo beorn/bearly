@@ -194,9 +194,10 @@
     },
     "packages/watchdog": {
       "name": "@bearly/watchdog",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@bearly/flock": "workspace:*",
+        "loggily": "^0.13.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.3",
@@ -928,6 +929,8 @@
     "zod": ["zod@4.6.5", "", {}, "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
+
+    "@bearly/watchdog/loggily": ["loggily@0.13.0", "", { "peerDependencies": { "@opentelemetry/api": ">=1.0.0" }, "optionalPeers": ["@opentelemetry/api"] }, "sha512-QN4YuN0ETjuYHY6zz6GhahDhMYN9mxJ1WZRhLvLGaF3aRn+cJya3rvCw3YzTNpGvRNoYGfzIrmqgNHWAsmAToQ=="],
 
     "@silvery/ansi/@silvery/color": ["@silvery/color@0.19.2", "", {}, "sha512-CjziKx4wfTy2DvP0JtgAowhPRT9FElppmCz9t9WSfdh6gLkO2jxS+vmRcbGoG1agYwSw65ZoaXYWPrTnY471wQ=="],
 
