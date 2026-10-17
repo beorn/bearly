@@ -9,7 +9,7 @@
     {
       "name": "loggily",
       "repository": "beorn/loggily",
-      "commit": "1918304aa42492f484353fbb113ed7b839ab360f",
+      "commit": "55bdc5a0f5604edb8947c4a295c5f00593030f93",
       "pack": true
     },
     {
