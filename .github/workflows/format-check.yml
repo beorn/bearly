@@ -1,4 +1,4 @@
-# vendor-kit: format-check@703ab7cb1a0a — generated; edit km/packages/km-infra/vendor-kit/templates/format-check.yml in km, then re-sync
+# vendor-kit: format-check@90d50cf332cd — generated; edit km/packages/km-infra/vendor-kit/templates/format-check.yml in km, then re-sync
 name: format-check
 
 # Per-push formatter-idempotency gate — asserts the formatter produces a clean
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - name: Format and assert clean tree
         run: |

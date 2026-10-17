@@ -30,9 +30,8 @@ const [major, minor, patch] = CHILD_BUN
 const DROPS_UNROUTED = major < 1 || (major === 1 && (minor < 4 || (minor === 4 && patch < 3)))
 
 describe("a CLI's output reaches a slow reader whole (hh 27071)", () => {
-  // Bun 1.4.3 fixed the drop this package was built around. On an older Bun (engines.bun >=1.3.13, and this repo's
-  // CI) the unrouted fixture still loses its tail (65,536 bytes), which is what routeConsoleToStreams exists for; from
-  // 1.4.3 it delivers every byte, and this row fails if the drop comes back.
+  // The control records the historical drop on an older Bun; supported Bun >=1.4.3 must deliver every byte.
+  // Running this suite on 1.3.14 also proves the fast-reader EPIPE regression below remains detectable.
   test(`control: an unrouted console.log on a slow pipe, on Bun ${CHILD_BUN.join(".")} (hh 27071)`, async () => {
     const run = await slowPipeRoundTrip(["bun", fixture("unrouted-log")])
     expect(run.exitCode).toBe(4)
@@ -43,15 +42,24 @@ describe("a CLI's output reaches a slow reader whole (hh 27071)", () => {
     ).toBe(DROPS_UNROUTED)
   })
 
-  test("routed through the streams, every byte arrives and the exit code is the command's", async () => {
-    const run = await slowPipeRoundTrip(["bun", fixture("routed-log")])
-    expect({ bytes: run.bytes, exitCode: run.exitCode }).toEqual({ bytes: FULL, exitCode: 4 })
+  test("routed through the streams, every byte and late write arrives with the command's exit code", async () => {
+    for (const late of [false, true]) {
+      const run = await slowPipeRoundTrip(["bun", fixture("routed-log"), ...(late ? ["--late"] : [])])
+      expect({ bytes: run.bytes, exitCode: run.exitCode }).toEqual({ bytes: FULL + (late ? 6 : 0), exitCode: 4 })
+      if (late) expect(run.stdout.toString().endsWith("later\n")).toBe(true)
+    }
   })
 
-  test("a reader that closes early fails the command by name with its arguments, exit 1, and no stack", async () => {
-    const run = await slowPipeRoundTrip(["bun", fixture("routed-log"), "--json"], { closeAfterBytes: 100 })
-    expect(run.exitCode).toBe(1)
-    expect(run.stderr).toContain("fixture: stdout refused the output of `fixture --json`: EPIPE")
-    expect(run.stderr).not.toMatch(/^\s+at /mu)
-  })
+  test.each([0, 1])(
+    "a reader that closes early after %ss fails the command by name with its arguments, exit 1, and no stack",
+    async (delaySeconds) => {
+      const run = await slowPipeRoundTrip(["bun", fixture("routed-log"), "--json"], {
+        closeAfterBytes: 100,
+        delaySeconds,
+      })
+      expect(run.exitCode, `reader delay ${String(delaySeconds)}s`).toBe(1)
+      expect(run.stderr).toContain("fixture: stdout refused the output of `fixture --json`: EPIPE")
+      expect(run.stderr).not.toMatch(/^\s+at /mu)
+    },
+  )
 })

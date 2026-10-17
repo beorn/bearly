@@ -5,5 +5,6 @@ routeConsoleToStreams()
 await runCliProcess("fixture", () => {
   process.stdout.write("")
   console.log("x".repeat(300_000))
+  if (process.argv.includes("--late")) setTimeout(() => console.log("later"), 25)
   return 4
 })

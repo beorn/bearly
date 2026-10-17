@@ -1,4 +1,4 @@
-# vendor-kit: release@6a5ba87e25c6 — generated; edit km/packages/km-infra/vendor-kit/templates/release.yml in km, then re-sync
+# vendor-kit: release@61f18dcd7038 — generated; edit km/packages/km-infra/vendor-kit/templates/release.yml in km, then re-sync
 name: Release
 
 on:
@@ -35,7 +35,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.3
 
       - name: Validate dispatch identity and planned package versions
         env:
