@@ -35,5 +35,6 @@ describe("@bearly/github exports", () => {
     expect(result.error).toBeUndefined()
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toBe("")
+    expect(result.stderr).toBe("")
   })
 })
