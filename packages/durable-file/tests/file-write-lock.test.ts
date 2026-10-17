@@ -48,19 +48,36 @@ describe("locked file writes", () => {
     const path = join(dir, "manifest.json")
     const ready = join(dir, "ready")
     writeFileSync(path, "before")
-    const holder = Bun.spawn([process.execPath, fileURLToPath(new URL("../../flock/tests/fixtures/writer.ts", import.meta.url)), "hold", `${path}.lock`, ready, "600"], { stdout: "ignore", stderr: "pipe" })
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        fileURLToPath(new URL("../../flock/tests/fixtures/writer.ts", import.meta.url)),
+        "hold",
+        `${path}.lock`,
+        ready,
+        "600",
+      ],
+      { stdout: "ignore", stderr: "pipe" },
+    )
     try {
       await vi.waitFor(() => expect(existsSync(ready)).toBe(true))
       const immediate = performance.now()
       expect(commitFileBytesIfUnchanged(path, "before", "after")).toEqual({ ok: false, reason: "locked" })
       expect(performance.now() - immediate).toBeLessThan(200)
       const timed = performance.now()
-      expect(commitFileBytesIfUnchanged(path, "before", "after", { lockTimeoutMs: 150 })).toEqual({ ok: false, reason: "locked" })
+      expect(commitFileBytesIfUnchanged(path, "before", "after", { lockTimeoutMs: 150 })).toEqual({
+        ok: false,
+        reason: "locked",
+      })
       expect(performance.now() - timed).toBeGreaterThanOrEqual(125)
       expect(readFileSync(path, "utf8")).toBe("before")
       expect(commitFileBytesIfUnchanged(path, "before", "after", { lockTimeoutMs: 1500 })).toEqual({ ok: true })
       expect(readFileSync(path, "utf8")).toBe("after")
-      expect(commitFileBytesIfUnchanged(path, "before", "stale", { lockTimeoutMs: 100 })).toEqual({ ok: false, reason: "changed", currentRaw: "after" })
+      expect(commitFileBytesIfUnchanged(path, "before", "stale", { lockTimeoutMs: 100 })).toEqual({
+        ok: false,
+        reason: "changed",
+        currentRaw: "after",
+      })
     } finally {
       holder.kill()
       await holder.exited

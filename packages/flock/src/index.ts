@@ -17,7 +17,11 @@ export function acquireFlockBlocking(path: string, options?: FlockOpenOptions): 
 }
 
 /** Try until the monotonic timeout expires, parking this thread between attempts; null means still held. */
-export function acquireFlockWithTimeout(path: string, timeoutMs: number, options?: FlockOpenOptions): FlockHandle | null {
+export function acquireFlockWithTimeout(
+  path: string,
+  timeoutMs: number,
+  options?: FlockOpenOptions,
+): FlockHandle | null {
   return runtime.acquireWithTimeout(path, timeoutMs, options)
 }
 
