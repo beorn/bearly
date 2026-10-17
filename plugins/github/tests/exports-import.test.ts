@@ -1,56 +1,39 @@
 /**
- * @failure Node's consumer probe cannot import @bearly/github: its only export
- *          is ./package.json, and Node 22+ refuses that specifier without
- *          `with { type: "json" }`. verify-publishable uses bare `import(s)`,
- *          so Release fails here and never publishes sibling packages
- *          (bearly run 38979712814 blocked @bearly/pacing@0.3.0).
- * @level l1
- * @consumer beorn/verify-publishable import-development probe
- * @testonly none
+ * @failure A runtime-specific child argv layout prevents the package's root and
+ *          sealed deep-path contracts from being exercised in CI.
+ * @level l3: real child import of the package's declared surface
+ * @consumer Node and Bun package consumers
  */
 import { spawnSync } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { fileURLToPath } from "node:url"
 import { describe, expect, test } from "vitest"
 
 const PLUGIN_DIR = fileURLToPath(new URL("..", import.meta.url))
-const MANIFEST = JSON.parse(readFileSync(join(PLUGIN_DIR, "package.json"), "utf8")) as {
-  exports?: Record<string, string>
+const IMPORT_SCRIPT = `import { readFileSync } from "node:fs";
+const name = JSON.parse(readFileSync(0, "utf8"));
+const root = await import(name);
+if (Object.keys(root).length !== 0) throw new Error("package root unexpectedly exports values");
+let sealed = false;
+try {
+  readFileSync("index.mjs", "utf8");
+  await import(name + "/index.mjs");
+} catch (error) {
+  // The real file exists and the root already loaded it; only resolution refusal seals this path.
+  if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED" && error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+  sealed = true;
 }
-
-// Same eval the hosted verifier runs (verify-publishable src/probes.ts importScript).
-const IMPORT_SCRIPT = `const specifiers = JSON.parse(process.argv[1]);
-for (const specifier of specifiers) {
-  try {
-    await import(specifier);
-  } catch (error) {
-    console.error(specifier + ": " + (error?.stack ?? String(error)));
-    process.exit(1);
-  }
-}`
-
-function exportedFileUrls(): string[] {
-  const exportsMap = MANIFEST.exports
-  if (exportsMap === undefined || Object.keys(exportsMap).length === 0) {
-    throw new Error("plugins/github must declare a nonempty explicit exports map")
-  }
-  return Object.values(exportsMap).map((target) => {
-    if (typeof target !== "string" || !target.startsWith("./")) {
-      throw new Error(`unsupported export target: ${JSON.stringify(target)}`)
-    }
-    return pathToFileURL(join(PLUGIN_DIR, target)).href
-  })
-}
+if (!sealed) throw new Error("package deep path unexpectedly imported");
+`
 
 describe("@bearly/github exports", () => {
-  test("every exported target is importable by Node without JSON import attributes", () => {
-    const specifiers = exportedFileUrls()
-    expect(specifiers.length).toBeGreaterThan(0)
-    const result = spawnSync("node", ["--input-type=module", "--eval", IMPORT_SCRIPT, JSON.stringify(specifiers)], {
+  test("the root imports without values or output and deep paths stay sealed", () => {
+    const result = spawnSync("node", ["--input-type=module", "--eval", IMPORT_SCRIPT], {
       encoding: "utf8",
       cwd: PLUGIN_DIR,
+      input: JSON.stringify("@bearly/github"),
     })
+    expect(result.error).toBeUndefined()
     expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toBe("")
   })
 })
