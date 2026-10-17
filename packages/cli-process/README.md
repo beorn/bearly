@@ -9,8 +9,8 @@ When a CLI writes to a pipe, two things lose output without a word:
 - **`console.log` on a non-blocking pipe.** Under Bun, once anything uses the `process.stdout` stream, stdout's pipe is
   non-blocking for the whole process. `console.log` writes the descriptor directly and, when the pipe fills, drops the
   rest of its text. A slow reader received 65,536 of 314,509 bytes. Bun 1.4.3 fixed this; `routeConsoleToStreams()`
-  still protects a consumer on an older Bun. The package's control test proves the drop on an older Bun and fails
-  if it comes back on 1.4.3 or later.
+  remains the single console routing path. The package's control test records the historical drop and fails
+  if it comes back on a supported Bun.
 
 ## Install
 
@@ -19,6 +19,12 @@ When a CLI writes to a pipe, two things lose output without a word:
 ```bash
 bun add @bearly/cli-process
 ```
+
+Version 0.2.0 requires Bun 1.4.3 or later, or Node 20 or later. It drops the previously supported Bun range
+`>=1.3.13 <1.4.3`: on Bun 1.3.14, a reader that closes fast can leave the command's exit code unchanged and omit
+the named EPIPE diagnostic ([CI run 39018308447](https://github.com/beorn/bearly/actions/runs/39018308447)).
+The owning early-close test reproduces this with `delaySeconds: 0` and `closeAfterBytes: 100`.
+Bun 1.4.3 is the first measured-good runtime; the first release containing the runtime fix is unknown.
 
 ## Use
 

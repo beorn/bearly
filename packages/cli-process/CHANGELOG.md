@@ -1,10 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Bun 1.4.3 no longer drops the tail of an unrouted `console.log` on a slow pipe. The control test reads the
-  running Bun: before 1.4.3 it proves the drop, and from 1.4.3 it fails if the drop returns. `routeConsoleToStreams()`
-  stays for consumers on an older Bun (hh 27071).
+### Breaking
+
+- Require Bun `>=1.4.3`, dropping `>=1.3.13 <1.4.3`; Node `>=20` remains supported. Bun 1.3.14 can omit the
+  named EPIPE and return the command's exit code when a reader closes fast, as in
+  [CI run 39018308447](https://github.com/beorn/bearly/actions/runs/39018308447). The owning test reproduces it
+  with `delaySeconds: 0` and `closeAfterBytes: 100`. Bun 1.4.3 is the first measured-good runtime, not a claim
+  about which release first fixed it. Production stream handling is unchanged.
+
+### Changed
+
+- The existing early-close test covers fast and slow readers; the full-output test also covers a write after
+  the CLI body returns. The unrouted control still records the historical drop and detects its return.
 
 ## 0.1.0
 
