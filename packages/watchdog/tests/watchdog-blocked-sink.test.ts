@@ -6,6 +6,7 @@
  *          blocks for good once ~10 KB sits unread on a pty, 64 KiB on a pipe (km 25947).
  * @level l2
  * @consumer @km/daemon/25947-bd-close-blocks-daemon
+ * @testonly none
  */
 import { afterEach, describe, expect, test } from "vitest"
 import { spawn } from "node:child_process"
