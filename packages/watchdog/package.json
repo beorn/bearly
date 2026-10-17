@@ -1,6 +1,6 @@
 {
   "name": "@bearly/watchdog",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A watchdog on its own thread: it sees a main thread that spins, and logs or kills",
   "keywords": [
     "bun",
@@ -45,7 +45,8 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@bearly/flock": "workspace:*"
+    "@bearly/flock": "workspace:*",
+    "loggily": "^0.13.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",

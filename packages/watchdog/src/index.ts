@@ -14,16 +14,27 @@
  * worker watchdog fired at 808 ms against an 8 s spin; a main-thread timer with
  * the same budget never fired.
  *
- * The worker prints with `writeSync` to stderr, because a buffered write can be
- * lost to the kill that follows it, and kills with SIGKILL, because a signal
- * handler would be queued on the frozen loop. Its lines are built only from
- * what shared memory holds: the stamp's age, the stall count, integer fields
- * the main thread publishes, with names only through static tables, and short
- * texts it publishes into fixed byte slots (what it was doing when it stopped).
+ * The worker's lines reach stderr through loggily's line sink (`loggily/sink`):
+ * a writer thread owns the one blocking write, so a stderr whose reader has
+ * stalled parks neither the watchdog nor the main thread. Measured 2026-10-16
+ * under Bun 1.4.3: a worker's `writeSync(2)` blocks for good once ~10 KB sits
+ * unread on a pty, and the km daemon's watchdog warned once and then went quiet
+ * with the daemon (km 25947). A kill waits at most SINK_DRAIN_BEFORE_KILL_MS for
+ * its line to reach the kernel and then SIGKILLs regardless, because a signal
+ * handler would be queued on the frozen loop; a line past the sink's byte bound
+ * is dropped and counted, and the next line written says so. Its lines are
+ * built only from what shared memory holds: the stamp's age, the stall count,
+ * integer fields the main thread publishes, with names only through static
+ * tables, and short texts it publishes into fixed byte slots (what it was doing
+ * when it stopped).
  */
 import { writeSync } from "node:fs"
 import { Worker } from "node:worker_threads"
+import { openLineSink } from "loggily/sink"
 import { PROCFS_SAMPLER_SOURCE, WATCHDOG_WORKER_SOURCE } from "./worker-source.ts"
+
+/** How long a kill waits for the sink to get its line to the kernel before the SIGKILL goes ahead anyway. */
+const SINK_DRAIN_BEFORE_KILL_MS = 1_000
 
 export interface WatchdogLogAction {
   /** A stamp older than this starts a stall, and the first line. */
@@ -140,6 +151,10 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
           workerData: { ...sampling, root: options.procRoot ?? "/proc", lockFiles: options.lockFiles ?? [] },
         })
   sampler?.unref()
+  // The worker's lines go through a line sink whose writer thread owns the blocking write to stderr: the worker gets
+  // a producer port (transferred) and the sink's shared control, and posts lines without ever waiting on the reader.
+  const sink = openLineSink({ fd: 2 })
+  const producer = sink.producer()
   const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
     eval: true,
     workerData: {
@@ -152,11 +167,17 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       log: options.log ?? null,
       kill: options.kill ?? null,
       sampler: sampling,
+      sinkPort: producer.port,
+      sinkControl: producer.control,
+      drainBeforeKillMs: SINK_DRAIN_BEFORE_KILL_MS,
     },
+    transferList: [producer.port],
   })
   worker.unref()
   // A worker that dies leaves the process unwatched, which is the state this package exists to rule out:
-  // say so on stderr. Only disarm() ends the watch quietly.
+  // say so on stderr. Only disarm() ends the watch quietly. These notices are written directly, not through the
+  // sink: the process may be on its way out, and the sink's writer, unref'd, would not get to them. A direct write
+  // parks the main thread only when stderr is already blocked, on the failure path of the failure path.
   let disarmed = false
   worker.on("error", (error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error)
@@ -197,6 +218,8 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       disarmed = true
       void worker.terminate()
       void sampler?.terminate()
+      // Drain what the worker posted, within the sink's own bound on the wait, then stop its writer.
+      void sink.close()
     },
   }
 }

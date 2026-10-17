@@ -1,4 +1,5 @@
 import { formatLockHolders, procLocksDeviceId, readLockHolders } from "@bearly/flock/holders"
+import { postSinkLine } from "loggily/sink"
 
 /**
  * The worker's source and the line renderer it embeds. Internal: the package
@@ -195,11 +196,15 @@ export function readFinishedSample(
  * hold back the kill.
  */
 export const WATCHDOG_WORKER_SOURCE = `
-const { writeSync } = require("node:fs")
 const { workerData } = require("node:worker_threads")
 ${renderWatchdogLine.toString()}
 ${readFinishedSample.toString()}
-const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler } = workerData
+${postSinkLine.toString()}
+const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler, sinkPort, sinkControl, drainBeforeKillMs } = workerData
+// Every line goes through loggily's line sink: the post returns at once, and a stderr whose reader has stalled parks
+// the sink's writer, never this thread. A line past the sink's byte bound is dropped and counted there.
+const sinkState = new Int32Array(sinkControl)
+const emit = (line) => postSinkLine(sinkPort, sinkState, line)
 const stamp = new Float64Array(stamps)
 const values = new Float64Array(slots)
 const decoder = new TextDecoder()
@@ -253,7 +258,15 @@ for (;;) {
   const last = stamp[0]
   const age = Date.now() - last
   if (kill && age >= kill.afterMs) {
-    writeSync(2, renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message, false) }))
+    emit(renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message, false) }))
+    // Give the writer up to drainBeforeKillMs to get the kill line, and what precedes it, to the kernel. A reader
+    // that stays stalled keeps the bytes pending, and the kill goes ahead regardless: it never waits on the log.
+    const deadline = Date.now() + drainBeforeKillMs
+    for (let pending = Atomics.load(sinkState, 0); pending > 0; pending = Atomics.load(sinkState, 0)) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      Atomics.wait(sinkState, 0, pending, remaining)
+    }
     process.kill(process.pid, "SIGKILL")
   }
   if (!log) continue
@@ -265,11 +278,11 @@ for (;;) {
     }
     if (age >= nextLineAt) {
       count += 1
-      writeSync(2, renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message, true) }))
+      emit(renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message, true) }))
       nextLineAt += log.repeatEveryMs
     }
   } else if (count > 0) {
-    writeSync(2, renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered, false) }))
+    emit(renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered, false) }))
     count = 0
     stallStamp = -1
   }

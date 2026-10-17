@@ -35,7 +35,12 @@ dog.set("inFlight", 0)
 If the worker dies, the main thread writes `watchdog <label>: its worker failed, so this
 process is no longer watched: <reason>` to stderr; only `disarm()` ends the watch quietly.
 
-Lines are written with `writeSync` to stderr and are built only from shared
+Lines reach stderr through loggily's line sink (`loggily/sink`): a writer thread
+owns the one blocking write, so a stderr whose reader has stalled parks neither
+the watchdog nor the main thread; a kill waits at most 1 s for its line to reach
+the kernel and then goes ahead regardless; lines past the sink's 64 KiB bound
+are dropped and counted, and the next line written says how many and for how
+long. Lines are built only from shared
 memory: `{elapsed}`, `{elapsedS}`, `{count}`, `{time}`, integer fields as
 `{name}`, table names as `{name:name}` (publish a negative code for "none"),
 and an epoch-ms time as its age, `{name:ageS}` (`4.2s`, or `none` for 0).
