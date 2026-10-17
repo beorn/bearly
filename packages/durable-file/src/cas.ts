@@ -2,7 +2,7 @@
  * Neutral exact-bytes file CAS. Every cooperating writer uses the same adjacent lock.
  * Policy (schema, generation, refusal detail) remains with each caller.
  */
-import { tryAcquireFlock } from "@bearly/flock"
+import { acquireFlockWithTimeout, tryAcquireFlock } from "@bearly/flock"
 import { mkdirSync, readFileSync, rmSync } from "node:fs"
 import { dirname } from "node:path"
 import { atomicWriteFileSync, syncDirectorySync } from "./atomic.ts"
@@ -23,13 +23,14 @@ export function commitFileBytesIfUnchanged(
   path: string,
   expectedRaw: string | null,
   nextRaw: string,
+  options?: { readonly lockTimeoutMs?: number },
 ): ExactFileCommitResult {
   return withAdjacentFileLock(path, () => {
     const currentRaw = readRawOrNull(path)
     if (currentRaw !== expectedRaw) return { ok: false, reason: "changed", currentRaw }
     atomicWriteFileSync(path, nextRaw)
     return { ok: true }
-  })
+  }, options?.lockTimeoutMs)
 }
 
 /**
@@ -100,10 +101,12 @@ export function writeFileBytesLocked(path: string, nextRaw: string): LockedFileW
   })
 }
 
-function withAdjacentFileLock<T>(path: string, write: () => T): T | { readonly ok: false; readonly reason: "locked" } {
+function withAdjacentFileLock<T>(path: string, write: () => T, timeoutMs?: number): T | { readonly ok: false; readonly reason: "locked" } {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const lockPath = `${path}.lock`
-  using lock = tryAcquireFlock(lockPath, { fileMode: 0o600 })
+  using lock = timeoutMs === undefined || timeoutMs === 0
+    ? tryAcquireFlock(lockPath, { fileMode: 0o600 })
+    : acquireFlockWithTimeout(lockPath, timeoutMs, { fileMode: 0o600 })
   if (lock === null) return { ok: false, reason: "locked" }
   return write()
 }

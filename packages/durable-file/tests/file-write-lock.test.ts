@@ -43,6 +43,30 @@ afterEach(() => {
 })
 
 describe("locked file writes", () => {
+  test("CAS opt-in waits for a real holder, times out once, and preserves immediate default and changed bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "durable-cas-wait-"))
+    const path = join(dir, "manifest.json")
+    const ready = join(dir, "ready")
+    writeFileSync(path, "before")
+    const holder = Bun.spawn([process.execPath, fileURLToPath(new URL("../../flock/tests/fixtures/writer.ts", import.meta.url)), "hold", `${path}.lock`, ready, "600"], { stdout: "ignore", stderr: "pipe" })
+    try {
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true))
+      const immediate = performance.now()
+      expect(commitFileBytesIfUnchanged(path, "before", "after")).toEqual({ ok: false, reason: "locked" })
+      expect(performance.now() - immediate).toBeLessThan(200)
+      const timed = performance.now()
+      expect(commitFileBytesIfUnchanged(path, "before", "after", { lockTimeoutMs: 150 })).toEqual({ ok: false, reason: "locked" })
+      expect(performance.now() - timed).toBeGreaterThanOrEqual(125)
+      expect(readFileSync(path, "utf8")).toBe("before")
+      expect(commitFileBytesIfUnchanged(path, "before", "after", { lockTimeoutMs: 1500 })).toEqual({ ok: true })
+      expect(readFileSync(path, "utf8")).toBe("after")
+      expect(commitFileBytesIfUnchanged(path, "before", "stale", { lockTimeoutMs: 100 })).toEqual({ ok: false, reason: "changed", currentRaw: "after" })
+    } finally {
+      holder.kill()
+      await holder.exited
+      safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
+    }
+  })
   test("a writer killed while holding the production lock cannot wedge its successor", async () => {
     const dir = mkdtempSync(join(tmpdir(), "inhab-file-write-kill-"))
     const path = join(dir, "status")

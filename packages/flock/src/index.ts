@@ -16,6 +16,11 @@ export function acquireFlockBlocking(path: string, options?: FlockOpenOptions): 
   return runtime.acquireBlocking(path, options)
 }
 
+/** Try until the monotonic timeout expires, parking this thread between attempts; null means still held. */
+export function acquireFlockWithTimeout(path: string, timeoutMs: number, options?: FlockOpenOptions): FlockHandle | null {
+  return runtime.acquireWithTimeout(path, timeoutMs, options)
+}
+
 /** Adopt an inherited descriptor only when it names and owns this exact flock. */
 export function adoptInheritedFlock(path: string, fd: number): FlockHandle | null {
   return runtime.adopt(path, fd)

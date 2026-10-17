@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add bounded synchronous flock acquisition with parked sleeps and the existing shared descriptor/errno lifecycle.
+
 ## 0.2.2
 
 - Runs under Node 24 as well as Bun: the lock core sits behind one platform seam, with a `bun:ffi` binding for Bun and a `koffi` binding for Node (hh 26964). `engines` now declares `node >=24`, and `koffi` is a dependency.
