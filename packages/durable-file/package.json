@@ -1,6 +1,6 @@
 {
   "name": "@bearly/durable-file",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Crash-durable atomic files and strict verdict artifacts",
   "keywords": [
     "atomic-write",

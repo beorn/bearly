@@ -5,7 +5,7 @@
  * @consumer @ag/code/shared-status-writer-lock
  * @testonly none
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -67,7 +67,7 @@ describe("locked file writes", () => {
     } finally {
       holder.kill()
       await holder.exited
-      rmSync(dir, { recursive: true, force: true })
+      safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
     }
   })
 
@@ -90,7 +90,7 @@ describe("locked file writes", () => {
       expect(writeFileBytesLocked(path, completeBytes)).toEqual({ ok: true })
       expect(readFileSync(path, "utf8")).toBe(completeBytes)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
     }
   })
 
@@ -104,7 +104,7 @@ describe("locked file writes", () => {
       expect(readFileSync(path)).toEqual(bytes)
       expect(faults.offsets).toEqual(Array.from({ length: Math.ceil(bytes.length / 3) }, (_, index) => index * 3))
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
     }
   })
 
@@ -119,7 +119,7 @@ describe("locked file writes", () => {
       faults.directoryFailure = false
       expect(writeFileBytesLocked(path, "recovered\n")).toEqual({ ok: true })
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
     }
   })
 })
@@ -137,7 +137,7 @@ test("CAS compares the exact observed bytes, including absence, before publishin
     expect(commitFileBytesIfUnchanged(path, "first\n", "next\n")).toEqual({ ok: true })
     expect(readFileSync(path, "utf8")).toBe("next\n")
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    safeRemoveSync(dir, { within: tmpdir(), allowMissing: true })
   }
 })
 
