@@ -123,7 +123,7 @@ jobs:
       - run: mkdir "$RUNNER_TEMP/verified-tarballs"
       - name: Verify the repository and retain its exact tarballs
         id: verify
-        uses: beorn/verify-publishable@0ac60c2f5fccfcc6364d9d5c555e1f04895a6454
+        uses: beorn/verify-publishable@82ad90c9998825c060c61729cfdab5ca4d7a174e
         with:
           output-dir: ${{ runner.temp }}/verified-tarballs
       - name: Keep the verifier's report beside the tarballs
