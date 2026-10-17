@@ -130,9 +130,9 @@ describe("armWatchdog: a stderr nobody reads never delays the kill (km 25947)", 
         `  log: { afterMs: 300, repeatEveryMs: 300, message: "STALL n={count}\\n", recovered: "RECOVERED\\n" },`,
         `  kill: { afterMs: 1_500, message: "KILLED after {elapsed}ms\\n" },`,
         `})`,
-        // Past the pipe's 64 KiB the main thread parks inside the kernel's pipe write and never stamps again; the
-        // worker's own line writes to the same fd then park the same way unless the kill is sequenced first.
-        `const line = "x".repeat(1024) + "\\n"`,
+        // Whole 1 KiB chunks fill the FIFO without leaving room for the worker's short warning or kill line.
+        // A 1,025-byte chunk can park the main thread with space still free, letting a broken worker kill pass.
+        `const line = "x".repeat(1024)`,
         `for (let i = 0; i < 4096; i++) writeSync(2, line)`,
         `console.error("WRITES COMPLETED — stderr was drained, the row proved nothing")`,
       ].join("\n"),
