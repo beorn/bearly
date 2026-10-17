@@ -5,7 +5,7 @@ import { F_GETFD, supportedPlatform } from "../../src/native-platform.ts"
 const FIONCLEX = { linux: 0x5450, darwin: 0x2000_6602 } as const
 import { adoptInheritedFlock, tryAcquireFlock } from "../../src/index.ts"
 
-const [mode, lockPath, readyPath] = process.argv.slice(2)
+const [mode, lockPath, readyPath, holdMs] = process.argv.slice(2)
 if (mode === undefined || lockPath === undefined) {
   throw new Error("usage: writer.ts <hold|once|adopt|adopt-cloexec> <lock-path> [ready-path]")
 }
@@ -60,5 +60,9 @@ if (mode === "once") process.exit(0)
 if (mode !== "hold" || readyPath === undefined) throw new Error(`unknown writer mode: ${mode}`)
 
 writeFileSync(readyPath, "ready")
-setInterval(() => {}, 60_000)
-await new Promise(() => {})
+if (holdMs !== undefined) {
+  await new Promise((resolve) => setTimeout(resolve, Number(holdMs)))
+} else {
+  setInterval(() => {}, 60_000)
+  await new Promise(() => {})
+}

@@ -62,8 +62,11 @@ using lock = acquireFlockBlocking("/tmp/my-app/migration.lock")
 runMigration()
 ```
 
-Timed waits, retry cadence, cancellation, path policy, and error wording belong
-to the caller. Build those policies by looping over `tryAcquireFlock()`.
+For a finite synchronous wait, `acquireFlockWithTimeout(path, timeoutMs, options?)`
+returns a handle or `null` when the bound expires. It uses one descriptor and
+monotonic time, parking the whole calling thread between attempts. The caller
+chooses the bound; cancellation, path policy and error wording stay with it.
+Existing `tryAcquireFlock()` still tries immediately without waiting.
 
 ## Descriptor inheritance
 

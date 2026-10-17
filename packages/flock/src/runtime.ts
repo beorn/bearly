@@ -54,43 +54,57 @@ export interface FlockHandle {
 export interface FlockRuntime {
   readonly tryAcquire: (path: string, options?: FlockOpenOptions) => FlockHandle | null
   readonly acquireBlocking: (path: string, options?: FlockOpenOptions) => FlockHandle
+  readonly acquireWithTimeout: (path: string, timeoutMs: number, options?: FlockOpenOptions) => FlockHandle | null
   readonly adopt: (path: string, fd: number) => FlockHandle | null
   readonly isHeld: (path: string) => boolean
 }
 
+// Shared parked wait word: bounded acquisition sleeps instead of spinning or allocating per retry.
+const waitWord = new Int32Array(new SharedArrayBuffer(4))
+
 export function createFlockRuntime(io: FlockIo, options: FlockRuntimeOptions): FlockRuntime {
   const heldIdentities = new Set<string>()
 
-  return {
-    tryAcquire(path, openOptions = {}) {
-      const candidate = openCandidate(io, path, openOptions)
-      if (heldIdentities.has(candidate.identity)) {
+  const acquire = (path: string, mode: "try" | "block" | number, openOptions: FlockOpenOptions): FlockHandle | null => {
+    if (typeof mode === "number" && (!Number.isFinite(mode) || mode < 0)) {
+      throw new TypeError(`flock timeout must be finite and nonnegative: ${path}`)
+    }
+    const deadline = typeof mode === "number" ? performance.now() + mode : undefined
+    const candidate = openCandidate(io, path, openOptions)
+    if (heldIdentities.has(candidate.identity)) {
+      io.close(candidate.fd)
+      if (mode === "block") throw new Error(`flock already held by this process: ${path}`)
+      return null
+    }
+    while (true) {
+      const result = flockOrClose(io, candidate.fd, mode === "block" ? "block" : "try")
+      if (result.ok) return publishHandle(io, heldIdentities, candidate, openOptions.body)
+      if (mode === "block" && result.errno === options.interruptedErrno) continue
+      const wouldBlock = options.wouldBlockErrnos.includes(result.errno)
+      if (mode === "block" || (!wouldBlock && !(deadline !== undefined && result.errno === options.interruptedErrno))) {
+        io.close(candidate.fd)
+        throw flockError(path, result.errno)
+      }
+      const remaining = deadline === undefined ? 0 : deadline - performance.now()
+      if (remaining <= 0) {
         io.close(candidate.fd)
         return null
       }
-      const result = flockOrClose(io, candidate.fd, "try")
-      if (!result.ok) {
-        io.close(candidate.fd)
-        if (options.wouldBlockErrnos.includes(result.errno)) return null
-        throw flockError(path, result.errno)
-      }
-      return publishHandle(io, heldIdentities, candidate, openOptions.body)
+      Atomics.wait(waitWord, 0, 0, Math.min(remaining, 25))
+    }
+  }
+
+  return {
+    tryAcquire(path, openOptions = {}) {
+      return acquire(path, "try", openOptions)
     },
 
     acquireBlocking(path, openOptions = {}) {
-      const candidate = openCandidate(io, path, openOptions)
-      if (heldIdentities.has(candidate.identity)) {
-        io.close(candidate.fd)
-        throw new Error(`flock already held by this process: ${path}`)
-      }
-      while (true) {
-        const result = flockOrClose(io, candidate.fd, "block")
-        if (result.ok) break
-        if (result.errno === options.interruptedErrno) continue
-        io.close(candidate.fd)
-        throw flockError(path, result.errno)
-      }
-      return publishHandle(io, heldIdentities, candidate, openOptions.body)
+      return acquire(path, "block", openOptions) as FlockHandle
+    },
+
+    acquireWithTimeout(path, timeoutMs, openOptions = {}) {
+      return acquire(path, timeoutMs, openOptions)
     },
 
     adopt(path, fd) {
