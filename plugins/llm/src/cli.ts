@@ -597,7 +597,7 @@ RECOVERY (for interrupted deep research)
 
 /** Keep the original parsed context and image inputs while retrying one model. */
 function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
-  return (model: string, bound: number, retryInstruction?: string, savedReport?: string): string => {
+  return (model: string, bound: number | undefined, retryInstruction?: string, savedReport?: string): string => {
     const entry =
       process.argv[1] && existsSync(resolve(process.argv[1]))
         ? resolve(process.argv[1])
@@ -608,8 +608,7 @@ function retryCommandFor(question: string, mode: "ask" | "pro" | "deep") {
       retryInstruction !== undefined || mode === "ask" ? "--ask" : mode === "deep" ? "--deep" : "pro",
       "--model",
       model,
-      "--max-output-tokens",
-      String(bound),
+      ...(bound === undefined ? [] : ["--max-output-tokens", String(bound)]),
     ]
     for (const flag of retryInstruction === undefined ? ["--context", "--context-file", "--image", "--bead"] : []) {
       for (const value of getAllArgs(flag)) command.push(flag, value)

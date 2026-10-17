@@ -106,7 +106,7 @@ export async function runProDual(options: {
   /** Resolve and print the dual-pro fleet without provider calls or writes. */
   dryRun?: boolean
   maxOutputTokens?: number
-  retryCommand?: (model: string, bound: number, retryInstruction?: string, savedReport?: string) => string
+  retryCommand?: (model: string, bound: number | undefined, retryInstruction?: string, savedReport?: string) => string
 }): Promise<void> {
   const {
     question,
@@ -1156,6 +1156,9 @@ export async function runProDual(options: {
                 if (affordable === undefined) return `${leg.model}: ${failure.remedy}`
                 if (options.retryCommand) return options.retryCommand(leg.model, affordable)
                 return `llm pro --model ${quotePosixArgument(leg.model)} --max-output-tokens ${affordable} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(question)}`
+              }
+              if (options.retryCommand) {
+                return options.retryCommand(leg.model, options.maxOutputTokens, undefined, outputFile)
               }
               return `llm pro --model ${quotePosixArgument(leg.model)}${budgetFlag} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(question)}`
             })
