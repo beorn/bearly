@@ -50,8 +50,9 @@ describe("a CLI's output reaches a slow reader whole (hh 27071)", () => {
     }
   })
 
-  test("a reader that closes early fails the command by name with its arguments, exit 1, and no stack", async () => {
-    for (const delaySeconds of [0, 1]) {
+  test.each([0, 1])(
+    "a reader that closes early after %ss fails the command by name with its arguments, exit 1, and no stack",
+    async (delaySeconds) => {
       const run = await slowPipeRoundTrip(["bun", fixture("routed-log"), "--json"], {
         closeAfterBytes: 100,
         delaySeconds,
@@ -59,6 +60,6 @@ describe("a CLI's output reaches a slow reader whole (hh 27071)", () => {
       expect(run.exitCode, `reader delay ${String(delaySeconds)}s`).toBe(1)
       expect(run.stderr).toContain("fixture: stdout refused the output of `fixture --json`: EPIPE")
       expect(run.stderr).not.toMatch(/^\s+at /mu)
-    }
-  })
+    },
+  )
 })
