@@ -9,9 +9,9 @@
  * @testonly none
  */
 import { afterEach, describe, expect, test } from "vitest"
-import { spawn } from "node:child_process"
+import { spawn, execFileSync } from "node:child_process"
 import { once } from "node:events"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { constants, closeSync, openSync, readSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -23,70 +23,64 @@ afterEach(() => {
 })
 
 /**
- * Like the other rows' scenario(), but the parent never reads the child's stderr until the child is gone: the
- * pipe fills, and every blocking write to fd 2 after that parks its caller in the kernel. A guard SIGTERM after
- * `guardMs` ends a child the watchdog never killed, so a guard kill can never pass as a watchdog kill.
+ * A FIFO passed as fd 2 keeps the unread boundary independent of ChildProcess stream buffering: under Bun
+ * 1.3.14, pausing child.stderr still lets a child complete 4 MB of writes. Without unreadMs the parent drains
+ * only after exit; otherwise it starts after that delay. Guard SIGTERM cannot pass as watchdog SIGKILL.
  */
-async function scenarioUndrained(
+async function scenario(
   body: string,
   guardMs: number,
-): Promise<{ code: number | null; signal: string | null; stderr: string; elapsedMs: number; guarded: boolean }> {
-  const root = mkdtempSync(join(tmpdir(), "bearly-watchdog-undrained-"))
-  roots.push(root)
-  const script = join(root, "scenario.ts")
-  writeFileSync(script, `import { armWatchdog } from ${JSON.stringify(MODULE)}\n${body}`)
-  const started = Date.now()
-  const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "pipe"] })
-  // A paused stream never asks libuv to read, so nothing drains the pipe while the child runs.
-  child.stderr.pause()
-  let guarded = false
-  const guard = setTimeout(() => {
-    guarded = true
-    child.kill("SIGTERM")
-  }, guardMs)
-  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null]
-  clearTimeout(guard)
-  const elapsedMs = Date.now() - started
-  let stderr = ""
-  child.stderr.setEncoding("utf8")
-  for (let chunk = child.stderr.read() as string | null; chunk !== null; chunk = child.stderr.read() as string | null) {
-    stderr += chunk
-  }
-  return { code, signal, stderr, elapsedMs, guarded }
-}
-
-/**
- * Like scenarioUndrained, but the parent starts reading after `unreadMs`: the pipe fills, the sink's bound fills and
- * lines drop; once the reader drains, the backlog flows and the sink announces what it dropped on the next line.
- */
-async function scenarioStalled(
-  body: string,
-  unreadMs: number,
-  guardMs: number,
+  unreadMs?: number,
 ): Promise<{ code: number | null; signal: string | null; stderr: string; elapsedMs: number; guarded: boolean }> {
   const root = mkdtempSync(join(tmpdir(), "bearly-watchdog-stalled-"))
   roots.push(root)
   const script = join(root, "scenario.ts")
+  const fifo = join(root, "stderr.fifo")
+  execFileSync("mkfifo", [fifo])
+  const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK)
+  const writer = openSync(fifo, constants.O_WRONLY)
   writeFileSync(script, `import { armWatchdog } from ${JSON.stringify(MODULE)}\n${body}`)
   const started = Date.now()
-  const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "pipe"] })
-  child.stderr.pause()
+  const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", writer] })
   let guarded = false
   const guard = setTimeout(() => {
     guarded = true
     child.kill("SIGTERM")
   }, guardMs)
   let stderr = ""
-  setTimeout(() => {
-    child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk
-    })
-    // A stream paused explicitly does not resume when a data listener is attached.
-    child.stderr.resume()
-  }, unreadMs)
-  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null]
-  clearTimeout(guard)
+  const buffer = Buffer.alloc(65536)
+  const drain = () => {
+    for (;;) {
+      let count: number
+      try {
+        count = readSync(reader, buffer, 0, buffer.length, null)
+      } catch (error) {
+        if (error !== null && typeof error === "object" && "code" in error && error.code === "EAGAIN") return
+        throw error
+      }
+      if (count === 0) return
+      stderr += buffer.toString("utf8", 0, count)
+    }
+  }
+  let draining: ReturnType<typeof setInterval> | undefined
+  const startDraining =
+    unreadMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          drain()
+          draining = setInterval(drain, 5)
+        }, unreadMs)
+  const [code, signal] = (await once(child, "exit").finally(() => {
+    clearTimeout(guard)
+    clearTimeout(startDraining)
+    clearInterval(draining)
+    try {
+      closeSync(writer)
+      drain()
+    } finally {
+      closeSync(reader)
+    }
+  })) as [number | null, NodeJS.Signals | null]
   return { code, signal, stderr, elapsedMs: Date.now() - started, guarded }
 }
 
@@ -94,7 +88,7 @@ describe("armWatchdog: lines the sink could not hold while stderr was blocked ar
   test("once the reader drains, the backlog flows whole and the next line says how many were dropped", async () => {
     // A 3 s spin logged every 10 ms with a 1 KB line against a 64 KiB pipe and a 64 KiB sink bound, unread for 2.5 s:
     // drops are certain. The stall still recovers, the watch is disarmed, and the process exits by itself.
-    const { signal, code, stderr, guarded } = await scenarioStalled(
+    const { signal, code, stderr, guarded } = await scenario(
       [
         `const dog = armWatchdog({`,
         `  label: "scenario",`,
@@ -108,8 +102,8 @@ describe("armWatchdog: lines the sink could not hold while stderr was blocked ar
         `clearInterval(tick)`,
         `dog.disarm()`,
       ].join("\n"),
-      2_500,
       15_000,
+      2_500,
     )
     expect(guarded, stderr.slice(-300)).toBe(false)
     expect(signal ?? code).toBe(0)
@@ -127,7 +121,7 @@ describe("armWatchdog: lines the sink could not hold while stderr was blocked ar
 
 describe("armWatchdog: a stderr nobody reads never delays the kill (km 25947)", () => {
   test("a main thread parked in a blocking write to a full stderr is still killed at the bound", async () => {
-    const { signal, code, stderr, elapsedMs, guarded } = await scenarioUndrained(
+    const { signal, code, stderr, elapsedMs, guarded } = await scenario(
       [
         `const { writeSync } = await import("node:fs")`,
         `const dog = armWatchdog({`,
