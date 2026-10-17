@@ -1,6 +1,6 @@
 {
   "name": "@bearly/durable-file",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Crash-durable atomic files and strict verdict artifacts",
   "keywords": [
     "atomic-write",
@@ -27,7 +27,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./verdict": "./src/verdict.ts"
+    "./verdict": "./src/verdict.ts",
+    "./cas": "./src/cas.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -39,6 +40,10 @@
       "./verdict": {
         "types": "./dist/verdict.d.mts",
         "import": "./dist/verdict.mjs"
+      },
+      "./cas": {
+        "types": "./dist/cas.d.mts",
+        "import": "./dist/cas.mjs"
       }
     }
   },
@@ -47,6 +52,9 @@
     "test": "bunx --bun vitest run",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@bearly/flock": "^0.2.2"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
@@ -60,7 +68,8 @@
     "dts": true,
     "entry": [
       "src/index.ts",
-      "src/verdict.ts"
+      "src/verdict.ts",
+      "src/cas.ts"
     ],
     "format": "esm"
   },
