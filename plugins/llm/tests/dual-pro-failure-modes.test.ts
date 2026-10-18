@@ -136,7 +136,14 @@ describe("dual-pro failure modes", () => {
       if (!followUpLine) throw new Error("Pro did not emit a targeted follow-up")
       if (tokenStopped) {
         const envelope = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
-        expect(envelope).toMatchObject({ b: { status: "incomplete", finishReason: "length", rawFinishReason: "max_output_tokens", appliedMaxOutputTokens: requestedBound } })
+        expect(envelope).toMatchObject({
+          b: {
+            status: "incomplete",
+            finishReason: "length",
+            rawFinishReason: "max_output_tokens",
+            appliedMaxOutputTokens: requestedBound,
+          },
+        })
         expect(original.toString()).toContain("RETAINED_PARTIAL_OPINION")
         expect(original.toString()).toContain("max_output_tokens")
         expect(env.stderr.join("\n")).toContain("same bound will stop again")
