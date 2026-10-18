@@ -11,7 +11,8 @@
 
 import { retrieveResponse, pollForCompletion } from "../lib/openai-deep"
 import { listPartials, findPartialByResponseId, cleanupPartials } from "../lib/persistence"
-import { getModel } from "../lib/types"
+import { getModel, type ModelResponse } from "../lib/types"
+import { outputTokenStop } from "../lib/format"
 import { emitContent, emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
@@ -62,6 +63,7 @@ async function writeRecoveredResponse(
   responseId: string,
   topic: string | undefined,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined,
+  completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
 ): Promise<string> {
   const { buildOutputPath, finalizeOutput } = await import("../lib/format")
   const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
@@ -72,7 +74,11 @@ async function writeRecoveredResponse(
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
       : undefined,
     responseId,
-    status: "recovered",
+    status: completion !== undefined && outputTokenStop(completion) !== undefined ? "incomplete" : "recovered",
+    finishReason: completion?.finishReason,
+    rawFinishReason: completion?.rawFinishReason,
+    appliedMaxOutputTokens: completion?.appliedMaxOutputTokens,
+    ...(completion === undefined ? {} : { error: outputTokenStop(completion) }),
   })
   return outputFile
 }
@@ -93,6 +99,9 @@ export async function pollResponseToCompletion(
 ): Promise<{
   status: string
   content: string
+  finishReason?: string
+  rawFinishReason?: string
+  appliedMaxOutputTokens?: number
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
   error?: string
 }> {
@@ -159,6 +168,10 @@ export async function pollResponseToCompletion(
  * just fall through to the caller's "still running" path.
  */
 export type RecoveryOutcome =
+  | ({ kind: "incomplete"; content: string; error: string; usage?: ModelResponse["usage"] } & Pick<
+      ModelResponse,
+      "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens"
+    >)
   | {
       kind: "completed"
       content: string
@@ -179,10 +192,15 @@ export function classifyRecovery(
   result: {
     status: string
     content: string
+    finishReason?: string
+    rawFinishReason?: string
+    appliedMaxOutputTokens?: number
     error?: string
     usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
   },
 ): RecoveryOutcome {
+  const stopped = outputTokenStop(result)
+  if (stopped !== undefined) return { ...result, kind: "incomplete", error: stopped }
   // Local client abort — NEVER delete the partial. The remote job may still
   // be running; re-running `recover` later should still work. "cancelled"
   // is reserved for remote provider-terminated runs.
@@ -262,15 +280,20 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
       const outcome = classifyRecovery(partial, recovered)
       const { completePartial } = await import("../lib/persistence")
       switch (outcome.kind) {
+        case "incomplete":
         case "completed": {
-          console.error(`    ✅ Recovered from ${providerName} (${outcome.content.length} chars)`)
+          if (outcome.kind === "incomplete") {
+            console.error(`    Incomplete: ${outcome.error} Partial kept for recovery.`)
+          } else {
+            console.error(`    ✅ Recovered from ${providerName} (${outcome.content.length} chars)`)
+          }
           console.error(`\n--- Recovered Response ---\n`)
           // emitContent → stdout in legacy, stderr in JSON mode (so the
           // single JSON envelope line is the only thing on stdout).
           emitContent(outcome.content)
           if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens} tokens]`)
           // Keep partial on disk as a recovery cache. cleanupPartials(24h) ages out.
-          completePartial(partial.path, { delete: false, usage: outcome.usage })
+          if (outcome.kind === "completed") completePartial(partial.path, { delete: false, usage: outcome.usage })
           console.error(`\n--- End Recovered Response ---\n`)
           break
         }
@@ -397,6 +420,12 @@ export async function runRecover(options: {
     const outcome = classifyRecovery(localPartial ?? undefined, result)
     const { completePartial } = await import("../lib/persistence")
     switch (outcome.kind) {
+      case "incomplete": {
+        console.error(outcome.error)
+        await writeRecoveredResponse(outcome.content, responseId, localPartial?.metadata.topic, outcome.usage, outcome)
+        process.exit(1)
+        break
+      }
       case "completed": {
         console.error("\nFull response from OpenAI:\n")
         emitContent(outcome.content)
@@ -526,6 +555,12 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   const result = await withSignalAbort((signal) =>
     pollResponseToCompletion(responseId, /* silentProgress */ true, signal),
   )
+
+  if (outputTokenStop(result) !== undefined) {
+    await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage, result)
+    process.exit(1)
+    return
+  }
 
   if (result.status === "completed" && result.content) {
     // finalizeOutput() inside writeRecoveredResponse already emits

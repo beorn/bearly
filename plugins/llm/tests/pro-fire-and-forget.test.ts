@@ -47,6 +47,69 @@ beforeEach(() => {
 })
 
 describe("queryOpenAIBackground — persistence and recovery", () => {
+  it.each(["background", "deep-sync", "deep-poll"])(
+    "preserves a terminal output-token stop through %s and await",
+    async (route) => {
+      const env = makeTestEnv()
+      const responseId = `resp_token_stop_${route}`
+      const terminal = {
+        id: responseId,
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        max_output_tokens: 4096,
+        output: [{ type: "message", content: [{ type: "output_text", text: "partial answer" }] }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }
+      responsesCreateMock.mockResolvedValue(route === "deep-sync" ? terminal : { id: responseId })
+      responsesRetrieveMock.mockResolvedValue(terminal)
+      vi.resetModules()
+      const api = await import("../src/lib/openai-deep")
+      const model = (await import("../src/lib/types")).getModel("gpt-5.4-pro")!
+      const result =
+        route === "background"
+          ? await api.queryOpenAIBackground({ prompt: "question", model, topic: "partial", maxOutputTokens: 4096 })
+          : await api.queryOpenAIDeepResearch({
+              topic: "question",
+              model,
+              background: route !== "deep-sync",
+              maxOutputTokens: 4096,
+            })
+      expect(result).toMatchObject({
+        content: "partial answer",
+        finishReason: "length",
+        rawFinishReason: "max_output_tokens",
+        appliedMaxOutputTokens: 4096,
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      })
+      expect(result.error).toBeUndefined()
+      expect(responsesRetrieveMock).toHaveBeenCalledTimes(route === "deep-sync" ? 0 : 1)
+      const { findPartialByResponseId } = await import("../src/lib/persistence")
+      const partial = findPartialByResponseId(responseId)
+      if (route !== "deep-sync") {
+        expect(partial?.content).toContain("partial answer")
+        expect(partial?.metadata.completedAt).toBeUndefined()
+      }
+      const { runAwait, runRecover } = await import("../src/cmd/recover")
+      await expect(runAwait({ responseId })).rejects.toThrow("__exit_1")
+      const envelope = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+      expect(envelope).toMatchObject({
+        status: "incomplete",
+        rawFinishReason: "max_output_tokens",
+        chars: "partial answer".length,
+      })
+      expect(findPartialByResponseId(responseId)?.metadata.completedAt).toBeUndefined()
+      await expect(runRecover({ responseId, clean: false, cleanStale: false, includeAll: false })).rejects.toThrow(
+        "__exit_1",
+      )
+      const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+      expect(recovered).toMatchObject({
+        status: "incomplete",
+        rawFinishReason: "max_output_tokens",
+        chars: "partial answer".length,
+      })
+    },
+  )
+
   it("persists a partial before polling, returns content on completion", async () => {
     makeTestEnv()
     const responseId = "resp_pro_happy_1"

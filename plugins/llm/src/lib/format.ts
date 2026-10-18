@@ -10,7 +10,7 @@ import { deniedProviders } from "./denied-providers"
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { estimateCost, formatCost, resolveCostForModel, type ServedBy } from "./types"
+import { estimateCost, formatCost, resolveCostForModel, type ServedBy, type ModelResponse } from "./types"
 import { resolveSubscriptionCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
@@ -26,8 +26,11 @@ export interface LegMeta {
   tokens?: { prompt: number; completion: number; total: number }
   cost?: number
   durationMs?: number
-  status?: "completed" | "failed"
+  status?: "completed" | "incomplete" | "failed"
   error?: string
+  finishReason?: string
+  rawFinishReason?: string
+  appliedMaxOutputTokens?: number
   /** Which mechanism answered this leg (subscription CLI routes, bead 29147). */
   servedBy?: ServedBy
 }
@@ -39,7 +42,7 @@ export interface ProCompletion {
   missing: ReadonlyArray<{
     slot: "a" | "b" | "c" | "d"
     model: string
-    cause: "dropped-before-dispatch" | "unavailable" | "timed-out" | "errored"
+    cause: "dropped-before-dispatch" | "unavailable" | "timed-out" | "errored" | "output-token-limit"
     detail: string
   }>
   judges: {
@@ -71,6 +74,10 @@ export interface OutputMeta {
   costUsd?: number
   durationMs?: number
   responseId?: string
+  finishReason?: string
+  rawFinishReason?: string
+  appliedMaxOutputTokens?: number
+  error?: string
   status?: "completed" | "incomplete" | "failed" | "background" | "recovered"
   completion?: ProCompletion
   /** Dual-pro: per-leg sections. A/B are mainstays (always present in
@@ -181,6 +188,10 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
  */
 export function buildResultJson(content: string, meta?: OutputMeta): Record<string, unknown> {
   const result: Record<string, unknown> = {}
+  if (meta?.finishReason !== undefined) result.finishReason = meta.finishReason
+  if (meta?.rawFinishReason !== undefined) result.rawFinishReason = meta.rawFinishReason
+  if (meta?.appliedMaxOutputTokens !== undefined) result.appliedMaxOutputTokens = meta.appliedMaxOutputTokens
+  if (meta?.error !== undefined) result.error = meta.error
   if (meta?.query) result.query = meta.query
   result.chars = content.length
   if (meta?.model) result.model = meta.model
@@ -234,6 +245,9 @@ function legToEnvelope(leg: LegMeta): Record<string, unknown> {
   if (leg.cost != null) out.cost = leg.cost
   if (leg.durationMs != null) out.durationMs = leg.durationMs
   if (leg.status) out.status = leg.status
+  if (leg.finishReason !== undefined) out.finishReason = leg.finishReason
+  if (leg.rawFinishReason !== undefined) out.rawFinishReason = leg.rawFinishReason
+  if (leg.appliedMaxOutputTokens !== undefined) out.appliedMaxOutputTokens = leg.appliedMaxOutputTokens
   if (leg.servedBy) out.servedBy = leg.servedBy
   if (leg.error) out.error = leg.error
   return out
@@ -319,6 +333,13 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
     obj.tokens = meta.tokens
   }
   if (meta?.durationMs) obj.durationMs = meta.durationMs
+  if (meta?.status === "incomplete") {
+    obj.status = meta.status
+    if (meta.finishReason !== undefined) obj.finishReason = meta.finishReason
+    if (meta.rawFinishReason !== undefined) obj.rawFinishReason = meta.rawFinishReason
+    if (meta.appliedMaxOutputTokens !== undefined) obj.appliedMaxOutputTokens = meta.appliedMaxOutputTokens
+    if (meta.error !== undefined) obj.error = meta.error
+  }
   return `<!-- llm-meta: ${JSON.stringify(obj)} -->`
 }
 
@@ -397,6 +418,18 @@ function withExclusionNote(message: string | undefined, provider?: import("./typ
   return `${message} (${provider} is excluded by RECALL_LLM_DENY_PROVIDERS on this host — the error above is the provider's own.)`
 }
 
+/** One completion verdict for explicit provider output-token stops, independent of text or usage counts. */
+export function outputTokenStop(
+  response: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
+): string | undefined {
+  if (response.finishReason !== "length" && response.rawFinishReason !== "max_output_tokens") return undefined
+  const bound =
+    response.appliedMaxOutputTokens === undefined
+      ? "applied output bound not measured"
+      : `applied output bound ${response.appliedMaxOutputTokens}`
+  return `Output token limit reached (${bound}; finishReason=${response.finishReason ?? "unavailable"}; rawFinishReason=${response.rawFinishReason ?? "unavailable"}). Partial output is incomplete.`
+}
+
 /** Compute cost, finalize output, and exit — shared by all single-model response modes */
 export async function finishResponse(
   content: string | undefined,
@@ -430,8 +463,10 @@ export async function finishResponse(
   /** Set when a subscription CLI (bead 29147) answered: names the route, the
    *  CLI and the CLI model, and zeroes the dollar cost with a matching source. */
   servedBy?: OutputMeta["servedBy"],
+  completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
 ): Promise<void> {
-  if (!content || content.trim().length === 0) {
+  const stopped = completion === undefined ? undefined : outputTokenStop(completion)
+  if (stopped === undefined && (!content || content.trim().length === 0)) {
     const providerError = withExclusionNote(
       formatBudgetRetry(error?.trim() || undefined, model, retryCommand),
       model.provider,
@@ -515,7 +550,7 @@ export async function finishResponse(
         })
       : undefined
   const cost = resolved !== undefined && resolved.source !== "unknown" ? resolved.usd : undefined
-  await finalizeOutput(content, outputFile, sessionTag, {
+  await finalizeOutput(content ?? "", outputFile, sessionTag, {
     query,
     model: model.displayName,
     tokens: usage
@@ -527,9 +562,21 @@ export async function finishResponse(
     costUsd: cost,
     durationMs,
     responseId,
-    status: "completed",
+    status: stopped === undefined ? "completed" : "incomplete",
+    ...(stopped === undefined ? {} : { error: stopped }),
+    finishReason: completion?.finishReason,
+    rawFinishReason: completion?.rawFinishReason,
+    appliedMaxOutputTokens: completion?.appliedMaxOutputTokens,
     ...(quota ? { quota } : {}),
   })
+  if (stopped !== undefined) {
+    const retry =
+      completion?.appliedMaxOutputTokens === undefined
+        ? "The applied bound is not measured; inspect the provider limit before retrying."
+        : "The same applied bound can stop again; raise --max-output-tokens before retrying."
+    log.error?.(`${stopped} ${retry}`)
+    process.exit(1)
+  }
 }
 
 /** Compute total cost across multiple model responses */

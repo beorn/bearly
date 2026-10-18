@@ -215,6 +215,11 @@ export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>
 export const ModelResponseSchema = z.object({
   model: ModelSchema,
   content: z.string(),
+  /** Terminal facts reported by the provider, absent when the route cannot supply them. */
+  finishReason: z.string().optional(),
+  rawFinishReason: z.string().optional(),
+  /** Output bound actually applied to this request, including context-limit corrections. */
+  appliedMaxOutputTokens: z.number().optional(),
   responseId: z.string().optional(),
   reasoning: z.string().optional(),
   citations: z

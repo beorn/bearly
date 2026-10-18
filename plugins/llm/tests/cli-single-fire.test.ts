@@ -15,7 +15,7 @@
  * holds for every command.
  */
 
-import { describe, it, expect, vi } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import { execFileSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -72,6 +72,40 @@ function resetGenerateTextToOk() {
 }
 
 describe("cli-single-fire", () => {
+  it("history judging excludes a saved token-stopped opinion and retains a completed panel", async () => {
+    const env = makeTestEnv()
+    vi.stubEnv("CLAUDE_PROJECT_DIR", process.cwd())
+    afterEach(() => vi.unstubAllEnvs())
+    resetGenerateTextToOk()
+    generateTextMock.mockResolvedValueOnce({
+      text: "retained partial opinion",
+      finishReason: "length",
+      rawFinishReason: "max_output_tokens",
+      finalStep: { reasoningText: undefined },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    })
+    await runCli(["pro", "--no-challenger", "--no-judge", "-y", "partial question"])
+    await runCli(["pro", "--no-challenger", "--no-judge", "-y", "completed question"])
+    const calls = generateTextMock.mock.calls.length
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify({
+        a: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+        b: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
+        winner: "b",
+        reasoning: "completed comparison",
+      }),
+      finalStep: { reasoningText: undefined },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    })
+    await runCli(["--json", "pro", "--judge-history"])
+    const result = env.stdout
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .at(-1)
+    expect(result).toMatchObject({ eligible: 1, judged: 1 })
+    expect(generateTextMock).toHaveBeenCalledTimes(calls + 1)
+  })
+
   /**
    * @failure A CLI caller's smaller output budget is lost before provider dispatch.
    * @level l1

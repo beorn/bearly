@@ -45,10 +45,11 @@ import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
-import type { ProCompletion } from "../lib/format"
+import { outputTokenStop, type ProCompletion } from "../lib/format"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
+  if (completion.missing.some((leg) => leg.cause === "output-token-limit")) return "incomplete"
   if (completion.returned.length === 0) return "failed"
   if (
     completion.missing.length > 0 ||
@@ -519,18 +520,26 @@ export async function runProDual(options: {
     // queryModel already rendered and redacted this failure. Reclassifying
     // its string for presentation would discard the retained HTTP evidence.
     const errRaw = response?.error ?? described?.message
-    const ok = !errRaw && !!response?.content && response.content.trim().length > 0
-    const error = formatBudgetRetry(
-      errRaw ?? (response && !ok ? "empty content" : undefined),
-      slot.model,
-      options.retryCommand,
-    )
+    const stopped = response === undefined ? undefined : outputTokenStop(response)
+    const ok = stopped === undefined && !errRaw && !!response?.content && response.content.trim().length > 0
+    const error =
+      stopped ??
+      formatBudgetRetry(errRaw ?? (response && !ok ? "empty content" : undefined), slot.model, options.retryCommand)
     return {
       ...slot,
       response,
       error,
       ok,
-      ...(ok ? {} : { missingCause: described?.kind === "timeout" ? ("timed-out" as const) : ("errored" as const) }),
+      ...(ok
+        ? {}
+        : {
+            missingCause:
+              stopped !== undefined
+                ? ("output-token-limit" as const)
+                : described?.kind === "timeout"
+                  ? ("timed-out" as const)
+                  : ("errored" as const),
+          }),
       ...(described === undefined ? {} : { failureKind: described.kind }),
       ...(rawText === undefined ? {} : { rawError: rawText }),
     }
@@ -727,7 +736,11 @@ export async function runProDual(options: {
                   : undefined,
               )
             }
-            const parsed = dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
+            const stopped = outputTokenStop(raw)
+            const parsed =
+              stopped === undefined
+                ? dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
+                : { ok: false as const, kind: "output-token-limit" as const, message: stopped }
             return { raw, cost, parsed }
           }
           let { raw, cost, parsed } = await askJudge(prompt)
@@ -741,15 +754,14 @@ export async function runProDual(options: {
           }
           if (parsed.ok) return { id: pairId, result: parsed.value, cost }
           const artifactPath = `${outputFile}.judge-${pairId}.json`
-          // ModelResponse is the complete normalized response available here;
-          // the adapter does not expose wire bodies, finish reasons or request IDs.
-          const unavailableMetadata = ["finishReason", "requestId", "rawProviderResponse"]
+          const unavailableMetadata = ["requestId", "rawProviderResponse"]
+          if (raw.finishReason === undefined) unavailableMetadata.push("finishReason")
           if (raw.responseId === undefined) unavailableMetadata.push("responseId")
           if (raw.usage === undefined) unavailableMetadata.push("usage")
           const detail = parsed.message.replace(/\s+/g, " ")
           const boundedDetail = detail.length <= 400 ? detail : `${detail.slice(0, 400)}… [cause shortened]`
           const description = `pair ${pairId}, ${raw.model.provider}/${raw.model.modelId}: ${parsed.kind}: ${boundedDetail}`
-          const metadata = `responseId=${raw.responseId ?? "unavailable"}; finishReason=unavailable; requestId=unavailable`
+          const metadata = `responseId=${raw.responseId ?? "unavailable"}; finishReason=${raw.finishReason ?? "unavailable"}; requestId=unavailable`
           let evidence: string
           try {
             await Bun.write(
@@ -931,7 +943,8 @@ export async function runProDual(options: {
     if (i === 0) parts.push(`---\n`)
     else parts.push(`\n---\n`)
     parts.push(`## ${leg.model.displayName}${tag}`)
-    if (leg.ok && leg.response) {
+    if (leg.response?.content.trim()) {
+      if (!leg.ok) parts.push(`⚠️  Incomplete: ${leg.error ?? "unusable opinion"}\n`)
       const cost = legCosts.get(leg.id) ?? 0
       const meta = `_${leg.response.usage?.totalTokens ?? 0} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCost(cost)}_`
       parts.push(meta + "\n")
@@ -986,9 +999,12 @@ export async function runProDual(options: {
     tokens?: { prompt: number; completion: number; total: number }
     cost: number
     durationMs?: number
-    status: "completed" | "failed"
+    status: "completed" | "incomplete" | "failed"
     error?: string
     servedBy?: ServedBy
+    finishReason?: string
+    rawFinishReason?: string
+    appliedMaxOutputTokens?: number
   }
   const envelopeLeg = (leg: LegOutcome): EnvelopeLeg => ({
     model: leg.model.displayName,
@@ -1001,7 +1017,10 @@ export async function runProDual(options: {
       : undefined,
     cost: legCosts.get(leg.id) ?? 0,
     durationMs: leg.response?.durationMs,
-    status: leg.ok ? "completed" : "failed",
+    status: leg.ok ? "completed" : leg.missingCause === "output-token-limit" ? "incomplete" : "failed",
+    finishReason: leg.response?.finishReason,
+    rawFinishReason: leg.response?.rawFinishReason,
+    appliedMaxOutputTokens: leg.response?.appliedMaxOutputTokens,
     error: leg.error,
     servedBy: leg.response?.servedBy,
   })
@@ -1121,7 +1140,7 @@ export async function runProDual(options: {
   // wrong. Keep the legacy "Both dual-pro legs failed" message for the
   // 2-leg case, since downstream scripts grep for it.
   if (status !== "completed") {
-    if (okLegs.length === 0) {
+    if (okLegs.length === 0 && status === "failed") {
       const msg =
         legOutcomes.length === 2
           ? "\n⚠️  Both dual-pro legs failed — see report for details."
@@ -1150,6 +1169,18 @@ export async function runProDual(options: {
         ? completion.missing
             .map((leg) => {
               const outcome = legOutcomes.find((item) => item.id === leg.slot)
+              if (leg.cause === "output-token-limit") {
+                const bound = outcome?.response?.appliedMaxOutputTokens
+                const notice =
+                  bound === undefined
+                    ? "Applied output bound not measured; inspect the provider limit before retrying."
+                    : `Applied output bound ${bound} was reached. ${bound === options.maxOutputTokens ? "The requested bound was applied unchanged and the same bound will stop again. " : ""}Raise --max-output-tokens before retrying; no bound was raised automatically.`
+                const command = options.retryCommand
+                  ? options.retryCommand(leg.model, options.maxOutputTokens, undefined, outputFile)
+                  : `llm pro --model ${quotePosixArgument(leg.model)}${budgetFlag} --context-file ${quotePosixArgument(outputFile)} ${quotePosixArgument(question)}`
+                console.error(`[dual-pro] ${leg.model} retry: ${notice}`)
+                return command
+              }
               const failure = outcome?.error ? describeDispatchFailure(outcome.error, outcome.model) : undefined
               if (failure?.kind === "output-budget") {
                 const affordable = failure.retryOutputTokens
@@ -1225,7 +1256,11 @@ async function appendAbProLog(entry: {
     // never depends on /tmp/llm-*.txt file lifetime (auto-cleaned at 7 days).
     const snapshot = (l: (typeof entry.legs)[number]) => ({
       model: l.model.modelId,
-      ok: !!l.response?.content && l.response.content.trim().length > 0 && !l.error,
+      ok:
+        !!l.response?.content &&
+        l.response.content.trim().length > 0 &&
+        !l.error &&
+        outputTokenStop(l.response) === undefined,
       error: l.error,
       tokens: l.response?.usage?.totalTokens,
       promptTokens: l.response?.usage?.promptTokens,
@@ -1235,6 +1270,9 @@ async function appendAbProLog(entry: {
       content: l.response?.content,
       cost: l.cost,
       servedBy: l.response?.servedBy,
+      finishReason: l.response?.finishReason,
+      rawFinishReason: l.response?.rawFinishReason,
+      appliedMaxOutputTokens: l.response?.appliedMaxOutputTokens,
       score: l.score ?? null,
     })
     const byId = new Map(entry.legs.map((l) => [l.id, l]))
@@ -1269,7 +1307,7 @@ async function appendAbProLog(entry: {
         gpt: legA
           ? {
               model: legA.model.modelId,
-              ok: !!legA.response?.content,
+              ok: a?.ok ?? false,
               error: legA.error,
               tokens: legA.response?.usage?.totalTokens,
               promptTokens: legA.response?.usage?.promptTokens,
@@ -1282,7 +1320,7 @@ async function appendAbProLog(entry: {
         kimi: legB
           ? {
               model: legB.model.modelId,
-              ok: !!legB.response?.content,
+              ok: b?.ok ?? false,
               error: legB.error,
               tokens: legB.response?.usage?.totalTokens,
               promptTokens: legB.response?.usage?.promptTokens,

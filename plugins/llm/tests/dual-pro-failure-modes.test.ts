@@ -85,7 +85,7 @@ async function runDualPro(outputFile?: string, maxOutputTokens?: number, context
 describe("dual-pro failure modes", () => {
   /** @failure A targeted retry drops determining source files (29904), overwrites the paid panel, or puts long opinions in argv.
    * @level l1 @consumer Callers recovering one affordable Pro leg or judge pair. */
-  it.each(["opinion", "judge", "empty-opinion", "empty-opinion-with-bound"] as const)(
+  it.each(["opinion", "judge", "empty-opinion", "empty-opinion-with-bound", "token-stopped-opinion"] as const)(
     "preserves the panel and source context when executing the %s retry",
     async (refused) => {
       const env = makeTestEnv()
@@ -94,7 +94,8 @@ describe("dual-pro failure modes", () => {
       const contextFiles = [join(env.tmpDir, "source's context.md"), join(env.tmpDir, "second context.md")]
       for (const path of contextFiles) writeFileSync(path, "DETERMINING_SOURCE_EVIDENCE")
       const emptyOpinion = refused.startsWith("empty-opinion")
-      const requestedBound = refused === "empty-opinion-with-bound" ? 3500 : undefined
+      const tokenStopped = refused === "token-stopped-opinion"
+      const requestedBound = refused === "empty-opinion-with-bound" || tokenStopped ? 3500 : undefined
       const firstOpinion = "SURVIVING_FIRST_OPINION " + "a".repeat(70000)
       const secondOpinion = "SURVIVING_SECOND_OPINION " + "b".repeat(70000)
       queryBackgroundMock.mockReset().mockResolvedValue({
@@ -115,7 +116,15 @@ describe("dual-pro failure modes", () => {
           usage: { inputTokens: 10, outputTokens: 20 },
         })
       }
-      if (emptyOpinion) {
+      if (tokenStopped) {
+        generateTextMock.mockResolvedValue({
+          text: "RETAINED_PARTIAL_OPINION",
+          finishReason: "length",
+          rawFinishReason: "max_output_tokens",
+          finalStep: { reasoningText: undefined },
+          usage: { inputTokens: 10, outputTokens: 5 },
+        })
+      } else if (emptyOpinion) {
         generateTextMock.mockResolvedValue({ text: "", usage: { inputTokens: 10, outputTokens: 0 } })
       } else {
         generateTextMock.mockRejectedValue(refusal)
@@ -125,7 +134,15 @@ describe("dual-pro failure modes", () => {
       expect(original.toString()).toContain("SURVIVING_FIRST_OPINION")
       const followUpLine = env.stderr.find((line) => line.includes("follow-up="))
       if (!followUpLine) throw new Error("Pro did not emit a targeted follow-up")
-      if (!emptyOpinion) {
+      if (tokenStopped) {
+        const envelope = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+        expect(envelope).toMatchObject({ b: { status: "incomplete", finishReason: "length", rawFinishReason: "max_output_tokens", appliedMaxOutputTokens: requestedBound } })
+        expect(original.toString()).toContain("RETAINED_PARTIAL_OPINION")
+        expect(original.toString()).toContain("max_output_tokens")
+        expect(env.stderr.join("\n")).toContain("same bound will stop again")
+        expect(env.stderr.join("\n")).toContain("--max-output-tokens")
+        expect(env.stderr.join("\n")).not.toContain("account-balance")
+      } else if (!emptyOpinion) {
         expect(env.stderr.join("\n")).toContain("account-balance")
         expect(followUpLine).toContain("2048")
       }
@@ -147,7 +164,7 @@ describe("dual-pro failure modes", () => {
       if (refused !== "judge") {
         const retryFiles = argv.flatMap((arg, index) => (arg === "--context-file" ? [argv[index + 1]] : []))
         expect(retryFiles).toEqual(expect.arrayContaining(contextFiles))
-        if (emptyOpinion) expect(retryFiles).toEqual([...contextFiles, outputFile])
+        if (emptyOpinion || tokenStopped) expect(retryFiles).toEqual([...contextFiles, outputFile])
         expect(argv.at(-1)).toBe("test question")
       }
       streamTextMock.mockReset().mockImplementation(() => ({
@@ -157,9 +174,16 @@ describe("dual-pro failure modes", () => {
         finalStep: Promise.resolve({ response: undefined }),
         usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
       }))
-      await runCli(argv.slice(2))
+      const siblingCalls = queryBackgroundMock.mock.calls.length
+      const sdkCalls = generateTextMock.mock.calls.length
+      const retryResult = await runCli(argv.slice(2))
+      expect(retryResult.error).toBeUndefined()
+      expect(retryResult.exited).toBeUndefined()
+      expect(streamTextMock).toHaveBeenCalledOnce()
+      expect(queryBackgroundMock).toHaveBeenCalledTimes(siblingCalls)
+      expect(generateTextMock).toHaveBeenCalledTimes(sdkCalls)
       const retryCall = streamTextMock.mock.calls.at(-1)![0]
-      if (emptyOpinion) {
+      if (emptyOpinion || tokenStopped) {
         if (requestedBound !== undefined) expect(retryCall.maxOutputTokens).toBe(requestedBound)
         else expect(argv).not.toContain("--max-output-tokens")
       } else {

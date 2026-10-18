@@ -616,6 +616,13 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       const response: ModelResponse = {
         model,
         content: fullText,
+        ...(streamFailure === undefined
+          ? {
+              finishReason: await result.finishReason,
+              rawFinishReason: await result.rawFinishReason,
+            }
+          : {}),
+        appliedMaxOutputTokens: maxOutputTokens,
         // Only surface the stream error when nothing came back — a partial
         // completion that errored late still gives the user usable content.
         ...streamFailureField(streamFailure, fullText),
@@ -645,6 +652,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       return await finishQuery(observationStore, model, {
         model,
         content: result.text,
+        finishReason: result.finishReason,
+        rawFinishReason: result.rawFinishReason,
+        appliedMaxOutputTokens: maxOutputTokens,
         reasoning: result.finalStep.reasoningText,
         usage: result.usage
           ? {
@@ -709,6 +719,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
           return await finishQuery(observationStore, model, {
             model,
             content: retryResult.text,
+            finishReason: retryResult.finishReason,
+            rawFinishReason: retryResult.rawFinishReason,
+            appliedMaxOutputTokens: correctedCap,
             reasoning: retryResult.finalStep.reasoningText,
             usage: retryResult.usage
               ? {

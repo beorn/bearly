@@ -39,10 +39,10 @@ const model: Model = {
 
 /** The real OpenRouter/K2.6 combined-limit refusal, which is what arms the
  *  retry: it reports the true input token count (1000 here). */
-function contextExceeded(): Error {
+function contextExceeded(realInputTokens = 1000): Error {
   return new Error(
     "This endpoint's maximum context length is 1048576 tokens. However, you requested about 1048600 tokens " +
-      "(1000 of text input, 1047600 in the output). Please reduce the length of either one.",
+      `(${realInputTokens} of text input, 1047600 in the output). Please reduce the length of either one.`,
   )
 }
 
@@ -66,28 +66,37 @@ describe("22972 — the context-exceeded retry clamps like the first attempt", (
   })
 
   it.each([
-    { callerBound: undefined, expectedCap: 32_768 },
-    { callerBound: 4096, expectedCap: 4096 },
-  ])("keeps the $expectedCap ceiling on both attempts", async ({ callerBound, expectedCap }) => {
-    generateTextMock.mockRejectedValueOnce(contextExceeded()).mockResolvedValueOnce({
-      text: "ok",
-      finalStep: { reasoningText: undefined },
-      usage: { inputTokens: 1000, outputTokens: 2 },
-    })
+    { callerBound: undefined, expectedCap: 32_768, realInputTokens: 1000, expectedRetryCap: 32_768 },
+    { callerBound: 4096, expectedCap: 4096, realInputTokens: 1000, expectedRetryCap: 4096 },
+    { callerBound: 32_768, expectedCap: 32_768, realInputTokens: 1_030_000, expectedRetryCap: 14_480 },
+  ])(
+    "reports the applied $expectedRetryCap cap after an initial $expectedCap request",
+    async ({ callerBound, expectedCap, realInputTokens, expectedRetryCap }) => {
+      generateTextMock.mockRejectedValueOnce(contextExceeded(realInputTokens)).mockResolvedValueOnce({
+        text: "ok",
+        finishReason: "length",
+        rawFinishReason: "max_output_tokens",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 1000, outputTokens: 2 },
+      })
 
-    const options = { modelObject: model, stream: false, maxOutputTokens: callerBound }
-    await ask("say ok", "standard", options)
+      const options = { modelObject: model, stream: false, maxOutputTokens: callerBound }
+      const response = await ask("say ok", "standard", options)
 
-    expect(generateTextMock).toHaveBeenCalledTimes(2)
-    expect(stderr.filter((line) => line.includes("Retrying with cap="))).toEqual([
-      expect.stringContaining(`Retrying with cap=${expectedCap}.`),
-    ])
-    const retryCap = generateTextMock.mock.calls[1]?.[0]?.maxOutputTokens
+      expect(generateTextMock).toHaveBeenCalledTimes(2)
+      expect(stderr.filter((line) => line.includes("Retrying with cap="))).toEqual([
+        expect.stringContaining(`Retrying with cap=${expectedRetryCap}.`),
+      ])
+      const retryCap = generateTextMock.mock.calls[1]?.[0]?.maxOutputTokens
+      expect(response.appliedMaxOutputTokens).toBe(retryCap)
+      expect(response.finishReason).toBe("length")
+      expect(response.rawFinishReason).toBe("max_output_tokens")
 
-    // Unclamped this would be 1048576 − 1000 − 4096 = 1043480: the same
-    // over-ask that 402s an expensive model and retired two mainstays.
-    expect(retryCap).not.toBe(1_043_480)
-    expect(generateTextMock.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual([expectedCap, expectedCap])
-    expect(retryCap).toBeLessThanOrEqual(MAX_USEFUL_OUTPUT_TOKENS)
-  })
+      // Unclamped this would be 1048576 − 1000 − 4096 = 1043480: the same
+      // over-ask that 402s an expensive model and retired two mainstays.
+      expect(retryCap).not.toBe(1_043_480)
+      expect(generateTextMock.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual([expectedCap, expectedRetryCap])
+      expect(retryCap).toBeLessThanOrEqual(MAX_USEFUL_OUTPUT_TOKENS)
+    },
+  )
 })

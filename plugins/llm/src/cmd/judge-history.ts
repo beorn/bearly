@@ -93,6 +93,7 @@ export async function runJudgeHistory(opts: {
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!
     if (e.judge) continue
+    if (!(e.a?.ok ?? e.gpt?.ok) || !(e.b?.ok ?? e.kimi?.ok)) continue
     const aModel = e.a?.model ?? e.gpt?.model
     const bModel = e.b?.model ?? e.kimi?.model
     const cModel = e.c?.model
@@ -113,7 +114,16 @@ export async function runJudgeHistory(opts: {
       }
     }
     if (!aContent || !bContent) continue
-    candidates.push({ idx: i, entry: e, aModel, bModel, cModel, aContent, bContent, cContent })
+    candidates.push({
+      idx: i,
+      entry: e,
+      aModel,
+      bModel,
+      cModel,
+      aContent,
+      bContent,
+      cContent: e.c?.ok ? cContent : undefined,
+    })
   }
 
   if (candidates.length === 0) {

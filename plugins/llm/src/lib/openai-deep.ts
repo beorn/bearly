@@ -23,10 +23,23 @@ import { getEndpoint } from "./types"
 import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
 import { missingApiKeyError } from "./env-preflight"
 import { describeDispatchFailure } from "./dispatch-error"
+import { outputTokenStop } from "./format"
 
 const log = createLogger("bearly:llm:openai")
 
 let client: OpenAI | undefined
+
+function completionFacts(response: {
+  incomplete_details?: { reason?: string } | null
+  max_output_tokens?: number | null
+}) {
+  const reason = response.incomplete_details?.reason
+  return {
+    ...(reason === undefined ? {} : { rawFinishReason: reason }),
+    ...(reason === "max_output_tokens" ? { finishReason: "length" } : {}),
+    ...(typeof response.max_output_tokens === "number" ? { appliedMaxOutputTokens: response.max_output_tokens } : {}),
+  }
+}
 
 function getClient(): OpenAI {
   if (!client) {
@@ -180,6 +193,8 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       return {
         model,
         content: fullText,
+        appliedMaxOutputTokens: maxOutputTokens,
+        ...completionFacts(response),
         responseId: response.id,
         usage: usage
           ? {
@@ -243,6 +258,20 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       },
     })
 
+    if (outputTokenStop(pollResult) !== undefined) {
+      if (onToken && pollResult.content) onToken(pollResult.content)
+      if (partialPath && pollResult.content) appendPartial(partialPath, pollResult.content)
+      return {
+        model,
+        content: pollResult.content,
+        responseId,
+        usage: pollResult.usage,
+        finishReason: pollResult.finishReason,
+        rawFinishReason: pollResult.rawFinishReason,
+        appliedMaxOutputTokens: pollResult.appliedMaxOutputTokens ?? maxOutputTokens,
+        durationMs: Date.now() - startTime,
+      }
+    }
     if (pollResult.status === "completed" && pollResult.content) {
       if (stream && onToken) onToken(pollResult.content)
       if (partialPath) {
@@ -395,6 +424,20 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       },
     })
 
+    if (outputTokenStop(pollResult) !== undefined) {
+      if (onToken && pollResult.content) onToken(pollResult.content)
+      if (partialPath && pollResult.content) appendPartial(partialPath, pollResult.content)
+      return {
+        model,
+        content: pollResult.content,
+        responseId,
+        usage: pollResult.usage,
+        finishReason: pollResult.finishReason,
+        rawFinishReason: pollResult.rawFinishReason,
+        appliedMaxOutputTokens: pollResult.appliedMaxOutputTokens ?? maxOutputTokens,
+        durationMs: Date.now() - startTime,
+      }
+    }
     if (pollResult.status === "completed" && pollResult.content) {
       if (onToken) onToken(pollResult.content)
       if (partialPath) {
@@ -505,6 +548,9 @@ export async function pollForCompletion(
 ): Promise<{
   status: string
   content: string
+  finishReason?: string
+  rawFinishReason?: string
+  appliedMaxOutputTokens?: number
   usage?: {
     promptTokens: number
     completionTokens: number
@@ -540,7 +586,7 @@ export async function pollForCompletion(
       return result
     }
 
-    if (result.status === "completed") {
+    if (result.status === "completed" || result.status === "incomplete") {
       return result
     }
 
@@ -593,6 +639,9 @@ export function sleepAbortable(ms: number, signal: AbortSignal | undefined): Pro
 export async function retrieveResponse(responseId: string): Promise<{
   status: string
   content: string
+  finishReason?: string
+  rawFinishReason?: string
+  appliedMaxOutputTokens?: number
   usage?: {
     promptTokens: number
     completionTokens: number
@@ -612,6 +661,7 @@ export async function retrieveResponse(responseId: string): Promise<{
     return {
       status: response.status ?? "unknown",
       content: extractText(response),
+      ...completionFacts(response),
       usage: usage
         ? {
             promptTokens: usage.input_tokens || 0,

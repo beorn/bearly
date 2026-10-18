@@ -11,6 +11,7 @@ import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { formatLegDispatchError, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { safeCurrentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
+import { outputTokenStop } from "../lib/format"
 
 /** Shared single-model ask: select model, stream, finalize */
 export async function askAndFinish(options: {
@@ -106,7 +107,7 @@ export async function askAndFinish(options: {
   }
   let response: ModelResponse
   const cached = cacheable ? readCache<ModelResponse>(cacheKey) : null
-  if (cached) {
+  if (cached && outputTokenStop(cached.envelope) === undefined) {
     response = cached.envelope
     console.error(`🟢 cache hit (${cached.ts}) — ${cached.content.length} chars\n`)
     streamToken(cached.content)
@@ -154,7 +155,7 @@ export async function askAndFinish(options: {
     } else {
       response = await withSignalAbort(dispatch)
     }
-    if (cacheable && response.content && !response.error) {
+    if (cacheable && response.content && !response.error && outputTokenStop(response) === undefined) {
       try {
         writeCache(cacheKey, response, response.content)
       } catch {
@@ -177,5 +178,6 @@ export async function askAndFinish(options: {
     response.error,
     options.retryCommand,
     response.servedBy,
+    response,
   )
 }

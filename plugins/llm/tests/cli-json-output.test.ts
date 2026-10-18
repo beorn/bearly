@@ -36,10 +36,12 @@ vi.mock("../src/lib/openai-deep", async () => {
   return { ...actual, queryOpenAIBackground: queryBackgroundMock }
 })
 
-function resetMocks() {
+function resetMocks(stopped = false) {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
     text: "ok",
+    finishReason: stopped ? "length" : "stop",
+    rawFinishReason: stopped ? "max_output_tokens" : undefined,
     finalStep: { reasoningText: undefined },
     usage: { inputTokens: 10, outputTokens: 5 },
   })
@@ -50,6 +52,8 @@ function resetMocks() {
     })(),
     finalStep: Promise.resolve({ response: undefined }),
     usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+    finishReason: Promise.resolve(stopped ? "length" : "stop"),
+    rawFinishReason: Promise.resolve(stopped ? "max_output_tokens" : undefined),
   }))
   queryBackgroundMock.mockReset()
   queryBackgroundMock.mockImplementation(async ({ model }: { model: { displayName: string } }) => ({
@@ -150,18 +154,21 @@ describe("output-mode singleton", () => {
 
 describe("--json mode end-to-end", () => {
   it.each([
-    { name: "ask", argv: ["ping"] },
-    { name: "explicit single-model pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"] },
+    { name: "ask", argv: ["ping"], stopped: false },
+    { name: "explicit single-model pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"], stopped: false },
+    { name: "token-limited ask", argv: ["ping"], stopped: true },
+    { name: "token-limited explicit pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"], stopped: true },
   ])(
     "$name path: stdout has exactly one JSON line; envelope has the canonical schema",
-    async ({ argv }) => {
+    async ({ argv, stopped }) => {
       const env = makeTestEnv()
-      resetMocks()
+      resetMocks(stopped)
 
       vi.resetModules()
       process.argv = ["node", "cli.ts", "--json", ...argv]
       const mod = await import("../src/cli")
-      await mod.main()
+      if (stopped) await expect(mod.main()).rejects.toThrow("__exit_1")
+      else await mod.main()
 
       // Exactly one JSON line on stdout — this is the contract.
       const jsonLines = env.stdout.filter((l) => l.trim().startsWith("{"))
@@ -173,9 +180,14 @@ describe("--json mode end-to-end", () => {
       // is /var/folders/.../T on macOS, /tmp on Linux. Just match the trailing
       // llm-…txt naming, not the prefix.
       expect(envelope.file).toMatch(/llm-.*\.txt$/)
-      expect(envelope.model).toBeTruthy()
+      expect(typeof envelope.model).toBe("string")
       expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
-      expect(envelope.status).toBe("completed")
+      expect(envelope.status).toBe(stopped ? "incomplete" : "completed")
+      expect(env.exitCodes).toEqual(stopped ? [1] : [])
+      if (stopped) {
+        expect(envelope.rawFinishReason).toBe("max_output_tokens")
+        expect(envelope.finishReason).toBe("length")
+      }
       // durationMs is omitted when 0 (mocked stream completes instantly); just
       // verify the field is absent or numeric — never a string or object.
       if (envelope.durationMs !== undefined) expect(typeof envelope.durationMs).toBe("number")

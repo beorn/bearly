@@ -30,7 +30,7 @@ export async function runDeep(options: {
   dryRun: boolean
 }): Promise<void> {
   const { topic, modelOverride, streamToken, outputFile, sessionTag, skipRecover, skipConfirm, dryRun } = options
-  const { finishResponse } = await import("../lib/format")
+  const { finishResponse, outputTokenStop } = await import("../lib/format")
 
   const context = await options.buildContext(topic)
   const shouldContinue = await checkAndRecoverPartials(skipRecover, skipConfirm)
@@ -115,7 +115,7 @@ export async function runDeep(options: {
     // (e.g. a client-side timeout after the server accepted the request),
     // fall through to the error path — otherwise scripts parsing stdout see
     // a false success. Flagged by K2.6 round-3 review.
-    if (response.responseId && !response.error) {
+    if (response.responseId && !response.error && outputTokenStop(response) === undefined) {
       // Emit a machine-readable status line on stdout so scripts and callers
       // can harvest the responseId without parsing stderr. Mirrors the
       // normal completion path (which emits JSON via finalizeOutput). The
@@ -147,6 +147,8 @@ export async function runDeep(options: {
       undefined,
       response.error,
       options.retryCommand,
+      response.servedBy,
+      response,
     )
     return
   }
@@ -168,6 +170,8 @@ export async function runDeep(options: {
         undefined,
         response.error,
         options.retryCommand,
+        response.servedBy,
+        response,
       )
       return
     }
@@ -182,5 +186,10 @@ export async function runDeep(options: {
     response.durationMs,
     topic,
     response.responseId,
+    undefined,
+    response.error,
+    options.retryCommand,
+    response.servedBy,
+    response,
   )
 }

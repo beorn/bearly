@@ -152,8 +152,22 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       status: "incomplete",
       returned: 1,
     },
+    {
+      name: "all opinions token-limited",
+      flags: ["--no-challenger", "--no-judge"],
+      failure: "all-token-limited",
+      status: "incomplete",
+      returned: 0,
+    },
+    {
+      name: "token-limited parseable judge",
+      flags: ["--no-challenger"],
+      failure: "judge-token-limited",
+      status: "incomplete",
+      returned: 2,
+    },
   ])(
-    "26561 $name",
+    "$name",
     async ({ flags, failure, status, returned }) => {
       const env = makeTestEnv()
       queryBackgroundMock.mockReset()
@@ -164,6 +178,7 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
         queryBackgroundMock.mockImplementation(async ({ model }: { model: unknown }) => ({
           model,
           content: "anchor opinion",
+          ...(failure === "all-token-limited" ? { finishReason: "length", rawFinishReason: "max_output_tokens" } : {}),
           durationMs: 1,
         }))
       }
@@ -174,8 +189,16 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
         if (failure === "all" || (judging && failure === "judges")) throw new Error("provider dispatch failed")
         return {
           text: judging ? JUDGE_JSON : "available configured opinion",
-          finishReason: failure === "token-limit" && !judging ? "length" : "stop",
-          rawFinishReason: failure === "token-limit" && !judging ? "max_output_tokens" : undefined,
+          finishReason:
+            ((failure === "token-limit" || failure === "all-token-limited") && !judging) ||
+            (failure === "judge-token-limited" && judging)
+              ? "length"
+              : "stop",
+          rawFinishReason:
+            ((failure === "token-limit" || failure === "all-token-limited") && !judging) ||
+            (failure === "judge-token-limited" && judging)
+              ? "max_output_tokens"
+              : undefined,
           finalStep: { reasoningText: undefined },
           usage: { inputTokens: 100, outputTokens: 50 },
         }
@@ -202,7 +225,18 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       expect(envelope.completion?.judges.waived).toBe(flags.includes("--no-judge"))
       const requiredPairs = flags.includes("--no-judge") ? 0 : Math.max(0, returned - 1)
       expect(envelope.completion?.judges.required).toHaveLength(requiredPairs)
-      expect(envelope.completion?.judges.returned).toHaveLength(failure === "judges" ? 0 : requiredPairs)
+      expect(envelope.completion?.judges.returned).toHaveLength(
+        failure === "judges" || failure === "judge-token-limited" ? 0 : requiredPairs,
+      )
+      if (failure === "token-limit" || failure === "all-token-limited") {
+        expect(envelope.completion?.missing).toContainEqual(
+          expect.objectContaining({
+            cause: "output-token-limit",
+            detail: expect.stringContaining("max_output_tokens"),
+          }),
+        )
+        expect(report).toContain("available configured opinion")
+      }
       if (failure === "unavailable") {
         expect(queryBackgroundMock).not.toHaveBeenCalled()
         expect(envelope.completion?.missing).toEqual([
