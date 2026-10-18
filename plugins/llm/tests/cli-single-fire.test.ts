@@ -13,11 +13,13 @@
  * This test drives the dual-pro path because that's where the regression
  * manifested (the A/B log made it obvious); the property "main() fires once"
  * holds for every command.
+ *
+ * @reach fs-walk <fixture-only: isolated temporary response cache>
  */
 
 import { afterEach, describe, it, expect, vi } from "vitest"
 import { execFileSync } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { listLlmTmpFiles, makeTestEnv, runCli } from "./helpers"
 
@@ -137,17 +139,51 @@ describe("cli-single-fire", () => {
 
   /** @failure Bounded cache entries bypass the caller's reservation. @level l1
    * @consumer CLI callers repeating one prompt with different output budgets. */
-  it("separates bounded and unbounded dispatches in the actual response cache", async () => {
-    makeTestEnv()
-    process.env.LLM_NO_CACHE = ""
-    resetGenerateTextToOk()
-    const base = ["--model", "google/gemini-2.5-pro", "cache budget separation"]
-    for (const budget of [[], ["--max-output-tokens", "4096"], [], ["--max-output-tokens", "4096"]]) {
-      await runCli([...base, ...budget])
-    }
-    expect(streamTextMock).toHaveBeenCalledTimes(2)
-    expect(streamTextMock.mock.calls.map((call) => call[0].maxOutputTokens)).toEqual([65536, 4096])
-  })
+  it.each([false, true])(
+    "separates budgets and excludes explicit token stops from the actual cache (stopped: %s)",
+    async (stopped) => {
+      const env = makeTestEnv()
+      vi.stubEnv("XDG_CACHE_HOME", env.tmpDir)
+      afterEach(() => vi.unstubAllEnvs())
+      process.env.LLM_NO_CACHE = ""
+      resetGenerateTextToOk()
+      if (stopped) {
+        streamTextMock.mockImplementation(() => ({
+          textStream: (async function* () {
+            yield "retained partial"
+          })(),
+          finalStep: Promise.resolve({ response: undefined }),
+          usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+          finishReason: Promise.resolve("length"),
+          rawFinishReason: Promise.resolve("max_output_tokens"),
+        }))
+      }
+      const base = ["--model", "google/gemini-2.5-pro", "cache budget separation"]
+      for (const budget of [[], ["--max-output-tokens", "4096"], [], ["--max-output-tokens", "4096"]]) {
+        await runCli([...base, ...budget])
+      }
+      expect(streamTextMock).toHaveBeenCalledTimes(stopped ? 4 : 2)
+      expect(streamTextMock.mock.calls.map((call) => call[0].maxOutputTokens)).toEqual(
+        stopped ? [65536, 4096, 65536, 4096] : [65536, 4096],
+      )
+      if (!stopped) {
+        const { getCacheDir } = await import("../src/lib/cache")
+        const cachedFiles = readdirSync(getCacheDir())
+        expect(cachedFiles).toHaveLength(2)
+        for (const file of cachedFiles) {
+          const path = join(getCacheDir(), file)
+          const cached = JSON.parse(readFileSync(path, "utf-8")) as { envelope: Record<string, unknown> }
+          cached.envelope.finishReason = "length"
+          cached.envelope.rawFinishReason = "max_output_tokens"
+          writeFileSync(path, JSON.stringify(cached))
+        }
+        // Reject the saved partial, then reuse the fresh completed replacement.
+        await runCli([...base, "--max-output-tokens", "4096"])
+        await runCli([...base, "--max-output-tokens", "4096"])
+        expect(streamTextMock).toHaveBeenCalledTimes(3)
+      }
+    },
+  )
 
   /** @failure Unsupported paid admin modes silently discard a caller's bound. @level l1
    * @consumer CLI callers enforcing a reservation ceiling. */
