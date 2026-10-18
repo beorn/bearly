@@ -133,7 +133,7 @@ describe("cli-single-fire", () => {
       if (stoppedJudge) {
         expect(env.stderr.join("\n")).toContain(judgeText)
         expect(env.stderr.join("\n")).toContain("max_output_tokens")
-        expect(result.totalCostUsd).toBeGreaterThan(0)
+        expect((result as Record<string, unknown>).totalCostUsd).toBeGreaterThan(0)
       }
     },
   )
