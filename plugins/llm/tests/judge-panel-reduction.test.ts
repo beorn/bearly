@@ -145,6 +145,13 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
     },
     { name: "no answer", flags: ["--no-challenger"], failure: "all", status: "failed", returned: 0 },
     { name: "timed out mainstay", flags: ["--no-challenger"], failure: "timeout", status: "incomplete", returned: 1 },
+    {
+      name: "token-limited nonempty opinion without judge",
+      flags: ["--no-challenger", "--no-judge"],
+      failure: "token-limit",
+      status: "incomplete",
+      returned: 1,
+    },
   ])(
     "26561 $name",
     async ({ flags, failure, status, returned }) => {
@@ -167,6 +174,8 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
         if (failure === "all" || (judging && failure === "judges")) throw new Error("provider dispatch failed")
         return {
           text: judging ? JUDGE_JSON : "available configured opinion",
+          finishReason: failure === "token-limit" && !judging ? "length" : "stop",
+          rawFinishReason: failure === "token-limit" && !judging ? "max_output_tokens" : undefined,
           finalStep: { reasoningText: undefined },
           usage: { inputTokens: 100, outputTokens: 50 },
         }
