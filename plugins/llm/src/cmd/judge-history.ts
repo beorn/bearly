@@ -13,6 +13,7 @@ import { ask } from "../lib/research"
 import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
 import { estimateCost, formatCost, getModel } from "../lib/types"
 import { emitJson, isJsonMode } from "../lib/output-mode"
+import { outputTokenStop } from "../lib/format"
 import { confirmOrExit } from "../ui/confirm"
 
 /**
@@ -155,6 +156,7 @@ export async function runJudgeHistory(opts: {
     judge?: import("../lib/dual-pro").JudgeResult
     cost: number
     error?: string
+    incomplete?: boolean
   }
   const results: Result[] = []
   for (let i = 0; i < todo.length; i += BATCH) {
@@ -173,8 +175,15 @@ export async function runJudgeHistory(opts: {
           rubric: cfg.rubric,
         })
         const r = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
-        const parsed = dualPro.parseJudgeResponse(r.content)
         const cost = r.usage ? estimateCost(judgeModel, r.usage.promptTokens, r.usage.completionTokens) : 0
+        const stopped = outputTokenStop(r)
+        if (stopped !== undefined) {
+          console.error(
+            `\nHistory entry ${c.idx + 1}, judge ${judgeModel.displayName}: ${stopped}; scores not applied.\n${r.content}`,
+          )
+          return { idx: c.idx, cost, error: stopped, incomplete: true }
+        }
+        const parsed = dualPro.parseJudgeResponse(r.content)
         return { idx: c.idx, judge: parsed, cost }
       }),
     )
@@ -215,13 +224,15 @@ export async function runJudgeHistory(opts: {
     console.error(`\nDry run — re-run with --apply to write augmented entries to ab-pro.jsonl`)
   }
 
+  const incomplete = results.some((r) => r.incomplete)
   if (isJsonMode()) {
     emitJson({
-      status: "completed",
+      status: incomplete ? "incomplete" : "completed",
       eligible: candidates.length,
       judged: judgedCount,
       totalCostUsd: totalCost,
       applied: !!opts.apply && judgedCount > 0,
     })
   }
+  if (incomplete) process.exit(1)
 }

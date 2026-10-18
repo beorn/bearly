@@ -74,39 +74,69 @@ function resetGenerateTextToOk() {
 }
 
 describe("cli-single-fire", () => {
-  it("history judging excludes a saved token-stopped opinion and retains a completed panel", async () => {
-    const env = makeTestEnv()
-    vi.stubEnv("CLAUDE_PROJECT_DIR", process.cwd())
-    afterEach(() => vi.unstubAllEnvs())
-    resetGenerateTextToOk()
-    generateTextMock.mockResolvedValueOnce({
-      text: "retained partial opinion",
-      finishReason: "length",
-      rawFinishReason: "max_output_tokens",
-      finalStep: { reasoningText: undefined },
-      usage: { inputTokens: 10, outputTokens: 5 },
-    })
-    await runCli(["pro", "--no-challenger", "--no-judge", "-y", "partial question"])
-    await runCli(["pro", "--no-challenger", "--no-judge", "-y", "completed question"])
-    const calls = generateTextMock.mock.calls.length
-    generateTextMock.mockResolvedValue({
-      text: JSON.stringify({
+  it.each([false, true])(
+    "history judging excludes stopped opinions and stopped judges (judge stopped: %s)",
+    async (stoppedJudge) => {
+      const env = makeTestEnv()
+      vi.stubEnv("CLAUDE_PROJECT_DIR", process.cwd())
+      afterEach(() => vi.unstubAllEnvs())
+      resetGenerateTextToOk()
+      generateTextMock.mockResolvedValueOnce({
+        text: "retained partial opinion",
+        finishReason: "length",
+        rawFinishReason: "max_output_tokens",
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      })
+      await runCli(["pro", "--no-challenger", "--no-judge", "-y", "partial question"])
+      await runCli(["pro", "--no-challenger", "--no-judge", "-y", "completed question"])
+      await runCli(["pro", "--no-challenger", "--no-judge", "-y", "completed sibling question"])
+      const calls = generateTextMock.mock.calls.length
+      const judgeText = JSON.stringify({
         a: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
         b: { scores: { specificity: 5, actionability: 5, correctness: 5, depth: 5 }, total: 20 },
         winner: "b",
         reasoning: "completed comparison",
-      }),
-      finalStep: { reasoningText: undefined },
-      usage: { inputTokens: 10, outputTokens: 5 },
-    })
-    await runCli(["--json", "pro", "--judge-history"])
-    const result = env.stdout
-      .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line))
-      .at(-1)
-    expect(result).toMatchObject({ eligible: 1, judged: 1 })
-    expect(generateTextMock).toHaveBeenCalledTimes(calls + 1)
-  })
+      })
+      generateTextMock.mockImplementation(async (args) => ({
+        text: judgeText,
+        finalStep: { reasoningText: undefined },
+        usage: { inputTokens: 10, outputTokens: 5 },
+        ...(stoppedJudge && JSON.stringify(args).includes("completed question")
+          ? { finishReason: "length", rawFinishReason: "max_output_tokens" }
+          : {}),
+      }))
+      const invocation = await runCli(["--json", "pro", "--judge-history", "--apply"])
+      const result = env.stdout
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line))
+        .at(-1)
+      expect(result).toMatchObject({
+        eligible: 2,
+        judged: stoppedJudge ? 1 : 2,
+        status: stoppedJudge ? "incomplete" : "completed",
+      })
+      expect(invocation.exited).toBe(stoppedJudge ? 1 : undefined)
+      expect(generateTextMock).toHaveBeenCalledTimes(calls + 2)
+      const judgeInputs = generateTextMock.mock.calls.slice(calls).map((call) => JSON.stringify(call[0]))
+      expect(judgeInputs.some((input) => input.includes("completed question"))).toBe(true)
+      expect(judgeInputs.some((input) => input.includes("completed sibling question"))).toBe(true)
+      expect(judgeInputs.every((input) => !input.includes("partial question"))).toBe(true)
+      const { readAbProLog } = await import("../src/lib/dual-pro")
+      const saved = await readAbProLog()
+      const completed = saved.find((entry) => entry.question === "completed question")
+      if (stoppedJudge) expect(completed?.judge).toBeUndefined()
+      else expect(completed?.judge).toMatchObject({ result: { winner: "b" } })
+      expect(saved.find((entry) => entry.question === "completed sibling question")?.judge).toMatchObject({
+        result: { winner: "b" },
+      })
+      if (stoppedJudge) {
+        expect(env.stderr.join("\n")).toContain(judgeText)
+        expect(env.stderr.join("\n")).toContain("max_output_tokens")
+        expect(result.totalCostUsd).toBeGreaterThan(0)
+      }
+    },
+  )
 
   /**
    * @failure A CLI caller's smaller output budget is lost before provider dispatch.

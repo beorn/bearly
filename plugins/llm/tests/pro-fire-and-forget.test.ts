@@ -47,7 +47,7 @@ beforeEach(() => {
 })
 
 describe("queryOpenAIBackground — persistence and recovery", () => {
-  it.each(["background", "deep-sync", "deep-poll"])(
+  it.each(["background", "deep-sync", "deep-poll", "background-fire-and-forget", "deep-fire-and-forget"])(
     "preserves a terminal output-token stop through %s and await",
     async (route) => {
       const env = makeTestEnv()
@@ -60,20 +60,27 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         output: [{ type: "message", content: [{ type: "output_text", text: "partial answer" }] }],
         usage: { input_tokens: 10, output_tokens: 5 },
       }
-      responsesCreateMock.mockResolvedValue(route === "deep-sync" ? terminal : { id: responseId })
+      const fireAndForget = route.endsWith("fire-and-forget")
+      responsesCreateMock.mockResolvedValue(route === "deep-sync" || fireAndForget ? terminal : { id: responseId })
       responsesRetrieveMock.mockResolvedValue(terminal)
       vi.resetModules()
       const api = await import("../src/lib/openai-deep")
       const model = (await import("../src/lib/types")).getModel("gpt-5.4-pro")!
-      const result =
-        route === "background"
-          ? await api.queryOpenAIBackground({ prompt: "question", model, topic: "partial", maxOutputTokens: 4096 })
-          : await api.queryOpenAIDeepResearch({
-              topic: "question",
-              model,
-              background: route !== "deep-sync",
-              maxOutputTokens: 4096,
-            })
+      const result = route.startsWith("background")
+        ? await api.queryOpenAIBackground({
+            prompt: "question",
+            model,
+            topic: "partial",
+            maxOutputTokens: 4096,
+            fireAndForget,
+          })
+        : await api.queryOpenAIDeepResearch({
+            topic: "question",
+            model,
+            background: route !== "deep-sync",
+            maxOutputTokens: 4096,
+            fireAndForget,
+          })
       expect(result).toMatchObject({
         content: "partial answer",
         finishReason: "length",
@@ -82,7 +89,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       })
       expect(result.error).toBeUndefined()
-      expect(responsesRetrieveMock).toHaveBeenCalledTimes(route === "deep-sync" ? 0 : 1)
+      expect(responsesRetrieveMock).toHaveBeenCalledTimes(route === "deep-sync" || fireAndForget ? 0 : 1)
       const { findPartialByResponseId } = await import("../src/lib/persistence")
       const partial = findPartialByResponseId(responseId)
       if (route !== "deep-sync") {
@@ -107,6 +114,31 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         rawFinishReason: "max_output_tokens",
         chars: "partial answer".length,
       })
+      if (route === "deep-fire-and-forget") {
+        const retrievesBeforeDeep = responsesRetrieveMock.mock.calls.length
+        const { runDeep } = await import("../src/cmd/deep")
+        await expect(
+          runDeep({
+            topic: "question",
+            modelOverride: (await import("../src/lib/types")).getModel("o3-deep-research-2025-06-26"),
+            streamToken: () => {},
+            buildContext: async () => undefined,
+            outputFile: `${env.tmpDir}/initial-deep.md`,
+            sessionTag: "initial-deep",
+            skipRecover: true,
+            skipConfirm: true,
+            maxOutputTokens: 4096,
+            dryRun: false,
+          }),
+        ).rejects.toThrow("__exit_1")
+        const deep = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+        expect(deep).toMatchObject({
+          status: "incomplete",
+          rawFinishReason: "max_output_tokens",
+          chars: "partial answer".length,
+        })
+        expect(responsesRetrieveMock).toHaveBeenCalledTimes(retrievesBeforeDeep)
+      }
     },
   )
 
@@ -210,40 +242,51 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     expect(responsesCreateMock).not.toHaveBeenCalled()
   })
 
-  it("fire-and-forget returns empty content + responseId, keeps partial on disk", async () => {
-    makeTestEnv()
-    const responseId = "resp_pro_faf_1"
+  it.each([undefined, 4096])(
+    "fire-and-forget returns empty content + responseId, keeps partial on disk (cap: %s)",
+    async (maxOutputTokens) => {
+      makeTestEnv()
+      const responseId = "resp_pro_faf_1"
 
-    responsesCreateMock.mockResolvedValueOnce({ id: responseId })
+      responsesCreateMock.mockResolvedValueOnce({ id: responseId })
 
-    vi.resetModules()
-    const { queryOpenAIBackground } = await import("../src/lib/openai-deep")
-    const { getModel } = await import("../src/lib/types")
-    const { findPartialByResponseId } = await import("../src/lib/persistence")
-    const gptPro = getModel("gpt-5.4-pro")!
+      vi.resetModules()
+      const { queryOpenAIBackground } = await import("../src/lib/openai-deep")
+      const { getModel } = await import("../src/lib/types")
+      const { findPartialByResponseId } = await import("../src/lib/persistence")
+      const gptPro = getModel("gpt-5.4-pro")!
 
-    const result = await queryOpenAIBackground({
-      prompt: "long pro query",
-      model: gptPro,
-      topic: "long query",
-      fireAndForget: true,
-    })
+      const result = await queryOpenAIBackground({
+        prompt: "long pro query",
+        model: gptPro,
+        topic: "long query",
+        fireAndForget: true,
+        maxOutputTokens,
+      })
 
-    expect(result.responseId).toBe(responseId)
-    expect(result.content).toBe("")
-    // Poll must NOT run in fire-and-forget mode — otherwise we'd block on it.
-    expect(responsesRetrieveMock).not.toHaveBeenCalled()
-    expect(responsesCreateMock.mock.calls[0]![0]).not.toHaveProperty("max_output_tokens")
+      expect(result.responseId).toBe(responseId)
+      expect(result.content).toBe("")
+      expect(result.appliedMaxOutputTokens).toBe(maxOutputTokens)
+      expect(result.finishReason).toBeUndefined()
+      expect(result.rawFinishReason).toBeUndefined()
+      // Poll must NOT run in fire-and-forget mode — otherwise we'd block on it.
+      expect(responsesRetrieveMock).not.toHaveBeenCalled()
+      if (maxOutputTokens === undefined) {
+        expect(responsesCreateMock.mock.calls[0]![0]).not.toHaveProperty("max_output_tokens")
+      } else {
+        expect(responsesCreateMock.mock.calls[0]![0].max_output_tokens).toBe(maxOutputTokens)
+      }
 
-    // The partial must be on disk so `bun llm recover <id>` finds it later.
-    const partial = findPartialByResponseId(responseId)
-    expect(partial).not.toBeNull()
-    expect(partial!.metadata.responseId).toBe(responseId)
-    expect(partial!.metadata.modelId).toBe("gpt-5.4-pro")
-    expect(partial!.metadata.topic).toBe("long query")
-    // No completion timestamp — still "in progress".
-    expect(partial!.metadata.completedAt).toBeUndefined()
-  })
+      // The partial must be on disk so `bun llm recover <id>` finds it later.
+      const partial = findPartialByResponseId(responseId)
+      expect(partial).not.toBeNull()
+      expect(partial!.metadata.responseId).toBe(responseId)
+      expect(partial!.metadata.modelId).toBe("gpt-5.4-pro")
+      expect(partial!.metadata.topic).toBe("long query")
+      // No completion timestamp — still "in progress".
+      expect(partial!.metadata.completedAt).toBeUndefined()
+    },
+  )
 
   it("persists responseId before the poll loop runs", async () => {
     // Critical invariant: even if polling blows up, the ID must already be

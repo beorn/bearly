@@ -234,13 +234,27 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     }
 
     if (options.fireAndForget) {
-      console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
-      console.error(`   bun llm recover ${responseId}\n`)
+      const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
+      const stopped = outputTokenStop(facts) !== undefined
+      const content = stopped ? extractText(initialResponse) : ""
+      const usage = stopped ? initialResponse.usage : undefined
+      if (stopped) {
+        if (onToken && content) onToken(content)
+        if (partialPath && content) appendPartial(partialPath, content)
+      } else {
+        console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
+        console.error(`   bun llm recover ${responseId}\n`)
+      }
       return {
         model,
-        content: "",
+        content,
         responseId,
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        ...facts,
+        usage: {
+          promptTokens: usage?.input_tokens ?? 0,
+          completionTokens: usage?.output_tokens ?? 0,
+          totalTokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
+        },
         durationMs: Date.now() - startTime,
       }
     }
@@ -402,13 +416,27 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     }
 
     if (options.fireAndForget) {
-      console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
-      console.error(`   bun llm recover ${responseId}\n`)
+      const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
+      const stopped = outputTokenStop(facts) !== undefined
+      const content = stopped ? extractText(initialResponse) : ""
+      const usage = stopped ? initialResponse.usage : undefined
+      if (stopped) {
+        if (onToken && content) onToken(content)
+        if (partialPath && content) appendPartial(partialPath, content)
+      } else {
+        console.error(`\n🔥 Fire-and-forget: response ID persisted. Recover later with:`)
+        console.error(`   bun llm recover ${responseId}\n`)
+      }
       return {
         model,
-        content: "",
+        content,
         responseId,
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        ...facts,
+        usage: {
+          promptTokens: usage?.input_tokens ?? 0,
+          completionTokens: usage?.output_tokens ?? 0,
+          totalTokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
+        },
         durationMs: Date.now() - startTime,
       }
     }
