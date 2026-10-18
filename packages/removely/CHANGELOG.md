@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+Minor.
+
+- The holder census reads argv: `ProcessCwdRow` gains an optional `argv`,
+  `inspectProcessCwdsInProc` requests it with `includeArgv`, and the per-element
+  rule is exported once as `argvElementHoldsRoot`/`argvHoldsRoot` instead of
+  living inside `rowHolders`. An absolute element that exists is also compared by
+  its realpath, cached once per distinct element, so a hook running
+  `/hh/dev-landings/current/...` matches the registered `/hh/dev-landings/<sha>`
+  root; a dangling element stays lexical. A denied alias read raises
+  `ArgvAliasUnreadableError` and the census records it as a denied argv coverage
+  gap rather than as no-holder. The macOS lsof path carries no argv and names
+  that gap.
 
 - `inspectPathHolderCensus` accepts explicit `allowMissing` on the Linux proc
   collector. An absent target and dangling argv are physically anchored with
@@ -17,6 +30,15 @@
   unreadable. A process that disappears during that retry counts as exited;
   a surviving process with a missing non-cwd source remains unreadable. The same
   census deadline applies, with no additional source retry.
+
+- A descriptor link that cannot be read omits its target instead of reporting an
+  undefined one, so a row never carries a target it did not prove.
+
+- `safeRemove` accepts a target that vanished between its own lstat and realpath
+  when `allowMissing` is declared: a sibling cleanup can remove the physical
+  anchor in that window. Only a fresh missing leaf counts as that absence — a
+  dangling symlink still has an entry, and permission or containment failures
+  stay loud.
 
 ## 0.4.0
 
