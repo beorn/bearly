@@ -1,6 +1,7 @@
 /**
  * @failure  a lookup mixes SKU headlines with LiteLLM cache rates, a zero-match
- *           refresh rewrites the cache, or a pre-change row is treated as dated
+ *           refresh rewrites the cache, a pre-change row is treated as dated,
+ *           or an update keeps a cache-class rate the map omitted
  * @level    l2
  * @consumer 29660 dated Bearly rate basis
  * @testonly none
@@ -90,6 +91,35 @@ describe("lookupModelRates basis", () => {
     expect(snapshot.models.matched?.rateDate).not.toBe(old)
     expect(snapshot.models.held?.rateDate).toBe(old)
     expect(snapshot.models.held?.rateSource).toBe("litellm")
+  })
+
+  it("drops a previous cache-class rate when the update omits it", async () => {
+    makeTestEnv()
+    const mod = await pricing()
+    const old = "2019-05-01T00:00:00.000Z"
+    mod.savePricingCache({
+      updatedAt: old,
+      models: {
+        matched: {
+          inputPricePerM: 1,
+          outputPricePerM: 2,
+          cacheReadPerM: 0.1,
+          cacheWritePerM: 0.2,
+          typicalLatencyMs: 40,
+          rateSource: "litellm",
+          rateDate: old,
+        },
+      },
+    })
+    const snapshot = mod.buildPricingSnapshot([{ modelId: "matched", inputPricePerM: 3, outputPricePerM: 4 }])
+    expect(snapshot.models.matched?.cacheReadPerM).toBeUndefined()
+    expect(snapshot.models.matched?.cacheWritePerM).toBeUndefined()
+    expect(snapshot.models.matched?.typicalLatencyMs).toBe(40)
+    expect(snapshot.models.matched?.rateSource).toBe("litellm")
+    expect(snapshot.models.matched?.rateDate).toBe(snapshot.updatedAt)
+    expect(snapshot.models.matched?.rateDate).not.toBe(old)
+    expect(snapshot.models.matched?.inputPricePerM).toBe(3)
+    expect(snapshot.models.matched?.outputPricePerM).toBe(4)
   })
 })
 

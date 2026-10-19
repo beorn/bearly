@@ -8,8 +8,8 @@
  * `outputPricePerM` always see the current overlay (the legacy `MODELS` rows
  * use property getters that consult the overlay map).
  *
- * The cache becomes stale after 5 days; `performPricingUpdate()` in dispatch.ts
- * refreshes it (and returns the snapshot for callers to write).
+ * The cache becomes stale after 5 days. `performPricingUpdate()` writes the
+ * cache itself, or returns an error and leaves the cache unchanged.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
@@ -115,16 +115,12 @@ export function applyCachedPricing(): void {
 }
 
 /**
- * Snapshot the current effective pricing (SKU defaults + overlay) into the cache.
- *
- * Use after a successful pricing-update extraction to persist the new values.
- * This does NOT mutate the registry — it writes the JSON cache; subsequent
- * processes will pick the values up via `applyCachedPricing()` at startup.
- */
-/**
  * Build a fresh snapshot from a set of accepted price updates, merging on top
  * of the current cache. This is the only merge. A caller that has no accepted
  * update does not call it: that refresh is an error and the cache stays put.
+ *
+ * A matched row takes cache-class rates only from this update. An omitted
+ * class stays absent. `typicalLatencyMs` still comes from the previous row.
  *
  * Pure — does not mutate any registry or cache.
  */
@@ -170,16 +166,8 @@ export function buildPricingSnapshot(
       inputPricePerM: u.inputPricePerM,
       outputPricePerM: u.outputPricePerM,
       ...(prev?.typicalLatencyMs !== undefined ? { typicalLatencyMs: prev.typicalLatencyMs } : {}),
-      ...(u.cacheReadPerM !== undefined
-        ? { cacheReadPerM: u.cacheReadPerM }
-        : prev?.cacheReadPerM !== undefined
-          ? { cacheReadPerM: prev.cacheReadPerM }
-          : {}),
-      ...(u.cacheWritePerM !== undefined
-        ? { cacheWritePerM: u.cacheWritePerM }
-        : prev?.cacheWritePerM !== undefined
-          ? { cacheWritePerM: prev.cacheWritePerM }
-          : {}),
+      ...(u.cacheReadPerM !== undefined ? { cacheReadPerM: u.cacheReadPerM } : {}),
+      ...(u.cacheWritePerM !== undefined ? { cacheWritePerM: u.cacheWritePerM } : {}),
       rateSource: "litellm",
       rateDate: updatedAt,
     }
@@ -187,12 +175,6 @@ export function buildPricingSnapshot(
   return { updatedAt, models }
 }
 
-/**
- * Full per-M rates for a model id: input/output from the (overlay-aware)
- * registry, cache-class rates from the pricing cache when the LiteLLM update
- * has populated them (bead 19899). Null when the model is unpriced — callers
- * treat that as cost-source UNKNOWN, never $0.
- */
 /**
  * Rates and basis for one model, from a single cache entry when one exists.
  *
@@ -269,9 +251,6 @@ export function getStaleWarning(): string | null {
   return null
 }
 
-/**
- * Initialize pricing on startup
- */
 /** Provenance-aware cost. One path: the lookup, which already answers SKU defaults. */
 export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, reportedUsd?: number): ResolvedCost {
   const lookup = lookupModelRates(model.modelId)
@@ -282,6 +261,9 @@ export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, r
   })
 }
 
+/**
+ * Initialize pricing on startup
+ */
 export function initializePricing(): void {
   applyCachedPricing()
   // A missing cache is seeded from SKU defaults. The seed is sku with no date.

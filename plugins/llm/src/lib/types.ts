@@ -1320,8 +1320,6 @@ export function skuRates(model: Model | SkuConfig): ModelRates | null {
   return { inputPerM: model.inputPricePerM, outputPerM: model.outputPricePerM }
 }
 
-export { resolveCostForModel } from "./pricing.ts"
-
 export function formatCost(cost: number): string {
   if (cost < 0.01) return `$${(cost * 100).toFixed(2)}¢`
   if (cost < 1) return `$${cost.toFixed(3)}`
