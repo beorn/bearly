@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { readFileSync } from "node:fs"
 import { DEFAULT_CONFIG } from "../src/lib/dual-pro"
-import {
-  assertDispatchableModelIds,
-  formatLegDispatchError,
-  getLegTimeoutMs,
-  runWithTimeout,
-} from "../src/lib/dispatch-safety"
+import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../src/lib/dispatch-safety"
 import { describeDispatchFailure } from "../src/lib/dispatch-error"
 import { runProDual } from "../src/cmd/pro"
 import { getModel } from "../src/lib/types"
@@ -36,26 +31,27 @@ describe("dual-pro dispatch safety", () => {
   it("makes an actual leg's insufficient-quota error actionable without a probe call", () => {
     const model = { provider: "openai" as const, modelId: "gpt-5.4-pro", displayName: "GPT-5.4 Pro" }
     const error = new Error("insufficient_quota: billing hard limit reached")
-    expect(formatLegDispatchError(model, error)).toBe(
+    expect(describeDispatchFailure(error, model).message).toBe(
       "OpenAI insufficient quota; top up OPENAI_API_KEY billing before retrying.",
     )
-    expect(describeDispatchFailure(error, model).message).toBe(formatLegDispatchError(model, error))
   })
 
   it("passes runWithTimeout's own wrapper message through verbatim (pro-specific partial-results semantics)", () => {
     expect(
-      formatLegDispatchError(
-        { provider: "openrouter", modelId: "moonshotai/kimi-k2.6", displayName: "Kimi K2.6" },
-        new Error("Kimi K2.6 leg timed out after 1s; partial results will be reported."),
-      ),
+      describeDispatchFailure(new Error("Kimi K2.6 leg timed out after 1s; partial results will be reported."), {
+        provider: "openrouter",
+        modelId: "moonshotai/kimi-k2.6",
+        displayName: "Kimi K2.6",
+      }).message,
     ).toBe("Kimi K2.6 leg timed out after 1s; partial results will be reported.")
   })
 
   it("gives generic-timeout callers (e.g. recall's own race, not runWithTimeout) actionable advice that is NOT a credentials fix", () => {
-    const result = formatLegDispatchError(
-      { provider: "openrouter", modelId: "moonshotai/kimi-k2.6", displayName: "Kimi K2.6" },
-      new Error("timed out after 2002ms (given 2000ms)"),
-    )
+    const result = describeDispatchFailure(new Error("timed out after 2002ms (given 2000ms)"), {
+      provider: "openrouter",
+      modelId: "moonshotai/kimi-k2.6",
+      displayName: "Kimi K2.6",
+    }).message
     expect(result).toContain("OpenRouter (moonshotai/kimi-k2.6)")
     // Timeout wording proves neither credential health nor an auth failure.
     expect(result).not.toMatch(/credentials|API_KEY/u)
