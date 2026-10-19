@@ -29,121 +29,130 @@ vi.mock("../src/lib/openai-deep", async () => {
   return { ...actual, queryOpenAIBackground: queryBackgroundMock }
 })
 
-/** An unknown OpenRouter failure: a 500 with a body none of the known classes match. */
-function unknownOpenRouterError(): Error {
+/** OpenRouter's own shape: `error.code` is the HTTP status, upstream detail is under `metadata`. */
+function openRouterError(body: Record<string, unknown>, status = 500): Error {
   return Object.assign(new Error("OpenRouter dispatch failed: unclassified provider error"), {
-    status: 500,
-    responseBody: {
-      error: {
-        code: "provider_internal",
-        message: "upstream exploded while reading key sk-or-v1-0123456789abcdef",
-      },
-    },
+    status,
+    responseBody: body,
   })
 }
 
+/** The pro path streams: streamText reports through onError and ends empty (28886). */
+function mockStreamFailure(error: unknown): void {
+  streamTextMock.mockReset()
+  streamTextMock.mockImplementation((opts: { onError?: (event: { error: unknown }) => void }) => {
+    opts.onError?.({ error })
+    return {
+      // The provider reported the failure and produced no text.
+      textStream: {
+        [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+      },
+      usage: undefined,
+      finishReason: "error",
+      rawFinishReason: "error",
+    }
+  })
+  generateTextMock.mockReset()
+  generateTextMock.mockRejectedValue(error)
+}
+
+async function runLeg(
+  slot: string,
+): Promise<{ env: ReturnType<typeof makeTestEnv>; envelope: Record<string, unknown> }> {
+  const env = makeTestEnv()
+  const result = await runCli([
+    "pro",
+    "--model",
+    "deepseek/deepseek-chat",
+    "--slot",
+    slot,
+    "--json",
+    "--full-paths",
+    "recover the missing opinion",
+  ])
+  expect(result.error, "the CLI must not crash past its own error path").toBeUndefined()
+  expect(result.exited).toBe(1)
+  const envelopeLine = env.stdout
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("{"))
+    .at(-1)
+  expect(envelopeLine, "one JSON envelope is emitted").toBeDefined()
+  return { env, envelope: JSON.parse(envelopeLine!) as Record<string, unknown> }
+}
+
 describe("27038 an unclassified provider error keeps its cause", () => {
-  it("carries status, provider code/message, model and slot into the envelope, stderr and the report", async () => {
-    const env = makeTestEnv()
-    // The pro path streams: streamText reports the provider error through
-    // `onError` and ends the text stream empty, then the SDK rejects the
-    // iteration with its evidence-free "no output generated" wrapper. Mock
-    // that shape, not a thrown generateText rejection (28886).
-    streamTextMock.mockReset()
-    streamTextMock.mockImplementation((opts: { onError?: (event: { error: unknown }) => void }) => {
-      let consumed = false
-      return {
-        textStream: (async function* () {
-          if (!consumed) {
-            consumed = true
-            opts.onError?.({ error: unknownOpenRouterError() })
-          }
-        })(),
-        usage: Promise.resolve(undefined),
-        finishReason: Promise.resolve("error"),
-        rawFinishReason: Promise.resolve("error"),
-      }
-    })
-    generateTextMock.mockReset()
-    generateTextMock.mockRejectedValue(unknownOpenRouterError())
-
-    const result = await runCli([
-      "pro",
-      "--model",
-      "deepseek/deepseek-chat",
-      "--slot",
-      "c",
-      "--json",
-      "--full-paths",
-      "recover the missing opinion",
-    ])
-    expect(result.error, "the CLI must not crash past its own error path").toBeUndefined()
-    expect(result.exited).toBe(1)
-
-    const envelopeLine = env.stdout
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("{"))
-      .at(-1)
-    expect(envelopeLine, "one JSON envelope is emitted").toBeDefined()
-    const envelope = JSON.parse(envelopeLine!) as Record<string, unknown>
+  it("carries the real OpenRouter body, the model and the slot into the envelope, stderr and the report", async () => {
+    mockStreamFailure(
+      openRouterError({
+        error: {
+          code: 500,
+          message: "Provider returned error",
+          metadata: {
+            provider_name: "DeepSeek",
+            raw: "upstream exploded while reading key sk-or-v1-0123456789abcdef",
+          },
+        },
+      }),
+    )
+    const { env, envelope } = await runLeg("c")
 
     expect(envelope.code).toBe("provider_error")
     expect(envelope.slot).toBe("c")
     expect(envelope.model).toBe("DeepSeek Chat V3")
     expect(envelope.httpStatus).toBe(500)
-    expect(envelope.providerCode).toBe("provider_internal")
+    // OpenRouter's numeric error.code IS the status; it is never restated as a
+    // provider code, which the honest absence shows (27038 review).
+    expect(envelope.providerCode).toBeUndefined()
     const envelopeError = String(envelope.error)
-    for (const needle of ["HTTP 500", "provider_internal", "upstream exploded"]) {
+    for (const needle of ["HTTP 500", "upstream exploded", "Provider returned error", "DeepSeek"]) {
       expect(envelopeError, `the envelope error names ${needle}`).toContain(needle)
     }
     expect(envelopeError).not.toContain("sk-or-v1-0123456789abcdef")
     expect(envelopeError).toContain("[REDACTED]")
 
     const stderr = env.stderr.join("\n")
-    for (const needle of ["HTTP 500", "provider_internal", "upstream exploded", "DeepSeek Chat V3", "Slot: c"]) {
+    for (const needle of ["HTTP 500", "upstream exploded", "DeepSeek Chat V3", "Slot: c"]) {
       expect(stderr, `stderr names ${needle}`).toContain(needle)
     }
     expect(stderr).not.toContain("sk-or-v1-0123456789abcdef")
 
     const report = readFileSync(String(envelope.file), "utf8")
-    for (const needle of ["HTTP 500", "provider_internal", "upstream exploded", "DeepSeek Chat V3", "Slot**: c"]) {
+    for (const needle of ["HTTP 500", "upstream exploded", "DeepSeek Chat V3", "Slot**: c"]) {
       expect(report, `the saved report names ${needle}`).toContain(needle)
     }
     expect(report).not.toContain("sk-or-v1-0123456789abcdef")
   })
 
-  it("names the absence when the error carries no HTTP status, instead of dropping the cause silently", async () => {
-    const env = makeTestEnv()
-    const bare = Object.assign(new Error("socket closed before headers"), {})
-    streamTextMock.mockReset()
-    streamTextMock.mockImplementation((opts: { onError?: (event: { error: unknown }) => void }) => ({
-      textStream: (async function* () {
-        opts.onError?.({ error: bare })
-      })(),
-      usage: Promise.resolve(undefined),
-      finishReason: Promise.resolve("error"),
-      rawFinishReason: Promise.resolve("error"),
-    }))
-    generateTextMock.mockReset()
-    generateTextMock.mockRejectedValue(bare)
+  it("carries a string error code from an OpenAI-compatible body into the envelope", async () => {
+    mockStreamFailure(
+      openRouterError({
+        error: { code: "provider_internal", message: "upstream exploded while reading key sk-or-v1-0123456789abcdef" },
+      }),
+    )
+    const { envelope } = await runLeg("a")
 
-    const result = await runCli([
-      "pro",
-      "--model",
-      "deepseek/deepseek-chat",
-      "--slot",
-      "b",
-      "--json",
-      "--full-paths",
-      "recover the missing opinion",
-    ])
-    expect(result.exited).toBe(1)
-    const envelope = JSON.parse(
-      env.stdout
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith("{"))
-        .at(-1)!,
-    ) as Record<string, unknown>
+    expect(envelope.httpStatus).toBe(500)
+    expect(envelope.providerCode).toBe("provider_internal")
+    expect(String(envelope.error)).toContain("provider code provider_internal")
+    expect(String(envelope.error)).not.toContain("sk-or-v1-0123456789abcdef")
+  })
+
+  it("redacts a secret that arrives as the provider's own code, on the envelope field as on the message", async () => {
+    mockStreamFailure(
+      openRouterError({
+        error: { code: "sk-or-v1-0123456789abcdef", message: "bad credential" },
+      }),
+    )
+    const { envelope } = await runLeg("d")
+
+    expect(envelope.providerCode).toBe("[REDACTED]")
+    expect(String(envelope.error)).not.toContain("sk-or-v1-0123456789abcdef")
+    expect(String(envelope.error)).toContain("provider code [REDACTED]")
+  })
+
+  it("names the absence when the error carries no HTTP status, instead of dropping the cause silently", async () => {
+    mockStreamFailure(Object.assign(new Error("socket closed before headers"), {}))
+    const { env, envelope } = await runLeg("b")
 
     expect(envelope.slot).toBe("b")
     expect(String(envelope.error)).toContain("with no HTTP status")
