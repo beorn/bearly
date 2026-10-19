@@ -26,7 +26,7 @@
  */
 
 import { z } from "zod"
-import { resolveCost, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
+import { resolveCost, type ModelRates } from "./cost.ts"
 import type {
   ProviderAvailabilityFact,
   ProviderAvailabilityStatus,
@@ -1320,18 +1320,7 @@ export function skuRates(model: Model | SkuConfig): ModelRates | null {
   return { inputPerM: model.inputPricePerM, outputPerM: model.outputPricePerM }
 }
 
-/**
- * Provenance-aware cost for a model (19899 P2: unknown is explicit, never $0).
- * Cache-class rates from the LiteLLM map are layered in by pricing.ts's
- * `lookupModelRates`; this entry point covers the registry's input/output case.
- */
-export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, reportedUsd?: number): ResolvedCost {
-  return resolveCost({
-    usage,
-    rates: skuRates(model),
-    ...(reportedUsd !== undefined ? { reportedUsd } : {}),
-  })
-}
+export { resolveCostForModel } from "./pricing.ts"
 
 export function formatCost(cost: number): string {
   if (cost < 0.01) return `$${(cost * 100).toFixed(2)}¢`

@@ -14,8 +14,8 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
-import { MODELS, SKUS, setPricingOverlay } from "./types"
-import type { ModelRates } from "./cost.ts"
+import { SKUS, setPricingOverlay, type Model, type SkuConfig } from "./types"
+import { resolveCost, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
 
 // Cache location (in user's home directory)
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
@@ -35,8 +35,21 @@ interface PricingCache {
        *  input rate (LiteLLM's own fallback convention). */
       cacheReadPerM?: number
       cacheWritePerM?: number
+      /** Absent on a cache written before the dated basis. The lookup then
+       * reports `unrecorded` and does not infer a date from `updatedAt`. */
+      rateSource?: "litellm" | "sku"
+      rateDate?: string
     }
   >
+}
+
+/** Where a model's rates came from. `unrecorded` is a cache row with no basis fields. */
+export type RateSource = "litellm" | "sku" | "unrecorded"
+
+export interface ModelRateLookup {
+  modelId: string
+  rates: ModelRates
+  basis: { rateSource: RateSource; rateDate?: string }
 }
 
 /**
@@ -108,33 +121,12 @@ export function applyCachedPricing(): void {
  * This does NOT mutate the registry — it writes the JSON cache; subsequent
  * processes will pick the values up via `applyCachedPricing()` at startup.
  */
-export function cacheCurrentPricing(): void {
-  const models: PricingCache["models"] = {}
-
-  for (const model of MODELS) {
-    if (model.inputPricePerM !== undefined && model.outputPricePerM !== undefined) {
-      models[model.modelId] = {
-        inputPricePerM: model.inputPricePerM,
-        outputPricePerM: model.outputPricePerM,
-        typicalLatencyMs: model.typicalLatencyMs,
-      }
-    }
-  }
-
-  savePricingCache({
-    updatedAt: new Date().toISOString(),
-    models,
-  })
-}
-
 /**
- * Build a fresh snapshot from a set of price updates, merging on top of the
- * current effective pricing. Returns the snapshot the caller can persist via
- * `savePricingCache(snapshot)` or `cacheCurrentPricing()` after applying the
- * overlay first.
+ * Build a fresh snapshot from a set of accepted price updates, merging on top
+ * of the current cache. This is the only merge. A caller that has no accepted
+ * update does not call it: that refresh is an error and the cache stays put.
  *
- * Pure — does not mutate any registry or cache. The dispatch-side updater
- * uses this so the registry never has to be mutated in-place.
+ * Pure — does not mutate any registry or cache.
  */
 export function buildPricingSnapshot(
   updates: Array<{
@@ -145,36 +137,54 @@ export function buildPricingSnapshot(
     cacheWritePerM?: number
   }>,
 ): PricingCache {
+  const updatedAt = new Date().toISOString()
   const models: PricingCache["models"] = {}
-  // Seed with SKU defaults so the snapshot is always full.
+  // Seed with frozen SKU defaults. A row that no cache entry and no update
+  // replaces is sku, with no date.
   for (const sku of SKUS) {
     if (sku.inputPricePerM !== undefined && sku.outputPricePerM !== undefined) {
       models[sku.modelId] = {
         inputPricePerM: sku.inputPricePerM,
         outputPricePerM: sku.outputPricePerM,
         typicalLatencyMs: sku.typicalLatencyMs,
+        rateSource: "sku",
       }
     }
   }
-  // Layer the existing cache (if any) on top — preserves prior overrides.
+  // A previous entry is kept whole, including its basis. An entry with no
+  // basis fields stays that way so the lookup reports unrecorded.
   const existing = loadPricingCache()
   if (existing) {
     for (const [id, v] of Object.entries(existing.models)) {
-      models[id] = { ...models[id], ...v }
+      const merged = { ...models[id], ...v }
+      if (v.rateSource === undefined) {
+        delete merged.rateSource
+        delete merged.rateDate
+      }
+      models[id] = merged
     }
   }
-  // Apply the new updates last.
   for (const u of updates) {
     const prev = models[u.modelId]
     models[u.modelId] = {
       inputPricePerM: u.inputPricePerM,
       outputPricePerM: u.outputPricePerM,
-      typicalLatencyMs: prev?.typicalLatencyMs,
-      ...(u.cacheReadPerM !== undefined ? { cacheReadPerM: u.cacheReadPerM } : {}),
-      ...(u.cacheWritePerM !== undefined ? { cacheWritePerM: u.cacheWritePerM } : {}),
+      ...(prev?.typicalLatencyMs !== undefined ? { typicalLatencyMs: prev.typicalLatencyMs } : {}),
+      ...(u.cacheReadPerM !== undefined
+        ? { cacheReadPerM: u.cacheReadPerM }
+        : prev?.cacheReadPerM !== undefined
+          ? { cacheReadPerM: prev.cacheReadPerM }
+          : {}),
+      ...(u.cacheWritePerM !== undefined
+        ? { cacheWritePerM: u.cacheWritePerM }
+        : prev?.cacheWritePerM !== undefined
+          ? { cacheWritePerM: prev.cacheWritePerM }
+          : {}),
+      rateSource: "litellm",
+      rateDate: updatedAt,
     }
   }
-  return { updatedAt: new Date().toISOString(), models }
+  return { updatedAt, models }
 }
 
 /**
@@ -183,15 +193,44 @@ export function buildPricingSnapshot(
  * has populated them (bead 19899). Null when the model is unpriced — callers
  * treat that as cost-source UNKNOWN, never $0.
  */
-export function lookupModelRates(modelId: string): ModelRates | null {
-  const model = MODELS.find((m) => m.modelId === modelId)
-  if (!model || model.inputPricePerM === undefined || model.outputPricePerM === undefined) return null
+/**
+ * Rates and basis for one model, from a single cache entry when one exists.
+ *
+ * Headline rates, cache-class rates, and the basis all come from that entry.
+ * This does not read `MODELS`: those getters show LiteLLM headlines only after
+ * `applyCachedPricing` has run in this process. A cache entry whose id is no
+ * longer a SKU still answers, with its own basis, so an older session can
+ * price on the last known rate and the date shows its age.
+ *
+ * No entry: the frozen SKU default, basis `sku`, no date. Not a SKU and not
+ * cached: null. An entry with no basis fields reads `unrecorded`.
+ */
+export function lookupModelRates(modelId: string): ModelRateLookup | null {
   const cached = loadPricingCache()?.models[modelId]
+  if (cached?.inputPricePerM !== undefined && cached.outputPricePerM !== undefined) {
+    const basis =
+      cached.rateSource === "litellm"
+        ? { rateSource: "litellm" as const, ...(cached.rateDate !== undefined ? { rateDate: cached.rateDate } : {}) }
+        : cached.rateSource === "sku"
+          ? { rateSource: "sku" as const }
+          : { rateSource: "unrecorded" as const }
+    return {
+      modelId,
+      rates: {
+        inputPerM: cached.inputPricePerM,
+        outputPerM: cached.outputPricePerM,
+        ...(cached.cacheReadPerM !== undefined ? { cacheReadPerM: cached.cacheReadPerM } : {}),
+        ...(cached.cacheWritePerM !== undefined ? { cacheWritePerM: cached.cacheWritePerM } : {}),
+      },
+      basis,
+    }
+  }
+  const sku = SKUS.find((s) => s.modelId === modelId)
+  if (sku?.inputPricePerM === undefined || sku?.outputPricePerM === undefined) return null
   return {
-    inputPerM: model.inputPricePerM,
-    outputPerM: model.outputPricePerM,
-    ...(cached?.cacheReadPerM !== undefined ? { cacheReadPerM: cached.cacheReadPerM } : {}),
-    ...(cached?.cacheWritePerM !== undefined ? { cacheWritePerM: cached.cacheWritePerM } : {}),
+    modelId,
+    rates: { inputPerM: sku.inputPricePerM, outputPerM: sku.outputPricePerM },
+    basis: { rateSource: "sku" },
   }
 }
 
@@ -233,14 +272,20 @@ export function getStaleWarning(): string | null {
 /**
  * Initialize pricing on startup
  */
-export function initializePricing(): void {
-  // Apply cached pricing as an overlay on the frozen registry.
-  applyCachedPricing()
+/** Provenance-aware cost. One path: the lookup, which already answers SKU defaults. */
+export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, reportedUsd?: number): ResolvedCost {
+  const lookup = lookupModelRates(model.modelId)
+  return resolveCost({
+    usage,
+    ...(lookup ? { rates: lookup.rates } : {}),
+    ...(reportedUsd !== undefined ? { reportedUsd } : {}),
+  })
+}
 
-  // If no cache exists, seed one from the SKU defaults so the stale-timer
-  // tracks "since first run" rather than perpetually firing.
-  const cache = loadPricingCache()
-  if (!cache) {
-    cacheCurrentPricing()
+export function initializePricing(): void {
+  applyCachedPricing()
+  // A missing cache is seeded from SKU defaults. The seed is sku with no date.
+  if (!loadPricingCache()) {
+    savePricingCache(buildPricingSnapshot([]))
   }
 }

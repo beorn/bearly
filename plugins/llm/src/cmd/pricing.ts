@@ -8,13 +8,7 @@
  */
 
 import { MODELS, PROVIDER_ENDPOINTS, type ModelMode } from "../lib/types"
-import {
-  isPricingStale,
-  cacheCurrentPricing,
-  buildPricingSnapshot,
-  savePricingCache,
-  applyCachedPricing,
-} from "../lib/pricing"
+import { isPricingStale, buildPricingSnapshot, savePricingCache, applyCachedPricing } from "../lib/pricing"
 import { fetchLiteLLMMap, matchLiteLLMEntry, renderUnknownModelsPage } from "../lib/litellm"
 
 export interface PricingUpdateResult {
@@ -52,9 +46,8 @@ export async function performPricingUpdate(options: {
   try {
     liteLLMMap = await fetchLiteLLMMap()
   } catch (e) {
-    // Don't cacheCurrentPricing on failure — that would reset the stale-timer
-    // and block retries for another 5 days. Leaving the timer alone means the
-    // next invocation will try again.
+    // A failed fetch leaves the cache untouched. Writing it would reset the
+    // 5-day stale timer and block retries.
     return {
       priceChanges: [],
       error: `Could not fetch any pricing pages. Pricing cache unchanged. (${e instanceof Error ? e.message : String(e)})`,
@@ -125,17 +118,17 @@ export async function performPricingUpdate(options: {
     })
   }
 
-  // Persist the snapshot and refresh the runtime overlay. `cacheCurrentPricing`
-  // is preserved as the "snapshot current effective pricing" entry point when
-  // nothing matched; otherwise we build the snapshot explicitly so the cache
-  // contains the new values (incl. cache-class rates); `applyCachedPricing()`
-  // then makes them effective immediately for the rest of this process.
-  if (acceptedUpdates.length > 0) {
-    savePricingCache(buildPricingSnapshot(acceptedUpdates))
-    applyCachedPricing()
-  } else {
-    cacheCurrentPricing()
+  // No accepted update — the map matched nothing, or the 10× guard held every
+  // match — is a broken source. Same as a failed fetch: say so and do not write.
+  // Writing would reset the 5-day stale timer.
+  if (acceptedUpdates.length === 0) {
+    return {
+      priceChanges: [],
+      error: "LiteLLM map matched no accepted tracked model. Pricing cache unchanged.",
+    }
   }
+  savePricingCache(buildPricingSnapshot(acceptedUpdates))
+  applyCachedPricing()
 
   // Stage 1 of the auto-discovery pipeline (km-bearly.llm-registry-auto-update):
   // feed LiteLLM entries we don't track to the discovery module, which writes

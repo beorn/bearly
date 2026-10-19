@@ -17,7 +17,6 @@ export {
   getModel,
   estimateCost,
   formatCost,
-  resolveCostForModel,
   skuRates,
   MODELS,
 } from "./lib/types.ts"
@@ -60,5 +59,5 @@ export type { DispatchFailureDescription, DispatchFailureKind, DispatchFailureTa
 // reported > computed > unknown precedence, unknown never renders as $0.
 export { resolveCost } from "./lib/cost.ts"
 export type { UsageMap, UsageClass, ModelRates, ResolvedCost, CostSource } from "./lib/cost.ts"
-export { lookupModelRates } from "./lib/pricing.ts"
+export { lookupModelRates, resolveCostForModel } from "./lib/pricing.ts"
 export { LITELLM_PRICES_URL, fetchLiteLLMMap, parseLiteLLMMap, matchLiteLLMEntry } from "./lib/litellm.ts"

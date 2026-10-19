@@ -4,9 +4,8 @@
  *      turn $2.50 into $250 and poison every cost estimate. The rejection is
  *      logged as "Suspicious pricing delta" and the MODELS entry is left
  *      unchanged. (cmd/pricing.ts outlier guard)
- *   2. NOT call cacheCurrentPricing when fetching the LiteLLM map fails.
- *      Writing the cache on failure would reset the 5-day stale timer and
- *      block retries until the timer re-expired.
+ *   2. NOT write the pricing cache when the LiteLLM fetch fails, or when no
+ *      tracked model is accepted. Writing would reset the 5-day stale timer.
  *   3. Skip auto-update entirely for --dry-run invocations.
  *
  * (bead 19899: the price source is the LiteLLM community map — deterministic
@@ -16,17 +15,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { makeTestEnv } from "./helpers"
 
-// Spy on cacheCurrentPricing to verify the failure path doesn't call it.
-// Mocked at the pricing module's export surface so both dispatch.performPricingUpdate
-// AND direct callers get the spied version.
-const cacheCurrentPricingMock = vi.fn()
+// A failed fetch and a refresh with no accepted update must leave the cache
+// bytes alone. savePricingCache is the only writer.
+const savePricingCacheMock = vi.fn()
 const isPricingStaleMock = vi.fn()
 
 vi.mock("../src/lib/pricing", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/pricing")>("../src/lib/pricing")
   return {
     ...actual,
-    cacheCurrentPricing: cacheCurrentPricingMock,
+    savePricingCache: savePricingCacheMock,
     isPricingStale: isPricingStaleMock,
   }
 })
@@ -45,7 +43,7 @@ function outlierLiteLLMBody(): Record<string, unknown> {
 
 describe("pricing sanity", () => {
   beforeEach(() => {
-    cacheCurrentPricingMock.mockReset()
+    savePricingCacheMock.mockReset()
     isPricingStaleMock.mockReset()
   })
 
@@ -74,8 +72,11 @@ describe("pricing sanity", () => {
 
     const result = await dispatch.performPricingUpdate({ verbose: false, modelMode: "quick" })
 
-    // No price change should have been recorded — the delta was rejected.
+    // The only tracked row in the stub map was held by the 10× guard, so the
+    // refresh accepts nothing: error, and the cache is not written.
     expect(result.priceChanges).toHaveLength(0)
+    expect(result.error).toMatch(/Pricing cache unchanged/)
+    expect(savePricingCacheMock).not.toHaveBeenCalled()
 
     // MODELS entry unchanged.
     const gpt54After = MODELS.find((m) => m.modelId === "gpt-5.4")!
@@ -87,11 +88,9 @@ describe("pricing sanity", () => {
     expect(stderrAll).toMatch(/Suspicious pricing delta/)
   }, 10_000)
 
-  it("pricing fetch failure does NOT reset the stale timer (cacheCurrentPricing not called)", async () => {
+  it("pricing fetch failure leaves the cache bytes unchanged", async () => {
     makeTestEnv()
 
-    // The LiteLLM fetch fails — performPricingUpdate must short-circuit
-    // BEFORE cacheCurrentPricing.
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -106,9 +105,7 @@ describe("pricing sanity", () => {
 
     expect(result.error).toBeDefined()
     expect(result.error).toMatch(/Could not fetch any pricing pages/)
-    // Core assertion: the cache write function was NEVER invoked. Previous
-    // (buggy) code would have reset the 5-day timer even on total failure.
-    expect(cacheCurrentPricingMock).not.toHaveBeenCalled()
+    expect(savePricingCacheMock).not.toHaveBeenCalled()
   }, 10_000)
 
   it("skips auto-update entirely for --dry-run invocations", async () => {
