@@ -55,7 +55,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@bearly/flock": "^0.2.2"
+    "@bearly/flock": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
