@@ -1,5 +1,6 @@
 {
   "name": "@bearly/watchdog",
+  "private": true,
   "version": "0.2.0",
   "description": "A watchdog on its own thread: it sees a main thread that spins, and logs or kills",
   "keywords": [
