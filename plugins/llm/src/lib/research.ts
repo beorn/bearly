@@ -284,8 +284,20 @@ async function finishQuery(
   response: ModelResponse,
   describedFailure?: DispatchFailureDescription,
 ): Promise<QueryResult> {
-  await recordQueryObservation(store, model, response, describedFailure)
-  return { response }
+  // 27038: the response record is what a caller downstream actually holds, so
+  // the structured cause rides with it rather than being re-derived from prose.
+  const withFailure: ModelResponse =
+    describedFailure && (describedFailure.httpStatus !== undefined || describedFailure.providerCode !== undefined)
+      ? {
+          ...response,
+          failure: {
+            ...(describedFailure.httpStatus === undefined ? {} : { httpStatus: describedFailure.httpStatus }),
+            ...(describedFailure.providerCode === undefined ? {} : { providerCode: describedFailure.providerCode }),
+          },
+        }
+      : response
+  await recordQueryObservation(store, model, withFailure, describedFailure)
+  return { response: withFailure }
 }
 
 function streamFailureField(

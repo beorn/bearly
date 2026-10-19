@@ -465,6 +465,13 @@ export async function finishResponse(
    *  CLI and the CLI model, and zeroes the dollar cost with a matching source. */
   servedBy?: OutputMeta["servedBy"],
   completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
+  /** The panel slot this call answered for (27038). A failed leg names it, so
+   *  a reader can match the error back to the panel header without guessing. */
+  slot?: string,
+  /** Structured provider failure facts, when the caller still had the error
+   *  object (27038). The message carries them as prose; these expose them to a
+   *  caller that branches on the envelope. */
+  failure?: { httpStatus?: number; providerCode?: string },
 ): Promise<void> {
   const stopped = completion === undefined ? undefined : outputTokenStop(completion)
   if (stopped === undefined && (!content || content.trim().length === 0)) {
@@ -483,6 +490,7 @@ export async function finishResponse(
       )
     }
     log.error?.(`Model: ${model.displayName}`)
+    if (slot) log.error?.(`Slot: ${slot}`)
     if (usage) log.error?.(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}`)
     if (durationMs) log.error?.(`Duration: ${Math.round(durationMs / 1000)}s`)
 
@@ -496,6 +504,7 @@ export async function finishResponse(
       providerError ?? "Model returned no content and the provider reported no error.",
       "",
       `- **Model**: ${model.displayName}`,
+      ...(slot ? [`- **Slot**: ${slot}`] : []),
       `- **Tokens**: prompt=${promptTokens}, completion=${completionTokens}`,
       `- **Duration**: ${durationStr}`,
       `- **Query**: ${query ?? "(none)"}`,
@@ -533,6 +542,9 @@ export async function finishResponse(
       durationMs,
     }
     if (query) result.query = query
+    if (slot) result.slot = slot
+    if (failure?.httpStatus !== undefined) result.httpStatus = failure.httpStatus
+    if (failure?.providerCode !== undefined) result.providerCode = failure.providerCode
     emitJson(result)
 
     process.exit(1)

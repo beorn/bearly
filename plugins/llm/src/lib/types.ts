@@ -241,6 +241,15 @@ export const ModelResponseSchema = z.object({
     .optional(),
   durationMs: z.number(),
   error: z.string().optional(),
+  /** Structured facts behind `error`, when a dispatch failure carried them
+   *  (27038). The message names them as prose; these let a caller branch
+   *  without parsing it. Absent when the provider supplied none. */
+  failure: z
+    .object({
+      httpStatus: z.number().optional(),
+      providerCode: z.string().optional(),
+    })
+    .optional(),
   /** Who actually answered, when it differs from the SKU's own provider API —
    *  today the subscription CLI routes (bead 29147). The SKU stays the slot's
    *  identity; this says which CLI and which CLI model produced the answer, so
