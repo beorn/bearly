@@ -111,4 +111,47 @@ describe("27038 an unclassified provider error keeps its cause", () => {
     }
     expect(report).not.toContain("sk-or-v1-0123456789abcdef")
   })
+
+  it("names the absence when the error carries no HTTP status, instead of dropping the cause silently", async () => {
+    const env = makeTestEnv()
+    const bare = Object.assign(new Error("socket closed before headers"), {})
+    streamTextMock.mockReset()
+    streamTextMock.mockImplementation((opts: { onError?: (event: { error: unknown }) => void }) => ({
+      textStream: (async function* () {
+        opts.onError?.({ error: bare })
+      })(),
+      usage: Promise.resolve(undefined),
+      finishReason: Promise.resolve("error"),
+      rawFinishReason: Promise.resolve("error"),
+    }))
+    generateTextMock.mockReset()
+    generateTextMock.mockRejectedValue(bare)
+
+    const result = await runCli([
+      "pro",
+      "--model",
+      "deepseek/deepseek-chat",
+      "--slot",
+      "b",
+      "--json",
+      "--full-paths",
+      "recover the missing opinion",
+    ])
+    expect(result.exited).toBe(1)
+    const envelope = JSON.parse(
+      env.stdout
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("{"))
+        .at(-1)!,
+    ) as Record<string, unknown>
+
+    expect(envelope.slot).toBe("b")
+    expect(String(envelope.error)).toContain("with no HTTP status")
+    // The classifier drops unvetted raw text on purpose; what must never be
+    // silent is that no status existed at all.
+    expect(String(envelope.error)).not.toContain("unclassified provider error")
+    expect(envelope.httpStatus).toBeUndefined()
+    expect(envelope.providerCode).toBeUndefined()
+    expect(env.stderr.join("\n")).toContain("Slot: b")
+  })
 })
