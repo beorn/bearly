@@ -123,6 +123,7 @@ const VALUE_FLAGS = [
   "--sample",
   "--limit",
   "--legs",
+  "--slot",
   "--max-output-tokens",
 ]
 
@@ -904,6 +905,7 @@ export async function main(): Promise<string | undefined> {
         question: q,
         modelOverride,
         imagePath,
+        slot: getArg("--slot"),
         streamToken,
         outputFile,
         sessionTag,

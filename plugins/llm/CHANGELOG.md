@@ -32,6 +32,12 @@ unknown` fact with closed refusal kinds, evidence source, age, expiry, and
   text into human output or the provider cache. Numeric token counts no longer
   alias HTTP status codes. Model-unavailable remediation now names the shipped
   `bun llm pro --discover-models` command.
+- An unclassified provider failure now keeps its cause on every surface: the
+  message carries the HTTP status, the provider's string error code and a
+  redacted bounded body; the JSON envelope adds `slot`, `httpStatus` and
+  `providerCode`; `pro` accepts `--slot <id>` and the panel's "Missing legs"
+  line names each leg's slot. OpenRouter's numeric `error.code` is the status,
+  so it is never restated as a provider code.
 - Provider stores and selectors reject runtime-invalid providers, observations,
   facts, candidates, exclusions, and non-finite times before I/O or selection.
   A continuously unreadable observation file warns once until it recovers.
@@ -41,9 +47,9 @@ unknown` fact with closed refusal kinds, evidence source, age, expiry, and
 - `isProviderAvailable()` remains source-compatible but reports credential
   presence only; use `readProviderAvailability()` plus `selectModels()` for new
   selection.
-- `describeProviderError()` and `formatLegDispatchError()` now render
-  `describeDispatchFailure().message`. Both wrappers remain for one release and
-  are scheduled for removal in the following release.
+- `describeProviderError()` and `formatLegDispatchError()` are removed; call
+  `describeDispatchFailure()` directly, which owns the message together with
+  `httpStatus` and `providerCode`.
 
 ## 0.10.0 (2026-04-28)
 

@@ -19,6 +19,12 @@ export interface DispatchFailureDescription {
   kind: DispatchFailureKind
   scope: "provider" | "model" | "call"
   message: string
+  /** HTTP status the provider returned, when the failure carried one (27038).
+   *  The message names it too; a caller that branches should not parse prose. */
+  httpStatus?: number
+  /** The provider's own error code, verbatim and bounded (27038). Absent when
+   *  the provider supplied none — never guessed. */
+  providerCode?: string
   remedy?: string
   requestedOutputTokens?: number
   affordableOutputTokens?: number
@@ -490,6 +496,49 @@ function classifyDispatchFailure(
   }
 }
 
+/** One redaction pass, so every surface that shows provider text shows the
+ *  same, already-redacted value — the message, the envelope field and the
+ *  cached response record all read from here (27038). */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/("(?:api[_-]?key|access[_-]?token|token|authorization|password|secret)"\s*:\s*")[^"]*/giu, "$1[REDACTED]")
+    .replace(/\bBearer\s+[^\s"',}]+/giu, "Bearer [REDACTED]")
+    .replace(/\bsk-[a-zA-Z0-9_-]+/gu, "[REDACTED]")
+    .replace(/([?&](?:api[_-]?key|token|access[_-]?token)=)[^&\s]+/giu, "$1[REDACTED]")
+}
+
+/**
+ * The provider's own error code, when it supplied one — the field a caller
+ * branches on ("provider_internal", "rate_limit_exceeded", …). Read from the
+ * error object first (Node/SDK errors carry `code`), then from the response
+ * body's `error.code` / `code`. Only a STRING is a provider code: OpenRouter
+ * sends a numeric `error.code` equal to the HTTP status, which the status
+ * field already carries, so it is never restated as a code. Never guessed:
+ * absent stays undefined, and the value is redacted here so no caller has to
+ * remember to (27038).
+ */
+function providerCodeFrom(source: unknown, body: string): string | undefined {
+  const fromObject = (value: unknown): string | undefined => {
+    if (!value || typeof value !== "object") return undefined
+    const item = value as { code?: unknown; error?: { code?: unknown } }
+    for (const candidate of [item.error?.code, item.code]) {
+      if (typeof candidate === "string" && candidate.trim().length > 0 && candidate.length <= 80) {
+        return redactSecrets(candidate.trim())
+      }
+    }
+    return undefined
+  }
+  const direct = fromObject(source)
+  if (direct !== undefined) return direct
+  try {
+    return fromObject(JSON.parse(body) as unknown)
+  } catch {
+    // silent-fallback-allow: the body is not JSON, so the provider named no error code; the
+    // full bounded body is already on the message, and the absence is reported as "no code"
+    return undefined
+  }
+}
+
 export type DispatchFailureModelTarget = Pick<Model, "displayName" | "modelId" | "provider">
 
 /** Render retained HTTP evidence through the existing query/Pro error string. */
@@ -519,27 +568,26 @@ export function describeDispatchFailure(
         ? stringify(item.data)
         : rawErrorMessage(source)
   // Redact before bounding so a partial credential cannot escape truncation.
-  const redact = (text: string): string =>
-    text
-      .replace(
-        /("(?:api[_-]?key|access[_-]?token|token|authorization|password|secret)"\s*:\s*")[^"]*/giu,
-        "$1[REDACTED]",
-      )
-      .replace(/\bBearer\s+[^\s"',}]+/giu, "Bearer [REDACTED]")
-      .replace(/\bsk-[a-zA-Z0-9_-]+/gu, "[REDACTED]")
-      .replace(/([?&](?:api[_-]?key|token|access[_-]?token)=)[^&\s]+/giu, "$1[REDACTED]")
   const bounded = (text: string): string => {
-    const safe = redact(text).replace(/\s+/gu, " ")
+    const safe = redactSecrets(text).replace(/\s+/gu, " ")
     return safe.length > 1_000 ? safe.slice(0, 1_000) + " [truncated]" : safe
   }
-  const message = `${bounded(described.message)} | HTTP ${status}; body: ${bounded(body)}`
+  const providerCode = providerCodeFrom(source, body)
+  // providerCodeFrom already redacted and bounded the value; restating the raw
+  // string here was the one surface that could still leak it (27038).
+  const codeNote = providerCode === undefined ? "" : `; provider code ${providerCode}`
+  const message = `${bounded(described.message)} | HTTP ${status}${codeNote}; body: ${bounded(body)}`
   // 29495 (@cto e60d240d): a 429's refusal record keeps the head of the upstream body beside bearly's own text. The
   // record outlives the call and refuses every model of the provider for its window, so it must show whose limit
   // refused (OpenRouter names it in `limit_source` and `provider_name`). Measurement only: the key stays the provider.
-  if (described.observation?.status !== "refusing" || described.observation.kind !== "rate-limited") {
-    return { ...described, message }
+  const facts = {
+    httpStatus: status,
+    ...(providerCode === undefined ? {} : { providerCode }),
   }
-  const head = redact(body).replace(/\s+/gu, " ").slice(0, 512)
+  if (described.observation?.status !== "refusing" || described.observation.kind !== "rate-limited") {
+    return { ...described, message, ...facts }
+  }
+  const head = redactSecrets(body).replace(/\s+/gu, " ").slice(0, 512)
   const reason = `${described.observation.reason} | HTTP ${status}; upstream body: ${head}`
-  return { ...described, message, observation: { ...described.observation, reason } }
+  return { ...described, message, ...facts, observation: { ...described.observation, reason } }
 }

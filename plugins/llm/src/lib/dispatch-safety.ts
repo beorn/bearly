@@ -1,5 +1,4 @@
-import type { Model } from "./types"
-import { describeDispatchFailure, getRetiredModelReplacement } from "./dispatch-error"
+import { getRetiredModelReplacement } from "./dispatch-error"
 
 export const DEFAULT_LEG_TIMEOUT_MS = 15 * 60 * 1_000
 
@@ -78,11 +77,4 @@ export async function runWithTimeout<T>({
     if (timer !== undefined) clearTimeout(timer)
     if (outerSignal && onOuterAbort) outerSignal.removeEventListener("abort", onOuterAbort)
   }
-}
-
-export function formatLegDispatchError(
-  model: Pick<Model, "displayName" | "modelId" | "provider">,
-  error: unknown,
-): string {
-  return describeDispatchFailure(error, model).message
 }

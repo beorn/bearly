@@ -9,7 +9,8 @@ import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
-import { formatLegDispatchError, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
+import { getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
+import { describeDispatchFailure } from "../lib/dispatch-error"
 import { safeCurrentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
 import { outputTokenStop } from "../lib/format"
 
@@ -21,6 +22,9 @@ export async function askAndFinish(options: {
   header: (name: string) => string
   modelOverride: Model | undefined
   imagePath: string | undefined
+  /** The panel slot this call answers for (27038). Passed through to the
+   *  failure envelope, stderr and saved report. */
+  slot?: string
   streamToken: (token: string) => void
   buildContext: (topic: string) => Promise<string | undefined>
   outputFile: string
@@ -106,6 +110,9 @@ export async function askAndFinish(options: {
     params: { level, modelMode: options.modelMode, maxOutputTokens: options.maxOutputTokens },
   }
   let response: ModelResponse
+  // Structured facts from the dispatch error, kept beside the rendered message
+  // so the envelope can expose them without a caller parsing prose (27038).
+  let dispatchFailure: { httpStatus?: number; providerCode?: string } | undefined
   const cached = cacheable ? readCache<ModelResponse>(cacheKey) : null
   if (cached && outputTokenStop(cached.envelope) === undefined) {
     response = cached.envelope
@@ -144,11 +151,16 @@ export async function askAndFinish(options: {
             run: dispatch,
           })
         } catch (error) {
+          const described = describeDispatchFailure(error, model)
+          dispatchFailure = {
+            httpStatus: described.httpStatus,
+            providerCode: described.providerCode,
+          }
           return {
             model,
             content: "",
             durationMs: Date.now() - startedAt,
-            error: formatLegDispatchError(model, error),
+            error: described.message,
           }
         }
       })
@@ -179,5 +191,7 @@ export async function askAndFinish(options: {
     options.retryCommand,
     response.servedBy,
     response,
+    options.slot,
+    response.failure ?? dispatchFailure,
   )
 }

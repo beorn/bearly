@@ -90,6 +90,10 @@ export async function runProDual(options: {
   question: string
   modelOverride: Model | undefined
   imagePath: string | undefined
+  /** The panel slot this call answers for, when the caller knows it (27038).
+   *  Named in the failure envelope, stderr and saved report so a leg that died
+   *  is identifiable without cross-reading the panel headers. */
+  slot?: string
   streamToken: (token: string) => void
   buildContext: (topic: string) => Promise<string | undefined>
   outputFile: string
@@ -146,6 +150,7 @@ export async function runProDual(options: {
       header: (name) => `[${name} - pro mode]`,
       modelOverride,
       imagePath,
+      slot: options.slot,
       streamToken: options.streamToken,
       maxOutputTokens: options.maxOutputTokens,
       retryCommand: options.retryCommand,
@@ -924,7 +929,9 @@ export async function runProDual(options: {
   const failedLegs = legOutcomes.filter((l) => !l.ok)
   if (failedLegs.length > 0) {
     parts.push(
-      `**Missing legs**: ${failedLegs.map((l) => `${l.model.displayName} (${l.error ?? "no content"})`).join("; ")}\n`,
+      `**Missing legs**: ${failedLegs
+        .map((l) => `leg ${l.id.toUpperCase()} ${l.model.displayName} (${l.error ?? "no content"})`)
+        .join("; ")}\n`,
     )
   }
   // A reduced panel is named where the verdict is read, not inferred from which
