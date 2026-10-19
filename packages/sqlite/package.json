@@ -1,7 +1,7 @@
 {
   "name": "@bearly/sqlite",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "description": "One shared single-statement assertion for native SQLite SQL text",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",
