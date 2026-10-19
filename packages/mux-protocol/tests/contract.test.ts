@@ -4,6 +4,9 @@
  * `renameTab` + `multiPane` disabled — so both the happy paths AND the
  * capability-negotiation branches (typed UnsupportedCapabilityError) are
  * exercised. Any backend (e.g. @bearly/mux-cmux-adapter) runs this same suite.
+ *
+ * @assertions ../src/testing/contract-cases.ts — the cases assert with
+ * node:assert/strict; this file only iterates them.
  */
 import { describe, test } from "vitest"
 import { muxContractCases } from "../src/testing/contract-cases.ts"
