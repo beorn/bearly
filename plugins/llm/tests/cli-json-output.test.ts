@@ -164,7 +164,7 @@ describe("buildResultJson — envelope schema", () => {
       fields: {
         cost_usd_reason: "provider did not state a charge",
         list_equivalent_usd: 0.000037,
-        list_equivalent_basis: [{ rateSource: "sku", matchedModelId: "fixture-model" }],
+        list_equivalent_basis: [{ rateSource: "sku" as const, matchedModelId: "fixture-model" }],
       },
     },
   ])("preserves independent cost columns: $name", ({ fields }) => {

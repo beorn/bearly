@@ -77,7 +77,7 @@ describe("persistToResearch home isolation (#25265)", () => {
     expect(text).toContain('list_equivalent_basis: [{"rateSource":"sku","matchedModelId":"test-model"}]')
     expect(text).not.toContain("\ncost:")
     const header = buildMetaComment("testsess12345678", meta)
-    const fields = JSON.parse(header.slice("<!-- llm-meta: ".length, -" -->".length))
+    const fields = JSON.parse(header.slice("<!-- llm-meta: ".length, -" -->".length)) as Record<string, unknown>
     expect(fields.cost_usd).toBe(0)
     expect(fields.list_equivalent_usd).toBe(0.25)
     expect(fields.list_equivalent_basis).toEqual(meta.list_equivalent_basis)
