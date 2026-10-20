@@ -370,7 +370,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
 
   /** @failure a later transfer failure hides its cause or the recovery refs already saved, or removes the source
    * @level l2 @consumer #27037 partial preservation failure @testonly none */
-  test.each(["before", "after", "source", "publication"] as const)(
+  test.each(["before", "after", "source", "publication", "readback"] as const)(
     "a recovery write failing %s names the failure and retained recovery",
     async (phase) => {
       const mainRepo = await buildSubmoduleMain(true)
@@ -415,7 +415,20 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           const wrapper = join(bin, "git")
           writeFileSync(
             wrapper,
-            `#!/usr/bin/env bun\nconst args = process.argv.slice(2); const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }); if (result.exitCode === 0 && args[1] === ${JSON.stringify(phase === "source" ? sourceLeaf : primaryParent)} && args.includes("update-ref") && args.some(a => a.startsWith("refs/archive/"))) { process.stderr.write("fixture failure after ref write\\n"); process.exit(1); } process.exit(result.exitCode);\n`,
+            `#!/usr/bin/env bun
+const args = process.argv.slice(2)
+const marker = ${JSON.stringify(join(sandbox, "parent-archive-published"))}
+if (${JSON.stringify(phase)} === "readback" && args[1] === ${JSON.stringify(primaryParent)} && args.includes("fetch") && args.includes("--dry-run") && args.some(a => a.startsWith("+refs/archive/")) && await Bun.file(marker).exists()) {
+  process.stderr.write("fixture cannot read archive after publication\\n"); process.exit(74)
+}
+const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+if (${JSON.stringify(phase)} === "readback") {
+  if (result.exitCode === 0 && args[1] === ${JSON.stringify(primaryParent)} && args.includes("push") && args.some(a => a.includes(":refs/archive/"))) await Bun.write(marker, "published")
+} else if (result.exitCode === 0 && args[1] === ${JSON.stringify(phase === "source" ? sourceLeaf : primaryParent)} && args.includes("update-ref") && args.some(a => a.startsWith("refs/archive/"))) {
+  process.stderr.write("fixture failure after ref write\\n"); process.exit(1)
+}
+process.exit(result.exitCode)
+`,
           )
           chmodSync(wrapper, 0o755)
           process.env.PATH = bin + ":" + originalPath
@@ -428,7 +441,8 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           failure = cause
         }
         expect(failure).toBeInstanceOf(Error)
-        const operation = phase === "publication" ? "archive publication/readback" : "update-ref"
+        const operation =
+          phase === "publication" || phase === "readback" ? "archive publication/readback" : "update-ref"
         const recoveryStore = phase === "source" ? sourceLeaf : primaryLeaf
         expect((failure as Error).message).toContain(operation)
         expect((failure as Error).message).toContain(phase === "source" ? sourceLeaf : primaryParent)
@@ -438,7 +452,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           "leaf saved before parent failure\n",
         )
         expect((failure as Error).message).toContain(recoveryStore + ":" + refs[0]!)
-        if (phase === "after" || phase === "publication") {
+        if (phase === "after" || phase === "publication" || phase === "readback") {
           const parentRefs = await preserveRefs(primaryParent, "wt5")
           expect(parentRefs).toHaveLength(1)
           expect((failure as Error).message).toContain(primaryParent + ":" + parentRefs[0]!)
