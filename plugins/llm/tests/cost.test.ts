@@ -6,10 +6,21 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { resolveCost, resolveSubscriptionCost, type ModelRates } from "../src/lib/cost"
+import { resolveCost, resolveSubscriptionCost, averageCost, type ModelRates } from "../src/lib/cost"
 import { parseLiteLLMMap, matchLiteLLMEntry } from "../src/lib/litellm"
 
 const RATES: ModelRates = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
+
+it("averages independent known columns without rounding, preserving missing facts and basis", () => {
+  const total = resolveCost({ usage: { input: 1 }, rates: RATES, reportedUsd: 0 })
+  const average = averageCost(total, 2)
+  expect(average.charged).toEqual({ usd: 0 })
+  expect(average.listEquivalent).toEqual({ usd: 0.0000015 })
+  expect(average.listEquivalentBasis).toEqual(total.listEquivalentBasis)
+  const missing = { ...total, charged: { reason: "one call has no bill" } }
+  expect(averageCost(missing, 2).charged).toEqual(missing.charged)
+  expect(averageCost(total, 0).charged).toEqual({ reason: "no observations to average" })
+})
 
 describe("resolveCost keeps charged dollars and list-equivalent estimates independent", () => {
   it("computes per-class cost with distinct cache rates (write > input > read)", () => {
