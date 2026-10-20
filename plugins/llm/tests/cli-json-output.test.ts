@@ -66,20 +66,30 @@ function resetMocks(stopped = false) {
 }
 
 describe("buildResultJson — envelope schema", () => {
-  it("produces tokens as {prompt, completion, total} from structured input", () => {
+  it("preserves tokens and distinct charged/list-equivalent amounts with their basis", () => {
     const env = buildResultJson("response body", {
       query: "test",
       model: "GPT-5.4",
       tokens: { prompt: 100, completion: 50, total: 150 },
-      cost: "$0.05",
-      costUsd: 0.05,
+      cost_usd: 0.05,
+      list_equivalent_usd: 0.000037,
+      list_equivalent_basis: [
+        { rateSource: "litellm", rateDate: "2026-10-19", matchedModelId: "openai/gpt-5.4" },
+      ],
       durationMs: 1234,
       responseId: "resp_abc",
       status: "completed",
     })
 
     expect(env.tokens).toEqual({ prompt: 100, completion: 50, total: 150 })
-    expect(env.cost).toBe(0.05) // numeric, not string (costUsd preferred)
+    // Charged dollars and a different token estimate must survive independently.
+    expect(env.cost_usd).toBe(0.05)
+    expect(env.list_equivalent_usd).toBe(0.000037)
+    expect(env.list_equivalent_basis).toEqual([
+      { rateSource: "litellm", rateDate: "2026-10-19", matchedModelId: "openai/gpt-5.4" },
+    ])
+    expect(env).not.toHaveProperty("cost")
+    expect(env).not.toHaveProperty("costUsd")
     expect(env.responseId).toBe("resp_abc")
     expect(env.status).toBe("completed")
     expect(env.durationMs).toBe(1234)
@@ -131,9 +141,33 @@ describe("buildResultJson — envelope schema", () => {
     expect(env.status).toBeUndefined()
   })
 
-  it("uses cost string when costUsd is absent (back-compat)", () => {
-    const env = buildResultJson("body", { cost: "$0.05" })
-    expect(env.cost).toBe("$0.05")
+  // @failure A missing column becomes zero, or a genuine stated zero is lost.
+  // @level l1 @consumer Canonical CLI JSON serialization, not cost arithmetic.
+  // Existing precedence coverage merges the two meanings and cannot prove this.
+  it.each([
+    {
+      name: "stated zero with unavailable rates",
+      fields: {
+        cost_usd: 0,
+        list_equivalent_reason: "rates unavailable",
+        list_equivalent_basis: [],
+      },
+    },
+    {
+      name: "known estimate without a stated charge",
+      fields: {
+        cost_usd_reason: "provider did not state a charge",
+        list_equivalent_usd: 0.000037,
+        list_equivalent_basis: [{ rateSource: "sku", matchedModelId: "fixture-model" }],
+      },
+    },
+  ])("preserves independent cost columns: $name", ({ fields }) => {
+    const env = buildResultJson("body", fields)
+    expect(env).toMatchObject(fields)
+    if (!("cost_usd" in fields)) expect(env).not.toHaveProperty("cost_usd")
+    if (!("list_equivalent_usd" in fields)) expect(env).not.toHaveProperty("list_equivalent_usd")
+    expect(env).not.toHaveProperty("cost")
+    expect(env).not.toHaveProperty("costUsd")
   })
 })
 
