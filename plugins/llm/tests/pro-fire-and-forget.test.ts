@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs"
 import { makeTestEnv } from "./helpers"
 
 // Intercept the OpenAI SDK — queryOpenAIBackground uses `openai.responses.create`
@@ -47,6 +47,44 @@ beforeEach(() => {
 })
 
 describe("queryOpenAIBackground — persistence and recovery", () => {
+  // A failed disk write must not erase the paid response already accepted
+  // from the provider. Normal successful persistence never exercises this.
+  it.each(["background-initial", "deep-initial", "background-poll", "deep-poll"])(
+    "retains the original response when %s persistence fails",
+    async (route) => {
+      makeTestEnv()
+      vi.resetModules()
+      vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000)
+      const responseId = `resp_disk_${route}`
+      const p = await import("../src/lib/persistence")
+      const path = p.getPartialPath(responseId)
+      const initialFailure = route.endsWith("initial")
+      if (initialFailure) mkdirSync(path)
+      const raw = { input_tokens: 7, output_tokens: 3, cost_usd: 0, invoice: route }
+      const paid = {
+        id: responseId,
+        status: "completed",
+        usage: raw,
+        output: [{ type: "message", content: [{ type: "output_text", text: "paid original" }] }],
+      }
+      responsesCreateMock.mockResolvedValue(initialFailure ? paid : { id: responseId })
+      responsesRetrieveMock.mockImplementation(async () => {
+        renameSync(path, `${path}.retained`)
+        mkdirSync(path)
+        return paid
+      })
+      const api = await import("../src/lib/openai-deep")
+      const model = (await import("../src/lib/types")).getModel("gpt-5.4-pro")!
+      const result = route.startsWith("background")
+        ? await api.queryOpenAIBackground({ model, prompt: "question" })
+        : await api.queryOpenAIDeepResearch({ model, topic: "question", background: true })
+      expect(result).toMatchObject({ responseId, content: "paid original", cost_usd: 0, usage: { raw } })
+      expect(result.error).toContain(path)
+      expect(responsesCreateMock).toHaveBeenCalledTimes(1)
+      expect(responsesRetrieveMock).toHaveBeenCalledTimes(initialFailure ? 0 : 1)
+    },
+  )
+
   // Poll observations belong to the original request; a local stop or failed
   // retrieval cannot erase its last available receipt or create a new bill.
   it.each(["aborted", "timeout", "error"])("keeps last poll facts on %s", async (status) => {
