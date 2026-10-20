@@ -363,22 +363,22 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
 }
 
 /**
- * Emit the one failure envelope both recover terminals share, so a script sees
- * the same JSON whichever rail reports the failure: `llm await`, the recover
- * `error` branch, and the recover `failed` branch all print this shape (29325).
+ * Emit recovery status and its receipt through the same cost/output owners,
+ * including unfinished responses that have already supplied usage facts.
  */
-function emitFailedEnvelope(
-  reason: string,
+function emitRecoveryEnvelope(
+  reason: string | undefined,
   pollStatus: string,
   responseId: string,
   receipt: Pick<ModelResponse, "usage" | "cost_usd">,
   modelId?: string,
+  status: "failed" | "pending" | "stale" | "unknown" = "failed",
 ): void {
   emitJson({
     ...serializeCost(resolveResponseCost({ model: { modelId }, usage: receipt.usage, cost_usd: receipt.cost_usd })),
     usage: receipt.usage,
     error: reason,
-    status: "failed",
+    status,
     pollStatus,
     responseId,
   })
@@ -496,7 +496,7 @@ export async function runRecover(options: {
         // A failed terminal must not read as success. Emit the same single JSON
         // envelope as runAwait and the sibling `error` branch, then exit non-zero,
         // so a script can tell a failed response from a finished one (29325).
-        emitFailedEnvelope(
+        emitRecoveryEnvelope(
           outcome.error ? `Response failed: ${outcome.error}` : "Response failed",
           outcome.status,
           responseId,
@@ -508,11 +508,13 @@ export async function runRecover(options: {
       case "stale": {
         console.error(`\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`)
         if (localPartial) console.error("Saved response receipt kept.")
+        emitRecoveryEnvelope(undefined, outcome.status, responseId, outcome, localPartial?.metadata.modelId, "stale")
         break
       }
       case "pending": {
         const ageStr = outcome.ageMs !== undefined ? ` (${Math.round(outcome.ageMs / 60000)}m old)` : ""
         console.error(`Response ${outcome.status}${ageStr}`)
+        emitRecoveryEnvelope(undefined, outcome.status, responseId, outcome, localPartial?.metadata.modelId, "pending")
         break
       }
       case "aborted": {
@@ -521,7 +523,7 @@ export async function runRecover(options: {
         // Exit 130 (SIGINT convention) so wrapping scripts can distinguish a
         // user interrupt from success. Flagged by K2.6 round-3 review.
         console.error(`\n⚠️  Recovery aborted locally — partial kept for future retry`)
-        emitFailedEnvelope(
+        emitRecoveryEnvelope(
           outcome.error ?? "Recovery aborted locally",
           outcome.status,
           responseId,
@@ -532,7 +534,7 @@ export async function runRecover(options: {
       }
       case "error": {
         console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${outcome.error}`)
-        emitFailedEnvelope(
+        emitRecoveryEnvelope(
           `Failed to retrieve: ${outcome.error}`,
           outcome.status,
           responseId,
@@ -543,6 +545,7 @@ export async function runRecover(options: {
       }
       case "unknown": {
         console.error(`Response ${outcome.status}${result.error ? `: ${result.error}` : ""}`)
+        emitRecoveryEnvelope(undefined, outcome.status, responseId, outcome, localPartial?.metadata.modelId, "unknown")
         break
       }
     }
@@ -640,7 +643,7 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
     return
   }
 
-  emitFailedEnvelope(
+  emitRecoveryEnvelope(
     result.error ?? `Response ${result.status}`,
     result.status,
     responseId,
