@@ -5,6 +5,7 @@
  */
 
 import { generateText, streamText, type LanguageModelUsage, type ModelMessage, type UserContent } from "ai"
+import { statedCharge } from "./cost"
 import { getLanguageModel, isProviderAvailable, isProviderRoutable } from "./providers"
 import {
   querySubscriptionCli,
@@ -97,11 +98,6 @@ function responseUsage(usage: LanguageModelUsage | undefined): ModelResponse["us
     classes,
     ...(usage.raw === undefined ? {} : { raw: usage.raw }),
   }
-}
-
-function statedCharge(usage: LanguageModelUsage | undefined, provider: Model["provider"]): { cost_usd?: number } {
-  const amount = usage?.raw?.cost_usd ?? (provider === "openrouter" ? usage?.raw?.cost : undefined)
-  return typeof amount === "number" && Number.isFinite(amount) && amount >= 0 ? { cost_usd: amount } : {}
 }
 
 export interface QueryOptions {
@@ -672,7 +668,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         // completion that errored late still gives the user usable content.
         ...streamFailureField(streamFailure, fullText),
         usage: responseUsage(usage),
-        ...statedCharge(usage, model.provider),
+        ...statedCharge(usage?.raw, model.provider),
         durationMs: Date.now() - startTime,
         ...(quota ? { quota } : {}),
       }
@@ -698,7 +694,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         appliedMaxOutputTokens: maxOutputTokens,
         reasoning: result.finalStep.reasoningText,
         usage: responseUsage(usage),
-        ...statedCharge(usage, model.provider),
+        ...statedCharge(usage?.raw, model.provider),
         durationMs: Date.now() - startTime,
         ...(quota ? { quota } : {}),
       })

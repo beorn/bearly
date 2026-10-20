@@ -24,10 +24,33 @@ import { getPartialPath, writePartialHeader, appendPartial, completePartial } fr
 import { missingApiKeyError } from "./env-preflight"
 import { describeDispatchFailure } from "./dispatch-error"
 import { outputTokenStop } from "./format"
+import { statedCharge } from "./cost"
 
 const log = createLogger("bearly:llm:openai")
 
 let client: OpenAI | undefined
+
+/** Keep the provider's original usage alongside disjoint priced token classes. */
+function usageFacts(usage: OpenAI.Responses.Response["usage"]): Pick<ModelResponse, "usage" | "cost_usd"> {
+  if (!usage) return {}
+  const cached = usage.input_tokens_details?.cached_tokens
+  const reasoning = usage.output_tokens_details?.reasoning_tokens
+  return {
+    ...statedCharge(usage, "openai"),
+    usage: {
+      promptTokens: usage.input_tokens,
+      completionTokens: usage.output_tokens,
+      totalTokens: usage.total_tokens ?? usage.input_tokens + usage.output_tokens,
+      classes: {
+        input: usage.input_tokens - (cached ?? 0),
+        output: usage.output_tokens,
+        ...(cached === undefined ? {} : { cache_read: cached }),
+        ...(reasoning === undefined ? {} : { reasoning }),
+      },
+      raw: { ...usage },
+    },
+  }
+}
 
 function completionFacts(response: {
   incomplete_details?: { reason?: string } | null
@@ -196,13 +219,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         appliedMaxOutputTokens: maxOutputTokens,
         ...completionFacts(response),
         responseId: response.id,
-        usage: usage
-          ? {
-              promptTokens: usage.input_tokens || 0,
-              completionTokens: usage.output_tokens || 0,
-              totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
-            }
-          : undefined,
+        ...usageFacts(usage),
         durationMs: Date.now() - startTime,
       }
     }
@@ -237,7 +254,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
       const stopped = outputTokenStop(facts) !== undefined
       const content = stopped ? extractText(initialResponse) : ""
-      const usage = stopped ? initialResponse.usage : undefined
+      const usage = initialResponse.usage
       if (stopped) {
         if (onToken && content) onToken(content)
         if (partialPath && content) appendPartial(partialPath, content)
@@ -250,11 +267,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         content,
         responseId,
         ...facts,
-        usage: {
-          promptTokens: usage?.input_tokens ?? 0,
-          completionTokens: usage?.output_tokens ?? 0,
-          totalTokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
-        },
+        ...usageFacts(usage),
         durationMs: Date.now() - startTime,
       }
     }
@@ -280,6 +293,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         content: pollResult.content,
         responseId,
         usage: pollResult.usage,
+        cost_usd: pollResult.cost_usd,
         finishReason: pollResult.finishReason,
         rawFinishReason: pollResult.rawFinishReason,
         appliedMaxOutputTokens: pollResult.appliedMaxOutputTokens ?? maxOutputTokens,
@@ -298,11 +312,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         // `cleanupPartials(24h)` sweeps completed entries automatically.
         completePartial(partialPath, {
           delete: false,
-          usage: {
-            promptTokens: pollResult.usage?.promptTokens ?? 0,
-            completionTokens: pollResult.usage?.completionTokens ?? 0,
-            totalTokens: pollResult.usage?.totalTokens ?? 0,
-          },
+          usage: pollResult.usage,
         })
       }
       process.stderr.write("\n")
@@ -310,11 +320,8 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         model,
         content: pollResult.content,
         responseId,
-        usage: {
-          promptTokens: pollResult.usage?.promptTokens ?? 0,
-          completionTokens: pollResult.usage?.completionTokens ?? 0,
-          totalTokens: pollResult.usage?.totalTokens ?? 0,
-        },
+        usage: pollResult.usage,
+        cost_usd: pollResult.cost_usd,
         durationMs: Date.now() - startTime,
       }
     }
@@ -330,7 +337,9 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       model,
       content: partial,
       responseId,
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      usage: pollResult.usage,
+      cost_usd: pollResult.cost_usd,
+      error: pollResult.error ?? (pollResult.status === "completed" ? undefined : "incomplete: " + pollResult.status),
       durationMs: Date.now() - startTime,
     }
   } catch (error) {
@@ -419,7 +428,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
       const stopped = outputTokenStop(facts) !== undefined
       const content = stopped ? extractText(initialResponse) : ""
-      const usage = stopped ? initialResponse.usage : undefined
+      const usage = initialResponse.usage
       if (stopped) {
         if (onToken && content) onToken(content)
         if (partialPath && content) appendPartial(partialPath, content)
@@ -432,11 +441,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         content,
         responseId,
         ...facts,
-        usage: {
-          promptTokens: usage?.input_tokens ?? 0,
-          completionTokens: usage?.output_tokens ?? 0,
-          totalTokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
-        },
+        ...usageFacts(usage),
         durationMs: Date.now() - startTime,
       }
     }
@@ -460,6 +465,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         content: pollResult.content,
         responseId,
         usage: pollResult.usage,
+        cost_usd: pollResult.cost_usd,
         finishReason: pollResult.finishReason,
         rawFinishReason: pollResult.rawFinishReason,
         appliedMaxOutputTokens: pollResult.appliedMaxOutputTokens ?? maxOutputTokens,
@@ -475,11 +481,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         // leg-completion and dispatcher's final-output write.
         completePartial(partialPath, {
           delete: false,
-          usage: {
-            promptTokens: pollResult.usage?.promptTokens ?? 0,
-            completionTokens: pollResult.usage?.completionTokens ?? 0,
-            totalTokens: pollResult.usage?.totalTokens ?? 0,
-          },
+          usage: pollResult.usage,
         })
       }
       if (process.stderr.isTTY) process.stderr.write("\n")
@@ -487,11 +489,8 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         model,
         content: pollResult.content,
         responseId,
-        usage: {
-          promptTokens: pollResult.usage?.promptTokens ?? 0,
-          completionTokens: pollResult.usage?.completionTokens ?? 0,
-          totalTokens: pollResult.usage?.totalTokens ?? 0,
-        },
+        usage: pollResult.usage,
+        cost_usd: pollResult.cost_usd,
         durationMs: Date.now() - startTime,
       }
     }
@@ -508,11 +507,8 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       model,
       content: partial,
       responseId,
-      usage: {
-        promptTokens: pollResult.usage?.promptTokens ?? 0,
-        completionTokens: pollResult.usage?.completionTokens ?? 0,
-        totalTokens: pollResult.usage?.totalTokens ?? 0,
-      },
+      usage: pollResult.usage,
+      cost_usd: pollResult.cost_usd,
       durationMs: Date.now() - startTime,
       error: pollResult.status === "completed" ? undefined : (pollResult.error ?? `incomplete: ${pollResult.status}`),
     }
@@ -579,11 +575,8 @@ export async function pollForCompletion(
   finishReason?: string
   rawFinishReason?: string
   appliedMaxOutputTokens?: number
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-  }
+  usage?: ModelResponse["usage"]
+  cost_usd?: number
   error?: string
 }> {
   // Default ceiling: 600 × 5s = 50 minutes (parity with dispatch.ts recover
@@ -670,11 +663,8 @@ export async function retrieveResponse(responseId: string): Promise<{
   finishReason?: string
   rawFinishReason?: string
   appliedMaxOutputTokens?: number
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-  }
+  usage?: ModelResponse["usage"]
+  cost_usd?: number
   error?: string
 }> {
   const openai = getClient()
@@ -690,13 +680,7 @@ export async function retrieveResponse(responseId: string): Promise<{
       status: response.status ?? "unknown",
       content: extractText(response),
       ...completionFacts(response),
-      usage: usage
-        ? {
-            promptTokens: usage.input_tokens || 0,
-            completionTokens: usage.output_tokens || 0,
-            totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
-          }
-        : undefined,
+      ...usageFacts(usage),
       error: providerError ? `${providerError.code}: ${providerError.message}` : undefined,
     }
   } catch (error) {
