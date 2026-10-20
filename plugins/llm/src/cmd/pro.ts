@@ -1110,6 +1110,7 @@ export async function runProDual(options: {
       id: l.id,
       model: l.model,
       response: l.response,
+      invoked: !preflightMissing.has(l.id),
       error: l.error,
       costs: serializeCost(legCosts.get(l.id)!),
       score: breakdownFor(l.id as "a" | "b" | "c" | "d"),
@@ -1231,6 +1232,7 @@ async function appendAbProLog(entry: {
     id: "a" | "b" | "c" | "d"
     model: Model
     response: import("../lib/types").ModelResponse | undefined
+    invoked: boolean
     error: string | undefined
     costs: CostFields
     score: import("../lib/dual-pro").JudgeBreakdown | null
@@ -1258,6 +1260,7 @@ async function appendAbProLog(entry: {
     // never depends on /tmp/llm-*.txt file lifetime (auto-cleaned at 7 days).
     const snapshot = (l: (typeof entry.legs)[number]) => ({
       model: l.model.modelId,
+      invoked: l.invoked,
       ok:
         !!l.response?.content &&
         l.response.content.trim().length > 0 &&

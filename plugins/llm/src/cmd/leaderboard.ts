@@ -8,6 +8,7 @@ import { estimateCost, formatCost, getModel, type Model } from "../lib/types"
 import { emitJson, isJsonMode } from "../lib/output-mode"
 import type { LeaderboardRow } from "../lib/dual-pro"
 import { confirmOrExit, promptChoice } from "../ui/confirm"
+import { formatCostColumns } from "../lib/format"
 
 /**
  * `bun llm pro --leaderboard` — print the current ranked leaderboard from
@@ -48,14 +49,14 @@ export async function runLeaderboard(opts: { rankByCost?: boolean } = {}): Promi
   }
   const fmtPct = (n: number) => `${(n * 100).toFixed(0)}%`
   const fmtMs = (n: number) => `${(n / 1000).toFixed(1)}s`
-  const fmtScore = (n: number) => n.toFixed(2)
-  const fmtCost = (n: number) => `$${n.toFixed(3)}`
+  const fmtScore = (n: number | undefined) => (n === undefined ? "unknown" : n.toFixed(2))
+  const fmtCost = (n: number | undefined) => (n === undefined ? "unknown" : `$${n.toFixed(3)}`)
   const headerNote = opts.rankByCost
     ? `sorted by Rank (quality − log-cost penalty above $${cfg.scoreWeights.costThreshold.toFixed(2)})`
     : `sorted by Quality — raw intellect (use --rank-by-cost for cost-aware sort)`
   console.error(`\nLeaderboard (${entries.length} runs, ${headerNote})\n`)
   console.error(
-    `${"Model".padEnd(36)} ${"Calls".padStart(6)} ${"Quality".padStart(9)} ${"FailRate".padStart(9)} ${"Cost".padStart(9)} ${"Speed".padStart(8)} ${"Rank".padStart(7)}`,
+    `${"Model".padEnd(36)} ${"Calls".padStart(6)} ${"Quality".padStart(9)} ${"FailRate".padStart(9)} ${"Charged".padStart(9)} ${"List-equiv".padStart(10)} ${"Speed".padStart(8)} ${"Rank".padStart(7)}`,
   )
   console.error("-".repeat(92))
   for (const r of rows) {
@@ -63,7 +64,10 @@ export async function runLeaderboard(opts: { rankByCost?: boolean } = {}): Promi
     const prefix = flagged ? "⚠️ " : ""
     const modelCell = `${prefix}${r.model}`
     console.error(
-      `${modelCell.padEnd(36)} ${String(r.calls).padStart(6)} ${fmtScore(r.avgScore).padStart(9)} ${fmtPct(r.failureRate).padStart(9)} ${fmtCost(r.avgCost).padStart(9)} ${fmtMs(r.avgTimeMs).padStart(8)} ${fmtScore(r.rankScore).padStart(7)}`,
+      `${modelCell.padEnd(36)} ${String(r.calls).padStart(6)} ${fmtScore(r.avgScore).padStart(9)} ${fmtPct(r.failureRate).padStart(9)} ${fmtCost(r.average.cost_usd).padStart(9)} ${fmtCost(r.average.list_equivalent_usd).padStart(10)} ${fmtMs(r.avgTimeMs).padStart(8)} ${fmtScore(r.rankScore).padStart(7)}`,
+    )
+    console.error(
+      `  Mean per invoked opinion: ${formatCostColumns(r.average)}; charged coverage ${r.costCoverage.charged.known}/${r.costCoverage.charged.total}; list-equivalent coverage ${r.costCoverage.listEquivalent.known}/${r.costCoverage.listEquivalent.total}; cost ranking ${r.costRanking}`,
     )
   }
   if (warnings.length > 0) {

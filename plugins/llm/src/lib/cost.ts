@@ -75,6 +75,21 @@ export interface CostFields {
   list_equivalent_basis: CostBasis[]
 }
 
+/** Decode saved canonical columns without reinterpreting older ambiguous scalar fields. */
+export function deserializeCost(fields?: Partial<CostFields>): ResolvedCost {
+  const amount = (usd: number | undefined, reason: string | undefined, name: string): CostAmount =>
+    usd === undefined
+      ? { reason: reason || `${name} facts are unavailable` }
+      : Number.isFinite(usd) && usd >= 0
+        ? { usd }
+        : { reason: `stored ${name} amount is invalid` }
+  return {
+    charged: amount(fields?.cost_usd, fields?.cost_usd_reason, "charged"),
+    listEquivalent: amount(fields?.list_equivalent_usd, fields?.list_equivalent_reason, "list-equivalent"),
+    listEquivalentBasis: fields?.list_equivalent_basis ?? [],
+  }
+}
+
 export function serializeCost(cost: ResolvedCost): CostFields {
   return {
     ...("usd" in cost.charged ? { cost_usd: cost.charged.usd } : { cost_usd_reason: cost.charged.reason }),

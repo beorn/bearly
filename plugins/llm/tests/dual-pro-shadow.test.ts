@@ -81,6 +81,32 @@ describe("default pools contain no deprecated model (19710)", () => {
 // (a) Leaderboard math
 // ----------------------------------------------------------
 describe("buildLeaderboard — leaderboard math", () => {
+  // @failure History discards billed failures, bills old scalar estimates, or ranks unknowns as free.
+  // @level l1 @consumer Actual persisted-record projection used by leaderboard and promotion.
+  it("keeps independent average coverage across invoked calls without rewriting legacy costs", () => {
+    const rows = buildLeaderboard(
+      [
+        { a: { model: "known", ok: true, cost_usd: 1, list_equivalent_usd: 2, list_equivalent_basis: [] } },
+        { a: { model: "known", ok: false, cost_usd: 3, list_equivalent_usd: 4, list_equivalent_basis: [] } },
+        { a: { model: "known", ok: false, invoked: false } },
+        { a: { model: "legacy", ok: true, cost: 99 } },
+      ],
+      { ...FLAT_WEIGHTS, cost: 1 },
+    )
+    const known = rows.find((row) => row.model === "known")!
+    expect(known.calls).toBe(3)
+    expect(known.successCalls).toBe(1)
+    expect(known.average).toMatchObject({ cost_usd: 2, list_equivalent_usd: 3 })
+    expect(known.costCoverage).toEqual({ charged: { known: 2, total: 2 }, listEquivalent: { known: 2, total: 2 } })
+    const legacy = rows.find((row) => row.model === "legacy")!
+    expect(legacy.calls).toBe(1)
+    expect(legacy.average).not.toHaveProperty("cost_usd")
+    expect(legacy.average).not.toHaveProperty("list_equivalent_usd")
+    expect(legacy.costRanking).toBe("unavailable")
+    expect(legacy.rankScore).toBeUndefined()
+    expect(legacy.costCoverage).toEqual({ charged: { known: 0, total: 1 }, listEquivalent: { known: 0, total: 1 } })
+  })
+
   it("aggregates multi-leg entries into per-model averages", () => {
     const entries: AbProEntry[] = [
       {
@@ -171,7 +197,8 @@ describe("buildLeaderboard — leaderboard math", () => {
           model: "cheap",
           ok: true,
           score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
-          cost: 0.01,
+          list_equivalent_usd: 0.01,
+          list_equivalent_basis: [],
           durationMs: 1000,
         },
       },
@@ -181,7 +208,8 @@ describe("buildLeaderboard — leaderboard math", () => {
           model: "expensive",
           ok: true,
           score: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
-          cost: 5.0,
+          list_equivalent_usd: 5.0,
+          list_equivalent_basis: [],
           durationMs: 60_000,
         },
       },
@@ -203,7 +231,7 @@ describe("buildLeaderboard — leaderboard math", () => {
       qualityWarningThreshold: 5.0,
     })
     expect(costWeighted.find((r) => r.model === "cheap")!.rankScore).toBeGreaterThan(
-      costWeighted.find((r) => r.model === "expensive")!.rankScore,
+      costWeighted.find((r) => r.model === "expensive")!.rankScore!,
     )
   })
 
@@ -226,7 +254,9 @@ describe("evaluatePromotion — three-gate threshold", () => {
       successCalls: Math.round(calls * (1 - failureRate)),
       failureRate,
       avgScore,
-      avgCost: 0,
+      average: { cost_usd_reason: "unmeasured", list_equivalent_reason: "unmeasured", list_equivalent_basis: [] },
+      costCoverage: { charged: { known: 0, total: calls }, listEquivalent: { known: 0, total: calls } },
+      costRanking: "unavailable",
       avgTimeMs: 0,
       rankScore: avgScore,
     }

@@ -12,13 +12,14 @@ import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
 import { formatCost, type ServedBy, type ModelResponse } from "./types"
 import { resolveResponseCost } from "./pricing.ts"
-import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "./cost"
+import { aggregateCosts, serializeCost, deserializeCost, type CostFields, type ResolvedCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
 
 /** Human display retains the independent amounts and the selected rate basis. */
-export function formatCostColumns(cost: ResolvedCost): string {
+export function formatCostColumns(value: ResolvedCost | CostFields): string {
+  const cost = "charged" in value ? value : deserializeCost(value)
   const amount = (value: ResolvedCost["charged"]) =>
     "usd" in value ? formatCost(value.usd) : `unknown (${value.reason})`
   const basis =
@@ -193,17 +194,7 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
  * carry their independent value/reason and estimate basis, without legacy aliases.
  */
 function costMeta(meta?: Partial<CostFields>): CostFields {
-  return serializeCost({
-    charged:
-      meta?.cost_usd !== undefined
-        ? { usd: meta.cost_usd }
-        : { reason: meta?.cost_usd_reason ?? "provider did not state a charge" },
-    listEquivalent:
-      meta?.list_equivalent_usd !== undefined
-        ? { usd: meta.list_equivalent_usd }
-        : { reason: meta?.list_equivalent_reason ?? "list-equivalent facts are unavailable" },
-    listEquivalentBasis: meta?.list_equivalent_basis ?? [],
-  })
+  return serializeCost(deserializeCost(meta))
 }
 
 export function buildResultJson(content: string, meta?: OutputMeta): Record<string, unknown> {

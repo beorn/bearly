@@ -149,6 +149,10 @@ describe("bun llm pro --leaderboard", () => {
     expect(all).toMatch(/champA/)
     expect(all).toMatch(/runnerB/)
     expect(all).toMatch(/challC/)
+    expect(all).toMatch(/Charged/)
+    expect(all).toMatch(/List-equiv/)
+    expect(all).toMatch(/cost ranking unavailable/)
+    expect(all).toMatch(/charged coverage 0\/1/)
   })
 })
 

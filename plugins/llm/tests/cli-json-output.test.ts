@@ -413,10 +413,35 @@ describe("--json mode end-to-end", () => {
       expect(leg.list_equivalent_basis).toHaveLength(1)
       expect(leg).not.toHaveProperty("cost")
     }
-    const { readAbProLog } = await import("../src/lib/dual-pro")
+    const { readAbProLog, getMemoryDir } = await import("../src/lib/dual-pro")
     const saved = (await readAbProLog()).at(-1)!
     expect(saved.a).toMatchObject({ cost_usd: 0.125, list_equivalent_basis: expect.any(Array) })
     expect(saved.a).not.toHaveProperty("cost")
+    const historyFile = join(getMemoryDir(), "ab-pro.jsonl")
+    const originalHistory = readFileSync(historyFile, "utf8")
+    const { savePricingCache } = await import("../src/lib/pricing")
+    savePricingCache({
+      updatedAt: "2026-10-20T00:00:00Z",
+      models: {
+        [saved.a!.model]: {
+          inputPricePerM: 1,
+          outputPricePerM: 2,
+          rateSource: "litellm",
+          rateDate: "2026-10-20",
+          matchedModelId: "history/selected-row",
+        },
+      },
+    })
+    const { runLeaderboard } = await import("../src/cmd/leaderboard")
+    await runLeaderboard()
+    const ranked = JSON.parse(env.stdout.at(-1)!) as { rows: { model: string; average: Record<string, unknown> }[] }
+    const row = ranked.rows.find((item) => item.model === saved.a!.model)!
+    expect(row.average.cost_usd).toBe(0.125)
+    expect(row.average.list_equivalent_usd).toBe(0.00002)
+    expect(row.average.list_equivalent_basis).toEqual([
+      { rateSource: "litellm", rateDate: "2026-10-20", matchedModelId: "history/selected-row" },
+    ])
+    expect(readFileSync(historyFile, "utf8")).toBe(originalHistory)
   }, 10_000)
 
   // @failure A paid schema-retry judge disappears from Pro totals or saved history.

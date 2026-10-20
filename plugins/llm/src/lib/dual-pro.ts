@@ -29,6 +29,8 @@
  */
 
 import { z } from "zod"
+import { aggregateCosts, deserializeCost, serializeCost } from "./cost"
+import { resolveResponseCost } from "./pricing"
 import { getModel, getEndpoint, type Model } from "./types"
 import { isProviderRoutable } from "./providers"
 import { createLogger } from "loggily"
@@ -775,11 +777,14 @@ export function parsePairwiseJudgeResponseDetailed(
 // --------------------------------------------------------------------
 
 /** One leg slot in an ab-pro.jsonl entry. */
-export interface AbProLegEntry {
+export interface AbProLegEntry extends Partial<import("./cost").CostFields> {
   model: string
   ok: boolean
   score?: JudgeBreakdown | null
   cost?: number
+  invoked?: boolean
+  usage?: import("./types").ModelResponse["usage"]
+  servedBy?: import("./types").ModelResponse["servedBy"]
   durationMs?: number
   /** Inline response content (added 2026-04-27 for retroactive judging).
    * Pre-existing entries lack this and must fall back to entry.outputFile. */
@@ -856,9 +861,14 @@ export interface LeaderboardRow {
   successCalls: number
   failureRate: number
   avgScore: number
-  avgCost: number
+  average: import("./cost").CostFields
+  costCoverage: {
+    charged: { known: number; total: number }
+    listEquivalent: { known: number; total: number }
+  }
+  costRanking: "list-equivalent" | "unavailable"
   avgTimeMs: number
-  rankScore: number // weighted final ranking score
+  rankScore?: number // Cost-weighted rank is unavailable when the estimate is incomplete.
 }
 
 /**
@@ -874,18 +884,20 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
       calls: number
       success: number
       scoreSum: number
-      costSum: number
+      costs: import("./cost").ResolvedCost[]
       timeSum: number
     }
   >()
   const bumpLeg = (leg?: AbProLegEntry) => {
     if (!leg?.model) return
-    const s = stats.get(leg.model) ?? { calls: 0, success: 0, scoreSum: 0, costSum: 0, timeSum: 0 }
+    const s = stats.get(leg.model) ?? { calls: 0, success: 0, scoreSum: 0, costs: [], timeSum: 0 }
     s.calls += 1
+    if (leg.invoked !== false) {
+      s.costs.push(leg.usage ? resolveResponseCost({ ...leg, model: { modelId: leg.model } }) : deserializeCost(leg))
+    }
     if (leg.ok) {
       s.success += 1
       if (leg.score?.total != null) s.scoreSum += leg.score.total
-      if (leg.cost != null) s.costSum += leg.cost
       if (leg.durationMs != null) s.timeSum += leg.durationMs
     }
     stats.set(leg.model, s)
@@ -897,28 +909,51 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
   const rows: LeaderboardRow[] = []
   for (const [model, s] of stats) {
     const avgScore = s.success > 0 ? s.scoreSum / s.success : 0
-    const avgCost = s.success > 0 ? s.costSum / s.success : 0
+    const total = aggregateCosts(s.costs)
+    const mean = (amount: import("./cost").CostAmount): import("./cost").CostAmount =>
+      s.costs.length === 0
+        ? { reason: "no invoked calls" }
+        : "usd" in amount
+          ? { usd: amount.usd / s.costs.length }
+          : amount
+    const average = serializeCost({
+      charged: mean(total.charged),
+      listEquivalent: mean(total.listEquivalent),
+      listEquivalentBasis: total.listEquivalentBasis,
+    })
+    const costCoverage = {
+      charged: { known: s.costs.filter((cost) => "usd" in cost.charged).length, total: s.costs.length },
+      listEquivalent: { known: s.costs.filter((cost) => "usd" in cost.listEquivalent).length, total: s.costs.length },
+    }
     const avgTimeMs = s.success > 0 ? s.timeSum / s.success : 0
     const failureRate = s.calls > 0 ? (s.calls - s.success) / s.calls : 0
     // Higher is better. Quality-first; log-scale cost penalty above threshold.
     // Speed and failure rate are display-only — not in rank.
     const threshold = weights.costThreshold > 0 ? weights.costThreshold : 0.1
-    const costPenalty = avgCost > threshold ? Math.log10(avgCost / threshold) : 0
-    const rankScore = avgScore * weights.score - costPenalty * weights.cost
+    const estimate = average.list_equivalent_usd
+    const costPenalty = estimate !== undefined && estimate > threshold ? Math.log10(estimate / threshold) : 0
+    const rankScore =
+      weights.cost !== 0 && estimate === undefined ? undefined : avgScore * weights.score - costPenalty * weights.cost
     rows.push({
       model,
       calls: s.calls,
       successCalls: s.success,
       failureRate,
       avgScore,
-      avgCost,
+      average,
+      costCoverage,
+      costRanking: estimate === undefined ? "unavailable" : "list-equivalent",
       avgTimeMs,
       rankScore,
     })
   }
   // Sort: rankScore desc, then calls desc as a tiebreaker so models with
   // more evidence rank higher when scores tie at zero (no judging yet).
-  rows.sort((x, y) => y.rankScore - x.rankScore || y.calls - x.calls)
+  rows.sort((x, y) => {
+    if (x.rankScore === undefined) return y.rankScore === undefined ? y.avgScore - x.avgScore || y.calls - x.calls : 1
+    if (y.rankScore === undefined) return -1
+    return y.rankScore - x.rankScore || y.calls - x.calls
+  })
   return rows
 }
 
