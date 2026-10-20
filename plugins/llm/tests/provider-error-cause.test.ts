@@ -44,6 +44,7 @@ function openRouterError(body: Record<string, unknown>, status = 500): Error {
 /** The pro path streams: streamText reports through onError and ends empty (28886). */
 function mockStreamFailure(error: unknown): void {
   streamTextMock.mockReset()
+  const finalStep = Promise.resolve({ usage: undefined })
   streamTextMock.mockImplementation((opts: { onError?: (event: { error: unknown }) => void }) => {
     opts.onError?.({ error })
     return {
@@ -52,7 +53,7 @@ function mockStreamFailure(error: unknown): void {
         [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
       },
       usage: undefined,
-      finalStep: Promise.resolve({ usage: undefined }),
+      finalStep,
       finishReason: "error",
       rawFinishReason: "error",
     }
