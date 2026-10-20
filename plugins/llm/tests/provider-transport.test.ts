@@ -16,6 +16,67 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  // 30170: the actual pinned Responses adapter must retain raw stated amounts and disjoint usage.
+  // Mocked ai.generateText results cannot expose schema stripping or aggregate-usage raw loss.
+  it.each([
+    [false, "moonshotai/kimi-k2.6", { cost: 0.125, upstream_inference_cost: 9 }, 0.125],
+    [true, "moonshotai/kimi-k2.6", { cost: 0 }, 0],
+    [false, "gpt-5-nano", { cost_usd: 0.25, cost: 9 }, 0.25],
+    [true, "gpt-5-nano", { cost_usd: 0.25 }, 0.25],
+    [false, "gpt-5-nano", { cost: 9 }, undefined],
+    [true, "moonshotai/kimi-k2.6", { cost: -1, upstream_inference_cost: 9 }, undefined],
+  ] as const)("retains Responses facts stream=%s model=%s extras=%j", async (stream, modelId, extras, charged) => {
+    const env = makeTestEnv()
+    vi.stubEnv("XDG_CACHE_HOME", env.tmpDir)
+    const usage = {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 20, cache_write_tokens: 10 },
+      output_tokens: 50,
+      output_tokens_details: { reasoning_tokens: 30 },
+      total_tokens: 150,
+      ...extras,
+    }
+    const responseBody = {
+      id: "resp_cost_contract",
+      created_at: 1,
+      model: modelId,
+      output: [
+        {
+          type: "message",
+          id: "msg_cost_contract",
+          role: "assistant",
+          content: [{ type: "output_text", text: "answer", annotations: [] }],
+        },
+      ],
+      usage,
+    }
+    const events = [
+      { type: "response.created", response: { id: responseBody.id, created_at: 1, model: modelId } },
+      { type: "response.output_text.delta", item_id: "msg_cost_contract", output_index: 0, delta: "answer" },
+      { type: "response.completed", response: { usage } },
+    ]
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          stream ? events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") : JSON.stringify(responseBody),
+          { headers: { "content-type": stream ? "text/event-stream" : "application/json" } },
+        ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const model = getModel(modelId)
+    if (!model) throw new Error(`required registry model ${modelId} is missing`)
+    const { response } = await queryModel({ question: "probe", model, stream, onToken: vi.fn() })
+    expect(response.error).toBeUndefined()
+    expect(response.content).toBe("answer")
+    expect(response.usage?.classes).toEqual({ input: 70, output: 50, cache_read: 20, cache_write: 10, reasoning: 30 })
+    expect(response.usage?.raw).toEqual(usage)
+    if (charged === undefined) expect(response).not.toHaveProperty("cost_usd")
+    else expect(response.cost_usd).toBe(charged)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ["moonshotai/kimi-k2.6", "OPENROUTER_API_KEY", "/api/v1/responses"],
     ["grok-4", "XAI_API_KEY", "/v1/chat/completions"],

@@ -222,6 +222,8 @@ export const ModelResponseSchema = z.object({
   appliedMaxOutputTokens: z.number().optional(),
   responseId: z.string().optional(),
   reasoning: z.string().optional(),
+  /** Validated stated API-key charge, independent of token-based estimates. */
+  cost_usd: z.number().finite().nonnegative().optional(),
   citations: z
     .array(
       z.object({
@@ -237,6 +239,10 @@ export const ModelResponseSchema = z.object({
       completionTokens: z.number(),
       totalTokens: z.number(),
       estimatedCost: z.number().optional(),
+      /** Disjoint priced classes; reasoning is a subset of output. */
+      classes: z.record(z.string(), z.number()).optional(),
+      /** Original provider usage facts, including unsupported extras. */
+      raw: z.record(z.string(), z.unknown()).optional(),
     })
     .optional(),
   durationMs: z.number(),

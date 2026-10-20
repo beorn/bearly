@@ -4,7 +4,7 @@
  * Handles single-model queries with streaming support
  */
 
-import { generateText, streamText, type ModelMessage, type UserContent } from "ai"
+import { generateText, streamText, type LanguageModelUsage, type ModelMessage, type UserContent } from "ai"
 import { getLanguageModel, isProviderAvailable, isProviderRoutable } from "./providers"
 import {
   querySubscriptionCli,
@@ -71,6 +71,37 @@ function extractHeaders(result: unknown): Record<string, string> | undefined {
   const headers = r.response?.headers
   if (!headers || typeof headers !== "object") return undefined
   return headers as Record<string, string>
+}
+
+/** Keep provider facts at the existing adapter boundary, without pricing them. */
+function responseUsage(usage: LanguageModelUsage | undefined): ModelResponse["usage"] {
+  if (!usage) return undefined
+  const cacheRead = usage.inputTokenDetails?.cacheReadTokens
+  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens
+  const input =
+    usage.inputTokenDetails?.noCacheTokens ??
+    (usage.inputTokens === undefined ? undefined : usage.inputTokens - (cacheRead ?? 0) - (cacheWrite ?? 0))
+  const classes = Object.fromEntries(
+    Object.entries({
+      input,
+      output: usage.outputTokens,
+      cache_read: cacheRead,
+      cache_write: cacheWrite,
+      reasoning: usage.outputTokenDetails?.reasoningTokens,
+    }).filter((entry): entry is [string, number] => entry[1] !== undefined),
+  )
+  return {
+    promptTokens: usage.inputTokens ?? 0,
+    completionTokens: usage.outputTokens ?? 0,
+    totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+    classes,
+    ...(usage.raw === undefined ? {} : { raw: usage.raw }),
+  }
+}
+
+function statedCharge(usage: LanguageModelUsage | undefined, provider: Model["provider"]): { cost_usd?: number } {
+  const amount = usage?.raw?.cost_usd ?? (provider === "openrouter" ? usage?.raw?.cost : undefined)
+  return typeof amount === "number" && Number.isFinite(amount) && amount >= 0 ? { cost_usd: amount } : {}
 }
 
 export interface QueryOptions {
@@ -622,7 +653,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         fullText += part
       }
 
-      const usage = await result.usage
+      // The pinned SDK's aggregate usage drops raw extras even for one step.
+      // This path invokes one step; its final-step usage retains the original facts.
+      const usage = (await result.finalStep).usage ?? (await result.usage)
       const quota = await captureQuotaFromResult(result, model.provider)
 
       const response: ModelResponse = {
@@ -638,13 +671,8 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         // Only surface the stream error when nothing came back — a partial
         // completion that errored late still gives the user usable content.
         ...streamFailureField(streamFailure, fullText),
-        usage: usage
-          ? {
-              promptTokens: usage.inputTokens ?? 0,
-              completionTokens: usage.outputTokens ?? 0,
-              totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-            }
-          : undefined,
+        usage: responseUsage(usage),
+        ...statedCharge(usage, model.provider),
         durationMs: Date.now() - startTime,
         ...(quota ? { quota } : {}),
       }
@@ -660,6 +688,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       })
 
       const quota = captureQuotaFromGenerateResult(result, model.provider)
+      const usage = result.finalStep.usage ?? result.usage
 
       return await finishQuery(observationStore, model, {
         model,
@@ -668,13 +697,8 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         rawFinishReason: result.rawFinishReason,
         appliedMaxOutputTokens: maxOutputTokens,
         reasoning: result.finalStep.reasoningText,
-        usage: result.usage
-          ? {
-              promptTokens: result.usage.inputTokens ?? 0,
-              completionTokens: result.usage.outputTokens ?? 0,
-              totalTokens: (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
-            }
-          : undefined,
+        usage: responseUsage(usage),
+        ...statedCharge(usage, model.provider),
         durationMs: Date.now() - startTime,
         ...(quota ? { quota } : {}),
       })
