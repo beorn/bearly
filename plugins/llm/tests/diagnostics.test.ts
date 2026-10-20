@@ -196,7 +196,7 @@ describe("buildDiagnostics — pure aggregator", () => {
     }
     // Older bare scalars cannot become stated bills; one missing estimate
     // cannot make the other nine calls look like a complete distribution.
-    for (let i = 0; i < 10; i++)
+    for (let i = 0; i < 10; i++) {
       entries.push({
         a: {
           model: "partial",
@@ -206,6 +206,7 @@ describe("buildDiagnostics — pure aggregator", () => {
           ...(i < 9 ? { list_equivalent_usd: 0.002 } : {}),
         },
       })
+    }
     for (let i = 0; i < 10; i++) entries.push({ a: { model: "legacy", ok: true, cost: 0.5 } })
     const r = buildDiagnostics(entries)
     const pricey = r.costDist.find((x) => x.model === "pricey")
