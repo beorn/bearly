@@ -212,7 +212,7 @@ export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>
 // Response & options schemas
 // ============================================================================
 
-export const ModelResponseSchema = z.object({
+const ModelResponseBaseSchema = z.object({
   model: ModelSchema,
   content: z.string(),
   /** Terminal facts reported by the provider, absent when the route cannot supply them. */
@@ -288,6 +288,17 @@ export const ModelResponseSchema = z.object({
       resetRequestsAt: z.string().optional(),
       resetTokensAt: z.string().optional(),
     })
+    .optional(),
+})
+export const ModelResponseSchema = ModelResponseBaseSchema.extend({
+  /** Physical provider calls, including failed SDK/context retries; original final facts remain above. */
+  calls: z
+    .array(
+      ModelResponseBaseSchema.pick({ usage: true, cost_usd: true, error: true }).extend({
+        model: ModelSchema.pick({ provider: true, modelId: true }),
+        responseBody: z.string().optional(),
+      }),
+    )
     .optional(),
 })
 export type ModelResponse = z.infer<typeof ModelResponseSchema>

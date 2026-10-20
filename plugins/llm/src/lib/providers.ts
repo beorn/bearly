@@ -134,7 +134,7 @@ function getOpenRouter() {
 export function getLanguageModel(
   model: Model,
   options?: { openRouterProviderPin?: OpenRouterProviderPin },
-): LanguageModel {
+): Exclude<LanguageModel, string> {
   const endpoint = getEndpoint(model.modelId)
   const id = endpoint?.apiModelId ?? model.modelId
   switch (model.provider) {

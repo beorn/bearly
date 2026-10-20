@@ -1011,6 +1011,7 @@ export async function runProDual(options: {
   type EnvelopeLeg = CostFields & {
     model: string
     usage?: ModelResponse["usage"]
+    calls?: ModelResponse["calls"]
     tokens?: { prompt?: number; completion?: number; total?: number }
     durationMs?: number
     status: "completed" | "incomplete" | "failed"
@@ -1023,6 +1024,7 @@ export async function runProDual(options: {
   const envelopeLeg = (leg: LegOutcome): EnvelopeLeg => ({
     model: leg.model.displayName,
     usage: leg.response?.usage,
+    calls: leg.response?.calls,
     tokens: leg.response?.usage
       ? {
           prompt: leg.response.usage.promptTokens,
@@ -1294,6 +1296,7 @@ async function appendAbProLog(entry: {
       chars: l.response?.content?.length,
       content: l.response?.content,
       usage: l.response?.usage,
+      calls: l.response?.calls,
       ...l.costs,
       servedBy: l.response?.servedBy,
       finishReason: l.response?.finishReason,

@@ -6,6 +6,8 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { makeTestEnv } from "./helpers"
 
 afterEach(() => {
@@ -81,12 +83,45 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(response.content).toBe("answer")
     expect(response.usage?.raw).toEqual(usage)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(response.calls).toHaveLength(2)
+    expect(response.calls?.[0]?.responseBody).toContain(message)
+    expect(response.calls?.[1]?.usage?.raw).toEqual(usage)
+    expect(response.usage?.promptTokens).toBeUndefined()
+    expect(response.usage?.completionTokens).toBeUndefined()
+    expect(response.usage?.totalTokens).toBeUndefined()
     const costs = resolveResponseCost(response)
     expect.soft(costs.charged).not.toHaveProperty("usd")
     expect.soft(costs.listEquivalent).not.toHaveProperty("usd")
     expect(costs.listEquivalentBasis).toEqual(
       expect.arrayContaining([expect.objectContaining({ matchedModelId: "moonshotai/kimi-k2.6" })]),
     )
+    // Exercise the real result writer: adapter-only proof cannot catch dropped call metadata.
+    const { finishResponse } = await import("../src/lib/format")
+    const file = join(env.tmpDir, "retry-receipt.txt")
+    await finishResponse(
+      response.content,
+      response.model,
+      file,
+      "retry-cost",
+      response.usage,
+      response.durationMs,
+      "probe",
+      response.responseId,
+      undefined,
+      response.error,
+      undefined,
+      response.servedBy,
+      response,
+    )
+    const lines = env.stdout.filter((line) => line.trim().startsWith("{"))
+    expect(lines).toHaveLength(1)
+    const envelope = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(envelope.calls).toEqual(response.calls)
+    expect(envelope).not.toHaveProperty("cost_usd")
+    expect(envelope).not.toHaveProperty("list_equivalent_usd")
+    const saved = readFileSync(file, "utf8").match(/^<!-- llm-meta: (.+) -->/)
+    expect(saved).not.toBeNull()
+    expect((JSON.parse(saved![1]!) as Record<string, unknown>).calls).toEqual(response.calls)
   })
 
   it("retains the last Ollama receipt when a later stream record is malformed", async () => {

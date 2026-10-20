@@ -28,11 +28,9 @@ import { listLlmTmpFiles, makeTestEnv, runCli } from "./helpers"
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
 
-vi.mock("ai", () => {
-  return {
-    generateText: generateTextMock,
-    streamText: streamTextMock,
-  }
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>()
+  return { ...actual, generateText: generateTextMock, streamText: streamTextMock }
 })
 
 // The pro-mode GPT leg routes through queryOpenAIBackground (Responses API +

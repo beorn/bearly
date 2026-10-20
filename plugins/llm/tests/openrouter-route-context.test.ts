@@ -30,7 +30,11 @@ const RECURRENCE_PROMPT_TOKENS = 128_846
 
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: streamTextMock }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: streamTextMock,
+}))
 
 function resetMocksToOk() {
   generateTextMock.mockReset()

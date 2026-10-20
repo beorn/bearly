@@ -9,7 +9,8 @@ import { makeTestEnv } from "./helpers"
 
 const { streamTextMock } = vi.hoisted(() => ({ streamTextMock: vi.fn() }))
 
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
   generateText: vi.fn(),
   streamText: streamTextMock,
 }))

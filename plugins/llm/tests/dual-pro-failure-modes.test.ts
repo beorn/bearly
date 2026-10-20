@@ -31,7 +31,8 @@ import { getMemoryDir } from "../src/lib/dual-pro"
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
 
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
   generateText: generateTextMock,
   streamText: streamTextMock,
 }))

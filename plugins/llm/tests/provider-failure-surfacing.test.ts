@@ -26,7 +26,11 @@ const { streamTextMock, generateTextMock } = vi.hoisted(() => ({
   streamTextMock: vi.fn(),
   generateTextMock: vi.fn(),
 }))
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: streamTextMock }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: streamTextMock,
+}))
 
 /** Recorded live 2026-10-13: `GET .../models/gemini-3-pro-preview:generateContent` with an invalid key. */
 function googleInvalidKeyError(): Error {

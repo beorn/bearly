@@ -4,7 +4,14 @@
  * Handles single-model queries with streaming support
  */
 
-import { generateText, streamText, type LanguageModelUsage, type ModelMessage, type UserContent } from "ai"
+import {
+  generateText,
+  streamText,
+  wrapLanguageModel,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type UserContent,
+} from "ai"
 import { statedCharge } from "./cost"
 import { getLanguageModel, isProviderAvailable, isProviderRoutable } from "./providers"
 import {
@@ -75,28 +82,48 @@ function extractHeaders(result: unknown): Record<string, string> | undefined {
 }
 
 /** Keep provider facts at the existing adapter boundary, without pricing them. */
-function responseUsage(usage: LanguageModelUsage | undefined): ModelResponse["usage"] {
+type ProviderUsage = Awaited<ReturnType<ReturnType<typeof wrapLanguageModel>["doGenerate"]>>["usage"]
+function responseUsage(usage: LanguageModelUsage | ProviderUsage | undefined): ModelResponse["usage"] {
   if (!usage) return undefined
-  const cacheRead = usage.inputTokenDetails?.cacheReadTokens
-  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens
+  if (typeof usage.inputTokens === "object") {
+    const providerUsage = usage as ProviderUsage
+    usage = {
+      inputTokens: providerUsage.inputTokens.total,
+      outputTokens: providerUsage.outputTokens.total,
+      inputTokenDetails: {
+        noCacheTokens: providerUsage.inputTokens.noCache,
+        cacheReadTokens: providerUsage.inputTokens.cacheRead,
+        cacheWriteTokens: providerUsage.inputTokens.cacheWrite,
+      },
+      outputTokenDetails: {
+        textTokens: providerUsage.outputTokens.text,
+        reasoningTokens: providerUsage.outputTokens.reasoning,
+      },
+      totalTokens: typeof providerUsage.raw?.total_tokens === "number" ? providerUsage.raw.total_tokens : undefined,
+      raw: providerUsage.raw,
+    }
+  }
+  const normalized = usage as LanguageModelUsage
+  const cacheRead = normalized.inputTokenDetails?.cacheReadTokens
+  const cacheWrite = normalized.inputTokenDetails?.cacheWriteTokens
   const input =
-    usage.inputTokenDetails?.noCacheTokens ??
-    (usage.inputTokens === undefined ? undefined : usage.inputTokens - (cacheRead ?? 0) - (cacheWrite ?? 0))
+    normalized.inputTokenDetails?.noCacheTokens ??
+    (normalized.inputTokens === undefined ? undefined : normalized.inputTokens - (cacheRead ?? 0) - (cacheWrite ?? 0))
   const classes = Object.fromEntries(
     Object.entries({
       input,
-      output: usage.outputTokens,
+      output: normalized.outputTokens,
       cache_read: cacheRead,
       cache_write: cacheWrite,
-      reasoning: usage.outputTokenDetails?.reasoningTokens,
+      reasoning: normalized.outputTokenDetails?.reasoningTokens,
     }).filter((entry): entry is [string, number] => entry[1] !== undefined),
   )
   return {
-    ...(usage.inputTokens === undefined ? {} : { promptTokens: usage.inputTokens }),
-    ...(usage.outputTokens === undefined ? {} : { completionTokens: usage.outputTokens }),
-    ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+    ...(normalized.inputTokens === undefined ? {} : { promptTokens: normalized.inputTokens }),
+    ...(normalized.outputTokens === undefined ? {} : { completionTokens: normalized.outputTokens }),
+    ...(normalized.totalTokens === undefined ? {} : { totalTokens: normalized.totalTokens }),
     classes,
-    ...(usage.raw === undefined ? {} : { raw: usage.raw }),
+    ...(normalized.raw === undefined ? {} : { raw: normalized.raw }),
   }
 }
 
@@ -516,7 +543,82 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     }
     if (decision.kind === "pin") openRouterPin = decision.pin
   }
-  const languageModel = getLanguageModel(model, { openRouterProviderPin: openRouterPin })
+  const calls: NonNullable<ModelResponse["calls"]> = []
+  const recordFailure = (call: (typeof calls)[number], error: unknown) => {
+    call.error = error instanceof Error ? error.message : String(error)
+    if (error && typeof error === "object" && "responseBody" in error && typeof error.responseBody === "string") {
+      call.responseBody = error.responseBody
+    }
+  }
+  const languageModel = wrapLanguageModel({
+    model: getLanguageModel(model, { openRouterProviderPin: openRouterPin }),
+    middleware: {
+      wrapGenerate: async ({ doGenerate }) => {
+        const call: (typeof calls)[number] = { model: { provider: model.provider, modelId: model.modelId } }
+        calls.push(call)
+        try {
+          const result = await doGenerate()
+          call.usage = responseUsage(result.usage)
+          Object.assign(call, statedCharge(result.usage.raw, model.provider))
+          return result
+        } catch (error) {
+          recordFailure(call, error)
+          throw error
+        }
+      },
+      wrapStream: async ({ doStream }) => {
+        const call: (typeof calls)[number] = { model: { provider: model.provider, modelId: model.modelId } }
+        calls.push(call)
+        try {
+          const result = await doStream()
+          return {
+            ...result,
+            stream: result.stream.pipeThrough(
+              new globalThis.TransformStream({
+                transform(chunk, controller) {
+                  if (chunk.type === "finish") {
+                    call.usage = responseUsage(chunk.usage)
+                    Object.assign(call, statedCharge(chunk.usage.raw, model.provider))
+                  } else if (chunk.type === "error") recordFailure(call, chunk.error)
+                  controller.enqueue(chunk)
+                },
+              }),
+            ),
+          }
+        } catch (error) {
+          recordFailure(call, error)
+          throw error
+        }
+      },
+    },
+  })
+  const finishSdkResponse = (response: ModelResponse, failure?: DispatchFailureDescription) => {
+    if (calls.length > 1) {
+      const usage = { ...response.usage }
+      for (const key of ["promptTokens", "completionTokens", "totalTokens"] as const) {
+        const values = calls.map((call) => call.usage?.[key])
+        if (values.every((value): value is number => value !== undefined)) {
+          usage[key] = values.reduce((sum, value) => sum + value, 0)
+        } else delete usage[key]
+      }
+      const classMaps = calls.map((call) => call.usage?.classes)
+      if (
+        classMaps.every(
+          (classes): classes is Record<string, number> =>
+            classes !== undefined && classes.input !== undefined && classes.output !== undefined,
+        )
+      ) {
+        usage.classes = {}
+        for (const classes of classMaps) {
+          for (const [key, count] of Object.entries(classes)) {
+            usage.classes[key] = (usage.classes[key] ?? 0) + count
+          }
+        }
+      } else delete usage.classes
+      response = { ...response, usage }
+    }
+    return finishQuery(observationStore, model, { ...response, ...(calls.length ? { calls } : {}) }, failure)
+  }
 
   // Reasoning models (e.g. Kimi K2.6) count reasoning tokens against the
   // output cap — so the cap must cover reasoning + final content or the
@@ -616,7 +718,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       thinking?.budgetTokens !== undefined &&
       thinking.budgetTokens >= maxOutputTokens
     ) {
-      return await finishQuery(observationStore, model, {
+      return await finishSdkResponse({
         model,
         content: "",
         durationMs: Date.now() - startTime,
@@ -672,7 +774,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         durationMs: Date.now() - startTime,
         ...(quota ? { quota } : {}),
       }
-      return await finishQuery(observationStore, model, response, streamFailure)
+      return await finishSdkResponse(response, streamFailure)
     } else {
       // Single step: no tools or stopWhen, so v7 aggregate usage is this call's usage.
       const result = await generateText({
@@ -686,7 +788,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       const quota = captureQuotaFromGenerateResult(result, model.provider)
       const usage = result.finalStep.usage ?? result.usage
 
-      return await finishQuery(observationStore, model, {
+      return await finishSdkResponse({
         model,
         content: result.text,
         finishReason: result.finishReason,
@@ -729,7 +831,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         thinking?.budgetTokens !== undefined &&
         thinking.budgetTokens >= correctedCap
       ) {
-        return finishQuery(observationStore, model, {
+        return finishSdkResponse({
           model,
           content: "",
           durationMs: Date.now() - startTime,
@@ -748,7 +850,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
             maxOutputTokens: correctedCap,
             ...(hasProviderOptions ? { providerOptions } : {}),
           })
-          return await finishQuery(observationStore, model, {
+          return await finishSdkResponse({
             model,
             content: retryResult.text,
             finishReason: retryResult.finishReason,
@@ -762,9 +864,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         } catch (retryError) {
           // Retry failed — fall through to the original error below.
           const retryFailure = describeDispatchFailure(retryError, model)
-          return finishQuery(
-            observationStore,
-            model,
+          return finishSdkResponse(
             {
               model,
               content: "",
@@ -776,9 +876,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         }
       }
       // Input alone exceeds the window — no cap will help. Report clearly.
-      return finishQuery(
-        observationStore,
-        model,
+      return finishSdkResponse(
         {
           model,
           content: "",
@@ -788,9 +886,7 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         describedFailure,
       )
     }
-    return finishQuery(
-      observationStore,
-      model,
+    return finishSdkResponse(
       {
         model,
         content: "",

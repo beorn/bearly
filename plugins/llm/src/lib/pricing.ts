@@ -15,7 +15,14 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
 import { SKUS, setPricingOverlay, type Model, type ModelResponse, type SkuConfig } from "./types"
-import { resolveCost, type CostBasis, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
+import {
+  aggregateCosts,
+  resolveCost,
+  type CostBasis,
+  type ModelRates,
+  type ResolvedCost,
+  type UsageMap,
+} from "./cost.ts"
 
 // Cache location (in user's home directory)
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
@@ -286,8 +293,18 @@ export function resolveCostForModel(
 
 /** Resolve current rates for the actual served model, retaining independent original charge facts. */
 export function resolveResponseCost(
-  response: Pick<ModelResponse, "usage" | "cost_usd" | "servedBy" | "cacheHit"> & { model: { modelId?: string } },
+  response: Pick<ModelResponse, "usage" | "cost_usd" | "servedBy" | "cacheHit" | "calls"> & {
+    model: { modelId?: string }
+  },
 ): ResolvedCost {
+  if (response.calls?.length) {
+    const costs = response.calls.map((call) => resolveResponseCost(call))
+    const [only] = costs
+    const resolved = costs.length === 1 && only ? only : aggregateCosts(costs)
+    return response.cacheHit
+      ? { ...resolved, charged: { reason: "cached answer does not state a new charge" } }
+      : resolved
+  }
   const usage = response.usage
   return resolveCostForModel(
     response.servedBy?.model ?? response.model.modelId,
