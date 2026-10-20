@@ -16,6 +16,8 @@ import { outputTokenStop } from "../lib/format"
 import { emitContent, emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
+import { resolveResponseCost } from "../lib/pricing"
+import { serializeCost } from "../lib/cost"
 
 /**
  * Default poll ceiling for recover/await: 600 × 5s = 50 minutes.
@@ -62,13 +64,17 @@ async function writeRecoveredResponse(
   content: string,
   responseId: string,
   topic: string | undefined,
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined,
-  completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
+  usage: ModelResponse["usage"],
+  completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd">,
+  modelId?: string,
 ): Promise<string> {
   const { buildOutputPath, finalizeOutput } = await import("../lib/format")
   const sessionTag = process.env.CLAUDE_SESSION_ID?.slice(0, 8) ?? "manual"
   const outputFile = buildOutputPath(sessionTag, topic ?? `recover-${responseId}`)
   await finalizeOutput(content, outputFile, sessionTag, {
+    ...serializeCost(resolveResponseCost({ model: { modelId }, usage, cost_usd: completion?.cost_usd })),
+    usage,
+    model: modelId,
     query: topic,
     tokens: usage
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
@@ -102,7 +108,8 @@ export async function pollResponseToCompletion(
   finishReason?: string
   rawFinishReason?: string
   appliedMaxOutputTokens?: number
-  usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+  usage?: ModelResponse["usage"]
+  cost_usd?: number
   error?: string
 }> {
   // Route to the right backend based on the persisted model. Gemini deep
@@ -167,22 +174,24 @@ export async function pollResponseToCompletion(
  * compute age, so "stale" never fires — pending/pending-ish statuses
  * just fall through to the caller's "still running" path.
  */
-export type RecoveryOutcome =
-  | ({ kind: "incomplete"; content: string; error: string; usage?: ModelResponse["usage"] } & Pick<
-      ModelResponse,
-      "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens"
-    >)
-  | {
-      kind: "completed"
-      content: string
-      usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
-    }
-  | { kind: "failed"; status: string; error?: string }
-  | { kind: "stale"; status: string; ageMs: number }
-  | { kind: "pending"; status: string; ageMs: number | undefined }
-  | { kind: "aborted"; status: string; error?: string }
-  | { kind: "error"; status: string; error?: string }
-  | { kind: "unknown"; status: string }
+export type RecoveryOutcome = Pick<ModelResponse, "usage" | "cost_usd"> &
+  (
+    | ({ kind: "incomplete"; content: string; error: string; usage?: ModelResponse["usage"] } & Pick<
+        ModelResponse,
+        "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens"
+      >)
+    | {
+        kind: "completed"
+        content: string
+        usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+      }
+    | { kind: "failed"; status: string; error?: string }
+    | { kind: "stale"; status: string; ageMs: number }
+    | { kind: "pending"; status: string; ageMs: number | undefined }
+    | { kind: "aborted"; status: string; error?: string }
+    | { kind: "error"; status: string; error?: string }
+    | { kind: "unknown"; status: string }
+  )
 
 /** Stale threshold for pending deep-research responses: 30m. */
 const STALE_THRESHOLD_MS = 30 * 60 * 1000
@@ -196,7 +205,8 @@ export function classifyRecovery(
     rawFinishReason?: string
     appliedMaxOutputTokens?: number
     error?: string
-    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+    usage?: ModelResponse["usage"]
+    cost_usd?: number
   },
 ): RecoveryOutcome {
   const stopped = outputTokenStop(result)
@@ -208,7 +218,7 @@ export function classifyRecovery(
     return { kind: "aborted", status: result.status, error: result.error }
   }
   if (result.status === "completed" && result.content) {
-    return { kind: "completed", content: result.content, usage: result.usage }
+    return { ...result, kind: "completed" }
   }
   // "completed && !content" = provider returned completion but no body.
   // Treated as error rather than success so callers surface the failure.
@@ -397,6 +407,8 @@ export async function runRecover(options: {
           responseId,
           localPartial.metadata.topic,
           localPartial.metadata.usage,
+          undefined,
+          localPartial.metadata.modelId,
         )
         return
       }
@@ -422,7 +434,14 @@ export async function runRecover(options: {
     switch (outcome.kind) {
       case "incomplete": {
         console.error(outcome.error)
-        await writeRecoveredResponse(outcome.content, responseId, localPartial?.metadata.topic, outcome.usage, outcome)
+        await writeRecoveredResponse(
+          outcome.content,
+          responseId,
+          localPartial?.metadata.topic,
+          outcome.usage,
+          outcome,
+          localPartial?.metadata.modelId,
+        )
         process.exit(1)
         break
       }
@@ -433,7 +452,14 @@ export async function runRecover(options: {
         // finalizeOutput() inside writeRecoveredResponse already writes the
         // path line to stderr — skip the redundant "Recovered output written
         // to:" that used to print a near-identical second line.
-        await writeRecoveredResponse(outcome.content, responseId, localPartial?.metadata.topic, outcome.usage)
+        await writeRecoveredResponse(
+          outcome.content,
+          responseId,
+          localPartial?.metadata.topic,
+          outcome.usage,
+          outcome,
+          localPartial?.metadata.modelId,
+        )
         // Mark completed but don't delete — re-runs of `bun llm recover <id>`
         // should keep working from local cache. cleanupPartials(24h) ages out.
         if (localPartial) {
@@ -557,7 +583,14 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   )
 
   if (outputTokenStop(result) !== undefined) {
-    await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage, result)
+    await writeRecoveredResponse(
+      result.content,
+      responseId,
+      localPartial?.metadata.topic,
+      result.usage,
+      result,
+      localPartial?.metadata.modelId,
+    )
     process.exit(1)
     return
   }
@@ -565,7 +598,14 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
   if (result.status === "completed" && result.content) {
     // finalizeOutput() inside writeRecoveredResponse already emits
     // "Output written to: ..." on stderr — don't print it a second time here.
-    await writeRecoveredResponse(result.content, responseId, localPartial?.metadata.topic, result.usage)
+    await writeRecoveredResponse(
+      result.content,
+      responseId,
+      localPartial?.metadata.topic,
+      result.usage,
+      result,
+      localPartial?.metadata.modelId,
+    )
     if (localPartial) {
       const { completePartial } = await import("../lib/persistence")
       // Keep on disk for re-recovery; cleanupPartials(24h) ages out.

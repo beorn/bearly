@@ -70,6 +70,8 @@ export interface ProCompletion {
 export interface OutputMeta extends Partial<CostFields> {
   query?: string
   model?: string
+  /** Original token classes and provider extras; totals are only a human summary. */
+  usage?: ModelResponse["usage"]
   /**
    * Total tokens (legacy single-number field) OR structured prompt/completion
    * pair (preferred for the JSON envelope schema). Both forms are accepted;
@@ -206,6 +208,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.query) result.query = meta.query
   result.chars = content.length
   if (meta?.model) result.model = meta.model
+  if (meta?.usage !== undefined) result.usage = meta.usage
 
   if (meta?.tokens != null) {
     if (typeof meta.tokens === "number") {
@@ -305,6 +308,7 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
       `query: ${JSON.stringify(meta.query)}`,
       meta.model ? `model: ${JSON.stringify(meta.model)}` : null,
       ...Object.entries(costMeta(meta)).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+      meta.usage === undefined ? null : `usage: ${JSON.stringify(meta.usage)}`,
       tokensTotal != null ? `tokens: ${tokensTotal}` : null,
       meta.durationMs ? `duration_ms: ${meta.durationMs}` : null,
       `timestamp: ${JSON.stringify(now.toISOString())}`,
@@ -329,6 +333,7 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
   obj.timestamp = new Date().toISOString()
   if (meta?.query) obj.query = meta.query
   Object.assign(obj, costMeta(meta))
+  if (meta?.usage !== undefined) obj.usage = meta.usage
   if (meta?.tokens != null) {
     // Both legacy number form and structured {prompt, completion} form
     // appear in the meta-comment unchanged — JSON.stringify handles both.
@@ -520,6 +525,7 @@ export async function finishResponse(
       ...costs,
       query,
       model: model.displayName,
+      usage,
       tokens: usage?.totalTokens,
       durationMs,
     }
@@ -540,6 +546,7 @@ export async function finishResponse(
       status: "failed",
       file: formatEnvelopeFile(outputFile, { fullPaths: isFullPaths(), cwd: process.cwd() }),
       model: model.displayName,
+      usage,
       tokens: usage
         ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
         : { total: 0 },
@@ -557,6 +564,7 @@ export async function finishResponse(
     ...costs,
     query,
     model: model.displayName,
+    usage,
     tokens: usage
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
       : undefined,

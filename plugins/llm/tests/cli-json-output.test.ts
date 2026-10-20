@@ -47,7 +47,7 @@ function resetMocks(stopped = false, empty = false) {
     finishReason: stopped ? "length" : "stop",
     rawFinishReason: stopped ? "max_output_tokens" : undefined,
     finalStep: { reasoningText: undefined },
-    usage: { inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125 } },
+    usage: { inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125, invoice: "original-cli" } },
   })
   streamTextMock.mockReset()
   streamTextMock.mockImplementation(() => ({
@@ -55,7 +55,7 @@ function resetMocks(stopped = false, empty = false) {
       if (!empty) yield "ok"
     })(),
     finalStep: Promise.resolve({ response: undefined }),
-    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125 } }),
+    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125, invoice: "original-cli" } }),
     finishReason: Promise.resolve(stopped ? "length" : "stop"),
     rawFinishReason: Promise.resolve(stopped ? "max_output_tokens" : undefined),
   }))
@@ -222,7 +222,7 @@ describe("--json mode end-to-end", () => {
       resetMocks(stopped, empty)
 
       vi.resetModules()
-      process.argv = ["node", "cli.ts", "--json", ...argv]
+      process.argv = ["node", "cli.ts", "--json", "--full-paths", ...argv]
       const mod = await import("../src/cli")
       if (stopped || empty) await expect(mod.main()).rejects.toThrow("__exit_1")
       else await mod.main()
@@ -239,6 +239,12 @@ describe("--json mode end-to-end", () => {
       expect(envelope.file).toMatch(/llm-.*\.txt$/)
       expect(typeof envelope.model).toBe("string")
       expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
+      // Totals cannot reconstruct provider extras; preserve the original facts in both real output channels.
+      expect(envelope.usage).toMatchObject({ raw: { cost_usd: 0.125, invoice: "original-cli" } })
+      const output = readFileSync(envelope.file as string, "utf8")
+      const metadata = output.match(/^<!-- llm-meta: (.+) -->/)
+      expect(metadata, "the actual output file must include the receipt metadata").not.toBeNull()
+      expect((JSON.parse(metadata![1]!) as { usage: unknown }).usage).toEqual(envelope.usage)
       expect(envelope.status).toBe(empty ? "failed" : stopped ? "incomplete" : "completed")
       expect(env.exitCodes).toEqual(stopped || empty ? [1] : [])
       // Adapter-only tests cannot detect a real command dropping charge facts on finalization.

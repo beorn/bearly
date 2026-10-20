@@ -59,6 +59,13 @@ describe("persistToResearch home isolation (#25265)", () => {
       query: "normal path probe",
       model: "test-model",
       tokens: 42,
+      usage: {
+        promptTokens: 40,
+        completionTokens: 2,
+        totalTokens: 42,
+        classes: { input: 40, output: 2 },
+        raw: { invoice: "original-archive" },
+      },
       cost_usd: 0,
       list_equivalent_usd: 0.25,
       list_equivalent_basis: [{ rateSource: "sku" as const, matchedModelId: "test-model" }],
@@ -72,6 +79,7 @@ describe("persistToResearch home isolation (#25265)", () => {
     expect(text).toContain('query: "normal path probe"')
     expect(text).toContain('model: "test-model"')
     expect(text).toContain("tokens: 42")
+    expect(text).toContain(`usage: ${JSON.stringify(meta.usage)}\n`)
     expect(text).toContain("cost_usd: 0\n")
     expect(text).toContain("list_equivalent_usd: 0.25\n")
     expect(text).toContain('list_equivalent_basis: [{"rateSource":"sku","matchedModelId":"test-model"}]')
@@ -81,6 +89,7 @@ describe("persistToResearch home isolation (#25265)", () => {
     expect(fields.cost_usd).toBe(0)
     expect(fields.list_equivalent_usd).toBe(0.25)
     expect(fields.list_equivalent_basis).toEqual(meta.list_equivalent_basis)
+    expect(fields.usage).toEqual(meta.usage)
     expect(fields).not.toHaveProperty("cost")
     expect(text.endsWith("note body")).toBe(true)
   })
