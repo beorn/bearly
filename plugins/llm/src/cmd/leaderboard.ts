@@ -4,11 +4,13 @@
  */
 
 import { ask } from "../lib/research"
-import { estimateCost, formatCost, getModel, type Model } from "../lib/types"
+import { getModel } from "../lib/types"
 import { emitJson, isJsonMode } from "../lib/output-mode"
 import type { LeaderboardRow } from "../lib/dual-pro"
 import { confirmOrExit, promptChoice } from "../ui/confirm"
 import { formatCostColumns } from "../lib/format"
+import { resolveCostForModel } from "../lib/pricing"
+import { aggregateCosts } from "../lib/cost"
 
 /**
  * `bun llm pro --leaderboard` — print the current ranked leaderboard from
@@ -194,20 +196,38 @@ export async function runBacktest(opts: {
   const runner = getModel(cfg.mainstays[1])
   const challengerId = opts.challengerOverride ?? cfg.splitTestPool[0]
   const challenger = opts.noChallenger ? undefined : challengerId ? getModel(challengerId) : undefined
-  const perLegEst = (m: Model | undefined) => (m ? estimateCost(m, 1500, 1500) : 0)
-  const oldCallCost = perLegEst(champion) + perLegEst(runner) + (opts.noChallenger ? 0 : perLegEst(challenger))
-  const newCallCost = oldCallCost
   const judgeModel = getModel(opts.quick ? "gpt-5-nano" : cfg.judge) ?? getModel("gpt-5-mini")
-  const judgeCost = judgeModel ? estimateCost(judgeModel, 4000, 800) : 0
-  const perQuery = ((opts.noOldFire ? 1 : 2) * (oldCallCost + newCallCost)) / 2 + judgeCost * (opts.noOldFire ? 1 : 2)
-  const totalEst = perQuery * sample.length
+  const opinionModels = [...(opts.noOldFire ? [] : [champion, runner]), champion, runner, challenger].filter(
+    (model) => model !== undefined,
+  )
+  const planned = opinionModels.map((model) => ({ model, input: 1500, output: 1500 }))
+  if (judgeModel)
+    for (let i = 0; i < (opts.noOldFire ? 1 : 2); i++) {
+      planned.push({ model: judgeModel, input: 4000, output: 800 })
+    }
+  const estimates = planned.map(({ model, input, output }) =>
+    resolveCostForModel(model, {
+      input: input * sample.length,
+      output: output * sample.length,
+    }),
+  )
+  const forecast = aggregateCosts(estimates)
+  forecast.charged = { reason: "forecast; no call dispatched" }
+  const unpriced = planned.filter((_, i) => "reason" in estimates[i]!.listEquivalent)
+  if (unpriced.length)
+    forecast.listEquivalent = {
+      reason: `rates unavailable for ${unpriced.map((call) => call.model.displayName).join(", ")}`,
+    }
+  const totalEst = "usd" in forecast.listEquivalent ? forecast.listEquivalent.usd : undefined
 
   console.error(
     `\nBacktest: ${sample.length} queries, judge=${judgeModel?.displayName ?? cfg.judge}${opts.quick ? " (quick)" : ""}${opts.noOldFire ? ", NEW-only" : ", OLD+NEW"}`,
   )
-  console.error(`Estimated cost: ${formatCost(totalEst)}`)
+  console.error(
+    `Forecast at 1500 input/1500 output tokens per opinion and 4000/800 per judge: ${formatCostColumns(forecast)}`,
+  )
 
-  if (totalEst > 50) {
+  if (totalEst !== undefined && totalEst > 50) {
     await confirmOrExit(`⚠️  Estimated cost exceeds $50. Proceed? [Y/n] `, !!opts.skipConfirm)
   }
 

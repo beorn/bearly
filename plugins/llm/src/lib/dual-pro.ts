@@ -809,7 +809,7 @@ export interface AbProEntry {
    *  v3 shape: judge: { model, rubric, error, cost, ab, ac?, ad? }
    *  Both still ship `winner`/`reasoning` at the top level for back-compat
    *  with v2 readers (synthesized from the AB pair on v3 writes). */
-  judge?: {
+  judge?: Partial<import("./cost").CostFields> & {
     model?: string
     rubric?: string
     error?: string
@@ -827,6 +827,7 @@ export interface AbProEntry {
   }
   pin?: boolean
   queryHash?: string
+  judgeAttempts?: Array<import("./cost").CostFields & { response?: import("./types").ModelResponse; error?: string }>
 }
 
 /**

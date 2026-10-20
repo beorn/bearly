@@ -37,7 +37,7 @@
 import { ask } from "../lib/research"
 import { isProviderRoutable, providerRouteLabel, getProviderEnvVar } from "../lib/providers"
 import { resolveSubscriptionRoute } from "../lib/subscription-cli"
-import { estimateCost, formatCost, getModel, skuRates, type Model, type ModelMode, type ServedBy } from "../lib/types"
+import { getModel, type Model, type ModelMode, type ServedBy } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
@@ -48,7 +48,7 @@ import { askAndFinish } from "./ask"
 import { outputTokenStop, type ProCompletion } from "../lib/format"
 import { formatCostColumns } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
-import { resolveResponseCost } from "../lib/pricing"
+import { resolveResponseCost, resolveCostForModel } from "../lib/pricing"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -75,18 +75,13 @@ function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "f
  * model the registry cannot price is NAMED rather than folded into an invented
  * number, because "we do not know" and "about five dollars" are different facts.
  */
-function estimateFleetCost(
-  models: readonly Model[],
-  inputTokens: number,
-  outputTokens: number,
-): { text: string; usd: number; unpriced: readonly string[] } {
-  const unpriced = models.filter((m) => skuRates(m) === null).map((m) => m.displayName)
-  const usd = models.reduce((sum, m) => sum + estimateCost(m, inputTokens, outputTokens), 0)
-  const text =
-    unpriced.length === 0
-      ? `~${formatCost(usd)}`
-      : `~${formatCost(usd)} for the priced legs, plus ${unpriced.length} the registry cannot price (${unpriced.join(", ")})`
-  return { text, usd, unpriced }
+function estimateFleetCost(models: readonly Model[], inputTokens: number, outputTokens: number): { text: string } {
+  const costs = models.map((model) => resolveCostForModel(model, { input: inputTokens, output: outputTokens }))
+  const forecast = aggregateCosts(costs)
+  forecast.charged = { reason: "forecast; no call dispatched" }
+  const unpriced = models.filter((_, i) => "reason" in costs[i]!.listEquivalent).map((model) => model.displayName)
+  if (unpriced.length) forecast.listEquivalent = { reason: `rates unavailable for ${unpriced.join(", ")}` }
+  return { text: formatCostColumns(forecast) }
 }
 
 export async function runProDual(options: {

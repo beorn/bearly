@@ -1325,23 +1325,6 @@ export function getDeepResearchModels(): Model[] {
   return MODELS.filter((m) => m.isDeepResearch)
 }
 
-/**
- * Estimate cost for a query (USD) — assumes ~500 input / ~1000 output tokens.
- *
- * Legacy numeric shim over the canonical substrate (cost.ts, bead 19899): the
- * public call shape is unchanged, but the math routes through `resolveCost`.
- * An unpriced model keeps the historical `0` return for numeric callers
- * (leaderboard sums, thresholds) — DISPLAY paths must not format that 0 as a
- * dollar figure; use `resolveCostForModel` and render its `source` first.
- */
-export function estimateCost(model: Model | SkuConfig, inputTokens = 500, outputTokens = 1000): number {
-  const resolved = resolveCost({
-    usage: { input: inputTokens, output: outputTokens },
-    rates: skuRates(model),
-  })
-  return resolved.source === "unknown" ? 0 : resolved.usd
-}
-
 /** Per-M rates from an (overlay-aware) SKU, or null when the model is unpriced. */
 export function skuRates(model: Model | SkuConfig): ModelRates | null {
   if (model.inputPricePerM === undefined || model.outputPricePerM === undefined) return null
@@ -1658,8 +1641,8 @@ export function selectModels(options: SelectModelsOptions): ModelSelectionResult
 }
 
 export function requiresConfirmation(model: Model | SkuConfig, threshold = 0.1): boolean {
-  const estimatedCost = estimateCost(model)
-  return estimatedCost > threshold || model.costTier === "very-high" || model.isDeepResearch
+  const estimate = resolveCost({ usage: { input: 500, output: 1000 }, rates: skuRates(model) }).listEquivalent
+  return ("usd" in estimate && estimate.usd > threshold) || model.costTier === "very-high" || model.isDeepResearch
 }
 
 // ============================================================================

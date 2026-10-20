@@ -101,7 +101,7 @@ describe("cli-single-fire", () => {
       generateTextMock.mockImplementation(async (args) => ({
         text: judgeText,
         finalStep: { reasoningText: undefined },
-        usage: { inputTokens: 10, outputTokens: 5 },
+        usage: { inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.3 } },
         ...(stoppedJudge && JSON.stringify(args).includes("completed question")
           ? { finishReason: "length", rawFinishReason: "max_output_tokens" }
           : {}),
@@ -110,13 +110,17 @@ describe("cli-single-fire", () => {
       const result = env.stdout
         .filter((line) => line.startsWith("{"))
         .map((line) => JSON.parse(line))
-        .at(-1)
+        .at(-1) as Record<string, unknown>
       expect(result).toMatchObject({
         eligible: 2,
         judged: stoppedJudge ? 1 : 2,
         status: stoppedJudge ? "incomplete" : "completed",
       })
       expect(invocation.exited).toBe(stoppedJudge ? 1 : undefined)
+      // Stopped output cannot receive scores, but its actual call is still accounted.
+      expect(result.cost_usd).toBeCloseTo(0.6)
+      expect(result.list_equivalent_usd).toBeGreaterThan(0)
+      expect(result).not.toHaveProperty("totalCostUsd")
       expect(generateTextMock).toHaveBeenCalledTimes(calls + 2)
       const judgeInputs = generateTextMock.mock.calls.slice(calls).map((call) => JSON.stringify(call[0]))
       expect(judgeInputs.some((input) => input.includes("completed question"))).toBe(true)
@@ -125,6 +129,8 @@ describe("cli-single-fire", () => {
       const { readAbProLog } = await import("../src/lib/dual-pro")
       const saved = await readAbProLog()
       const completed = saved.find((entry) => entry.question === "completed question")
+      expect(completed?.judgeAttempts).toHaveLength(1)
+      expect(completed?.judgeAttempts?.[0]).toMatchObject({ cost_usd: 0.3 })
       if (stoppedJudge) expect(completed?.judge).toBeUndefined()
       else expect(completed?.judge).toMatchObject({ result: { winner: "b" } })
       expect(saved.find((entry) => entry.question === "completed sibling question")?.judge).toMatchObject({
@@ -133,7 +139,6 @@ describe("cli-single-fire", () => {
       if (stoppedJudge) {
         expect(env.stderr.join("\n")).toContain(judgeText)
         expect(env.stderr.join("\n")).toContain("max_output_tokens")
-        expect((result as Record<string, unknown>).totalCostUsd).toBeGreaterThan(0)
       }
     },
   )

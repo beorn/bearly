@@ -10,16 +10,7 @@
  */
 
 export { queryModel } from "./lib/research.ts"
-export {
-  getCheapModel,
-  getCheapModels,
-  selectModels,
-  getModel,
-  estimateCost,
-  formatCost,
-  skuRates,
-  MODELS,
-} from "./lib/types.ts"
+export { getCheapModel, getCheapModels, selectModels, getModel, formatCost, skuRates, MODELS } from "./lib/types.ts"
 export type {
   Model,
   Provider,
@@ -57,7 +48,7 @@ export { describeDispatchFailure } from "./lib/dispatch-error.ts"
 export type { DispatchFailureDescription, DispatchFailureKind, DispatchFailureTarget } from "./lib/dispatch-error.ts"
 // Canonical usage/cost substrate (bead 19899 P1-P3): open usage-class map,
 // independent stated charges/list-equivalent estimates; unknown is never $0.
-export { resolveCost, serializeCost, aggregateCosts } from "./lib/cost.ts"
+export { resolveCost, serializeCost, deserializeCost, aggregateCosts } from "./lib/cost.ts"
 export type { UsageMap, UsageClass, ModelRates, ResolvedCost, CostAmount, CostBasis, CostFields } from "./lib/cost.ts"
 export { lookupModelRates, resolveCostForModel, resolveResponseCost } from "./lib/pricing.ts"
 export { LITELLM_PRICES_URL, fetchLiteLLMMap, parseLiteLLMMap, matchLiteLLMEntry } from "./lib/litellm.ts"

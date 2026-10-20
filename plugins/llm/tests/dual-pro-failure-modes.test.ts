@@ -26,6 +26,7 @@ import { join } from "node:path"
 import { makeTestEnv, runCli } from "./helpers"
 import { execFileSync } from "node:child_process"
 import type { ModelResponse } from "../src/lib/types"
+import { getMemoryDir } from "../src/lib/dual-pro"
 
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
@@ -47,10 +48,7 @@ vi.mock("../src/lib/openai-deep", async () => {
 })
 
 function abProLogPath(home: string): string {
-  // Mirrors dispatch.ts:appendAbProLog — CLAUDE_PROJECT_DIR or cwd, /-encoded.
-  const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
-  const encoded = projectRoot.replace(/\//g, "-")
-  return join(home, ".claude/projects", encoded, "memory/ab-pro.jsonl")
+  return join(getMemoryDir({ ...process.env, HOME: home }), "ab-pro.jsonl")
 }
 
 async function runDualPro(outputFile?: string, maxOutputTokens?: number, contextFiles: readonly string[] = []) {

@@ -11,9 +11,11 @@
 
 import { ask } from "../lib/research"
 import { isProviderAvailable, getProviderEnvVar } from "../lib/providers"
-import { estimateCost, formatCost, getModel } from "../lib/types"
+import { getModel, type ModelResponse } from "../lib/types"
 import { emitJson, isJsonMode } from "../lib/output-mode"
-import { outputTokenStop } from "../lib/format"
+import { outputTokenStop, formatCostColumns } from "../lib/format"
+import { resolveCostForModel, resolveResponseCost } from "../lib/pricing"
+import { aggregateCosts, serializeCost } from "../lib/cost"
 import { confirmOrExit } from "../ui/confirm"
 
 /**
@@ -67,7 +69,6 @@ export async function runJudgeHistory(opts: {
   const dualPro = await import("../lib/dual-pro")
   const cfg = await dualPro.loadConfig()
   const fs = await import("fs")
-  const os = await import("os")
   const entries = await dualPro.readAbProLog()
   const judgeModelId = opts.quick ? "gpt-5-nano" : cfg.judge
   const judgeModel = getModel(judgeModelId)
@@ -138,23 +139,24 @@ export async function runJudgeHistory(opts: {
   const limit = Math.min(opts.limit ?? candidates.length, candidates.length)
   const todo = candidates.slice(0, limit)
 
-  const perCallCost = estimateCost(judgeModel, 3000, 400)
-  const totalEst = perCallCost * todo.length
+  const forecast = resolveCostForModel(judgeModel, { input: 3000 * todo.length, output: 400 * todo.length })
+  forecast.charged = { reason: "forecast; no call dispatched" }
+  const totalEst = "usd" in forecast.listEquivalent ? forecast.listEquivalent.usd : undefined
   console.error(
     `\nRetroactive judging: ${todo.length} entries (of ${candidates.length} eligible / ${entries.length} total)`,
   )
   console.error(`  Judge: ${judgeModel.displayName}${opts.quick ? " (quick)" : ""}`)
-  console.error(`  Estimated cost: ${formatCost(totalEst)}\n`)
+  console.error(`  Forecast at 3000 input/400 output tokens per entry: ${formatCostColumns(forecast)}\n`)
 
-  if (totalEst > 5 && !opts.skipConfirm) {
-    await confirmOrExit(`⚠️  Estimated cost ${formatCost(totalEst)}. Proceed? [Y/n] `, !!opts.skipConfirm)
+  if (totalEst !== undefined && totalEst > 5 && !opts.skipConfirm) {
+    await confirmOrExit(`⚠️  ${formatCostColumns(forecast)}. Proceed? [Y/n] `, !!opts.skipConfirm)
   }
 
   const BATCH = 5
   type Result = {
     idx: number
     judge?: import("../lib/dual-pro").JudgeResult
-    cost: number
+    response?: ModelResponse
     error?: string
     incomplete?: boolean
   }
@@ -175,51 +177,51 @@ export async function runJudgeHistory(opts: {
           rubric: cfg.rubric,
         })
         const r = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
-        const cost = r.usage ? estimateCost(judgeModel, r.usage.promptTokens, r.usage.completionTokens) : 0
         const stopped = outputTokenStop(r)
         if (stopped !== undefined) {
           console.error(
             `\nHistory entry ${c.idx + 1}, judge ${judgeModel.displayName}: ${stopped}; scores not applied.\n${r.content}`,
           )
-          return { idx: c.idx, cost, error: stopped, incomplete: true }
+          return { idx: c.idx, response: r, error: stopped, incomplete: true }
         }
         const parsed = dualPro.parseJudgeResponse(r.content)
-        return { idx: c.idx, judge: parsed, cost }
+        return { idx: c.idx, judge: parsed, response: r }
       }),
     )
     for (let j = 0; j < settled.length; j++) {
       const s = settled[j]!
       if (s.status === "fulfilled") results.push(s.value)
-      else results.push({ idx: batch[j]!.idx, cost: 0, error: String(s.reason) })
+      else results.push({ idx: batch[j]!.idx, error: String(s.reason) })
     }
     process.stderr.write(`  ${Math.min(i + BATCH, todo.length)}/${todo.length} judged\n`)
   }
 
   const judgedCount = results.filter((r) => r.judge).length
-  const totalCost = results.reduce((s, r) => s + r.cost, 0)
-  console.error(`\n${judgedCount}/${todo.length} judged successfully (cost: ${formatCost(totalCost)})`)
+  const totalCost = aggregateCosts(
+    results.map((result) => resolveResponseCost(result.response ?? { model: judgeModel })),
+  )
+  console.error(`\n${judgedCount}/${todo.length} judged successfully (${formatCostColumns(totalCost)})`)
 
-  if (opts.apply && judgedCount > 0) {
+  if (opts.apply && results.length > 0) {
     const updated = entries.map((e) => ({ ...e })) as Array<import("../lib/dual-pro").AbProEntry>
     for (const r of results) {
-      if (!r.judge) continue
       const e = updated[r.idx]
       if (!e) continue
-      e.judge = { model: judgeModel.modelId, result: r.judge }
+      const costs = serializeCost(resolveResponseCost(r.response ?? { model: judgeModel }))
+      e.judgeAttempts = [...(e.judgeAttempts ?? []), { ...costs, response: r.response, error: r.error }]
+      if (!r.judge) continue
+      e.judge = { model: judgeModel.modelId, result: r.judge, ...costs }
       if (e.a) e.a = { ...e.a, score: r.judge.a }
       if (e.b) e.b = { ...e.b, score: r.judge.b }
       if (e.c && r.judge.c) e.c = { ...e.c, score: r.judge.c }
       if (e.d && r.judge.d) e.d = { ...e.d, score: r.judge.d }
     }
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
-    const encoded = projectRoot.replace(/\//g, "-")
-    const home = process.env.HOME || os.homedir()
-    const file = `${home}/.claude/projects/${encoded}/memory/ab-pro.jsonl`
+    const file = `${dualPro.getMemoryDir()}/ab-pro.jsonl`
     fs.copyFileSync(file, `${file}.bak`)
     fs.writeFileSync(file, updated.map((e) => JSON.stringify(e)).join("\n") + "\n")
     console.error(`\n✓ Rewrote ${file}`)
     console.error(`  Backup: ${file}.bak`)
-    console.error(`  Augmented ${judgedCount} entries with judge scores.`)
+    console.error(`  Retained ${results.length} judge attempts; applied ${judgedCount} scores.`)
   } else if (judgedCount > 0) {
     console.error(`\nDry run — re-run with --apply to write augmented entries to ab-pro.jsonl`)
   }
@@ -230,7 +232,8 @@ export async function runJudgeHistory(opts: {
       status: incomplete ? "incomplete" : "completed",
       eligible: candidates.length,
       judged: judgedCount,
-      totalCostUsd: totalCost,
+      ...serializeCost(totalCost),
+      attemptsRecorded: opts.apply ? results.length : 0,
       applied: !!opts.apply && judgedCount > 0,
     })
   }

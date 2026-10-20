@@ -287,7 +287,7 @@ if (modelOverrideId) {
           displayName: `${modelOverrideId} [unverified]`,
           isDeepResearch: false,
           // very-high so requiresConfirmation always returns true; pricing
-          // is left undefined so estimateCost reports $0 (transparent unknown).
+          // is left undefined so its list-equivalent estimate stays explicitly unknown.
           costTier: "very-high",
         }
       }
