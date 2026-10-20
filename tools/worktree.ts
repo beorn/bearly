@@ -56,7 +56,8 @@ import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submod
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
 import { superStatus, type ConsultedRepository } from "git-super/status"
-import { remoteContainsCommit } from "git-super/push"
+import { remoteContainsCommit, superPush } from "git-super/push"
+import { archiveRefFor, ensureArchiveRef } from "git-super/archive-ref"
 import { clearedByIdentity, inspectProcessCwds, type ProcessCwdProjection } from "removely"
 
 // ANSI colors
@@ -2448,7 +2449,7 @@ async function snapshotDirtyRepo(
 export interface PreserveOptions {
   /** Declared root-relative component exclusions, judged by the mechanics owner before preservation. */
   excludedSubmodules?: readonly string[]
-  /** Fixed ref slug: `wip/<label>` instead of `wip/<slot>-preserve-<stamp>`. */
+  /** Snapshot label within its canonical archive ref; the full snapshot OID distinguishes different saves. */
   label?: string
   /** Override the UTC stamp (tests). */
   stamp?: string
@@ -2479,17 +2480,17 @@ async function preserveGit(repo: string, args: string[]): Promise<string> {
 /** Record recovery refs even when Git reports failure after its atomic ref write. */
 async function writeRecoveryRef(
   repo: string,
-  args: string[],
   ref: string,
   sha: string,
-  written: { repo: string; sha: string }[],
+  written: { repo: string; ref: string; sha: string }[],
 ): Promise<void> {
   try {
-    await preserveGit(repo, args)
+    const result = ensureArchiveRef(repo, ref, sha)
+    if (!result.ok) throw new Error(`preserve: archive update-ref/readback for ${ref} in ${repo}: ${result.reason}`)
   } catch (cause) {
     const received = await safeExec($`git -C ${repo} rev-parse --verify --quiet ${ref + "^{commit}"}`)
     if (received.exitCode === 0) {
-      written.push({ repo, sha: received.stdout.trim() })
+      written.push({ repo, ref, sha: received.stdout.trim() })
     } else if (received.exitCode !== 1 || received.stdout !== "" || received.stderr !== "") {
       const failure = cause instanceof Error ? cause.message : String(cause)
       throw new Error(`${failure}; cannot inspect recovery ref ${ref} in ${repo}: ${gitCommandError(received)}`, {
@@ -2498,7 +2499,7 @@ async function writeRecoveryRef(
     }
     throw cause
   }
-  written.push({ repo, sha })
+  written.push({ repo, ref, sha })
 }
 
 /**
@@ -2583,9 +2584,10 @@ export async function preserveSlotState(
   const includeAhead = opts.includeAhead ?? true
   const recoverySlot = slotNameFromResolvedPath(gitRoot, worktreePath)
   const stamp = opts.stamp ?? preserveStamp()
-  const refShort = opts.label ? `wip/${opts.label}` : `wip/${recoverySlot}-preserve-${stamp}`
-  const refFull = `refs/heads/${refShort}`
-  assertValidPreserveRef(refFull, gitRoot)
+  const label = opts.label ?? `${recoverySlot}-preserve-${stamp}`
+  const date = new Date().toISOString().slice(0, 10)
+  assertValidPreserveRef(archiveRefFor(`${label}-snapshot`, "worktree", date), gitRoot)
+  let refShort: string | undefined
   void slotName
 
   const inventory = superStatus({ repo: worktreePath, excludedSubmodules: opts.excludedSubmodules })
@@ -2664,7 +2666,7 @@ export async function preserveSlotState(
   const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead ? "dirty+ahead" : dirty ? "dirty" : "ahead"
   const preservedSubs: PreservedSubmodule[] = []
   const overrides = new Map<string, Map<string, string>>()
-  const written: { repo: string; sha: string }[] = []
+  const written: { repo: string; ref: string; sha: string }[] = []
   const unmergedPaths: ({ repo: string } & UnmergedPath)[] = []
   let sha: string | undefined
   let rootIndex: string | undefined
@@ -2680,24 +2682,35 @@ export async function preserveSlotState(
               .map((path) => path.slice(repo.path.length + 1))
       const snapshot =
         repo.dirty || gitlinks !== undefined
-          ? await snapshotDirtyRepo(repo.root, `preserve ${refShort} (${repo.path})`, gitlinks, localExclusions)
+          ? await snapshotDirtyRepo(repo.root, `preserve ${label} (${repo.path})`, gitlinks, localExclusions)
           : { sha: repo.head, unmerged: [] }
       const saved = snapshot.sha
+      const refFull = archiveRefFor(`${label}-${saved}`, "worktree", date)
       for (const entry of snapshot.unmerged) unmergedPaths.push({ repo: repo.path, ...entry })
       const refRepo = repo.path === "." ? gitRoot : repo.root
-      await writeRecoveryRef(refRepo, ["update-ref", refFull, saved], refFull, saved, written)
+      await writeRecoveryRef(refRepo, refFull, saved, written)
+      if (refRepo !== repo.primary) {
+        await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
+        await writeRecoveryRef(repo.primary, refFull, saved, written)
+      }
+      const publication = await superPush({
+        repo: repo.primary,
+        remote: "origin",
+        refspecs: [`${saved}:${refFull}`],
+        forceWithLease: [`${refFull}:`],
+        recurseSubmodules: "check",
+      })
+      if (publication.state !== "updated" && publication.state !== "unchanged") {
+        throw new Error(
+          `preserve: archive publication/readback failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
+        )
+      }
       if (repo.path === ".") {
         sha = saved
+        refShort = refFull
         rootIndex = snapshot.index
         continue
       }
-      await writeRecoveryRef(
-        repo.primary,
-        ["fetch", "--no-recurse-submodules", "-q", repo.root, `+${refFull}:${refFull}`],
-        refFull,
-        saved,
-        written,
-      )
       const received = await preserveGit(repo.primary, ["rev-parse", "--verify", refFull + "^{commit}"])
       if (received !== saved) {
         throw new Error(`preserve: ${refFull} in ${repo.primary} is ${received}, expected ${saved}`)
@@ -2707,7 +2720,7 @@ export async function preserveSlotState(
       }
       preservedSubs.push({
         path: repo.path,
-        ref: refShort,
+        ref: refFull,
         sha: saved,
         ...(snapshot.index === undefined ? {} : { index: snapshot.index }),
       })
@@ -2715,10 +2728,11 @@ export async function preserveSlotState(
       parentLinks.set(repo.parent === "." ? repo.path : repo.path.slice(repo.parent.length + 1), saved)
       overrides.set(repo.parent, parentLinks)
     }
-    if (sha === undefined) throw new Error("preserve: child recovery did not produce its root recovery ref")
+    if (sha === undefined || refShort === undefined)
+      throw new Error("preserve: child recovery did not produce its root recovery ref")
   } catch (cause) {
     const failure = cause instanceof Error ? cause.message : String(cause)
-    const refs = written.map((entry) => `${entry.repo}:${refFull}@${entry.sha}`).join(", ")
+    const refs = written.map((entry) => `${entry.repo}:${entry.ref}@${entry.sha}`).join(", ")
     if (written.length > 0) {
       warn(`preserve: incomplete; source and registration retained. Recovery refs already written: ${refs}`)
       await appendPreserveLog(
@@ -2737,7 +2751,9 @@ export async function preserveSlotState(
     console.log("")
     warn(`Preserved ${reason} state of slot ${recoverySlot} before the destructive step:`)
     console.log(CYAN + `    ${refShort}` + RESET + DIM + `  (${sha.slice(0, 12)})` + RESET)
-    console.log(DIM + `    recover: git switch ${refShort}   # in ${basename(gitRoot)}` + RESET)
+    console.log(
+      DIM + `    recover: git worktree add --detach <recovery-path> ${refShort}   # in ${basename(gitRoot)}` + RESET,
+    )
     if (rootIndex !== undefined) {
       console.log(
         DIM +
@@ -2749,7 +2765,7 @@ export async function preserveSlotState(
       const staged = s.index === undefined ? "" : `, staged index ${s.index.slice(0, 12)}`
       console.log(
         CYAN +
-          `    ${s.path} → ${refShort}` +
+          `    ${s.path} → ${s.ref}` +
           RESET +
           DIM +
           `  (${s.sha.slice(0, 12)}${staged}, in that submodule)` +
@@ -2758,7 +2774,9 @@ export async function preserveSlotState(
     }
   }
   const subLog = preservedSubs
-    .map((s) => `${s.path}@${s.sha.slice(0, 12)}${s.index === undefined ? "" : `+index:${s.index.slice(0, 12)}`}`)
+    .map(
+      (s) => `${s.path}@${s.sha.slice(0, 12)}:${s.ref}${s.index === undefined ? "" : `+index:${s.index.slice(0, 12)}`}`,
+    )
     .join(",")
   const unmergedLog = unmergedPaths
     .map((u) => `${u.repo === "." ? "" : `${u.repo}/`}${u.path}:${u.stage1 ?? "-"}/${u.stage3 ?? "-"}`)

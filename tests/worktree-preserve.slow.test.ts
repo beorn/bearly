@@ -10,7 +10,7 @@
  *
  * The L5 invariant proved here: NO destructive step ever loses dirty-or-ahead
  * state. Before removing/force-resetting a slot the tooling AUTO-preserves to a
- * durable `wip/<slot>-preserve-<UTCstamp>` ref (built from a temporary index —
+ * durable `refs/archive/<date>/worktree/<label>-<snapshot>` ref (built from a temporary index —
  * never `git stash`), prints it loudly, and continues (exit 0, zero prompts).
  * Fresh creation refuses an orphan slot ref with commits absent from its base;
  * choosing an exact destination does not authorize replacing that ref.
@@ -82,6 +82,10 @@ async function buildSubmoduleMain(nested = false): Promise<string> {
   await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
   await commitAll(mainRepo, "add-sub")
   if (nested) await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule update --init --recursive`.quiet()
+  const upstreamRepo = join(sandbox, "origin.git")
+  await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+  await $`git -C ${mainRepo} remote add origin ${upstreamRepo}`.quiet()
+  await $`git -C ${mainRepo} push -q origin main`.quiet()
   return mainRepo
 }
 
@@ -89,7 +93,7 @@ async function buildSubmoduleMain(nested = false): Promise<string> {
 async function preserveRefs(repo: string, slot: string): Promise<string[]> {
   // Interpolate the pattern + format as JS strings so Bun's shell escapes them
   // (no local glob expansion; git receives the literal `*` pattern).
-  const pattern = `refs/heads/wip/${slot}-preserve-*`
+  const pattern = `refs/archive/*/worktree/${slot}-preserve-*`
   const fmt = "%(refname)"
   const res = await $`cd ${repo} && git for-each-ref --format=${fmt} ${pattern}`.nothrow().quiet()
   return res.stdout.toString().trim().split("\n").filter(Boolean)
@@ -99,7 +103,7 @@ async function preserveRefs(repo: string, slot: string): Promise<string[]> {
 function loggedRef(): string | undefined {
   for (const call of consoleLogSpy.mock.calls) {
     const line = call.map((a: unknown) => String(a)).join(" ")
-    const m = /wip\/\S*preserve-\S+/.exec(line)
+    const m = /refs\/archive\/\S*preserve-\S+/.exec(line)
     if (m) return m[0]
   }
   return undefined
@@ -170,7 +174,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       reason: "dirty",
       submodules: [],
     })
-    expect(receipt.ref).toMatch(/^wip\//u)
+    expect(receipt.ref).toMatch(/^refs\/archive\/\d{4}-\d{2}-\d{2}\/worktree\//u)
     expect(receipt.index, "the receipt carries the staged-index commit additively (cto plan pin 3)").toMatch(
       /^[0-9a-f]{40}$/u,
     )
@@ -186,10 +190,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
    * @level l2 @consumer Bearly reset recreation @testonly none */
   test("reset recreation leaves the excluded checkout empty and its common store unchanged", async () => {
     const mainRepo = await buildSubmoduleMain()
-    const origin = join(sandbox, "origin.git")
-    await $`git init --bare -q -b main ${origin}`.quiet()
-    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-    await $`git -C ${mainRepo} push -q origin main`.quiet()
     const destination = join(sandbox, "candidate")
     const privateStore = join(mainRepo, ".git/modules/vendor/sub")
     const head = readFileSync(join(privateStore, "HEAD"))
@@ -370,7 +370,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
 
   /** @failure a later transfer failure hides its cause or the recovery refs already saved, or removes the source
    * @level l2 @consumer #27037 partial preservation failure @testonly none */
-  test.each(["before", "after", "source"] as const)(
+  test.each(["before", "after", "source", "publication"] as const)(
     "a recovery write failing %s names the failure and retained recovery",
     async (phase) => {
       const mainRepo = await buildSubmoduleMain(true)
@@ -384,7 +384,19 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         await createWorktree("wt5", undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
         const sourceLeaf = join(worktreePath, "vendor/sub/apps/maddoc")
         writeFileSync(join(sourceLeaf, "file.txt"), "leaf saved before parent failure\n")
-        if (phase === "before") {
+        if (phase === "publication") {
+          const destination = (await $`git -C ${primaryParent} remote get-url origin`.text()).trim()
+          const common = (
+            await $`git -C ${destination} rev-parse --path-format=absolute --git-common-dir`.text()
+          ).trim()
+          const hook = join(common, "hooks/pre-receive")
+          mkdirSync(dirname(hook), { recursive: true })
+          writeFileSync(
+            hook,
+            '#!/usr/bin/env bun\nprocess.stderr.write("fixture rejects archive publication\\n"); process.exit(1)\n',
+          )
+          chmodSync(hook, 0o755)
+        } else if (phase === "before") {
           const parentCommon = (
             await $`git -C ${primaryParent} rev-parse --path-format=absolute --git-common-dir`.text()
           ).trim()
@@ -392,7 +404,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           mkdirSync(dirname(hook), { recursive: true })
           writeFileSync(
             hook,
-            '#!/usr/bin/env bun\nif (process.argv[2] === "prepared" && (await Bun.stdin.text()).includes("refs/heads/wip/")) process.exit(1)\n',
+            '#!/usr/bin/env bun\nif (process.argv[2] === "prepared" && (await Bun.stdin.text()).includes("refs/archive/")) process.exit(1)\n',
           )
           chmodSync(hook, 0o755)
         } else {
@@ -403,7 +415,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           const wrapper = join(bin, "git")
           writeFileSync(
             wrapper,
-            `#!/usr/bin/env bun\nconst args = process.argv.slice(2); const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }); if (result.exitCode === 0 && args[1] === ${JSON.stringify(phase === "source" ? sourceLeaf : primaryParent)} && args[2] === ${JSON.stringify(phase === "source" ? "update-ref" : "fetch")}) { process.stderr.write("fixture failure after ref write\\n"); process.exit(1); } process.exit(result.exitCode);\n`,
+            `#!/usr/bin/env bun\nconst args = process.argv.slice(2); const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }); if (result.exitCode === 0 && args[1] === ${JSON.stringify(phase === "source" ? sourceLeaf : primaryParent)} && args.includes("update-ref") && args.some(a => a.startsWith("refs/archive/"))) { process.stderr.write("fixture failure after ref write\\n"); process.exit(1); } process.exit(result.exitCode);\n`,
           )
           chmodSync(wrapper, 0o755)
           process.env.PATH = bin + ":" + originalPath
@@ -416,7 +428,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           failure = cause
         }
         expect(failure).toBeInstanceOf(Error)
-        const operation = phase === "source" ? "git update-ref" : "git fetch"
+        const operation = phase === "publication" ? "archive publication/readback" : "update-ref"
         const recoveryStore = phase === "source" ? sourceLeaf : primaryLeaf
         expect((failure as Error).message).toContain(operation)
         expect((failure as Error).message).toContain(phase === "source" ? sourceLeaf : primaryParent)
@@ -426,7 +438,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
           "leaf saved before parent failure\n",
         )
         expect((failure as Error).message).toContain(recoveryStore + ":" + refs[0]!)
-        if (phase === "after") {
+        if (phase === "after" || phase === "publication") {
           const parentRefs = await preserveRefs(primaryParent, "wt5")
           expect(parentRefs).toHaveLength(1)
           expect((failure as Error).message).toContain(primaryParent + ":" + parentRefs[0]!)
@@ -460,10 +472,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     "%s preserves %s in the primary submodule store",
     async (operation, shape) => {
       const mainRepo = await buildSubmoduleMain(true)
-      const origin = join(sandbox, "origin.git")
-      await $`git init --bare -q -b main ${origin}`.quiet()
-      await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-      await $`git -C ${mainRepo} push -q origin main`.quiet()
       const originalCwd = process.cwd()
       const slot = "wt5"
       const worktreePath = join(sandbox, "main-wt5")
@@ -493,12 +501,20 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
         expect(refs).toHaveLength(1)
         const ref = refs[0]!
         expect(await $`git -C ${primary} show ${ref + ":file.txt"}`.text()).toBe(bytes)
+        const destination = (await $`git -C ${primary} remote get-url origin`.text()).trim()
+        expect((await $`git -C ${destination} rev-parse ${ref}`.text()).trim()).toBe(
+          (await $`git -C ${primary} rev-parse ${ref}`.text()).trim(),
+        )
+        expect(await $`git -C ${destination} show ${ref + ":file.txt"}`.text()).toBe(bytes)
         if (privateTip !== undefined) {
           expect((await $`git -C ${primary} cat-file -t ${privateTip}`.text()).trim()).toBe("commit")
           await $`git -C ${primary} merge-base --is-ancestor ${privateTip} ${ref}`.quiet()
         }
         const rootRefs = await preserveRefs(mainRepo, slot)
         expect(rootRefs).toHaveLength(1)
+        expect((await $`git -C ${join(sandbox, "origin.git")} rev-parse ${rootRefs[0]!}`.text()).trim()).toBe(
+          (await $`git -C ${mainRepo} rev-parse ${rootRefs[0]!}`.text()).trim(),
+        )
         const childPrimary = join(mainRepo, "vendor/sub")
         const childRefs = await preserveRefs(childPrimary, slot)
         expect(childRefs).toHaveLength(1)
@@ -833,9 +849,11 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       expect(await $`git -C ${mainRepo} worktree list --porcelain`.text()).toBe(registration)
       await removeWorktree(destination, { force: true, deleteBranch: true, preserveLabel: "wt5-generated-output" })
       expect(existsSync(destination)).toBe(false)
-      expect(await $`git -C ${mainRepo} show refs/heads/wip/wt5-generated-output:README.md`.text()).toBe(
-        "tracked dirt to preserve\n",
-      )
+      const saved = (
+        await $`git -C ${mainRepo} for-each-ref --format=${"%(refname)"} ${"refs/archive/*/worktree/wt5-generated-output-*"}`.text()
+      ).trim()
+      expect(saved).toMatch(/^refs\/archive\//u)
+      expect(await $`git -C ${mainRepo} show ${saved + ":README.md"}`.text()).toBe("tracked dirt to preserve\n")
     } finally {
       process.chdir(origCwd)
     }
@@ -847,10 +865,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     "%s refuses an uninitialized primary child before mutation",
     async (operation) => {
       const mainRepo = await buildSubmoduleMain()
-      const origin = join(sandbox, "origin.git")
-      await $`git init --bare -q -b main ${origin}`.quiet()
-      await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-      await $`git -C ${mainRepo} push -q origin main`.quiet()
       const originalCwd = process.cwd()
       const worktreePath = join(sandbox, "main-wt5")
       const source = join(worktreePath, "vendor/sub")
@@ -886,10 +900,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
    * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
   test("29392: a child clean on its recorded pin with no primary store is skipped and named; the root dirt is still preserved", async () => {
     const mainRepo = await buildSubmoduleMain()
-    const origin = join(sandbox, "origin.git")
-    await $`git init --bare -q -b main ${origin}`.quiet()
-    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-    await $`git -C ${mainRepo} push -q origin main`.quiet()
     const originalCwd = process.cwd()
     const worktreePath = join(sandbox, "main-wt5")
     const child = join(worktreePath, "vendor/sub")
@@ -919,10 +929,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
    * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
   test("29392: a child off its recorded pin with no primary store still refuses by name", async () => {
     const mainRepo = await buildSubmoduleMain()
-    const origin = join(sandbox, "origin.git")
-    await $`git init --bare -q -b main ${origin}`.quiet()
-    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-    await $`git -C ${mainRepo} push -q origin main`.quiet()
     const originalCwd = process.cwd()
     const worktreePath = join(sandbox, "main-wt5")
     const child = join(worktreePath, "vendor/sub")
@@ -948,10 +954,6 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
    * @level l2 @consumer #29392 yrd env close --preserve @testonly none */
   test("29392: a storeless child clean on its pin with a local branch carrying a commit still refuses by name", async () => {
     const mainRepo = await buildSubmoduleMain()
-    const origin = join(sandbox, "origin.git")
-    await $`git init --bare -q -b main ${origin}`.quiet()
-    await $`git -C ${mainRepo} remote add origin ${origin}`.quiet()
-    await $`git -C ${mainRepo} push -q origin main`.quiet()
     const originalCwd = process.cwd()
     const worktreePath = join(sandbox, "main-wt5")
     const child = join(worktreePath, "vendor/sub")
@@ -1030,16 +1032,32 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       writeFileSync(join(worktreePath, "README.md"), "main\nworking-B\n")
       const workingBlob = (await $`cd ${worktreePath} && git hash-object README.md`.text()).trim()
       expect(stagedBlob).not.toBe(workingBlob)
+      writeFileSync(join(worktreePath, "untracked.txt"), "untracked-C\n")
+      const legacyTip = (await $`git -C ${mainRepo} rev-parse HEAD`.text()).trim()
+      await $`git -C ${mainRepo} update-ref refs/heads/wip/legacy-save ${legacyTip}`.quiet()
 
       // Force-remove must preserve and continue; the worktree and its index are gone afterwards.
       await removeWorktree(slot, { force: true })
       expect(existsSync(worktreePath)).toBe(false)
+      expect((await $`git -C ${mainRepo} rev-parse refs/heads/wip/legacy-save`.text()).trim()).toBe(legacyTip)
 
       // One preserve ref; the working-tree version is its tree, as before.
-      const refs = await preserveRefs(mainRepo, slot)
+      const refs = (await $`git -C ${mainRepo} for-each-ref --format=${"%(refname)"} refs/archive/`.text())
+        .trim()
+        .split("\n")
+        .filter(Boolean)
       expect(refs.length).toBe(1)
       const ref = refs[0]!
+      expect(ref).toMatch(/^refs\/archive\/\d{4}-\d{2}-\d{2}\/worktree\/wt6-preserve-.*-[0-9a-f]{40}$/u)
       expect(await $`cd ${mainRepo} && git show ${ref}:README.md`.text()).toBe("main\nworking-B\n")
+      expect(await $`git -C ${mainRepo} show ${ref + ":untracked.txt"}`.text()).toBe("untracked-C\n")
+      const remote = join(sandbox, "origin.git")
+      expect((await $`git -C ${remote} rev-parse ${ref}`.text()).trim()).toBe(
+        (await $`git -C ${mainRepo} rev-parse ${ref}`.text()).trim(),
+      )
+      expect(await $`git -C ${remote} show ${ref + ":README.md"}`.text()).toBe("main\nworking-B\n")
+      expect(await $`git -C ${remote} show ${ref + "^2:README.md"}`.text()).toBe("main\nstaged-A\n")
+      expect(await $`git -C ${remote} show ${ref + ":untracked.txt"}`.text()).toBe("untracked-C\n")
 
       // BOTH versions are reachable from the durable ref: the staged blob too, not only the working-tree blob.
       const reachable = (await $`cd ${mainRepo} && git rev-list --objects ${ref}`.text())
@@ -1424,7 +1442,7 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       expect(existsSync(worktreePath)).toBe(false)
 
       const refs = await preserveRefs(mainRepo, slot)
-      expect(refs).toEqual([expect.stringMatching(/^refs\/heads\/wip\/wt5-preserve-/)])
+      expect(refs).toEqual([expect.stringMatching(/^refs\/archive\/\d{4}-\d{2}-\d{2}\/worktree\/wt5-preserve-/)])
       const scratch = await $`cd ${mainRepo} && git show ${refs[0]!}:scratch.txt`.text()
       expect(scratch).toBe("absolute-path-precious\n")
       expect(refs[0]!.includes("//")).toBe(false)
