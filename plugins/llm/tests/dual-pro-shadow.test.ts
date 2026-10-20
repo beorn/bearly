@@ -690,7 +690,8 @@ describe("config + env overrides + persistence", () => {
 import { vi as vit } from "vitest"
 const generateTextMock3 = vit.fn()
 const queryBackgroundMock3 = vit.fn()
-vit.mock("ai", () => ({
+vit.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
   generateText: generateTextMock3,
   streamText: vit.fn(),
 }))

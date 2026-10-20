@@ -158,12 +158,16 @@ One usage/cost contract for every consumer of this plugin (the `llm` CLI, the
   `reasoning` (informational — a subset of `output` on every provider that
   reports it; never priced separately). The map is the input to `resolveCost`:
   `input` is always non-cached input, and the cache classes are disjoint.
-- **Cost precedence: provider-reported > computed > unknown.**
-  `resolveCost()` returns `{ usd, source, breakdown }`. A provider-reported
-  figure (including a genuine $0) always wins; computed costs require a price
-  in the map; anything else is `source: "unknown"` and MUST render as the
-  unknown label ("—") — never a synthetic `$0`; check `source` before
-  formatting `usd`.
+- **Two independent amounts.** `resolveCost()` returns `charged` and
+  `listEquivalent`, each containing either `usd` or an explicit `reason`.
+  A stated charge, including zero, never replaces the token-based estimate.
+  Unknown usage or prices remain unknown. Arithmetic keeps full precision;
+  rounding happens only when formatting.
+- **The estimate names its basis.** `listEquivalentBasis` retains each
+  actual matched model, rate source and recorded date. Missing dates or model
+  identities remain unrecorded. JSON uses `cost_usd` or `cost_usd_reason`,
+  `list_equivalent_usd` or `list_equivalent_reason`, and
+  `list_equivalent_basis`.
 - **Cache classes are priced at their own rates** (`cache_read` /
   `cache_write` per-M rates from the price map); a missing cache rate falls
   back to the input rate (LiteLLM's convention). Cache reads never count
@@ -175,9 +179,12 @@ One usage/cost contract for every consumer of this plugin (the `llm` CLI, the
   persists per-model rates (including cache classes) to the pricing cache.
   Skill prose uses qualitative tiers (cheap/moderate/expensive), never
   dollar literals.
-- `estimateCost(model, in, out)` remains as a numeric legacy shim over
-  `resolveCost` (unknown → 0 for numeric callers); display paths use
-  `resolveCostForModel`.
+- **Every invoked call counts.** `resolveResponseCost()` prices retained
+  physical `calls`, including failed SDK and context retries. A missing
+  constituent makes that column's total unknown; bases and original usage
+  remain available. Judges, synthesis and abandoned race calls follow the
+  same rule through `aggregateCosts()`. Subscription routes do not state an
+  API-key charge, and cache replay does not restate the original bill.
 
 ## --json envelope
 
