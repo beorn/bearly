@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { resolveCost, resolveSubscriptionCost, averageCost, type ModelRates } from "../src/lib/cost"
+import { resolveCost, resolveSubscriptionCost, averageCost, aggregateCosts, type ModelRates } from "../src/lib/cost"
 import { parseLiteLLMMap, matchLiteLLMEntry } from "../src/lib/litellm"
 
 const RATES: ModelRates = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
@@ -19,6 +19,9 @@ it("averages independent known columns without rounding, preserving missing fact
   expect(average.listEquivalentBasis).toEqual(total.listEquivalentBasis)
   const missing = { ...total, charged: { reason: "one call has no bill" } }
   expect(averageCost(missing, 2).charged).toEqual(missing.charged)
+  expect(aggregateCosts([total, missing], "evaluation runs").charged).toEqual({
+    reason: "charged unavailable for 1 of 2 evaluation runs",
+  })
   expect(averageCost(total, 0).charged).toEqual({ reason: "no observations to average" })
 })
 

@@ -116,11 +116,14 @@ export function averageCost(total: ResolvedCost, observations: number): Resolved
 }
 
 /** Sum every invoked call independently in each column; absent facts are never free. */
-export function aggregateCosts(costs: readonly ResolvedCost[]): ResolvedCost {
+export function aggregateCosts(
+  costs: readonly ResolvedCost[],
+  unit: "invoked calls" | "evaluation runs" = "invoked calls",
+): ResolvedCost {
   const total = (column: "charged" | "listEquivalent"): CostAmount => {
     const unknown = costs.filter((cost) => "reason" in cost[column])
     if (unknown.length) {
-      return { reason: `${column} unavailable for ${unknown.length} of ${costs.length} invoked calls` }
+      return { reason: `${column} unavailable for ${unknown.length} of ${costs.length} ${unit}` }
     }
     let usd = 0
     for (const cost of costs) {
