@@ -30,7 +30,7 @@ export async function runDeep(options: {
   dryRun: boolean
 }): Promise<void> {
   const { topic, modelOverride, streamToken, outputFile, sessionTag, skipRecover, skipConfirm, dryRun } = options
-  const { finishResponse, outputTokenStop } = await import("../lib/format")
+  const { finishResponse, outputTokenStop, estimateFleetCost } = await import("../lib/format")
 
   const context = await options.buildContext(topic)
   const shouldContinue = await checkAndRecoverPartials(skipRecover, skipConfirm)
@@ -62,13 +62,12 @@ export async function runDeep(options: {
   if (!deepModel.isDeepResearch && deepModel.costTier === "very-high") {
     console.error(`⚠️  ${deepModel.displayName} is not a dedicated deep research model — may take 10-15 minutes`)
   }
-  // 24577: ONE value, read by both the report and the gate. This printed a
-  // tier-aware estimate and then asked the user to consent to a DIFFERENT,
-  // hardcoded one — for a very-high model, ~$5-15 on screen and ~$2-5 in the
-  // prompt, seconds apart, with the consent attached to the number that had
-  // ignored the model. Keeping the gate's literal in sync by hand is the
-  // arrangement that failed, so the gate now reads what was computed.
-  const costEstimate = deepModel.costTier === "very-high" ? "~$5-15" : "~$2-5"
+  // The displayed forecast and consent share the same amounts and assumptions.
+  const costEstimate = estimateFleetCost(
+    [deepModel],
+    Math.max(200, Math.ceil((topic.length + (context?.length ?? 0)) / 4)),
+    options.maxOutputTokens ?? 1_000,
+  ).text
   const consentPrompt = `⚠️  This uses deep research models (${costEstimate}). Proceed? [Y/n] `
   console.error(`Estimated cost: ${costEstimate}\n`)
   if (context) {

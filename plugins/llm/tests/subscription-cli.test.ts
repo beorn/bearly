@@ -172,6 +172,37 @@ function modelOf(id: string): Model {
 }
 
 describe("route table", () => {
+  it("Pro subscription dry-run keeps forecast charge unknown", async () => {
+    writeBin("codex", "exit 0")
+    resetSubscriptionCliProbe()
+    const output: string[] = []
+    const stderr = vi.spyOn(console, "error").mockImplementation((...parts) => {
+      output.push(parts.join(" "))
+    })
+    try {
+      const { runProDual } = await import("../src/cmd/pro")
+      await runProDual({
+        question: "forecast fixture",
+        modelOverride: modelOf("gpt-5.4"),
+        imagePath: undefined,
+        streamToken: vi.fn(),
+        buildContext: vi.fn(),
+        outputFile: join(fakeDir, "never-written.txt"),
+        sessionTag: "test",
+        skipConfirm: true,
+        dryRun: true,
+      })
+      const forecast = output.find((line) => line.includes("Estimated cost:"))!
+      expect(forecast).toContain("charged unknown (forecast; no call dispatched)")
+      expect(forecast).toContain("list-equivalent unknown")
+      expect(forecast).toContain("subscription served model not yet reported")
+      expect(output.join("\n")).not.toContain("~$0")
+      expect(existsSync(join(fakeDir, "never-written.txt"))).toBe(false)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
   it("maps openai→codex and google→agy, and nothing else", () => {
     expect(subscriptionCliFor("openai")).toBe("codex")
     expect(subscriptionCliFor("google")).toBe("agy")

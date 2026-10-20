@@ -21,7 +21,7 @@ export async function runDebate(options: {
   dryRun: boolean
 }): Promise<void> {
   const { question, outputFile, sessionTag, skipRecover, skipConfirm, dryRun } = options
-  const { finalizeOutput } = await import("../lib/format")
+  const { finalizeOutput, estimateFleetCost } = await import("../lib/format")
 
   const contextDebate = await options.buildContext(question)
   const enrichedQuestion = contextDebate ? `${contextDebate}\n\n---\n\n${question}` : question
@@ -46,7 +46,9 @@ export async function runDebate(options: {
 
   console.error(`Multi-model debate: ${question}`)
   console.error(`Models: ${debateModels.map((m) => m.displayName).join(", ")}`)
-  console.error(`Estimated cost: ~$1-3\n`)
+  const costEstimate = `${estimateFleetCost(debateModels, Math.max(200, Math.ceil(enrichedQuestion.length / 4)), 1_000).text}; initial opinions only, synthesis excluded (reply lengths unknown)`
+  const consentPrompt = `⚠️  This queries multiple models (${costEstimate}). Proceed? [Y/n] `
+  console.error(`Estimated cost: ${costEstimate}\n`)
   if (debateWarning) console.error(`⚠️  ${debateWarning}\n`)
   if (contextDebate) {
     console.error(`📎 Context provided (${contextDebate.length} chars)\n`)
@@ -60,10 +62,11 @@ export async function runDebate(options: {
     if (contextDebate) {
       console.error(`   Context: ${contextDebate.slice(0, 100)}...`)
     }
+    console.error(`   Would ask: ${consentPrompt.trim()}`)
     process.exit(0)
   }
 
-  await confirmOrExit("⚠️  This queries multiple models (~$1-3). Proceed? [Y/n] ", skipConfirm)
+  await confirmOrExit(consentPrompt, skipConfirm)
 
   // SIGINT/SIGTERM aborts all three parallel queryModel calls inside
   // consensus(). A $1-3 multi-model run that the user wants to kill should

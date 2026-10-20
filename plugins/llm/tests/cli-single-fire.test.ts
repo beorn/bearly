@@ -302,6 +302,7 @@ describe("cli-single-fire", () => {
     { label: "explicit ask", mode: ["--ask"] },
     { label: "quick", mode: ["quick"] },
     { label: "opinion", mode: ["opinion"] },
+    { label: "explicit Pro", mode: ["pro"] },
   ])(
     "$label --dry-run previews without provider calls",
     async ({ mode }) => {
@@ -320,6 +321,13 @@ describe("cli-single-fire", () => {
       expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
       expect(env.stderr.join("\n")).toMatch(/Dry run.*would query/s)
       expect(env.stderr.join("\n")).toContain("google/gemini-2.5-pro")
+      if (mode[0] === "pro") {
+        const forecast = env.stderr.find((line) => line.includes("Estimated cost:"))!
+        expect(forecast).toContain("charged unknown (forecast; no call dispatched)")
+        expect(forecast).toContain("list-equivalent $")
+        expect(forecast).toMatch(/date .+; model google\/gemini-2\.5-pro/)
+        expect(forecast).toContain("assumed")
+      }
     },
     10_000,
   )
@@ -399,5 +407,8 @@ describe("cli-single-fire", () => {
     expect(stderr).toMatch(/Kimi K2\.6|moonshotai\/kimi-k2\.6/)
     expect(stderr).toMatch(/Config/)
     expect(stderr).toMatch(/Estimated cost/)
+    expect(stderr).toContain("charged unknown (forecast; no call dispatched)")
+    expect(stderr).toContain("assumed")
+    expect(stderr).not.toContain("~$0 subscription")
   }, 10_000)
 })

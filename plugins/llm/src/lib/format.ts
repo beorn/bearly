@@ -10,8 +10,9 @@ import { deniedProviders } from "./denied-providers"
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { formatCost, type ServedBy, type ModelResponse } from "./types"
-import { resolveResponseCost } from "./pricing.ts"
+import { formatCost, type Model, type ServedBy, type ModelResponse } from "./types"
+import { resolveResponseCost, resolveCostForModel } from "./pricing.ts"
+import { resolveSubscriptionRoute } from "./subscription-cli"
 import { aggregateCosts, serializeCost, deserializeCost, type CostFields, type ResolvedCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
@@ -29,6 +30,36 @@ export function formatCostColumns(value: ResolvedCost | CostFields): string {
       )
       .join(" | ") || "unrecorded"
   return `charged ${amount(cost.charged)}; list-equivalent ${amount(cost.listEquivalent)} [${basis}]`
+}
+
+/** Forecast selected models using explicit assumptions, never a stated bill. */
+export function estimateFleetCost(
+  models: readonly Model[],
+  inputTokens: number,
+  outputTokens: number,
+  hasImage = false,
+): { text: string } {
+  const priced = models.map((model) => {
+    const subscription = resolveSubscriptionRoute(model, { hasImage }) !== undefined
+    return {
+      model,
+      subscription,
+      // A subscription may serve another model. Until its receipt names that
+      // model, the requested SKU's API rate is not its list-equivalent basis.
+      cost: resolveCostForModel(subscription ? undefined : model, { input: inputTokens, output: outputTokens }),
+    }
+  })
+  const forecast = aggregateCosts(priced.map(({ cost }) => cost))
+  forecast.charged = { reason: "forecast; no call dispatched" }
+  const unpriced = priced
+    .filter(({ cost }) => "reason" in cost.listEquivalent)
+    .map(({ model, subscription }) =>
+      subscription ? `${model.displayName} (subscription served model not yet reported)` : model.displayName,
+    )
+  if (unpriced.length) forecast.listEquivalent = { reason: `rates unavailable for ${unpriced.join(", ")}` }
+  return {
+    text: `${formatCostColumns(forecast)}; assumed ${inputTokens} input / ${outputTokens} output tokens per model`,
+  }
 }
 
 /**

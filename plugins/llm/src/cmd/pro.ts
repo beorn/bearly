@@ -46,9 +46,9 @@ import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "..
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
 import { outputTokenStop, type ProCompletion } from "../lib/format"
-import { formatCostColumns } from "../lib/format"
+import { formatCostColumns, estimateFleetCost } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
-import { resolveResponseCost, resolveCostForModel } from "../lib/pricing"
+import { resolveResponseCost } from "../lib/pricing"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -62,29 +62,6 @@ function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "f
     return "incomplete"
   }
   return "completed"
-}
-
-/**
- * 24533 defect 4. The estimate was a hardcoded tier band — `~$5-15` whenever
- * fewer than two Pro-tier legs were selected, INCLUDING when none were. @chief
- * measured a 2-leg run at $0.0015 against that printed $5-15: four orders of
- * magnitude, on the very line that gates the spend confirmation. An estimate
- * nobody can trust is one nobody reads, including when it matters.
- *
- * It is now derived from the registry prices of the models actually selected. A
- * model the registry cannot price is NAMED rather than folded into an invented
- * number, because "we do not know" and "about five dollars" are different facts.
- */
-function estimateFleetCost(models: readonly Model[], inputTokens: number, outputTokens: number): { text: string } {
-  const priced = models.map((model) => ({
-    model,
-    cost: resolveCostForModel(model, { input: inputTokens, output: outputTokens }),
-  }))
-  const forecast = aggregateCosts(priced.map(({ cost }) => cost))
-  forecast.charged = { reason: "forecast; no call dispatched" }
-  const unpriced = priced.filter(({ cost }) => "reason" in cost.listEquivalent).map(({ model }) => model.displayName)
-  if (unpriced.length) forecast.listEquivalent = { reason: `rates unavailable for ${unpriced.join(", ")}` }
-  return { text: formatCostColumns(forecast) }
 }
 
 export async function runProDual(options: {
@@ -131,12 +108,12 @@ export async function runProDual(options: {
   if (modelOverride) {
     assertDispatchableModelIds([modelOverride.modelId])
     if (dryRun) {
-      const onSubscription = resolveSubscriptionRoute(modelOverride, {}) !== undefined
-      const estimate = onSubscription
-        ? "~$0 (subscription CLI)"
-        : modelOverride.costTier === "very-high"
-          ? "~$5-15"
-          : "registry-priced single-model call"
+      const estimate = estimateFleetCost(
+        [modelOverride],
+        Math.max(200, Math.ceil(question.length / 4)),
+        options.maxOutputTokens ?? 1_000,
+        imagePath !== undefined,
+      ).text
       console.error("[pro] Dry run - would query one model:")
       console.error(`  • Model: ${modelOverride.displayName} (${modelOverride.modelId})`)
       console.error("  • Config: explicit --model override")
@@ -271,7 +248,8 @@ export async function runProDual(options: {
     const dryCost = estimateFleetCost(
       knownLegs.map((l) => l.model),
       Math.max(200, Math.ceil(question.length / 4)),
-      1_000,
+      options.maxOutputTokens ?? 1_000,
+      imagePath !== undefined,
     ).text
     console.error("[dual-pro] Dry run - would query these models:")
     for (const leg of dryLegs) {
@@ -281,9 +259,9 @@ export async function runProDual(options: {
         continue
       }
       const availability = providerRouteLabel(leg.model.provider)
-      const subscription = resolveSubscriptionRoute(leg.model, {}) !== undefined
+      const subscription = resolveSubscriptionRoute(leg.model, { hasImage: imagePath !== undefined }) !== undefined
       console.error(
-        `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability}${subscription ? "; ~$0 subscription" : ""})`,
+        `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability}${subscription ? "; subscription route" : ""})`,
       )
     }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
@@ -300,7 +278,7 @@ export async function runProDual(options: {
         const availability = providerRouteLabel(judgeModel.provider)
         const subscription = resolveSubscriptionRoute(judgeModel, {}) !== undefined
         console.error(
-          `  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability}${subscription ? "; ~$0 subscription" : ""})`,
+          `  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability}${subscription ? "; subscription route" : ""})`,
         )
       } else {
         console.error(`  • Judge: unknown model "${cfg.judge}"`)
@@ -405,11 +383,12 @@ export async function runProDual(options: {
   // Cost estimate, derived from the models this call actually selected.
   const proLegCount = legSlots.filter((s) => s.model.costTier === "very-high").length
   const estInputTokens = Math.max(200, Math.ceil((question.length + (context?.length ?? 0)) / 4))
-  const estOutputTokens = 1_000
+  const estOutputTokens = options.maxOutputTokens ?? 1_000
   const fleetEstimate = estimateFleetCost(
     legSlots.map((s) => s.model),
     estInputTokens,
     estOutputTokens,
+    imagePath !== undefined,
   )
   const totalEstStr = fleetEstimate.text
   console.error(

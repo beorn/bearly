@@ -15,7 +15,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { runDeep } from "../src/cmd/deep"
-import type { Model } from "../src/lib/types"
+import { runDebate } from "../src/cmd/debate"
+import { getModel, type Model } from "../src/lib/types"
 
 function modelAt(costTier: Model["costTier"]): Model {
   return {
@@ -48,7 +49,7 @@ async function deepDryRun(costTier: Model["costTier"]): Promise<string[]> {
   await runDeep({
     buildContext: async () => undefined,
     dryRun: true,
-    modelOverride: modelAt(costTier),
+    modelOverride: costTier === "very-high" ? getModel("gpt-5.4-pro")! : modelAt(costTier),
     outputFile: "/dev/null",
     sessionTag: "test",
     skipConfirm: true,
@@ -58,8 +59,6 @@ async function deepDryRun(costTier: Model["costTier"]): Promise<string[]> {
   })
   return errors
 }
-
-const PRICE = /(~\$[0-9]+-[0-9]+)/u
 
 describe("the /deep consent gate states the price the command computed (24577)", () => {
   it.each(["very-high", "high"] as const)(
@@ -72,11 +71,16 @@ describe("the /deep consent gate states the price the command computed (24577)",
       expect(printed, `no estimate line in:\n${out.join("\n")}`).toBeDefined()
       expect(wouldAsk, `no gate line in:\n${out.join("\n")}`).toBeDefined()
 
-      const printedPrice = PRICE.exec(String(printed))?.[1]
-      const gatePrice = PRICE.exec(String(wouldAsk))?.[1]
-      expect(printedPrice).toBeDefined()
-      expect(gatePrice).toBeDefined()
-      expect(gatePrice, "the consent must not name a price the command already contradicted").toBe(printedPrice)
+      const forecast = printed!.replace("Estimated cost: ", "").trim()
+      expect(forecast).toContain("charged unknown (forecast; no call dispatched)")
+      expect(forecast).toContain("list-equivalent")
+      expect(forecast).toContain("assumed")
+      if (costTier === "very-high") {
+        expect(forecast).toContain("list-equivalent $")
+        expect(forecast).toMatch(/date .+; model gpt-5\.4-pro/)
+      } else expect(forecast).toContain("list-equivalent unknown (rates unavailable for Fixture high)")
+      expect(wouldAsk).toContain(forecast)
+      expect(forecast).not.toMatch(/~\$\d+-\d+/)
     },
   )
 
@@ -86,5 +90,40 @@ describe("the /deep consent gate states the price the command computed (24577)",
     // never reached the wrong line.
     const out = await deepDryRun("very-high")
     expect(out.some((line) => line.includes("Would ask:") && line.includes("Proceed?"))).toBe(true)
+  })
+
+  it("debate names the same independent forecast and synthesis limit at consent", async () => {
+    vi.stubEnv("LLM_NO_ENV_AUTOLOAD", "1")
+    vi.stubEnv("OPENAI_API_KEY", "sk-offline-test")
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-offline-test")
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "offline-test")
+    vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("dry-run-exit")
+    }) as never)
+    try {
+      await expect(
+        runDebate({
+          question: "forecast fixture",
+          buildContext: async () => "context fixture",
+          outputFile: "/dev/null",
+          sessionTag: "test",
+          skipRecover: true,
+          skipConfirm: true,
+          dryRun: true,
+        }),
+      ).rejects.toThrow("dry-run-exit")
+      const forecast = errors
+        .find((line) => line.startsWith("Estimated cost:"))!
+        .replace("Estimated cost: ", "")
+        .trim()
+      expect(forecast).toContain("charged unknown (forecast; no call dispatched)")
+      expect(forecast).toContain("list-equivalent $")
+      expect(forecast).toContain("assumed")
+      expect(forecast).toContain("synthesis excluded")
+      expect(errors.find((line) => line.includes("Would ask:"))).toContain(forecast)
+    } finally {
+      vi.restoreAllMocks()
+      vi.unstubAllEnvs()
+    }
   })
 })
