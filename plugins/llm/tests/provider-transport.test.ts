@@ -122,6 +122,47 @@ describe("provider transport across AI SDK upgrades", () => {
     const saved = readFileSync(file, "utf8").match(/^<!-- llm-meta: (.+) -->/)
     expect(saved).not.toBeNull()
     expect((JSON.parse(saved![1]!) as Record<string, unknown>).calls).toEqual(response.calls)
+    if (kind === "SDK" && stream) {
+      // The actual ask cache merge must not leave a final-call charge beside an unknown aggregate reason.
+      vi.stubEnv("LLM_NO_CACHE", "0")
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message, type: "invalid_request_error" } }), {
+          status,
+          headers: { "content-type": "application/json", "retry-after-ms": "1" },
+        }),
+      )
+      const { askAndFinish } = await import("../src/cmd/ask")
+      const { readCache } = await import("../src/lib/cache")
+      const options = {
+        question: "cache retry",
+        modelMode: "default" as const,
+        level: "standard" as const,
+        header: (name: string) => name,
+        modelOverride: response.model,
+        imagePath: undefined,
+        streamToken: vi.fn(),
+        buildContext: async () => undefined,
+        outputFile: join(env.tmpDir, "cache-retry.txt"),
+        sessionTag: "cache-retry",
+      }
+      await askAndFinish(options)
+      const entry = readCache<Record<string, unknown>>({
+        model: response.model.modelId,
+        prompt: options.question,
+        route: "key",
+        params: { level: options.level, modelMode: options.modelMode, maxOutputTokens: undefined },
+      })
+      expect(entry, "the actual command must write the expected isolated cache entry").not.toBeNull()
+      expect.soft(entry?.envelope).not.toHaveProperty("cost_usd")
+      expect(entry?.envelope.cost_usd_reason).toEqual(expect.any(String))
+      expect(entry?.envelope.calls).toEqual(response.calls)
+      await askAndFinish(options)
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+      const replay = JSON.parse(env.stdout.at(-1)!) as Record<string, unknown>
+      expect(replay).not.toHaveProperty("cost_usd")
+      expect(replay).not.toHaveProperty("list_equivalent_usd")
+      expect(replay.calls).toEqual(response.calls)
+    }
   })
 
   it("retains the last Ollama receipt when a later stream record is malformed", async () => {

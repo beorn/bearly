@@ -171,7 +171,10 @@ export async function askAndFinish(options: {
     }
     if (cacheable && response.content && !response.error && outputTokenStop(response) === undefined) {
       try {
-        writeCache(cacheKey, { ...response, ...serializeCost(resolveResponseCost(response)) }, response.content)
+        const receipt = { ...response }
+        // The normalized total replaces the final call's stated amount; its raw fact remains in calls/usage.
+        delete receipt.cost_usd
+        writeCache(cacheKey, { ...receipt, ...serializeCost(resolveResponseCost(response)) }, response.content)
       } catch {
         // Cache write failure must not affect the user-visible call result.
       }

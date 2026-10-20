@@ -52,6 +52,7 @@ function mockStreamFailure(error: unknown): void {
         [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
       },
       usage: undefined,
+      finalStep: Promise.resolve({ usage: undefined }),
       finishReason: "error",
       rawFinishReason: "error",
     }
