@@ -16,6 +16,241 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  // 30170: the Interactions API reports optional usage/steps. SDK-only fixtures
+  // cannot detect REST field mismatches or a completed partial with no saved text.
+  it.each([
+    {
+      name: "complete",
+      usage: {
+        total_input_tokens: 20,
+        total_cached_tokens: 0,
+        total_output_tokens: 1000,
+        total_thought_tokens: 500,
+        total_tokens: 1520,
+      },
+      counts: { promptTokens: 20, completionTokens: 1500, totalTokens: 1520 },
+      priced: true,
+    },
+    { name: "raw only", usage: {}, counts: {}, priced: false },
+    {
+      name: "input only",
+      usage: { total_input_tokens: 20, total_cached_tokens: 0 },
+      counts: { promptTokens: 20 },
+      priced: false,
+    },
+    {
+      name: "output only",
+      usage: { total_output_tokens: 1000, total_thought_tokens: 500 },
+      counts: { completionTokens: 1500 },
+      priced: false,
+    },
+    {
+      name: "missing thought count",
+      usage: { total_input_tokens: 20, total_cached_tokens: 0, total_output_tokens: 1000 },
+      counts: { promptTokens: 20 },
+      priced: false,
+    },
+    {
+      name: "missing cache count",
+      usage: { total_input_tokens: 20, total_output_tokens: 1000, total_thought_tokens: 500 },
+      counts: { promptTokens: 20, completionTokens: 1500 },
+      priced: false,
+    },
+    {
+      name: "unsupported tool usage",
+      usage: {
+        total_input_tokens: 20,
+        total_cached_tokens: 0,
+        total_output_tokens: 1000,
+        total_thought_tokens: 500,
+        total_tool_use_tokens: 4,
+      },
+      counts: { promptTokens: 20, completionTokens: 1500 },
+      priced: false,
+    },
+    {
+      name: "unsupported image usage",
+      usage: {
+        total_input_tokens: 20,
+        total_cached_tokens: 0,
+        total_output_tokens: 1000,
+        total_thought_tokens: 500,
+        input_tokens_by_modality: [{ modality: "image", tokens: 4 }],
+      },
+      counts: { promptTokens: 20, completionTokens: 1500 },
+      priced: false,
+    },
+  ])("retains Gemini $name facts through HTTP, saved partial and recovery", async ({ usage, counts, priced }) => {
+    const env = makeTestEnv()
+    vi.resetModules()
+    const raw = { ...usage, cost_usd: 0, invoice: "gemini-original" }
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "gemini_receipt",
+            status: "completed",
+            usage: raw,
+            steps: [
+              { type: "model_output", content: [{ type: "text", text: "draft" }] },
+              { type: "model_output", content: [{ type: "text", text: "final report" }] },
+            ],
+          }),
+        ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
+    const { getModel } = await import("../src/lib/types")
+    const response = await queryGeminiDeepResearch({
+      topic: "probe",
+      model: getModel("deep-research-pro-preview-12-2025")!,
+    })
+    expect(response.error).toBeUndefined()
+    expect(response.content).toBe("final report")
+    expect(response.cost_usd).toBe(0)
+    expect(response.usage?.raw).toEqual(raw)
+    const { classes, raw: _raw, ...actualCounts } = response.usage!
+    expect(actualCounts).toEqual(counts)
+    const { resolveResponseCost } = await import("../src/lib/pricing")
+    const cost = resolveResponseCost(response)
+    expect(cost.charged).toEqual({ usd: 0 })
+    expect(cost.listEquivalent).toHaveProperty(priced ? "usd" : "reason")
+    if (priced) expect(classes).toEqual({ input: 20, cache_read: 0, output: 1500, reasoning: 500 })
+    const { findPartialByResponseId } = await import("../src/lib/persistence")
+    const partial = findPartialByResponseId("gemini_receipt")
+    expect(partial?.metadata.usage).toEqual(response.usage)
+    expect(partial?.metadata.cost_usd).toBe(0)
+    expect(partial?.content.trim()).toBe("final report")
+    const { runRecover } = await import("../src/cmd/recover")
+    await runRecover({ responseId: "gemini_receipt", clean: false, cleanStale: false, includeAll: false })
+    const envelope = JSON.parse(env.stdout.filter((line) => line.trim().startsWith("{")).at(-1)!)
+    expect(envelope).toHaveProperty("usage", response.usage)
+    expect(envelope).toHaveProperty("cost_usd", 0)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  // Terminal provider outcomes and local interruption are different, but neither
+  // may erase the last real receipt or turn poll observations into extra requests.
+  it.each(["failed", "cancelled", "expired", "aborted", "timeout", "http-error"])(
+    "retains the latest Gemini receipt after %s",
+    async (outcome) => {
+      makeTestEnv()
+      vi.resetModules()
+      const controller = new AbortController()
+      const raw = { total_input_tokens: 7, invoice: outcome, cost_usd: 0 }
+      const fetchMock = vi.fn(async () => {
+        if (outcome === "aborted") controller.abort("operator-interrupt")
+        return new Response(
+          JSON.stringify({
+            id: "gemini_poll",
+            status: ["failed", "cancelled", "expired"].includes(outcome) ? outcome : "in_progress",
+            usage: raw,
+            error: outcome === "http-error" ? { message: "upstream failed" } : undefined,
+          }),
+          { status: outcome === "http-error" ? 400 : 200 },
+        )
+      })
+      vi.stubGlobal("fetch", fetchMock)
+      const { pollForGeminiCompletion } = await import("../src/lib/gemini-deep")
+      const result = await pollForGeminiCompletion("gemini_poll", {
+        intervalMs: 0,
+        maxAttempts: 1,
+        abortSignal: controller.signal,
+      })
+      expect(result.status).toBe(outcome === "http-error" ? "error" : outcome)
+      expect(result).toHaveProperty("usage.raw", raw)
+      expect(result).toHaveProperty("cost_usd", 0)
+      expect(result.error).toEqual(expect.any(String))
+      expect(fetchMock).toHaveBeenCalledOnce()
+    },
+  )
+
+  it.each([200, 400])("retains initial Gemini failure facts on HTTP %s without a poll", async (status) => {
+    makeTestEnv()
+    vi.resetModules()
+    const raw = { invoice: "failed-create", cost_usd: 0 }
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "gemini_failed_create",
+            status: "failed",
+            usage: raw,
+            error: { message: "provider stopped" },
+          }),
+          { status },
+        ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
+    const { getModel } = await import("../src/lib/types")
+    const response = await queryGeminiDeepResearch({
+      topic: "probe",
+      model: getModel("deep-research-pro-preview-12-2025")!,
+    })
+    expect(response.error).toContain("provider stopped")
+    expect(response).toHaveProperty("usage.raw", raw)
+    expect(response.cost_usd).toBe(0)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const { findPartialByResponseId } = await import("../src/lib/persistence")
+    const saved = findPartialByResponseId("gemini_failed_create")
+    expect(saved?.metadata.usage?.raw).toEqual(raw)
+    expect(saved?.metadata.cost_usd).toBe(0)
+    expect(saved?.metadata.completedAt).toBeUndefined()
+  })
+
+  it.each(["completed", "failed", "aborted"])(
+    "keeps the latest %s Gemini poll in the actual query and saved receipt",
+    async (outcome) => {
+      makeTestEnv()
+      vi.resetModules()
+      const controller = new AbortController()
+      const raw = { total_input_tokens: 7, invoice: "latest-poll", cost_usd: 0 }
+      const fetchMock = vi.fn(async (_url, init?: RequestInit) => {
+        if (init?.method === "POST")
+          return new Response(
+            JSON.stringify({
+              id: "gemini_lifecycle",
+              status: "in_progress",
+              usage: { cost_usd: 0.25, invoice: "initial-create" },
+            }),
+          )
+        if (outcome === "aborted") controller.abort("operator-interrupt")
+        return new Response(
+          JSON.stringify({
+            id: "gemini_lifecycle",
+            status: outcome === "aborted" ? "in_progress" : outcome,
+            usage: raw,
+            steps: [{ type: "model_output", content: [{ type: "text", text: "latest text" }] }],
+            error: outcome === "failed" ? { message: "provider stopped" } : undefined,
+          }),
+        )
+      })
+      vi.stubGlobal("fetch", fetchMock)
+      const { queryGeminiDeepResearch } = await import("../src/lib/gemini-deep")
+      const { getModel } = await import("../src/lib/types")
+      const response = await queryGeminiDeepResearch({
+        topic: "probe",
+        model: getModel("deep-research-pro-preview-12-2025")!,
+        abortSignal: controller.signal,
+      })
+      expect(response.usage?.raw).toEqual(raw)
+      expect(response.cost_usd).toBe(0)
+      expect(response.content).toBe("latest text")
+      if (outcome === "completed") expect(response.error).toBeUndefined()
+      else expect(response.error).toEqual(expect.any(String))
+      const { findPartialByResponseId } = await import("../src/lib/persistence")
+      const saved = findPartialByResponseId("gemini_lifecycle")
+      expect(saved?.metadata.usage?.raw).toEqual(raw)
+      expect(saved?.metadata.cost_usd).toBe(0)
+      if (outcome === "completed") {
+        expect(saved?.metadata.completedAt).toEqual(expect.any(String))
+        expect(saved?.content.trim()).toBe("latest text")
+      } else expect(saved?.metadata.completedAt).toBeUndefined()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    },
+  )
+
   // 30170: the actual pinned Responses adapter must retain raw stated amounts and disjoint usage.
   // Mocked ai.generateText results cannot expose schema stripping or aggregate-usage raw loss.
   it.each([
