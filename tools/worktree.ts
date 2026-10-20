@@ -2693,17 +2693,25 @@ export async function preserveSlotState(
         await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
         await writeRecoveryRef(repo.primary, refFull, saved, written)
       }
-      const publication = await superPush({
-        repo: repo.primary,
-        remote: "origin",
-        refspecs: [`${saved}:${refFull}`],
-        forceWithLease: [`${refFull}:`],
-        recurseSubmodules: "check",
-      })
-      if (publication.state !== "updated" && publication.state !== "unchanged") {
-        throw new Error(
-          `preserve: archive publication/readback failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
-        )
+      // A clean push acknowledgement is not a separate read of the destination.
+      // Repeating the create-only operation reads identical custody as unchanged;
+      // an unreadable or conflicting destination retains the source.
+      for (const phase of ["publication", "readback"]) {
+        const publication = await superPush({
+          repo: repo.primary,
+          remote: "origin",
+          refspecs: [`${saved}:${refFull}`],
+          forceWithLease: [`${refFull}:`],
+          recurseSubmodules: "check",
+        })
+        if (
+          (publication.state !== "updated" && publication.state !== "unchanged") ||
+          (phase === "readback" && publication.state !== "unchanged")
+        ) {
+          throw new Error(
+            `preserve: archive publication/readback (${phase}) failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
+          )
+        }
       }
       if (repo.path === ".") {
         sha = saved
