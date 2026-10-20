@@ -83,7 +83,7 @@ describe("AI SDK 7 bearly response contract", () => {
     expect(response.reasoning).toBe("kept reasoning")
   })
 
-  it("keeps fixed SDK usage and its cost in the bearly envelope", async () => {
+  it("keeps fixed SDK usage and estimates it without inventing a stated charge", async () => {
     makeTestEnv()
     generateTextMock.mockResolvedValueOnce({
       text: "ok",
@@ -98,8 +98,15 @@ describe("AI SDK 7 bearly response contract", () => {
 
     const { response } = await queryModel({ question: "hi", model })
 
-    expect(response.usage).toEqual({ promptTokens: 100, completionTokens: 50, totalTokens: 150 })
-    expect(totalResponseCost([response])).toBeCloseTo(0.0007)
+    expect(response.usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+      classes: { input: 100, output: 50 },
+    })
+    const cost = totalResponseCost([response])
+    expect(cost.charged).toEqual({ reason: "charged unavailable for 1 of 1 invoked calls" })
+    expect("usd" in cost.listEquivalent && cost.listEquivalent.usd).toBeCloseTo(0.0007)
   })
 
   it("keeps generateText rate-limit headers from finalStep", async () => {
