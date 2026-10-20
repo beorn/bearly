@@ -204,6 +204,8 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     }
   }
   const openai = getClient()
+  let retained: Pick<ModelResponse, "content" | "usage" | "cost_usd" | "responseId"> = { content: "" }
+  let partialPath = ""
 
   try {
     // Non-background path: single synchronous create. Used when caller explicitly
@@ -243,7 +245,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
 
     const responseId = initialResponse.id
     const initialUsage = usageFacts(initialResponse.usage)
-    let partialPath = ""
+    retained = { responseId, content: extractText(initialResponse), ...initialUsage }
 
     if (responseId && !noPersist) {
       partialPath = getPartialPath(responseId)
@@ -303,6 +305,8 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       usage: polled.usage ?? initialUsage.usage,
       cost_usd: polled.cost_usd ?? initialUsage.cost_usd,
     }
+
+    retained = { responseId, content: pollResult.content, usage: pollResult.usage, cost_usd: pollResult.cost_usd }
 
     if (partialPath) updatePartialMetadata(partialPath, pollResult)
 
@@ -364,11 +368,19 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       durationMs: Date.now() - startTime,
     }
   } catch (error) {
-    const errorMessage = formatApiError(error, model)
+    const errorMessage =
+      retained.responseId === undefined
+        ? formatApiError(error, model)
+        : "Response " +
+          retained.responseId +
+          " processing failed" +
+          (partialPath ? " (partial " + partialPath + ")" : "") +
+          ": " +
+          (error instanceof Error ? error.message : String(error))
     log.error?.(`Deep research error: ${errorMessage}`)
     return {
       model,
-      content: "",
+      ...retained,
       durationMs: Date.now() - startTime,
       error: errorMessage,
     }
@@ -415,6 +427,8 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     }
   }
   const openai = getClient()
+  let retained: Pick<ModelResponse, "content" | "usage" | "cost_usd" | "responseId"> = { content: "" }
+  let partialPath = ""
   const topic = options.topic ?? prompt.slice(0, 80)
 
   try {
@@ -432,7 +446,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
 
     const responseId = initialResponse.id
     const initialUsage = usageFacts(initialResponse.usage)
-    let partialPath = ""
+    retained = { responseId, content: extractText(initialResponse), ...initialUsage }
 
     if (responseId && !noPersist) {
       partialPath = getPartialPath(responseId)
@@ -490,6 +504,8 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       usage: polled.usage ?? initialUsage.usage,
       cost_usd: polled.cost_usd ?? initialUsage.cost_usd,
     }
+
+    retained = { responseId, content: pollResult.content, usage: pollResult.usage, cost_usd: pollResult.cost_usd }
 
     if (partialPath) updatePartialMetadata(partialPath, pollResult)
 
@@ -549,11 +565,19 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       error: pollResult.status === "completed" ? undefined : (pollResult.error ?? `incomplete: ${pollResult.status}`),
     }
   } catch (error) {
-    const errorMessage = formatApiError(error, model)
+    const errorMessage =
+      retained.responseId === undefined
+        ? formatApiError(error, model)
+        : "Response " +
+          retained.responseId +
+          " processing failed" +
+          (partialPath ? " (partial " + partialPath + ")" : "") +
+          ": " +
+          (error instanceof Error ? error.message : String(error))
     log.error?.(`Background query error: ${errorMessage}`)
     return {
       model,
-      content: "",
+      ...retained,
       durationMs: Date.now() - startTime,
       error: errorMessage,
     }
