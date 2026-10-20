@@ -38,6 +38,42 @@ vi.mock("../src/lib/openai-deep", () => ({
 }))
 
 describe("recovery routing", () => {
+  it.each(["pending", "stale", "unknown"])(
+    "recover emits a receipt for %s without completing the partial",
+    async (kind) => {
+      const env = makeTestEnv()
+      vi.resetModules()
+      const persistence = await import("../src/lib/persistence")
+      const responseId = `resp_receipt_${kind}`
+      const path = persistence.getPartialPath(responseId)
+      persistence.writePartialHeader(path, {
+        responseId,
+        model: "GPT-5.4 Pro",
+        modelId: "gpt-5.4-pro",
+        topic: "pending receipt",
+        startedAt: new Date(Date.now() - (kind === "stale" ? 31 * 60_000 : 0)).toISOString(),
+      })
+      const usage = { promptTokens: 7, completionTokens: 3, totalTokens: 10, raw: { invoice: "pending-original" } }
+      const status = kind === "unknown" ? "unrecognised" : "queued"
+      const result = { status, content: "", usage, cost_usd: 0 }
+      retrieveOpenAIMock.mockReset().mockResolvedValue(result)
+      pollOpenAIMock.mockReset().mockResolvedValue(result)
+      pollGeminiMock.mockReset()
+      const { setJsonMode } = await import("../src/lib/output-mode")
+      setJsonMode(true)
+      const { runRecover } = await import("../src/cmd/recover")
+      await runRecover({ responseId, clean: false, cleanStale: false, includeAll: false })
+      const lines = env.stdout.filter((line) => line.startsWith("{"))
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({ status: kind, pollStatus: status, responseId, cost_usd: 0, usage })
+      const saved = persistence.findPartialByResponseId(responseId)
+      expect(saved?.metadata.usage).toEqual(usage)
+      expect(saved?.metadata.cost_usd).toBe(0)
+      expect(saved?.metadata.completedAt).toBeUndefined()
+      expect(pollGeminiMock).not.toHaveBeenCalled()
+    },
+  )
+
   it("Gemini partial routes to pollForGeminiCompletion (not retrieveResponse)", async () => {
     makeTestEnv()
 
