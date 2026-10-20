@@ -5,8 +5,8 @@
  */
 
 import { queryModel } from "./research"
-import { getLanguageModel, isProviderAvailable } from "./providers"
-import { generateText } from "ai"
+import { isProviderAvailable } from "./providers"
+import { serializeCost } from "./cost"
 import type { Model, ModelResponse, ConsensusResult, ThinkingLevel } from "./types"
 import { getModelsForLevel, getModel, MODELS } from "./types"
 
@@ -61,39 +61,41 @@ export async function consensus(options: ConsensusOptions): Promise<ConsensusRes
     }),
   )
 
-  // Cost aggregation matches format.totalResponseCost — single source of
-  // truth for "sum usage × per-model rates" across callers (dual-pro report,
-  // debate report, consensus). Previously this file recomputed inline; now
-  // both paths route through the same helper.
-  const { totalResponseCost } = await import("./format")
-  const totalCost = totalResponseCost(responses)
-
   // Build base result
   const result: ConsensusResult = {
     level,
     question,
     responses,
-    totalCost,
+    list_equivalent_basis: [],
     totalDurationMs: Date.now() - startTime,
   }
 
   // Synthesize if requested and we have multiple responses
   if (synthesize && responses.length > 1) {
-    const synthesis = await synthesizeResponses(question, responses)
+    const synthesis = await synthesizeResponses(question, responses, abortSignal)
     result.synthesis = synthesis.synthesis
     result.agreements = synthesis.agreements
     result.disagreements = synthesis.disagreements
     result.confidence = synthesis.confidence
+    result.synthesisResponse = synthesis.response
   } else if (responses.length === 1) {
     // Single response - just use it as synthesis
     result.synthesis = responses[0]!.content
     result.confidence = 1
   }
 
+  // Synthesis is a real invoked call even if its answer cannot be parsed.
+  const { totalResponseCost } = await import("./format")
+  Object.assign(
+    result,
+    serializeCost(totalResponseCost([...responses, ...(result.synthesisResponse ? [result.synthesisResponse] : [])])),
+  )
+  result.totalDurationMs = Date.now() - startTime
   return result
 }
 
 interface SynthesisResult {
+  response?: ModelResponse
   synthesis: string
   agreements: string[]
   disagreements: string[]
@@ -103,7 +105,11 @@ interface SynthesisResult {
 /**
  * Synthesize multiple model responses into a unified answer
  */
-async function synthesizeResponses(question: string, responses: ModelResponse[]): Promise<SynthesisResult> {
+async function synthesizeResponses(
+  question: string,
+  responses: ModelResponse[],
+  abortSignal?: AbortSignal,
+): Promise<SynthesisResult> {
   // Format responses for the synthesis prompt
   const formattedResponses = responses
     .filter((r) => !r.error && r.content)
@@ -153,14 +159,24 @@ Format your response as JSON:
     }
   }
 
+  const synthesisStarted = Date.now()
+  let response: ModelResponse
   try {
-    const result = await generateText({
-      model: getLanguageModel(synthesisModel),
-      messages: [{ role: "user", content: synthesisPrompt }],
-    })
+    const result = await queryModel({ question: synthesisPrompt, model: synthesisModel, abortSignal })
+    response = result.response
+  } catch (error) {
+    // Retain an attempted call with unknown accounting instead of making fallback free.
+    response = {
+      model: synthesisModel,
+      content: "",
+      durationMs: Date.now() - synthesisStarted,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
 
+  try {
     // Parse JSON from response
-    const jsonMatch = result.text.match(/\{[\s\S]*\}/)
+    const jsonMatch = response.error ? null : response.content.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]) as {
         synthesis?: string
@@ -169,6 +185,7 @@ Format your response as JSON:
         confidence?: number
       }
       return {
+        response,
         synthesis: parsed.synthesis || "",
         agreements: parsed.agreements || [],
         disagreements: parsed.disagreements || [],
@@ -180,6 +197,7 @@ Format your response as JSON:
   }
 
   return {
+    response,
     synthesis: responses.map((r) => r.content).join("\n\n---\n\n"),
     agreements: [],
     disagreements: [],

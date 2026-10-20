@@ -324,6 +324,60 @@ describe("--json mode end-to-end", () => {
     expect(streamTextMock).toHaveBeenCalledOnce()
   }, 10_000)
 
+  // @failure Debate loses the synthesis call's charge, including an unparseable billed answer.
+  // @level l3 @consumer Actual debate CLI envelope; single-model cases never invoke synthesis.
+  it.each([true, false])(
+    "debate accounts for all calls when synthesis charge is known=%s",
+    async (known) => {
+      const env = makeTestEnv()
+      vi.stubEnv("BEARLY_LLM_OUTPUT_DIR", env.tmpDir)
+      resetMocks()
+      generateTextMock.mockImplementation(async ({ messages }: { messages: { content: unknown }[] }) => {
+        const synthesis = messages.some(
+          (message) => typeof message.content === "string" && message.content.includes("You are synthesizing"),
+        )
+        return {
+          text:
+            synthesis && known
+              ? JSON.stringify({ synthesis: "unified", agreements: [], disagreements: [], confidence: 85 })
+              : "opinion",
+          finishReason: "stop",
+          finalStep: { reasoningText: undefined },
+          usage: {
+            inputTokens: 10,
+            outputTokens: 5,
+            raw: synthesis ? (known ? { cost_usd: 0.5 } : {}) : { cost_usd: 0.125 },
+          },
+        }
+      })
+      vi.resetModules()
+      process.argv = ["node", "cli.ts", "--json", "--full-paths", "debate", "-y", "test"]
+      const mod = await import("../src/cli")
+      await mod.main()
+
+      const lines = env.stdout.filter((line) => line.trim().startsWith("{"))
+      expect(lines).toHaveLength(1)
+      const envelope = JSON.parse(lines[0]!) as Record<string, unknown>
+      expect(envelope.status).toBe("completed")
+      expect(generateTextMock).toHaveBeenCalledTimes(4)
+      for (const [options] of generateTextMock.mock.calls) expect(options.abortSignal).toBeInstanceOf(AbortSignal)
+      if (known) {
+        expect(envelope.cost_usd).toBe(0.875)
+        expect(envelope).not.toHaveProperty("cost_usd_reason")
+      } else {
+        expect(envelope).not.toHaveProperty("cost_usd")
+        expect(envelope.cost_usd_reason).toBe("charged unavailable for 1 of 4 invoked calls")
+      }
+      expect(envelope.list_equivalent_usd).toBeGreaterThan(0)
+      expect(envelope.list_equivalent_basis).toHaveLength(4)
+      expect(envelope).not.toHaveProperty("cost")
+      expect(envelope).not.toHaveProperty("costUsd")
+      const output = readFileSync(envelope.file as string, "utf8")
+      expect(output).toContain(known ? "unified" : "opinion")
+    },
+    10_000,
+  )
+
   it("pro (dual): envelope has a/b sections with per-leg tokens/cost/status", async () => {
     const env = makeTestEnv()
     resetMocks()

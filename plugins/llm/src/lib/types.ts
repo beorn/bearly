@@ -300,11 +300,22 @@ export const ConsensusResultSchema = z.object({
   level: ThinkingLevelSchema,
   question: z.string(),
   responses: z.array(ModelResponseSchema),
+  synthesisResponse: ModelResponseSchema.optional(),
   synthesis: z.string().optional(),
   agreements: z.array(z.string()).optional(),
   disagreements: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
-  totalCost: z.number().optional(),
+  cost_usd: z.number().finite().nonnegative().optional(),
+  cost_usd_reason: z.string().optional(),
+  list_equivalent_usd: z.number().finite().nonnegative().optional(),
+  list_equivalent_reason: z.string().optional(),
+  list_equivalent_basis: z.array(
+    z.object({
+      rateSource: z.enum(["litellm", "sku", "unrecorded"]),
+      rateDate: z.string().optional(),
+      matchedModelId: z.string().optional(),
+    }),
+  ),
   totalDurationMs: z.number(),
 })
 export type ConsensusResult = z.infer<typeof ConsensusResultSchema>

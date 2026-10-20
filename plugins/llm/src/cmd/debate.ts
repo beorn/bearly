@@ -4,7 +4,6 @@
 
 import { consensus } from "../lib/consensus"
 import { isProviderAvailable } from "../lib/providers"
-import { formatCost } from "../lib/types"
 import { emitJson } from "../lib/output-mode"
 import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
@@ -22,7 +21,7 @@ export async function runDebate(options: {
   dryRun: boolean
 }): Promise<void> {
   const { question, outputFile, sessionTag, skipRecover, skipConfirm, dryRun } = options
-  const { finalizeOutput, totalResponseCost } = await import("../lib/format")
+  const { finalizeOutput } = await import("../lib/format")
 
   const contextDebate = await options.buildContext(question)
   const enrichedQuestion = contextDebate ? `${contextDebate}\n\n---\n\n${question}` : question
@@ -103,12 +102,15 @@ export async function runDebate(options: {
   if (process.stderr.isTTY) {
     console.error("\n" + debateContent)
   }
-  const debateCost = totalResponseCost(result.responses)
+  const { cost_usd, cost_usd_reason, list_equivalent_usd, list_equivalent_reason, list_equivalent_basis } = result
   await finalizeOutput(debateContent, outputFile, sessionTag, {
     query: question,
     model: `${result.responses.length} models`,
-    cost: formatCost(debateCost),
-    costUsd: debateCost,
+    cost_usd,
+    cost_usd_reason,
+    list_equivalent_usd,
+    list_equivalent_reason,
+    list_equivalent_basis,
     durationMs: result.totalDurationMs,
     status: "completed",
   })
