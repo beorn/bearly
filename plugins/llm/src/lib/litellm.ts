@@ -33,15 +33,9 @@ interface LiteLLMEntry {
 
 export type LiteLLMRatesMap = Map<string, ModelRates & { provider?: string }>
 
-/**
- * Per-token USD → per-1M USD, rounded to 6 decimals. Upstream stores values
- * like `2e-7`; a raw `* 1_000_000` yields float debris
- * (`0.19999999999999998`) that fabricates phantom price "changes" in the
- * update diff. Six decimals of a per-M price = $0.000001 resolution — far
- * below any real price granularity.
- */
+/** Convert units without quantizing rates before cost arithmetic. */
 function perM(perToken: number): number {
-  return Math.round(perToken * 1_000_000 * 1_000_000) / 1_000_000
+  return perToken * 1_000_000
 }
 
 /**
@@ -79,15 +73,19 @@ export function parseLiteLLMMap(json: Record<string, unknown>): LiteLLMRatesMap 
  * candidates. First hit wins; a miss returns null (callers treat that as
  * cost-source UNKNOWN, never $0).
  */
-export function matchLiteLLMEntry(map: LiteLLMRatesMap, candidates: string[]): ModelRates | null {
+export function matchLiteLLMEntry(
+  map: LiteLLMRatesMap,
+  candidates: string[],
+): (ModelRates & { matchedModelId: string }) | null {
   for (const candidate of candidates) {
     if (!candidate) continue
     const exact = map.get(candidate)
-    if (exact) return exact
+    if (exact) return { ...exact, matchedModelId: candidate }
     const slash = candidate.lastIndexOf("/")
     if (slash !== -1) {
-      const stripped = map.get(candidate.slice(slash + 1))
-      if (stripped) return stripped
+      const matchedModelId = candidate.slice(slash + 1)
+      const stripped = map.get(matchedModelId)
+      if (stripped) return { ...stripped, matchedModelId }
     }
   }
   return null

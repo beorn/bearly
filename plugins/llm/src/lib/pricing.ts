@@ -39,6 +39,7 @@ interface PricingCache {
        * reports `unrecorded` and does not infer a date from `updatedAt`. */
       rateSource?: "litellm" | "sku"
       rateDate?: string
+      matchedModelId?: string
     }
   >
 }
@@ -49,7 +50,7 @@ export type RateSource = CostBasis["rateSource"]
 export interface ModelRateLookup {
   modelId: string
   rates: ModelRates
-  basis: { rateSource: RateSource; rateDate?: string }
+  basis: CostBasis
 }
 
 /**
@@ -131,6 +132,7 @@ export function buildPricingSnapshot(
     outputPricePerM: number
     cacheReadPerM?: number
     cacheWritePerM?: number
+    matchedModelId?: string
   }>,
 ): PricingCache {
   const updatedAt = new Date().toISOString()
@@ -144,6 +146,7 @@ export function buildPricingSnapshot(
         outputPricePerM: sku.outputPricePerM,
         typicalLatencyMs: sku.typicalLatencyMs,
         rateSource: "sku",
+        matchedModelId: sku.modelId,
       }
     }
   }
@@ -157,6 +160,7 @@ export function buildPricingSnapshot(
         delete merged.rateSource
         delete merged.rateDate
       }
+      if (v.matchedModelId === undefined) delete merged.matchedModelId
       models[id] = merged
     }
   }
@@ -170,6 +174,7 @@ export function buildPricingSnapshot(
       ...(u.cacheWritePerM !== undefined ? { cacheWritePerM: u.cacheWritePerM } : {}),
       rateSource: "litellm",
       rateDate: updatedAt,
+      ...(u.matchedModelId !== undefined ? { matchedModelId: u.matchedModelId } : {}),
     }
   }
   return { updatedAt, models }
@@ -190,12 +195,11 @@ export function buildPricingSnapshot(
 export function lookupModelRates(modelId: string): ModelRateLookup | null {
   const cached = loadPricingCache()?.models[modelId]
   if (cached?.inputPricePerM !== undefined && cached.outputPricePerM !== undefined) {
-    const basis =
-      cached.rateSource === "litellm"
-        ? { rateSource: "litellm" as const, ...(cached.rateDate !== undefined ? { rateDate: cached.rateDate } : {}) }
-        : cached.rateSource === "sku"
-          ? { rateSource: "sku" as const }
-          : { rateSource: "unrecorded" as const }
+    const basis: CostBasis = {
+      rateSource: cached.rateSource === "litellm" || cached.rateSource === "sku" ? cached.rateSource : "unrecorded",
+      ...(cached.rateDate !== undefined ? { rateDate: cached.rateDate } : {}),
+      ...(cached.matchedModelId !== undefined ? { matchedModelId: cached.matchedModelId } : {}),
+    }
     return {
       modelId,
       rates: {
@@ -212,7 +216,7 @@ export function lookupModelRates(modelId: string): ModelRateLookup | null {
   return {
     modelId,
     rates: { inputPerM: sku.inputPricePerM, outputPerM: sku.outputPricePerM },
-    basis: { rateSource: "sku" },
+    basis: { rateSource: "sku", matchedModelId: sku.modelId },
   }
 }
 
@@ -256,7 +260,7 @@ export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, r
   const lookup = lookupModelRates(model.modelId)
   return resolveCost({
     usage,
-    ...(lookup ? { rates: lookup.rates } : {}),
+    ...(lookup ? { rates: lookup.rates, basis: [lookup.basis] } : {}),
     ...(reportedUsd !== undefined ? { reportedUsd } : {}),
   })
 }

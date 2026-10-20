@@ -67,6 +67,7 @@ export async function performPricingUpdate(options: {
     outputPricePerM: number
     cacheReadPerM?: number
     cacheWritePerM?: number
+    matchedModelId: string
   }> = []
   for (const model of MODELS) {
     const current = currentPrices.get(model.modelId)
@@ -111,6 +112,7 @@ export async function performPricingUpdate(options: {
     // and may be new (bead 19899 P3).
     acceptedUpdates.push({
       modelId: model.modelId,
+      matchedModelId: rates.matchedModelId,
       inputPricePerM: inChanged || outChanged ? rates.inputPerM : current.input,
       outputPricePerM: inChanged || outChanged ? rates.outputPerM : current.output,
       ...(rates.cacheReadPerM !== undefined ? { cacheReadPerM: rates.cacheReadPerM } : {}),

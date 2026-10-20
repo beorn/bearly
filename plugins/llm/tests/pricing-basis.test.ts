@@ -40,6 +40,7 @@ describe("lookupModelRates basis", () => {
           cacheWritePerM: 2,
           rateSource: "litellm",
           rateDate: "2020-01-01T00:00:00.000Z",
+          matchedModelId: "upstream/retired-version",
         },
       },
     })
@@ -47,7 +48,11 @@ describe("lookupModelRates basis", () => {
     expect(looked).toEqual({
       modelId: "retired-model",
       rates: { inputPerM: 9, outputPerM: 10, cacheReadPerM: 1, cacheWritePerM: 2 },
-      basis: { rateSource: "litellm", rateDate: "2020-01-01T00:00:00.000Z" },
+      basis: {
+        rateSource: "litellm",
+        rateDate: "2020-01-01T00:00:00.000Z",
+        matchedModelId: "upstream/retired-version",
+      },
     })
     expect(env.homeDir).not.toBe("")
   })
@@ -58,10 +63,13 @@ describe("lookupModelRates basis", () => {
     mod.savePricingCache({
       updatedAt: "2020-01-01T00:00:00.000Z",
       models: {
-        "old-row": { inputPricePerM: 4, outputPricePerM: 5, cacheReadPerM: 0.4 },
+        "gpt-5.4": { inputPricePerM: 4, outputPricePerM: 5, cacheReadPerM: 0.4 },
       },
     })
-    expect(mod.lookupModelRates("old-row")?.basis).toEqual({ rateSource: "unrecorded" })
+    expect(mod.lookupModelRates("gpt-5.4")?.basis).toEqual({ rateSource: "unrecorded" })
+    // A seed must not invent the missing identity/date on a pre-existing SKU cache row.
+    mod.savePricingCache(mod.buildPricingSnapshot([]))
+    expect(mod.lookupModelRates("gpt-5.4")?.basis).toEqual({ rateSource: "unrecorded" })
   })
 
   it("stamps a matched model and keeps an unmatched model's date", async () => {
@@ -85,12 +93,16 @@ describe("lookupModelRates basis", () => {
         },
       },
     })
-    const snapshot = mod.buildPricingSnapshot([{ modelId: "matched", inputPricePerM: 1, outputPricePerM: 2 }])
+    const snapshot = mod.buildPricingSnapshot([
+      { modelId: "matched", inputPricePerM: 1, outputPricePerM: 2, matchedModelId: "provider/actual-row" },
+    ])
     expect(snapshot.models.matched?.rateSource).toBe("litellm")
     expect(snapshot.models.matched?.rateDate).toBe(snapshot.updatedAt)
     expect(snapshot.models.matched?.rateDate).not.toBe(old)
+    expect(snapshot.models.matched?.matchedModelId).toBe("provider/actual-row")
     expect(snapshot.models.held?.rateDate).toBe(old)
     expect(snapshot.models.held?.rateSource).toBe("litellm")
+    expect(snapshot.models.held?.matchedModelId).toBeUndefined()
   })
 
   it("drops a previous cache-class rate when the update omits it", async () => {
@@ -120,6 +132,39 @@ describe("lookupModelRates basis", () => {
     expect(snapshot.models.matched?.rateDate).not.toBe(old)
     expect(snapshot.models.matched?.inputPricePerM).toBe(3)
     expect(snapshot.models.matched?.outputPricePerM).toBe(4)
+  })
+})
+
+// 30170: matching, snapshot persistence and actual result resolution must retain the same row identity.
+// Lookup fixtures alone cannot detect the updater or resolver silently dropping the match.
+describe("refresh-to-result provenance", () => {
+  it("retains the actual API alias match and independent amounts without inventing old cache metadata", async () => {
+    makeTestEnv()
+    const mod = await pricing()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          "gpt-5-pro": { input_cost_per_token: 25e-6, output_cost_per_token: 200e-6 },
+        }),
+      })),
+    )
+    const { performPricingUpdate } = await import("../src/cmd/pricing")
+    const result = await performPricingUpdate({ verbose: false })
+    expect(result.error).toBeUndefined()
+    const cache = mod.loadPricingCache()
+    expect(cache?.models["gpt-5.4-pro"]?.matchedModelId).toBe("gpt-5-pro")
+    const { getModel } = await import("../src/lib/types")
+    const model = getModel("gpt-5.4-pro")
+    if (!model) throw new Error("required registry model gpt-5.4-pro is missing")
+    const resolved = mod.resolveCostForModel(model, { input: 1_000_000 }, 0.5)
+    expect(resolved.charged).toEqual({ usd: 0.5 })
+    expect(resolved.listEquivalent).toEqual({ usd: 25 })
+    expect(resolved.listEquivalentBasis).toEqual([
+      { rateSource: "litellm", rateDate: cache?.updatedAt, matchedModelId: "gpt-5-pro" },
+    ])
   })
 })
 

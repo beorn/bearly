@@ -105,13 +105,23 @@ describe("LiteLLM map parsing + matching", () => {
       cacheReadPerM: 0.5,
       cacheWritePerM: 6.25,
     })
+    // 30170: a rate below the old six-decimal quantum must survive before arithmetic.
+    // The ordinary rates above cannot distinguish conversion from quantization.
+    const tiny = parseLiteLLMMap({
+      tiny: { input_cost_per_token: 1.23456789e-12, output_cost_per_token: 2e-12 },
+    })
+    expect(tiny.get("tiny")?.inputPerM).toBe(0.00000123456789)
   })
 
   it("matches exact, then provider-prefix-stripped candidates; misses return null", () => {
     const map = parseLiteLLMMap(FIXTURE)
-    expect(matchLiteLLMEntry(map, ["claude-opus-4-5"])).not.toBeNull()
-    expect(matchLiteLLMEntry(map, ["anthropic/claude-opus-4-5"])).not.toBeNull()
-    expect(matchLiteLLMEntry(map, ["gemini/gemini-3.1-pro"])).not.toBeNull()
+    expect(matchLiteLLMEntry(map, ["claude-opus-4-5"])).toMatchObject({ matchedModelId: "claude-opus-4-5" })
+    expect(matchLiteLLMEntry(map, ["anthropic/claude-opus-4-5"])).toMatchObject({
+      matchedModelId: "claude-opus-4-5",
+    })
+    expect(matchLiteLLMEntry(map, ["gemini/gemini-3.1-pro"])).toMatchObject({
+      matchedModelId: "gemini/gemini-3.1-pro",
+    })
     expect(matchLiteLLMEntry(map, ["totally-unknown-model"])).toBeNull()
   })
 })
