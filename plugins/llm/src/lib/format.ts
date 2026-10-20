@@ -10,9 +10,9 @@ import { deniedProviders } from "./denied-providers"
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { estimateCost, formatCost, type ServedBy, type ModelResponse } from "./types"
-import { resolveCostForModel, resolveResponseCost } from "./pricing.ts"
-import { aggregateCosts, serializeCost, resolveSubscriptionCost, type CostFields, type ResolvedCost } from "./cost"
+import { type ServedBy, type ModelResponse } from "./types"
+import { resolveResponseCost } from "./pricing.ts"
+import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
@@ -440,11 +440,7 @@ export async function finishResponse(
   },
   outputFile: string,
   sessionTag: string,
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-  },
+  usage?: ModelResponse["usage"],
   durationMs?: number,
   query?: string,
   responseId?: string,
@@ -458,10 +454,12 @@ export async function finishResponse(
    *  empty-response message on a real provider failure. */
   error?: string,
   retryCommand?: (model: string, bound: number) => string,
-  /** Set when a subscription CLI (bead 29147) answered: names the route, the
-   *  CLI and the CLI model, and zeroes the dollar cost with a matching source. */
+  /** Names the actual subscription route/model; it does not establish an API charge. */
   servedBy?: OutputMeta["servedBy"],
-  completion?: Pick<ModelResponse, "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens">,
+  completion?: Pick<
+    ModelResponse,
+    "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd" | "cacheHit"
+  >,
   /** The panel slot this call answered for (27038). A failed leg names it, so
    *  a reader can match the error back to the panel header without guessing. */
   slot?: string,
@@ -470,6 +468,9 @@ export async function finishResponse(
    *  caller that branches on the envelope. */
   failure?: { httpStatus?: number; providerCode?: string },
 ): Promise<void> {
+  const costs = serializeCost(
+    resolveResponseCost({ model, usage, cost_usd: completion?.cost_usd, cacheHit: completion?.cacheHit, servedBy }),
+  )
   const stopped = completion === undefined ? undefined : outputTokenStop(completion)
   if (stopped === undefined && (!content || content.trim().length === 0)) {
     const providerError = withExclusionNote(
@@ -512,6 +513,7 @@ export async function finishResponse(
     ].join("\n")
 
     const meta: OutputMeta = {
+      ...costs,
       query,
       model: model.displayName,
       tokens: usage?.totalTokens,
@@ -528,6 +530,7 @@ export async function finishResponse(
     // `error` carries the human message; `code` stays stable for machine branching
     // ("provider_error" when the provider reported a failure, "empty_response" otherwise).
     const result: Record<string, unknown> = {
+      ...costs,
       error: providerError ?? "empty_response",
       code: providerError ? "provider_error" : "empty_response",
       status: "failed",
@@ -546,30 +549,14 @@ export async function finishResponse(
 
     process.exit(1)
   }
-  // Provenance-aware (bead 19899 P2): an unpriced model resolves to source
-  // "unknown" and the cost fields are OMITTED — never a synthetic "$0".
-  // A subscription CLI answer (bead 29147) spent no per-token money: 0 USD with
-  // a source that NAMES the subscription, never the SKU's API rates — and even
-  // when the CLI reported no usage.
-  const resolved = servedBy
-    ? resolveSubscriptionCost()
-    : usage
-      ? resolveCostForModel(model as Parameters<typeof resolveCostForModel>[0], {
-          input: usage.promptTokens,
-          output: usage.completionTokens,
-        })
-      : undefined
-  const cost = resolved !== undefined && resolved.source !== "unknown" ? resolved.usd : undefined
   await finalizeOutput(content ?? "", outputFile, sessionTag, {
+    ...costs,
     query,
     model: model.displayName,
     tokens: usage
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
       : undefined,
     ...(servedBy ? { servedBy } : {}),
-    ...(resolved?.source === "subscription" ? { costSource: resolved.source } : {}),
-    cost: cost !== undefined ? formatCost(cost) : undefined,
-    costUsd: cost,
     durationMs,
     responseId,
     status: stopped === undefined ? "completed" : "incomplete",
@@ -591,7 +578,7 @@ export async function finishResponse(
 
 /** Compute total cost across multiple model responses */
 export function totalResponseCost(
-  responses: Array<Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy">>,
+  responses: Array<Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy" | "cacheHit">>,
 ): ResolvedCost {
   return aggregateCosts(responses.map(resolveResponseCost))
 }

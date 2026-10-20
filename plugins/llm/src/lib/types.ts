@@ -224,6 +224,8 @@ export const ModelResponseSchema = z.object({
   reasoning: z.string().optional(),
   /** Validated stated API-key charge, independent of token-based estimates. */
   cost_usd: z.number().finite().nonnegative().optional(),
+  /** Replayed original facts do not establish a charge for this cache lookup. */
+  cacheHit: z.boolean().optional(),
   citations: z
     .array(
       z.object({

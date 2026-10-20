@@ -15,7 +15,7 @@
  *
  *   sha64       — 64 hex chars (sha256 of cache key)
  *   model-slug  — model id with `/` → `_` (e.g. `moonshotai_kimi-k2.6`)
- *   microUSD    — cost in integer microUSD (USD × 1_000_000)
+ *   microUSD    — original list-equivalent estimate in microUSD, or unknown
  *   ms          — duration in milliseconds (integer)
  *   status      — one of: ok | err | abrt | trunc
  *
@@ -138,20 +138,22 @@ export function readCache<E = unknown>(key: CacheKey): CacheEntry<E> | null {
 /**
  * Derive filename metadata from an envelope (ModelResponse-shaped).
  * Duck-typed: cache.ts is generic over E, so we read optional fields
- * defensively. Anything missing falls back to a sentinel that still
- * produces a well-formed `<hash>,<model>,<microUSD>,<ms>,<status>.json` name.
+ * defensively. Missing estimates are explicitly unknown; existing timing and
+ * status defaults still produce a readable filename.
  */
 function deriveMetadata(
   key: CacheKey,
   envelope: unknown,
-): { model: string; microUSD: number; ms: number; status: CacheStatus } {
+): { model: string; microUSD: number | "unknown"; ms: number; status: CacheStatus } {
   const env = (envelope ?? {}) as Record<string, unknown>
   // Prefer envelope.model.modelId, fall back to the cache key.
   const envModel = env.model as { modelId?: unknown } | undefined
   const modelId = typeof envModel?.modelId === "string" && envModel.modelId.length > 0 ? envModel.modelId : key.model
-  const usage = env.usage as { estimatedCost?: unknown } | undefined
-  const cost = typeof usage?.estimatedCost === "number" ? usage.estimatedCost : 0
-  const microUSD = Math.max(0, Math.round(cost * 1_000_000))
+  const estimate = env.list_equivalent_usd
+  const microUSD =
+    typeof estimate === "number" && Number.isFinite(estimate) && estimate >= 0
+      ? Math.round(estimate * 1_000_000)
+      : "unknown"
   const durationMs = env.durationMs
   const ms = Math.max(0, typeof durationMs === "number" ? Math.round(durationMs) : 0)
   let status: CacheStatus = "ok"

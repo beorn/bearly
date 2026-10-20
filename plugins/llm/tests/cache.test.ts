@@ -166,13 +166,17 @@ describe("CAS property — cache hit on identical input", () => {
 // ============================================================================
 
 describe("filename format — <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json", () => {
-  it("encodes hash, sanitized model, microUSD cost, ms duration, and ok status", () => {
+  it.each([
+    { estimate: 0.000123, encoded: "123" },
+    { estimate: 0, encoded: "0" },
+  ])("encodes list-equivalent estimate $estimate independently from a charge", ({ estimate, encoded }) => {
     const key: CacheKey = { model: "moonshotai/kimi-k2.6", prompt: "hi" }
     writeCache(
       key,
       {
         model: { modelId: "moonshotai/kimi-k2.6" },
-        usage: { estimatedCost: 0.000123 }, // 123 microUSD
+        cost_usd: 3,
+        list_equivalent_usd: estimate,
         durationMs: 456,
       },
       "hello",
@@ -181,7 +185,7 @@ describe("filename format — <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json
     expect(files).toHaveLength(1)
     const filename = files[0]
     const hash = cacheKeyHash(key)
-    expect(filename).toBe(`${hash},moonshotai_kimi-k2.6,123,456,ok.json`)
+    expect(filename).toBe(`${hash},moonshotai_kimi-k2.6,${encoded},456,ok.json`)
   })
 
   it("err status when envelope.error is non-empty and not abort/truncate", () => {
@@ -202,11 +206,11 @@ describe("filename format — <sha64>,<model-slug>,<microUSD>,<ms>,<status>.json
     expect(files[0]).toMatch(/,trunc\.json$/)
   })
 
-  it("missing usage / durationMs default to 0,0 (parser still accepts)", () => {
+  it("missing estimate is unknown while duration retains its existing default", () => {
     writeCache({ model: "x", prompt: "p" }, { model: { modelId: "x" } }, "c")
     const files = readdirSync(cacheDir).filter((f) => f.endsWith(".json"))
     expect(files).toHaveLength(1)
-    expect(files[0]).toMatch(/,x,0,0,ok\.json$/)
+    expect(files[0]).toMatch(/,x,unknown,0,ok\.json$/)
   })
 
   it("falls back to cache-key model when envelope.model.modelId is absent", () => {

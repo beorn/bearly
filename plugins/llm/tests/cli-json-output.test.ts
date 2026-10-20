@@ -21,6 +21,8 @@
  */
 
 import { describe, it, expect, vi } from "vitest"
+import { readFileSync, readdirSync } from "node:fs"
+import { join } from "node:path"
 import { makeTestEnv } from "./helpers"
 import { buildResultJson } from "../src/lib/format"
 
@@ -36,22 +38,22 @@ vi.mock("../src/lib/openai-deep", async () => {
   return { ...actual, queryOpenAIBackground: queryBackgroundMock }
 })
 
-function resetMocks(stopped = false) {
+function resetMocks(stopped = false, empty = false) {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
-    text: "ok",
+    text: empty ? "" : "ok",
     finishReason: stopped ? "length" : "stop",
     rawFinishReason: stopped ? "max_output_tokens" : undefined,
     finalStep: { reasoningText: undefined },
-    usage: { inputTokens: 10, outputTokens: 5 },
+    usage: { inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125 } },
   })
   streamTextMock.mockReset()
   streamTextMock.mockImplementation(() => ({
     textStream: (async function* () {
-      yield "ok"
+      if (!empty) yield "ok"
     })(),
     finalStep: Promise.resolve({ response: undefined }),
-    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125 } }),
     finishReason: Promise.resolve(stopped ? "length" : "stop"),
     rawFinishReason: Promise.resolve(stopped ? "max_output_tokens" : undefined),
   }))
@@ -61,6 +63,7 @@ function resetMocks(stopped = false) {
     content: "ok",
     responseId: `resp_${Math.random().toString(36).slice(2, 10)}`,
     usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    cost_usd: 0.125,
     durationMs: 100,
   }))
 }
@@ -194,20 +197,32 @@ describe("output-mode singleton", () => {
 
 describe("--json mode end-to-end", () => {
   it.each([
-    { name: "ask", argv: ["ping"], stopped: false },
-    { name: "explicit single-model pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"], stopped: false },
-    { name: "token-limited ask", argv: ["ping"], stopped: true },
-    { name: "token-limited explicit pro", argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"], stopped: true },
+    { name: "ask", argv: ["ping"], stopped: false, empty: false },
+    {
+      name: "explicit single-model pro",
+      argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"],
+      stopped: false,
+      empty: false,
+    },
+    { name: "token-limited ask", argv: ["ping"], stopped: true, empty: false },
+    {
+      name: "token-limited explicit pro",
+      argv: ["pro", "--model", "moonshotai/kimi-k2.6", "ping"],
+      stopped: true,
+      empty: false,
+    },
+    // 30170: the error writer bypasses finalizeOutput, so successful-result coverage misses its charge facts.
+    { name: "empty billed ask", argv: ["ping"], stopped: false, empty: true },
   ])(
     "$name path: stdout has exactly one JSON line; envelope has the canonical schema",
-    async ({ argv, stopped }) => {
+    async ({ argv, stopped, empty }) => {
       const env = makeTestEnv()
-      resetMocks(stopped)
+      resetMocks(stopped, empty)
 
       vi.resetModules()
       process.argv = ["node", "cli.ts", "--json", ...argv]
       const mod = await import("../src/cli")
-      if (stopped) await expect(mod.main()).rejects.toThrow("__exit_1")
+      if (stopped || empty) await expect(mod.main()).rejects.toThrow("__exit_1")
       else await mod.main()
 
       // Exactly one JSON line on stdout — this is the contract.
@@ -222,8 +237,16 @@ describe("--json mode end-to-end", () => {
       expect(envelope.file).toMatch(/llm-.*\.txt$/)
       expect(typeof envelope.model).toBe("string")
       expect(envelope.tokens).toEqual({ prompt: 10, completion: 5, total: 15 })
-      expect(envelope.status).toBe(stopped ? "incomplete" : "completed")
-      expect(env.exitCodes).toEqual(stopped ? [1] : [])
+      expect(envelope.status).toBe(empty ? "failed" : stopped ? "incomplete" : "completed")
+      expect(env.exitCodes).toEqual(stopped || empty ? [1] : [])
+      // Adapter-only tests cannot detect a real command dropping charge facts on finalization.
+      expect(envelope.cost_usd).toBe(0.125)
+      expect(envelope.list_equivalent_usd).toEqual(expect.any(Number))
+      expect(envelope.list_equivalent_usd).toBeGreaterThan(0)
+      expect(envelope.list_equivalent_usd).not.toBe(0.125)
+      expect(envelope.list_equivalent_basis).toEqual([{ rateSource: "sku", matchedModelId: expect.any(String) }])
+      expect(envelope).not.toHaveProperty("cost")
+      expect(envelope).not.toHaveProperty("costUsd")
       if (stopped) {
         expect(envelope.rawFinishReason).toBe("max_output_tokens")
         expect(envelope.finishReason).toBe("length")
@@ -231,7 +254,7 @@ describe("--json mode end-to-end", () => {
       // durationMs is omitted when 0 (mocked stream completes instantly); just
       // verify the field is absent or numeric — never a string or object.
       if (envelope.durationMs !== undefined) expect(typeof envelope.durationMs).toBe("number")
-      expect(envelope.chars).toBe("ok".length)
+      if (!empty) expect(envelope.chars).toBe("ok".length)
 
       // The "Output written to: ..." path line is suppressed in JSON mode (stderr
       // is for progress only — file path lives in envelope.file).
@@ -243,6 +266,8 @@ describe("--json mode end-to-end", () => {
 
   it("legacy mode (no --json): stdout still has one JSON line + stderr has the path", async () => {
     const env = makeTestEnv()
+    vi.stubEnv("LLM_NO_CACHE", "0")
+    vi.stubEnv("XDG_CACHE_HOME", env.tmpDir)
     resetMocks()
 
     vi.resetModules()
@@ -262,6 +287,41 @@ describe("--json mode end-to-end", () => {
     // working until they migrate to --json.
     const pathLines = env.stderr.filter((l) => l.includes("Output written to:"))
     expect(pathLines.length).toBeGreaterThanOrEqual(1)
+    // 30170: replay must not bill an original call again, and read-time rates must not mutate raw facts.
+    // Generic cache round trips never pass through the actual command's output/accounting boundary.
+    const { getCacheDir } = await import("../src/lib/cache")
+    const files = readdirSync(getCacheDir()).filter((name) => name.endsWith(".json"))
+    expect(files).toHaveLength(1)
+    const cacheFile = join(getCacheDir(), files[0]!)
+    const original = readFileSync(cacheFile, "utf8")
+    const entry = JSON.parse(original) as { envelope: { cost_usd: number; model: { modelId: string } } }
+    expect(entry.envelope.cost_usd).toBe(0.125)
+    const { savePricingCache } = await import("../src/lib/pricing")
+    savePricingCache({
+      updatedAt: "2026-10-19T00:00:00Z",
+      models: {
+        [entry.envelope.model.modelId]: {
+          inputPricePerM: 1,
+          outputPricePerM: 2,
+          rateSource: "litellm",
+          rateDate: "2026-10-19T00:00:00Z",
+          matchedModelId: "fixture/actual-row",
+        },
+      },
+    })
+    await mod.main()
+    const replay = JSON.parse(env.stdout.filter((line) => line.trim().startsWith("{")).at(-1)!) as Record<
+      string,
+      unknown
+    >
+    expect(replay).not.toHaveProperty("cost_usd")
+    expect(replay.cost_usd_reason).toEqual(expect.stringContaining("cached"))
+    expect(replay.list_equivalent_usd).toBe(0.00002)
+    expect(replay.list_equivalent_basis).toEqual([
+      { rateSource: "litellm", rateDate: "2026-10-19T00:00:00Z", matchedModelId: "fixture/actual-row" },
+    ])
+    expect(readFileSync(cacheFile, "utf8")).toBe(original)
+    expect(streamTextMock).toHaveBeenCalledOnce()
   }, 10_000)
 
   it("pro (dual): envelope has a/b sections with per-leg tokens/cost/status", async () => {

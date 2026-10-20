@@ -257,12 +257,13 @@ export function getStaleWarning(): string | null {
 
 /** Provenance-aware cost. One path: the lookup, which already answers SKU defaults. */
 export function resolveCostForModel(
-  model: Model | SkuConfig | string,
+  model: Model | SkuConfig | string | undefined,
   usage: UsageMap,
   reportedUsd?: number,
   chargedUnavailableReason?: string,
 ): ResolvedCost {
-  const lookup = lookupModelRates(typeof model === "string" ? model : model.modelId)
+  const modelId = typeof model === "string" ? model : model?.modelId
+  const lookup = modelId === undefined ? null : lookupModelRates(modelId)
   return resolveCost({
     usage,
     ...(lookup ? { rates: lookup.rates, basis: [lookup.basis] } : {}),
@@ -273,14 +274,18 @@ export function resolveCostForModel(
 
 /** Resolve current rates for the actual served model, retaining independent original charge facts. */
 export function resolveResponseCost(
-  response: Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy">,
+  response: Pick<ModelResponse, "usage" | "cost_usd" | "servedBy" | "cacheHit"> & { model: { modelId?: string } },
 ): ResolvedCost {
   const usage = response.usage
   return resolveCostForModel(
     response.servedBy?.model ?? response.model.modelId,
     usage?.classes ?? (usage ? { input: usage.promptTokens, output: usage.completionTokens } : {}),
     response.cost_usd,
-    response.servedBy ? "subscription route has no stated API-key charge" : undefined,
+    response.cacheHit
+      ? "cached answer does not state a new charge"
+      : response.servedBy
+        ? "subscription route has no stated API-key charge"
+        : undefined,
   )
 }
 

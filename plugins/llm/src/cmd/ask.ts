@@ -13,6 +13,8 @@ import { getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { safeCurrentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
 import { outputTokenStop } from "../lib/format"
+import { resolveResponseCost } from "../lib/pricing"
+import { serializeCost } from "../lib/cost"
 
 /** Shared single-model ask: select model, stream, finalize */
 export async function askAndFinish(options: {
@@ -115,7 +117,7 @@ export async function askAndFinish(options: {
   let dispatchFailure: { httpStatus?: number; providerCode?: string } | undefined
   const cached = cacheable ? readCache<ModelResponse>(cacheKey) : null
   if (cached && outputTokenStop(cached.envelope) === undefined) {
-    response = cached.envelope
+    response = { ...cached.envelope, cacheHit: true }
     console.error(`🟢 cache hit (${cached.ts}) — ${cached.content.length} chars\n`)
     streamToken(cached.content)
   } else {
@@ -169,7 +171,7 @@ export async function askAndFinish(options: {
     }
     if (cacheable && response.content && !response.error && outputTokenStop(response) === undefined) {
       try {
-        writeCache(cacheKey, response, response.content)
+        writeCache(cacheKey, { ...response, ...serializeCost(resolveResponseCost(response)) }, response.content)
       } catch {
         // Cache write failure must not affect the user-visible call result.
       }
