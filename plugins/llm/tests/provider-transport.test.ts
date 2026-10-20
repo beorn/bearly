@@ -207,7 +207,7 @@ describe("provider transport across AI SDK upgrades", () => {
       const controller = new AbortController()
       const raw = { total_input_tokens: 7, invoice: "latest-poll", cost_usd: 0 }
       const fetchMock = vi.fn(async (_url, init?: RequestInit) => {
-        if (init?.method === "POST")
+        if (init?.method === "POST") {
           return new Response(
             JSON.stringify({
               id: "gemini_lifecycle",
@@ -215,6 +215,7 @@ describe("provider transport across AI SDK upgrades", () => {
               usage: { cost_usd: 0.25, invoice: "initial-create" },
             }),
           )
+        }
         if (outcome === "aborted") controller.abort("operator-interrupt")
         return new Response(
           JSON.stringify({

@@ -155,10 +155,10 @@ function extractUsage(interaction: InteractionResponse): ModelResponse["usage"] 
     }).filter((entry): entry is [string, number] => entry[1] !== undefined),
     ...(meta.input_tokens_by_modality ?? [])
       .filter((part) => part.modality !== "text")
-      .map((part) => [`input_${part.modality}`, part.tokens]),
+      .map((part) => [`input_${part.modality}`, part.tokens] as const),
     ...(meta.output_tokens_by_modality ?? [])
       .filter((part) => part.modality !== "text")
-      .map((part) => [`output_${part.modality}`, part.tokens]),
+      .map((part) => [`output_${part.modality}`, part.tokens] as const),
   ])
   return {
     ...(meta.total_input_tokens === undefined ? {} : { promptTokens: meta.total_input_tokens }),
@@ -335,8 +335,9 @@ async function queryWithPolling(
     usage: result.usage ?? retained.usage,
     cost_usd: result.cost_usd ?? retained.cost_usd,
   })
-  if (partialPath)
+  if (partialPath) {
     updatePartialMetadata(partialPath, { usage: retained.usage, cost_usd: retained.cost_usd, error: result.error })
+  }
 
   if (result.error) {
     // Keep failed and locally interrupted receipts available to recovery.
