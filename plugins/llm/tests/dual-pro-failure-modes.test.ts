@@ -425,6 +425,11 @@ describe("dual-pro failure modes", () => {
     // The caller's reservation covers opinions, pairwise judging, and schema retry.
     expect(generateTextMock.mock.calls.every((call) => call[0].maxOutputTokens === 4096)).toBe(true)
     expect(queryBackgroundMock.mock.calls[0]![0].maxOutputTokens).toBe(4096)
+    // The live Pro log must describe this requested reservation, rather than
+    // displaying a model's much larger context capacity as the output cap.
+    const budgets = env.stderr.filter((line) => line.includes("output budget:"))
+    expect(budgets).toHaveLength(2)
+    expect(budgets.every((line) => line.endsWith("4096 tokens (requested)"))).toBe(true)
     expect(JSON.stringify(judgeCalls[1]?.[0] ?? {})).toContain("scoreA.scores.correctness")
     const report = readFileSync(outputFile, "utf8")
     expect(report).toContain("first unranked opinion")

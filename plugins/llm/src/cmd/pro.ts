@@ -415,12 +415,19 @@ export async function runProDual(options: {
   console.error(
     `  • Estimated cost: ${totalEstStr} — registry prices for ${legSlots.length} legs at ~${estInputTokens} in / ${estOutputTokens} out tokens`,
   )
-  // Surface dynamic-thinking budgets for any leg that uses them.
+  // A requested reservation takes precedence over the model's capacity label.
   for (const s of legSlots) {
-    if (s.model.reasoning?.contextWindow || s.model.reasoning?.maxOutputTokens) {
-      const cap = s.model.reasoning?.contextWindow
-        ? `dynamic (up to ~${s.model.reasoning.contextWindow - 4096} tokens, scales with input)`
-        : `${s.model.reasoning?.maxOutputTokens} tokens (static)`
+    if (
+      options.maxOutputTokens !== undefined ||
+      s.model.reasoning?.contextWindow ||
+      s.model.reasoning?.maxOutputTokens
+    ) {
+      const cap =
+        options.maxOutputTokens !== undefined
+          ? `${options.maxOutputTokens} tokens (requested)`
+          : s.model.reasoning?.contextWindow
+            ? `dynamic (up to ~${s.model.reasoning.contextWindow - 4096} tokens, scales with input)`
+            : `${s.model.reasoning?.maxOutputTokens} tokens (static)`
       console.error(`  • ${s.model.displayName} output budget: ${cap}`)
     }
   }
