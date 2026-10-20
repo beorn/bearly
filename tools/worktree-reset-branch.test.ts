@@ -80,7 +80,14 @@ test.each(["distinct", "same"] as const)(
       expect(git(repo, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`)).toBe(
         mode === "same" ? base : tip,
       )
-      expect(git(repo, "show", "refs/heads/wip/retirement-proof:payload.txt")).toBe("uncommitted author work")
+      const archiveRefs = git(repo, "for-each-ref", "--format=%(refname)", "refs/archive/").split("\n")
+      expect(archiveRefs).toHaveLength(1)
+      const archiveRef = archiveRefs[0]
+      expect(archiveRef).toContain("retirement-proof-")
+      expect(git(repo, "show", `${archiveRef}:payload.txt`)).toBe("uncommitted author work")
+      expect(git(repo, "rev-parse", `${archiveRef}^`)).toBe(tip)
+      expect(git(origin, "rev-parse", `${archiveRef}`)).toBe(git(repo, "rev-parse", `${archiveRef}`))
+      expect(git(origin, "show", `${archiveRef}:payload.txt`)).toBe("uncommitted author work")
       expect(messages).toContainEqual(expect.stringContaining("reset"))
     } finally {
       process.chdir(beforeCwd)
