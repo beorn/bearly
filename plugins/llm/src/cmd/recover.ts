@@ -192,7 +192,7 @@ export type RecoveryOutcome = Pick<ModelResponse, "usage" | "cost_usd"> &
     | {
         kind: "completed"
         content: string
-        usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+        usage?: ModelResponse["usage"]
       }
     | { kind: "failed"; status: string; error?: string }
     | { kind: "stale"; status: string; ageMs: number }
@@ -315,7 +315,7 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
           // emitContent → stdout in legacy, stderr in JSON mode (so the
           // single JSON envelope line is the only thing on stdout).
           emitContent(outcome.content)
-          if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens} tokens]`)
+          if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens ?? "unknown"} tokens]`)
           // Keep partial on disk as a recovery cache. cleanupPartials(24h) ages out.
           if (outcome.kind === "completed") completePartial(partial.path, { delete: false, ...outcome })
           console.error(`\n--- End Recovered Response ---\n`)
@@ -423,7 +423,9 @@ export async function runRecover(options: {
         console.error(`Found completed partial (${localPartial.content.length} chars) — returning cached content.\n`)
         emitContent(localPartial.content)
         if (localPartial.metadata.usage) {
-          console.error(`\n[${localPartial.metadata.usage.totalTokens} tokens, recovered from local cache]`)
+          console.error(
+            `\n[${localPartial.metadata.usage.totalTokens ?? "unknown"} tokens, recovered from local cache]`,
+          )
         }
         await writeRecoveredResponse(
           localPartial.content,
@@ -471,7 +473,7 @@ export async function runRecover(options: {
       case "completed": {
         console.error("\nFull response from OpenAI:\n")
         emitContent(outcome.content)
-        if (outcome.usage) console.error(`\n[${outcome.usage.totalTokens} tokens]`)
+        if (outcome.usage) console.error(`\n[${outcome.usage.totalTokens ?? "unknown"} tokens]`)
         // finalizeOutput() inside writeRecoveredResponse already writes the
         // path line to stderr — skip the redundant "Recovered output written
         // to:" that used to print a near-identical second line.

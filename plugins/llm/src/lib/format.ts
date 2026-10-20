@@ -38,7 +38,8 @@ export function formatCostColumns(value: ResolvedCost | CostFields): string {
  */
 export interface LegMeta extends Partial<CostFields> {
   model?: string
-  tokens?: { prompt: number; completion: number; total: number }
+  usage?: ModelResponse["usage"]
+  tokens?: { prompt?: number; completion?: number; total?: number }
   durationMs?: number
   status?: "completed" | "incomplete" | "failed"
   error?: string
@@ -77,7 +78,7 @@ export interface OutputMeta extends Partial<CostFields> {
    * pair (preferred for the JSON envelope schema). Both forms are accepted;
    * the envelope serializer normalizes.
    */
-  tokens?: number | { prompt: number; completion: number; total?: number }
+  tokens?: number | { prompt?: number; completion?: number; total?: number }
   /** Which mechanism actually answered (subscription CLI routes, bead 29147).
    *  Carried into the envelope so a CLI substitution is never silent. */
   servedBy?: ServedBy
@@ -217,9 +218,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
       // without lying about the breakdown.
       result.tokens = { total: meta.tokens }
     } else {
-      const { prompt, completion } = meta.tokens
-      const total = meta.tokens.total ?? prompt + completion
-      result.tokens = { prompt, completion, total }
+      result.tokens = meta.tokens
     }
   }
 
@@ -241,11 +240,12 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
 function legToEnvelope(leg: LegMeta): Record<string, unknown> {
   const out: Record<string, unknown> = { ...costMeta(leg) }
   if (leg.model) out.model = leg.model
+  if (leg.usage !== undefined) out.usage = leg.usage
   if (leg.tokens) {
     out.tokens = {
       prompt: leg.tokens.prompt,
       completion: leg.tokens.completion,
-      total: leg.tokens.total ?? leg.tokens.prompt + leg.tokens.completion,
+      total: leg.tokens.total,
     }
   }
   if (leg.durationMs != null) out.durationMs = leg.durationMs
@@ -295,12 +295,7 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
     // Tokens may be a legacy number or the structured {prompt, completion}
     // shape. Frontmatter is plain YAML — collapse to a total scalar so old
     // recall-indexer queries (which read `tokens: 1234`) continue to work.
-    const tokensTotal =
-      typeof meta.tokens === "number"
-        ? meta.tokens
-        : meta.tokens
-          ? (meta.tokens.total ?? meta.tokens.prompt + meta.tokens.completion)
-          : undefined
+    const tokensTotal = typeof meta.tokens === "number" ? meta.tokens : meta.tokens ? meta.tokens.total : undefined
 
     // Build YAML frontmatter
     const frontmatter = [
@@ -498,13 +493,17 @@ export async function finishResponse(
     }
     log.error?.(`Model: ${model.displayName}`)
     if (slot) log.error?.(`Slot: ${slot}`)
-    if (usage) log.error?.(`Tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}`)
+    if (usage) {
+      log.error?.(
+        `Tokens: prompt=${usage.promptTokens ?? "unknown"}, completion=${usage.completionTokens ?? "unknown"}`,
+      )
+    }
     if (durationMs) log.error?.(`Duration: ${Math.round(durationMs / 1000)}s`)
 
     // Write error details to the output file so background callers can find it
     const durationStr = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown"
-    const promptTokens = usage?.promptTokens ?? 0
-    const completionTokens = usage?.completionTokens ?? 0
+    const promptTokens = usage?.promptTokens ?? "unknown"
+    const completionTokens = usage?.completionTokens ?? "unknown"
     const errorContent = [
       providerError ? "# LLM Error" : "# LLM Error: Empty Response",
       "",

@@ -37,7 +37,7 @@
 import { ask } from "../lib/research"
 import { isProviderRoutable, providerRouteLabel, getProviderEnvVar } from "../lib/providers"
 import { resolveSubscriptionRoute } from "../lib/subscription-cli"
-import { getModel, type Model, type ModelMode, type ServedBy } from "../lib/types"
+import { getModel, type Model, type ModelResponse, type ModelMode, type ServedBy } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
 import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
@@ -595,7 +595,7 @@ export async function runProDual(options: {
     const tag = leg.role === "split-test" ? " [split-test]" : ""
     if (leg.ok && leg.response) {
       console.error(
-        `  ✓ ${leg.model.displayName}${tag} (${leg.response.usage?.totalTokens ?? 0} tok, ${Math.round(leg.response.durationMs / 1000)}s)`,
+        `  ✓ ${leg.model.displayName}${tag} (${leg.response.usage?.totalTokens ?? "unknown"} tok, ${Math.round(leg.response.durationMs / 1000)}s)`,
       )
     } else {
       console.error(`  ✗ ${leg.model.displayName}${tag}: ${leg.error ?? "unknown failure"}`)
@@ -960,7 +960,7 @@ export async function runProDual(options: {
     parts.push(`## ${leg.model.displayName}${tag}`)
     if (leg.response?.content.trim()) {
       if (!leg.ok) parts.push(`⚠️  Incomplete: ${leg.error ?? "unusable opinion"}\n`)
-      const meta = `_${leg.response.usage?.totalTokens ?? 0} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCostColumns(legCosts.get(leg.id)!)}_`
+      const meta = `_${leg.response.usage?.totalTokens ?? "unknown"} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCostColumns(legCosts.get(leg.id)!)}_`
       parts.push(meta + "\n")
       parts.push(leg.response.content.trim())
     } else {
@@ -1010,7 +1010,8 @@ export async function runProDual(options: {
   // on which leg produced what without re-parsing the combined report.
   type EnvelopeLeg = CostFields & {
     model: string
-    tokens?: { prompt: number; completion: number; total: number }
+    usage?: ModelResponse["usage"]
+    tokens?: { prompt?: number; completion?: number; total?: number }
     durationMs?: number
     status: "completed" | "incomplete" | "failed"
     error?: string
@@ -1021,6 +1022,7 @@ export async function runProDual(options: {
   }
   const envelopeLeg = (leg: LegOutcome): EnvelopeLeg => ({
     model: leg.model.displayName,
+    usage: leg.response?.usage,
     tokens: leg.response?.usage
       ? {
           prompt: leg.response.usage.promptTokens,
@@ -1045,12 +1047,23 @@ export async function runProDual(options: {
   // Combine prompt/completion totals across legs so the top-level `tokens`
   // is the canonical {prompt, completion, total} shape (mirrors single-model
   // emission). Cost columns also include every invoked judge and retry.
-  const combinedTokens = legOutcomes.some((l) => l.response?.usage)
-    ? {
-        prompt: legOutcomes.reduce((s, l) => s + (l.response?.usage?.promptTokens ?? 0), 0),
-        completion: legOutcomes.reduce((s, l) => s + (l.response?.usage?.completionTokens ?? 0), 0),
-        total: legOutcomes.reduce((s, l) => s + (l.response?.usage?.totalTokens ?? 0), 0),
-      }
+  const invokedLegs = legOutcomes.filter((leg) => !preflightMissing.has(leg.id))
+  const combinedTokens = invokedLegs.some((leg) => leg.response?.usage)
+    ? Object.fromEntries(
+        (
+          [
+            ["prompt", "promptTokens"],
+            ["completion", "completionTokens"],
+            ["total", "totalTokens"],
+          ] as const
+        ).map(([name, key]) => {
+          const counts = invokedLegs.map((leg) => leg.response?.usage?.[key])
+          return [
+            name,
+            counts.every((count) => count !== undefined) ? counts.reduce((sum, count) => sum + count, 0) : undefined,
+          ]
+        }),
+      )
     : undefined
 
   // Build a leaderboard snapshot at write time for skill consumers that

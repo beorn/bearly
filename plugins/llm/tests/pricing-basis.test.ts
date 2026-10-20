@@ -159,7 +159,7 @@ describe("refresh-to-result provenance", () => {
     const { getModel } = await import("../src/lib/types")
     const model = getModel("gpt-5.4-pro")
     if (!model) throw new Error("required registry model gpt-5.4-pro is missing")
-    const resolved = mod.resolveCostForModel(model, { input: 1_000_000 }, 0.5)
+    const resolved = mod.resolveCostForModel(model, { input: 1_000_000, output: 0 }, 0.5)
     expect(resolved.charged).toEqual({ usd: 0.5 })
     expect(resolved.listEquivalent).toEqual({ usd: 25 })
     expect(resolved.listEquivalentBasis).toEqual([
@@ -182,6 +182,61 @@ describe("refresh-to-result provenance", () => {
     const noUsage = totalResponseCost([known, { model, cost_usd: 0.25 }])
     expect(noUsage.charged).toEqual({ usd: 0.75 })
     expect(noUsage.listEquivalent).toEqual({ reason: expect.stringContaining("1 of 2") })
+  })
+})
+
+// Missing normalized counts used to be rejected by the schema or coerced to zero by adapters.
+// Complete fixtures cannot detect a partial estimate masquerading as a whole response price.
+describe("partial response usage preserves independent financial facts", () => {
+  it.each([
+    { name: "raw only", usage: { raw: { invoice: "kept" } }, reason: /input.*output/ },
+    { name: "input only", usage: { promptTokens: 20 }, reason: /output/ },
+    { name: "output only", usage: { completionTokens: 30 }, reason: /input/ },
+    {
+      name: "partial classes override apparently complete legacy counts",
+      usage: { promptTokens: 20, completionTokens: 30, classes: { input: 20 } },
+      reason: /output/,
+    },
+    {
+      name: "unsupported positive class",
+      usage: { classes: { input: 20, output: 30, tool: 4 } },
+      reason: /tool/,
+    },
+    {
+      name: "complete explicit classes without normalized totals",
+      usage: { classes: { input: 20, output: 30 } },
+      usd: 0.00014,
+    },
+    { name: "complete legacy counts without a total", usage: { promptTokens: 20, completionTokens: 30 }, usd: 0.00014 },
+    { name: "reported zero counts", usage: { classes: { input: 0, output: 0 } }, usd: 0 },
+    { name: "unsupported zero class", usage: { classes: { input: 20, output: 30, tool: 0 } }, usd: 0.00014 },
+  ])("$name", async ({ usage, reason, usd }) => {
+    makeTestEnv()
+    const mod = await pricing()
+    mod.savePricingCache({
+      updatedAt: "2026-10-20T00:00:00Z",
+      models: {
+        "gpt-5.4": { inputPricePerM: 1, outputPricePerM: 4, rateSource: "litellm", matchedModelId: "actual-model" },
+      },
+    })
+    const { ModelResponseSchema, getModel } = await import("../src/lib/types")
+    const response = ModelResponseSchema.parse({
+      model: getModel("gpt-5.4"),
+      content: "answer",
+      usage,
+      cost_usd: 0,
+      durationMs: 1,
+    })
+    const resolved = mod.resolveResponseCost(response)
+    expect(resolved.charged).toEqual({ usd: 0 })
+    expect(resolved.listEquivalentBasis).toEqual([{ rateSource: "litellm", matchedModelId: "actual-model" }])
+    if (reason) {
+      expect(resolved.listEquivalent).toEqual({ reason: expect.stringMatching(reason) })
+      expect(resolved.breakdown).toBeUndefined()
+    } else {
+      expect(resolved.listEquivalent).toEqual({ usd: expect.closeTo(usd!, 12) })
+    }
+    expect(JSON.parse(JSON.stringify(response.usage))).toEqual(usage)
   })
 })
 
