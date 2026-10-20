@@ -7,11 +7,33 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from "fs"
 import { join } from "path"
+import { ModelResponseSchema, type ModelResponse } from "./types"
 
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
 const PARTIALS_DIR = join(CACHE_DIR, "llm-partials")
 
-export interface PartialMetadata {
+const PartialReceiptSchema = ModelResponseSchema.pick({
+  usage: true,
+  cost_usd: true,
+  finishReason: true,
+  rawFinishReason: true,
+  appliedMaxOutputTokens: true,
+  error: true,
+})
+
+function parseReceipt(value: string | undefined, path: string) {
+  if (value === undefined) return {}
+  try {
+    return PartialReceiptSchema.parse(JSON.parse(value))
+  } catch (error) {
+    throw new Error(`Invalid saved response receipt in ${path}: ${String(error)}`, { cause: error })
+  }
+}
+
+export interface PartialMetadata extends Pick<
+  ModelResponse,
+  "usage" | "cost_usd" | "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "error"
+> {
   responseId: string
   model: string
   modelId: string
@@ -19,11 +41,6 @@ export interface PartialMetadata {
   startedAt: string
   lastSequence?: number
   completedAt?: string
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-  }
 }
 
 export interface PartialFile {
@@ -60,6 +77,7 @@ model: ${metadata.model}
 model_id: ${metadata.modelId}
 topic: ${metadata.topic.slice(0, 200).replace(/\n/g, " ")}
 started_at: ${metadata.startedAt}
+receipt: ${JSON.stringify(PartialReceiptSchema.parse(metadata))}
 ---
 
 `
@@ -104,11 +122,12 @@ export function updatePartialMetadata(path: string, updates: Partial<PartialMeta
   if (updates.completedAt) {
     metadata["completed_at"] = updates.completedAt
   }
-  if (updates.usage) {
-    metadata["usage_prompt"] = String(updates.usage.promptTokens)
-    metadata["usage_completion"] = String(updates.usage.completionTokens)
-    metadata["usage_total"] = String(updates.usage.totalTokens)
-  }
+  metadata["receipt"] = JSON.stringify({
+    ...parseReceipt(metadata["receipt"], path),
+    ...Object.fromEntries(
+      Object.entries(PartialReceiptSchema.parse(updates)).filter(([, value]) => value !== undefined),
+    ),
+  })
 
   // Rebuild file
   const newHeader = Object.entries(metadata)
@@ -123,7 +142,10 @@ export function updatePartialMetadata(path: string, updates: Partial<PartialMeta
  */
 export function completePartial(
   path: string,
-  options: { delete?: boolean; usage?: PartialMetadata["usage"] } = {},
+  options: { delete?: boolean } & Pick<
+    PartialMetadata,
+    "usage" | "cost_usd" | "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "error"
+  > = {},
 ): void {
   if (options.delete) {
     if (existsSync(path)) {
@@ -131,8 +153,8 @@ export function completePartial(
     }
   } else {
     updatePartialMetadata(path, {
+      ...options,
       completedAt: new Date().toISOString(),
-      usage: options.usage,
     })
   }
 }
@@ -178,6 +200,7 @@ export function parsePartialFile(path: string): PartialFile | null {
             totalTokens: parseInt(metadata["usage_total"] || "0", 10),
           }
         : undefined,
+      ...parseReceipt(metadata["receipt"], path),
     },
     content: bodyContent,
   }

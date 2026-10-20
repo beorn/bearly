@@ -20,7 +20,13 @@ import OpenAI from "openai"
 import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getEndpoint } from "./types"
-import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+import {
+  getPartialPath,
+  writePartialHeader,
+  appendPartial,
+  completePartial,
+  updatePartialMetadata,
+} from "./persistence"
 import { missingApiKeyError } from "./env-preflight"
 import { describeDispatchFailure } from "./dispatch-error"
 import { outputTokenStop } from "./format"
@@ -246,12 +252,18 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         modelId: model.modelId,
         topic,
         startedAt: new Date().toISOString(),
+        ...usageFacts(initialResponse.usage),
+        ...completionFacts(initialResponse),
+        appliedMaxOutputTokens: maxOutputTokens,
       })
       log.info?.(`Response ID: ${responseId} (recoverable with 'bun llm recover')`)
     }
 
     if (options.fireAndForget) {
-      const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
+      const facts = {
+        appliedMaxOutputTokens: maxOutputTokens,
+        ...completionFacts(initialResponse),
+      }
       const stopped = outputTokenStop(facts) !== undefined
       const content = stopped ? extractText(initialResponse) : ""
       const usage = initialResponse.usage
@@ -285,6 +297,8 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
       },
     })
 
+    if (partialPath) updatePartialMetadata(partialPath, pollResult)
+
     if (outputTokenStop(pollResult) !== undefined) {
       if (onToken && pollResult.content) onToken(pollResult.content)
       if (partialPath && pollResult.content) appendPartial(partialPath, pollResult.content)
@@ -312,7 +326,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         // `cleanupPartials(24h)` sweeps completed entries automatically.
         completePartial(partialPath, {
           delete: false,
-          usage: pollResult.usage,
+          ...pollResult,
         })
       }
       process.stderr.write("\n")
@@ -420,12 +434,18 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         modelId: model.modelId,
         topic,
         startedAt: new Date().toISOString(),
+        ...usageFacts(initialResponse.usage),
+        ...completionFacts(initialResponse),
+        appliedMaxOutputTokens: maxOutputTokens,
       })
       log.info?.(`Response ID: ${responseId} (recoverable with 'bun llm recover')`)
     }
 
     if (options.fireAndForget) {
-      const facts = { appliedMaxOutputTokens: maxOutputTokens, ...completionFacts(initialResponse) }
+      const facts = {
+        appliedMaxOutputTokens: maxOutputTokens,
+        ...completionFacts(initialResponse),
+      }
       const stopped = outputTokenStop(facts) !== undefined
       const content = stopped ? extractText(initialResponse) : ""
       const usage = initialResponse.usage
@@ -457,6 +477,8 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
       },
     })
 
+    if (partialPath) updatePartialMetadata(partialPath, pollResult)
+
     if (outputTokenStop(pollResult) !== undefined) {
       if (onToken && pollResult.content) onToken(pollResult.content)
       if (partialPath && pollResult.content) appendPartial(partialPath, pollResult.content)
@@ -481,7 +503,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         // leg-completion and dispatcher's final-output write.
         completePartial(partialPath, {
           delete: false,
-          usage: pollResult.usage,
+          ...pollResult,
         })
       }
       if (process.stderr.isTTY) process.stderr.write("\n")

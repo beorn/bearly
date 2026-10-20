@@ -407,7 +407,7 @@ export async function runRecover(options: {
           responseId,
           localPartial.metadata.topic,
           localPartial.metadata.usage,
-          undefined,
+          localPartial.metadata,
           localPartial.metadata.modelId,
         )
         return

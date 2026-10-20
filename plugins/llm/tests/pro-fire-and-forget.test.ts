@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { makeTestEnv } from "./helpers"
 
 // Intercept the OpenAI SDK — queryOpenAIBackground uses `openai.responses.create`
@@ -57,7 +57,12 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         status: "incomplete",
         incomplete_details: { reason: "max_output_tokens" },
         max_output_tokens: 4096,
-        output: [{ type: "message", content: [{ type: "output_text", text: "partial answer" }] }],
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "partial answer" }],
+          },
+        ],
         usage: {
           input_tokens: 10,
           output_tokens: 5,
@@ -99,13 +104,20 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
       expect(result.error).toBeUndefined()
       expect(result.cost_usd).toBe(0)
       expect(result.usage?.raw).toEqual(terminal.usage)
-      expect(result.usage?.classes).toEqual({ input: 8, output: 5, cache_read: 2, reasoning: 3 })
+      expect(result.usage?.classes).toEqual({
+        input: 8,
+        output: 5,
+        cache_read: 2,
+        reasoning: 3,
+      })
       expect(responsesRetrieveMock).toHaveBeenCalledTimes(route === "deep-sync" || fireAndForget ? 0 : 1)
       const { findPartialByResponseId } = await import("../src/lib/persistence")
       const partial = findPartialByResponseId(responseId)
       if (route !== "deep-sync") {
         expect(partial?.content).toContain("partial answer")
         expect(partial?.metadata.completedAt).toBeUndefined()
+        expect(partial?.metadata.usage?.raw).toEqual(terminal.usage)
+        expect(partial?.metadata.cost_usd).toBe(0)
       }
       const { runAwait, runRecover } = await import("../src/cmd/recover")
       await expect(runAwait({ responseId })).rejects.toThrow("__exit_1")
@@ -118,9 +130,14 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         chars: "partial answer".length,
       })
       expect(findPartialByResponseId(responseId)?.metadata.completedAt).toBeUndefined()
-      await expect(runRecover({ responseId, clean: false, cleanStale: false, includeAll: false })).rejects.toThrow(
-        "__exit_1",
-      )
+      await expect(
+        runRecover({
+          responseId,
+          clean: false,
+          cleanStale: false,
+          includeAll: false,
+        }),
+      ).rejects.toThrow("__exit_1")
       const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
       expect(recovered).toMatchObject({
         status: "incomplete",
@@ -158,7 +175,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
   )
 
   it("persists a partial before polling, returns content on completion", async () => {
-    makeTestEnv()
+    const env = makeTestEnv()
     const responseId = "resp_pro_happy_1"
 
     responsesCreateMock.mockResolvedValueOnce({ id: responseId })
@@ -171,7 +188,12 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
           content: [{ type: "output_text", text: "hello from pro" }],
         },
       ],
-      usage: { input_tokens: 10, output_tokens: 5 },
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cost_usd: 0,
+        invoice: "saved-original",
+      },
     })
 
     vi.resetModules()
@@ -199,6 +221,13 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     expect(cachedPartial!.content).toContain("hello from pro")
     expect(cachedPartial!.metadata.completedAt).toBeDefined()
     expect(cachedPartial!.metadata.usage?.totalTokens).toBe(15)
+    expect(cachedPartial!.metadata.usage?.raw).toEqual({
+      input_tokens: 10,
+      output_tokens: 5,
+      cost_usd: 0,
+      invoice: "saved-original",
+    })
+    expect(cachedPartial!.metadata.cost_usd).toBe(0)
     expect(responsesCreateMock).toHaveBeenCalledTimes(1)
     // create() must have requested background mode — that's the whole reason
     // we're on this path. Without it the ID isn't captured before polling and
@@ -213,12 +242,27 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     // Responses-API background path should NOT inject the web_search_preview
     // tool — that's for deep research only. Standard pro is a plain completion.
     expect(createArgs.tools).toBeUndefined()
+    // Recover the actual producer's saved receipt, without a fresh provider call.
+    const { runRecover } = await import("../src/cmd/recover")
+    await runRecover({
+      responseId,
+      clean: false,
+      cleanStale: false,
+      includeAll: false,
+    })
+    const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+    expect(recovered.cost_usd).toBe(0)
+    expect(recovered.usage).toEqual(cachedPartial!.metadata.usage)
+    expect(responsesRetrieveMock).toHaveBeenCalledTimes(1)
   })
 
   // Dedicated deep research adds a wrapper that consumes the same context budget as the topic.
   it.each([false, true])("budgets the actual deep prompt for background=%s", async (background) => {
     makeTestEnv()
-    responsesCreateMock.mockResolvedValueOnce({ id: "resp_deep_bound", output: [] })
+    responsesCreateMock.mockResolvedValueOnce({
+      id: "resp_deep_bound",
+      output: [],
+    })
     vi.resetModules()
     const { queryOpenAIDeepResearch } = await import("../src/lib/openai-deep")
     const { getModel } = await import("../src/lib/types")
@@ -245,7 +289,11 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     const { queryOpenAIBackground, queryOpenAIDeepResearch } = await import("../src/lib/openai-deep")
     const { getModel } = await import("../src/lib/types")
     for (const result of [
-      await queryOpenAIBackground({ prompt: "probe", model: getModel("gpt-5.4-pro")!, maxOutputTokens }),
+      await queryOpenAIBackground({
+        prompt: "probe",
+        model: getModel("gpt-5.4-pro")!,
+        maxOutputTokens,
+      }),
       await queryOpenAIDeepResearch({
         topic: "probe",
         model: getModel("o3-deep-research-2025-06-26")!,
@@ -425,8 +473,8 @@ describe("recover <id> fast-path: completed local partial bypasses OpenAI re-pol
   //      ultimately fails. Fast-path: return the cached partial directly,
   //      skip the re-poll. The OpenAI response object's lifecycle is its own
   //      problem; the local cache is canonical.
-  it("returns cached content from completed partial without calling OpenAI", async () => {
-    makeTestEnv()
+  it("returns legacy cached content without inventing a historical charge or calling OpenAI", async () => {
+    const env = makeTestEnv()
     const responseId = "resp_pro_cached_recovery"
 
     // Seed a completed partial on disk as queryOpenAIBackground would now write.
@@ -445,6 +493,10 @@ describe("recover <id> fast-path: completed local partial bypasses OpenAI re-pol
       delete: false,
       usage: { promptTokens: 42, completionTokens: 100, totalTokens: 142 },
     })
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(/^receipt: .*$/m, "usage_prompt: 42\nusage_completion: 100\nusage_total: 142"),
+    )
 
     // Both OpenAI mock paths MUST stay unused. If runRecover re-polls
     // OpenAI for a partial we already have, that's the bug.
@@ -462,6 +514,10 @@ describe("recover <id> fast-path: completed local partial bypasses OpenAI re-pol
 
     expect(responsesRetrieveMock).not.toHaveBeenCalled()
     expect(responsesCreateMock).not.toHaveBeenCalled()
+    const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+    expect(recovered.cost_usd).toBeUndefined()
+    expect(recovered.cost_usd_reason).toBeTruthy()
+    expect(recovered.usage).toEqual({ promptTokens: 42, completionTokens: 100, totalTokens: 142 })
 
     // Partial stays on disk for the NEXT recovery — re-runs of `bun llm
     // recover <id>` should keep working from the same cache.
