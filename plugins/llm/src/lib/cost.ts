@@ -100,6 +100,21 @@ export function serializeCost(cost: ResolvedCost): CostFields {
   }
 }
 
+/** Average independent totals over an explicit observation count. */
+export function averageCost(total: ResolvedCost, observations: number): ResolvedCost {
+  const mean = (amount: CostAmount): CostAmount =>
+    !Number.isInteger(observations) || observations <= 0
+      ? { reason: "no observations to average" }
+      : "usd" in amount
+        ? { usd: amount.usd / observations }
+        : amount
+  return {
+    charged: mean(total.charged),
+    listEquivalent: mean(total.listEquivalent),
+    listEquivalentBasis: total.listEquivalentBasis,
+  }
+}
+
 /** Sum every invoked call independently in each column; absent facts are never free. */
 export function aggregateCosts(costs: readonly ResolvedCost[]): ResolvedCost {
   const total = (column: "charged" | "listEquivalent"): CostAmount => {

@@ -10,6 +10,8 @@
  */
 
 export { queryModel } from "./lib/research.ts"
+export { formatCostColumns } from "./lib/format.ts"
+export { averageCost } from "./lib/cost.ts"
 export { getCheapModel, getCheapModels, selectModels, getModel, formatCost, skuRates, MODELS } from "./lib/types.ts"
 export type {
   Model,

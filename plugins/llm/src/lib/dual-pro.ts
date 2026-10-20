@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod"
-import { aggregateCosts, deserializeCost, serializeCost } from "./cost"
+import { aggregateCosts, averageCost, deserializeCost, serializeCost } from "./cost"
 import { resolveResponseCost } from "./pricing"
 import { getModel, getEndpoint, type Model } from "./types"
 import { isProviderRoutable } from "./providers"
@@ -911,17 +911,7 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
   for (const [model, s] of stats) {
     const avgScore = s.success > 0 ? s.scoreSum / s.success : 0
     const total = aggregateCosts(s.costs)
-    const mean = (amount: import("./cost").CostAmount): import("./cost").CostAmount =>
-      s.costs.length === 0
-        ? { reason: "no invoked calls" }
-        : "usd" in amount
-          ? { usd: amount.usd / s.costs.length }
-          : amount
-    const average = serializeCost({
-      charged: mean(total.charged),
-      listEquivalent: mean(total.listEquivalent),
-      listEquivalentBasis: total.listEquivalentBasis,
-    })
+    const average = serializeCost(averageCost(total, s.costs.length))
     const costCoverage = {
       charged: { known: s.costs.filter((cost) => "usd" in cost.charged).length, total: s.costs.length },
       listEquivalent: { known: s.costs.filter((cost) => "usd" in cost.listEquivalent).length, total: s.costs.length },
