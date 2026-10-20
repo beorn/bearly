@@ -112,6 +112,8 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
       const envelope = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
       expect(envelope).toMatchObject({
         status: "incomplete",
+        cost_usd: 0,
+        usage: { raw: terminal.usage },
         rawFinishReason: "max_output_tokens",
         chars: "partial answer".length,
       })
@@ -122,6 +124,8 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
       const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
       expect(recovered).toMatchObject({
         status: "incomplete",
+        cost_usd: 0,
+        usage: { raw: terminal.usage },
         rawFinishReason: "max_output_tokens",
         chars: "partial answer".length,
       })
