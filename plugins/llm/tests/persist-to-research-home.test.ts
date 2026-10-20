@@ -52,8 +52,18 @@ describe("persistToResearch home isolation (#25265)", () => {
     const encoded = projectDir.replace(/\//g, "-")
     const dir = join(env.homeDir, ".claude/projects", encoded, "memory/research")
 
-    const { persistToResearch } = await import("../src/lib/format")
-    persistToResearch("note body", "testsess12345678", { query: "normal path probe", model: "test-model", tokens: 42 })
+    const { persistToResearch, buildMetaComment } = await import("../src/lib/format")
+    // 30170: archive/frontmatter and file headers must retain the same independent meanings as JSON.
+    // The envelope suite never inspects these persisted reader boundaries.
+    const meta = {
+      query: "normal path probe",
+      model: "test-model",
+      tokens: 42,
+      cost_usd: 0,
+      list_equivalent_usd: 0.25,
+      list_equivalent_basis: [{ rateSource: "sku" as const, matchedModelId: "test-model" }],
+    }
+    persistToResearch("note body", "testsess12345678", meta)
 
     const files = readdirSync(dir)
     expect(files.length).toBe(1)
@@ -62,6 +72,16 @@ describe("persistToResearch home isolation (#25265)", () => {
     expect(text).toContain('query: "normal path probe"')
     expect(text).toContain('model: "test-model"')
     expect(text).toContain("tokens: 42")
+    expect(text).toContain("cost_usd: 0\n")
+    expect(text).toContain("list_equivalent_usd: 0.25\n")
+    expect(text).toContain('list_equivalent_basis: [{"rateSource":"sku","matchedModelId":"test-model"}]')
+    expect(text).not.toContain("\ncost:")
+    const header = buildMetaComment("testsess12345678", meta)
+    const fields = JSON.parse(header.slice("<!-- llm-meta: ".length, -" -->".length))
+    expect(fields.cost_usd).toBe(0)
+    expect(fields.list_equivalent_usd).toBe(0.25)
+    expect(fields.list_equivalent_basis).toEqual(meta.list_equivalent_basis)
+    expect(fields).not.toHaveProperty("cost")
     expect(text.endsWith("note body")).toBe(true)
   })
 })

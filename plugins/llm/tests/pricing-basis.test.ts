@@ -165,6 +165,23 @@ describe("refresh-to-result provenance", () => {
     expect(resolved.listEquivalentBasis).toEqual([
       { rateSource: "litellm", rateDate: cache?.updatedAt, matchedModelId: "gpt-5-pro" },
     ])
+    // Independent totals must account for every invoked call, including one with absent facts.
+    // Resolver-only coverage cannot catch the existing outer sum silently dropping that call.
+    const { totalResponseCost } = await import("../src/lib/format")
+    const known = {
+      model,
+      cost_usd: 0.5,
+      usage: { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 },
+    }
+    const bothKnown = totalResponseCost([known, known])
+    expect(bothKnown.charged).toEqual({ usd: 1 })
+    expect(bothKnown.listEquivalent).toEqual({ usd: 50 })
+    const noCharge = totalResponseCost([known, { model, usage: known.usage }])
+    expect(noCharge.charged).toEqual({ reason: expect.stringContaining("1 of 2") })
+    expect(noCharge.listEquivalent).toEqual({ usd: 50 })
+    const noUsage = totalResponseCost([known, { model, cost_usd: 0.25 }])
+    expect(noUsage.charged).toEqual({ usd: 0.75 })
+    expect(noUsage.listEquivalent).toEqual({ reason: expect.stringContaining("1 of 2") })
   })
 })
 

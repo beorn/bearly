@@ -14,7 +14,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
-import { SKUS, setPricingOverlay, type Model, type SkuConfig } from "./types"
+import { SKUS, setPricingOverlay, type Model, type ModelResponse, type SkuConfig } from "./types"
 import { resolveCost, type CostBasis, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
 
 // Cache location (in user's home directory)
@@ -256,13 +256,32 @@ export function getStaleWarning(): string | null {
 }
 
 /** Provenance-aware cost. One path: the lookup, which already answers SKU defaults. */
-export function resolveCostForModel(model: Model | SkuConfig, usage: UsageMap, reportedUsd?: number): ResolvedCost {
-  const lookup = lookupModelRates(model.modelId)
+export function resolveCostForModel(
+  model: Model | SkuConfig | string,
+  usage: UsageMap,
+  reportedUsd?: number,
+  chargedUnavailableReason?: string,
+): ResolvedCost {
+  const lookup = lookupModelRates(typeof model === "string" ? model : model.modelId)
   return resolveCost({
     usage,
     ...(lookup ? { rates: lookup.rates, basis: [lookup.basis] } : {}),
     ...(reportedUsd !== undefined ? { reportedUsd } : {}),
+    ...(chargedUnavailableReason !== undefined ? { chargedUnavailableReason } : {}),
   })
+}
+
+/** Resolve current rates for the actual served model, retaining independent original charge facts. */
+export function resolveResponseCost(
+  response: Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy">,
+): ResolvedCost {
+  const usage = response.usage
+  return resolveCostForModel(
+    response.servedBy?.model ?? response.model.modelId,
+    usage?.classes ?? (usage ? { input: usage.promptTokens, output: usage.completionTokens } : {}),
+    response.cost_usd,
+    response.servedBy ? "subscription route has no stated API-key charge" : undefined,
+  )
 }
 
 /**

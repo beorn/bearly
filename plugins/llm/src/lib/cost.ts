@@ -66,6 +66,46 @@ export interface ResolvedCost {
   breakdown?: Partial<Record<UsageClass, number>>
 }
 
+/** Canonical serialized columns. Each amount is emitted with either its value or its reason. */
+export interface CostFields {
+  cost_usd?: number
+  cost_usd_reason?: string
+  list_equivalent_usd?: number
+  list_equivalent_reason?: string
+  list_equivalent_basis: CostBasis[]
+}
+
+export function serializeCost(cost: ResolvedCost): CostFields {
+  return {
+    ...("usd" in cost.charged ? { cost_usd: cost.charged.usd } : { cost_usd_reason: cost.charged.reason }),
+    ...("usd" in cost.listEquivalent
+      ? { list_equivalent_usd: cost.listEquivalent.usd }
+      : { list_equivalent_reason: cost.listEquivalent.reason }),
+    list_equivalent_basis: cost.listEquivalentBasis,
+  }
+}
+
+/** Sum every invoked call independently in each column; absent facts are never free. */
+export function aggregateCosts(costs: readonly ResolvedCost[]): ResolvedCost {
+  const total = (column: "charged" | "listEquivalent"): CostAmount => {
+    const unknown = costs.filter((cost) => "reason" in cost[column])
+    if (unknown.length) {
+      return { reason: `${column} unavailable for ${unknown.length} of ${costs.length} invoked calls` }
+    }
+    let usd = 0
+    for (const cost of costs) {
+      const amount = cost[column]
+      if ("usd" in amount) usd += amount.usd
+    }
+    return Number.isFinite(usd) ? { usd } : { reason: `${column} total is not finite` }
+  }
+  return {
+    charged: total("charged"),
+    listEquivalent: total("listEquivalent"),
+    listEquivalentBasis: costs.flatMap((cost) => cost.listEquivalentBasis),
+  }
+}
+
 interface CostOptions {
   usage: UsageMap
   rates?: ModelRates | null

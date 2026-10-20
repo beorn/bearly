@@ -73,9 +73,7 @@ describe("buildResultJson — envelope schema", () => {
       tokens: { prompt: 100, completion: 50, total: 150 },
       cost_usd: 0.05,
       list_equivalent_usd: 0.000037,
-      list_equivalent_basis: [
-        { rateSource: "litellm", rateDate: "2026-10-19", matchedModelId: "openai/gpt-5.4" },
-      ],
+      list_equivalent_basis: [{ rateSource: "litellm", rateDate: "2026-10-19", matchedModelId: "openai/gpt-5.4" }],
       durationMs: 1234,
       responseId: "resp_abc",
       status: "completed",
@@ -114,14 +112,18 @@ describe("buildResultJson — envelope schema", () => {
       a: {
         model: "GPT-5.4 Pro",
         tokens: { prompt: 100, completion: 50, total: 150 },
-        cost: 0.05,
+        cost_usd: 0.05,
+        list_equivalent_usd: 0.1,
+        list_equivalent_basis: [],
         durationMs: 1000,
         status: "completed",
       },
       b: {
         model: "Kimi K2.6",
         tokens: { prompt: 100, completion: 50, total: 150 },
-        cost: 0.0001,
+        cost_usd_reason: "provider did not state a charge",
+        list_equivalent_usd: 0.0001,
+        list_equivalent_basis: [],
         durationMs: 800,
         status: "completed",
       },
@@ -133,7 +135,11 @@ describe("buildResultJson — envelope schema", () => {
     expect((a.tokens as { total: number }).total).toBe(150)
     expect(a.status).toBe("completed")
     expect(b.model).toBe("Kimi K2.6")
-    expect(b.cost).toBe(0.0001)
+    expect(a.cost_usd).toBe(0.05)
+    expect(a.list_equivalent_usd).toBe(0.1)
+    expect(b.cost_usd_reason).toBe("provider did not state a charge")
+    expect(b.list_equivalent_usd).toBe(0.0001)
+    expect(b).not.toHaveProperty("cost")
   })
 
   it("omits status when caller didn't set one (callers add their own default)", () => {

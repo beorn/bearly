@@ -11,8 +11,8 @@ import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
 import { estimateCost, formatCost, type ServedBy, type ModelResponse } from "./types"
-import { resolveCostForModel } from "./pricing.ts"
-import { resolveSubscriptionCost } from "./cost"
+import { resolveCostForModel, resolveResponseCost } from "./pricing.ts"
+import { aggregateCosts, serializeCost, resolveSubscriptionCost, type CostFields, type ResolvedCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
@@ -22,10 +22,9 @@ const log = createLogger("bearly:llm")
  * because the two models can disagree on tokens/cost/duration; flattening
  * loses the A/B signal we publish for skill consumers (e.g. ranking).
  */
-export interface LegMeta {
+export interface LegMeta extends Partial<CostFields> {
   model?: string
   tokens?: { prompt: number; completion: number; total: number }
-  cost?: number
   durationMs?: number
   status?: "completed" | "incomplete" | "failed"
   error?: string
@@ -54,7 +53,7 @@ export interface ProCompletion {
   }
 }
 
-export interface OutputMeta {
+export interface OutputMeta extends Partial<CostFields> {
   query?: string
   model?: string
   /**
@@ -66,13 +65,6 @@ export interface OutputMeta {
   /** Which mechanism actually answered (subscription CLI routes, bead 29147).
    *  Carried into the envelope so a CLI substitution is never silent. */
   servedBy?: ServedBy
-  /** Provenance label for `costUsd` — e.g. "subscription" for a CLI answer that
-   *  spent no per-token money. */
-  costSource?: string
-  /** Display-formatted cost string (legacy, kept for the meta-comment header). */
-  cost?: string
-  /** Numeric cost in USD — preferred for the JSON envelope. */
-  costUsd?: number
   durationMs?: number
   responseId?: string
   finishReason?: string
@@ -172,7 +164,9 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
  *     "file": "/tmp/llm-...txt",
  *     "model": "GPT-5.4 Pro",
  *     "tokens": { "prompt": 1234, "completion": 567, "total": 1801 },
- *     "cost": 0.045,                         // USD, number (not string)
+ *     "cost_usd": 0.045,                     // stated charge or cost_usd_reason
+ *     "list_equivalent_usd": 0.05,           // estimate or list_equivalent_reason
+ *     "list_equivalent_basis": [],
  *     "durationMs": 12345,
  *     "responseId": "resp_abc123",
  *     "status": "completed" | "incomplete" | "failed" | "background" | "recovered",
@@ -182,13 +176,25 @@ export function buildOutputPath(sessionTag: string, topic?: string): string {
  *     "b": { ...leg meta }
  *   }
  *
- * Backward-compat: legacy callers passed `tokens` as a number and `cost`
- * as a formatted string. Both are still accepted via OutputMeta; this
- * builder normalizes to the canonical shape so the envelope is stable
- * regardless of which dispatch path emitted it.
+ * Token totals retain their existing single-number input. Cost columns always
+ * carry their independent value/reason and estimate basis, without legacy aliases.
  */
+function costMeta(meta?: Partial<CostFields>): CostFields {
+  return serializeCost({
+    charged:
+      meta?.cost_usd !== undefined
+        ? { usd: meta.cost_usd }
+        : { reason: meta?.cost_usd_reason ?? "provider did not state a charge" },
+    listEquivalent:
+      meta?.list_equivalent_usd !== undefined
+        ? { usd: meta.list_equivalent_usd }
+        : { reason: meta?.list_equivalent_reason ?? "list-equivalent facts are unavailable" },
+    listEquivalentBasis: meta?.list_equivalent_basis ?? [],
+  })
+}
+
 export function buildResultJson(content: string, meta?: OutputMeta): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
+  const result: Record<string, unknown> = { ...costMeta(meta) }
   if (meta?.finishReason !== undefined) result.finishReason = meta.finishReason
   if (meta?.rawFinishReason !== undefined) result.rawFinishReason = meta.rawFinishReason
   if (meta?.appliedMaxOutputTokens !== undefined) result.appliedMaxOutputTokens = meta.appliedMaxOutputTokens
@@ -210,18 +216,10 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
     }
   }
 
-  // Prefer numeric cost; fall back to legacy string form for back-compat.
-  if (meta?.costUsd != null) {
-    result.cost = meta.costUsd
-  } else if (meta?.cost) {
-    result.cost = meta.cost
-  }
-
   if (meta?.durationMs) result.durationMs = meta.durationMs
   if (meta?.responseId) result.responseId = meta.responseId
   if (meta?.status) result.status = meta.status
   if (meta?.servedBy) result.servedBy = meta.servedBy
-  if (meta?.costSource) result.costSource = meta.costSource
   if (meta?.completion) result.completion = meta.completion
   if (meta?.a) result.a = legToEnvelope(meta.a)
   if (meta?.b) result.b = legToEnvelope(meta.b)
@@ -234,7 +232,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
 }
 
 function legToEnvelope(leg: LegMeta): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
+  const out: Record<string, unknown> = { ...costMeta(leg) }
   if (leg.model) out.model = leg.model
   if (leg.tokens) {
     out.tokens = {
@@ -243,7 +241,6 @@ function legToEnvelope(leg: LegMeta): Record<string, unknown> {
       total: leg.tokens.total ?? leg.tokens.prompt + leg.tokens.completion,
     }
   }
-  if (leg.cost != null) out.cost = leg.cost
   if (leg.durationMs != null) out.durationMs = leg.durationMs
   if (leg.status) out.status = leg.status
   if (leg.finishReason !== undefined) out.finishReason = leg.finishReason
@@ -303,7 +300,7 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
       "---",
       `query: ${JSON.stringify(meta.query)}`,
       meta.model ? `model: ${JSON.stringify(meta.model)}` : null,
-      meta.cost ? `cost: ${JSON.stringify(meta.cost)}` : null,
+      ...Object.entries(costMeta(meta)).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
       tokensTotal != null ? `tokens: ${tokensTotal}` : null,
       meta.durationMs ? `duration_ms: ${meta.durationMs}` : null,
       `timestamp: ${JSON.stringify(now.toISOString())}`,
@@ -327,7 +324,7 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
   if (sessionTag !== "manual") obj.session = sessionTag
   obj.timestamp = new Date().toISOString()
   if (meta?.query) obj.query = meta.query
-  if (meta?.cost) obj.cost = meta.cost
+  Object.assign(obj, costMeta(meta))
   if (meta?.tokens != null) {
     // Both legacy number form and structured {prompt, completion} form
     // appear in the meta-comment unchanged — JSON.stringify handles both.
@@ -594,16 +591,9 @@ export async function finishResponse(
 
 /** Compute total cost across multiple model responses */
 export function totalResponseCost(
-  responses: Array<{
-    model: any
-    usage?: { promptTokens: number; completionTokens: number }
-  }>,
-): number {
-  let total = 0
-  for (const resp of responses) {
-    if (resp.usage) total += estimateCost(resp.model, resp.usage.promptTokens, resp.usage.completionTokens)
-  }
-  return total
+  responses: Array<Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy">>,
+): ResolvedCost {
+  return aggregateCosts(responses.map(resolveResponseCost))
 }
 
 /**
