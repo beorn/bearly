@@ -100,6 +100,14 @@ export function serializeCost(cost: ResolvedCost): CostFields {
   }
 }
 
+/** Adapter-only extraction; a generic numeric cost is a charge only on the identified OpenRouter route. */
+export function statedCharge(raw: unknown, provider: string): { cost_usd?: number } {
+  if (!raw || typeof raw !== "object") return {}
+  const fields = raw as Record<string, unknown>
+  const amount = fields.cost_usd ?? (provider === "openrouter" ? fields.cost : undefined)
+  return typeof amount === "number" && Number.isFinite(amount) && amount >= 0 ? { cost_usd: amount } : {}
+}
+
 /** Average independent totals over an explicit observation count. */
 export function averageCost(total: ResolvedCost, observations: number): ResolvedCost {
   const mean = (amount: CostAmount): CostAmount =>

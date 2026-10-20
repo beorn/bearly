@@ -58,7 +58,15 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         incomplete_details: { reason: "max_output_tokens" },
         max_output_tokens: 4096,
         output: [{ type: "message", content: [{ type: "output_text", text: "partial answer" }] }],
-        usage: { input_tokens: 10, output_tokens: 5 },
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          input_tokens_details: { cached_tokens: 2 },
+          output_tokens_details: { reasoning_tokens: 3 },
+          total_tokens: 15,
+          cost_usd: 0,
+          invoice: "original-terminal",
+        },
       }
       const fireAndForget = route.endsWith("fire-and-forget")
       responsesCreateMock.mockResolvedValue(route === "deep-sync" || fireAndForget ? terminal : { id: responseId })
@@ -89,6 +97,9 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       })
       expect(result.error).toBeUndefined()
+      expect(result.cost_usd).toBe(0)
+      expect(result.usage?.raw).toEqual(terminal.usage)
+      expect(result.usage?.classes).toEqual({ input: 8, output: 5, cache_read: 2, reasoning: 3 })
       expect(responsesRetrieveMock).toHaveBeenCalledTimes(route === "deep-sync" || fireAndForget ? 0 : 1)
       const { findPartialByResponseId } = await import("../src/lib/persistence")
       const partial = findPartialByResponseId(responseId)
@@ -266,6 +277,8 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
 
       expect(result.responseId).toBe(responseId)
       expect(result.content).toBe("")
+      expect(result.usage).toBeUndefined() // pending work has no measured token facts yet
+      expect(result.cost_usd).toBeUndefined()
       expect(result.appliedMaxOutputTokens).toBe(maxOutputTokens)
       expect(result.finishReason).toBeUndefined()
       expect(result.rawFinishReason).toBeUndefined()
