@@ -95,11 +95,9 @@ export function appendPartial(path: string, content: string): void {
  * Update metadata in partial file (e.g., sequence number, completion)
  */
 export function updatePartialMetadata(path: string, updates: Partial<PartialMetadata>): void {
-  if (!existsSync(path)) return
-
   const content = readFileSync(path, "utf-8")
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
-  if (!match) return
+  if (!match) throw new Error(`Partial response ${path} has no valid metadata header; original file kept`)
 
   const headerContent = match[1]!
   const bodyContent = match[2]!
