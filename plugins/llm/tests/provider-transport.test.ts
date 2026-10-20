@@ -170,7 +170,10 @@ describe("provider transport across AI SDK upgrades", () => {
     const init = fetchMock.mock.calls[0]![1]
     expect(JSON.parse(String(init?.body))).toMatchObject({ max_tokens: 4096 })
     const { totalResponseCost } = await import("../src/lib/format")
-    expect(totalResponseCost([response])).toBe((20 * 0.2 + 12 * 0.5) / 1_000_000)
+    const cost = totalResponseCost([response])
+    expect(cost.charged).toEqual({ reason: "charged unavailable for 1 of 1 invoked calls" })
+    expect(cost.listEquivalent).toEqual({ usd: expect.closeTo((20 * 0.2 + 12 * 0.5) / 1_000_000, 12) })
+    expect(cost.listEquivalentBasis).toEqual([{ rateSource: "sku", matchedModelId: "grok-4-1-fast-reasoning" }])
   })
 
   // Native HTTP adapters have independent serialization/refusal risks from AI SDK transports.
