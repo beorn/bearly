@@ -14,7 +14,15 @@
 import { createLogger } from "loggily"
 import type { Model, ModelResponse } from "./types"
 import { getEndpoint } from "./types"
-import { getPartialPath, writePartialHeader, appendPartial, completePartial } from "./persistence"
+import {
+  getPartialPath,
+  writePartialHeader,
+  appendPartial,
+  completePartial,
+  findPartialByResponseId,
+  updatePartialMetadata,
+} from "./persistence"
+import { statedCharge } from "./cost"
 import { missingApiKeyError } from "./env-preflight"
 
 const log = createLogger("bearly:llm:gemini")
@@ -50,12 +58,19 @@ export interface GeminiDeepResearchOptions {
 interface InteractionResponse {
   id: string
   status: string
-  outputs?: Array<{ type?: string; text?: string }>
+  steps?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>
+  cost_usd?: number
   error?: { message?: string; code?: number }
-  usageMetadata?: {
-    promptTokenCount?: number
-    candidatesTokenCount?: number
-    totalTokenCount?: number
+  usage?: {
+    total_input_tokens?: number
+    total_output_tokens?: number
+    total_thought_tokens?: number
+    total_cached_tokens?: number
+    total_tokens?: number
+    total_tool_use_tokens?: number
+    input_tokens_by_modality?: Array<{ modality: string; tokens: number }>
+    output_tokens_by_modality?: Array<{ modality: string; tokens: number }>
+    [key: string]: unknown
   }
 }
 
@@ -88,38 +103,69 @@ async function getInteraction(interactionId: string): Promise<InteractionRespons
 
   if (!resp.ok) {
     const text = await resp.text()
-    throw new Error(`Gemini API error (${resp.status}): ${text}`)
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch (cause) {
+      throw new Error(`Gemini API error (${resp.status}): ${text}`, { cause })
+    }
+    throw new Error(`Gemini API error (${resp.status}): ${text}`, { cause: body })
   }
 
   return resp.json() as Promise<InteractionResponse>
 }
 
 /**
- * Extract text content from interaction outputs
+ * Extract the final model output from documented Interactions steps.
  */
 function extractText(interaction: InteractionResponse): string {
-  if (!interaction.outputs || interaction.outputs.length === 0) return ""
-  // The last output typically contains the final research report
-  const lastOutput = interaction.outputs[interaction.outputs.length - 1]
-  return lastOutput?.text || ""
+  const lastOutput = interaction.steps?.filter((step) => step.type === "model_output").at(-1)
+  return (
+    lastOutput?.content
+      ?.filter((part) => part.type === "text")
+      .map((part) => part.text ?? "")
+      .join("\n") ?? ""
+  )
 }
 
 /**
  * Extract usage from interaction response
  */
-function extractUsage(interaction: InteractionResponse):
-  | {
-      promptTokens: number
-      completionTokens: number
-      totalTokens: number
-    }
-  | undefined {
-  const meta = interaction.usageMetadata
+function extractUsage(interaction: InteractionResponse): ModelResponse["usage"] {
+  const meta = interaction.usage
   if (!meta) return undefined
+  // Interactions output and thought counts are disjoint. Our output class
+  // includes thought; reasoning remains its informational subset.
+  // https://ai.google.dev/api/interactions-api
+  const output =
+    meta.total_output_tokens !== undefined && meta.total_thought_tokens !== undefined
+      ? meta.total_output_tokens + meta.total_thought_tokens
+      : undefined
+  const input =
+    meta.total_input_tokens !== undefined && meta.total_cached_tokens !== undefined
+      ? meta.total_input_tokens - meta.total_cached_tokens
+      : undefined
+  const classes = Object.fromEntries([
+    ...Object.entries({
+      input,
+      output,
+      cache_read: meta.total_cached_tokens,
+      reasoning: meta.total_thought_tokens,
+      tool: meta.total_tool_use_tokens,
+    }).filter((entry): entry is [string, number] => entry[1] !== undefined),
+    ...(meta.input_tokens_by_modality ?? [])
+      .filter((part) => part.modality !== "text")
+      .map((part) => [`input_${part.modality}`, part.tokens]),
+    ...(meta.output_tokens_by_modality ?? [])
+      .filter((part) => part.modality !== "text")
+      .map((part) => [`output_${part.modality}`, part.tokens]),
+  ])
   return {
-    promptTokens: meta.promptTokenCount || 0,
-    completionTokens: meta.candidatesTokenCount || 0,
-    totalTokens: meta.totalTokenCount || 0,
+    ...(meta.total_input_tokens === undefined ? {} : { promptTokens: meta.total_input_tokens }),
+    ...(output === undefined ? {} : { completionTokens: output }),
+    ...(meta.total_tokens === undefined ? {} : { totalTokens: meta.total_tokens }),
+    classes,
+    raw: meta,
   }
 }
 
@@ -129,6 +175,7 @@ function extractUsage(interaction: InteractionResponse):
 export async function queryGeminiDeepResearch(options: GeminiDeepResearchOptions): Promise<ModelResponse> {
   const { topic, model, stream = false, onToken, noPersist = false, context, abortSignal } = options
   const startTime = Date.now()
+  const retained: Pick<ModelResponse, "content" | "usage" | "cost_usd" | "responseId"> = { content: "" }
 
   // Build the research prompt with optional context
   const contextSection = context ? `## Background Context\n\n${context}\n\n---\n\n` : ""
@@ -164,7 +211,7 @@ Please provide:
     // with the final content from the poll path.
     void stream
     void onToken
-    return await queryWithPolling(researchPrompt, model, topic, startTime, onToken, noPersist, abortSignal)
+    return await queryWithPolling(researchPrompt, model, topic, startTime, retained, onToken, noPersist, abortSignal)
   } catch (error) {
     let errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -180,7 +227,7 @@ Please provide:
 
     return {
       model,
-      content: "",
+      ...retained,
       durationMs: Date.now() - startTime,
       error: errorMessage,
     }
@@ -201,20 +248,29 @@ async function queryWithPolling(
   model: Model,
   topic: string,
   startTime: number,
+  retained: Pick<ModelResponse, "content" | "usage" | "cost_usd" | "responseId">,
   onToken?: (token: string) => void,
   noPersist?: boolean,
   abortSignal?: AbortSignal,
 ): Promise<ModelResponse> {
   const resp = await createInteraction(prompt, model.modelId)
 
-  if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`Gemini API error (${resp.status}): ${text}`)
+  const text = await resp.text()
+  let initial: InteractionResponse
+  try {
+    initial = JSON.parse(text) as InteractionResponse
+  } catch (cause) {
+    throw new Error(`Gemini API response (${resp.status}): ${text}`, { cause })
   }
-
-  const initial = (await resp.json()) as InteractionResponse
-
+  Object.assign(retained, {
+    content: extractText(initial),
+    usage: extractUsage(initial),
+    responseId: initial.id,
+    ...statedCharge(initial.usage, "google"),
+    ...statedCharge(initial, "google"),
+  })
   if (!initial.id) {
+    if (!resp.ok) throw new Error(`Gemini API error (${resp.status}): ${text}`)
     throw new Error("No interaction ID in response")
   }
 
@@ -229,7 +285,14 @@ async function queryWithPolling(
       modelId: model.modelId,
       topic,
       startedAt: new Date().toISOString(),
+      usage: retained.usage,
+      cost_usd: retained.cost_usd,
     })
+  }
+  if (!resp.ok) {
+    const error = `Gemini API error (${resp.status}): ${text}`
+    if (partialPath) updatePartialMetadata(partialPath, { error })
+    throw new Error(error)
   }
 
   // If already completed (unlikely for deep research but handle it)
@@ -239,15 +302,21 @@ async function queryWithPolling(
     // Keep completed partials on disk as a recovery cache. See openai-deep.ts
     // for the SIGKILL-between-leg-completion-and-final-output rationale.
     // cleanupPartials(24h) ages them out.
-    if (partialPath) completePartial(partialPath, { delete: false, usage: extractUsage(initial) })
+    if (partialPath) {
+      appendPartial(partialPath, content)
+      completePartial(partialPath, { delete: false, usage: retained.usage, cost_usd: retained.cost_usd })
+    }
 
     return {
       model,
-      content,
-      responseId: interactionId,
-      usage: extractUsage(initial),
+      ...retained,
       durationMs: Date.now() - startTime,
     }
+  }
+  if (["failed", "cancelled", "expired"].includes(initial.status)) {
+    const error = initial.error?.message ?? `Research ${initial.status}`
+    if (partialPath) updatePartialMetadata(partialPath, { error })
+    throw new Error(error)
   }
 
   // Poll until complete
@@ -261,19 +330,19 @@ async function queryWithPolling(
     },
   })
   process.stderr.write("\n")
+  Object.assign(retained, {
+    content: result.content || retained.content,
+    usage: result.usage ?? retained.usage,
+    cost_usd: result.cost_usd ?? retained.cost_usd,
+  })
+  if (partialPath)
+    updatePartialMetadata(partialPath, { usage: retained.usage, cost_usd: retained.cost_usd, error: result.error })
 
   if (result.error) {
-    // Only delete the partial on terminal remote outcomes — a local abort,
-    // timeout, or transient network error leaves the remote job running,
-    // and the partial file is the local routing hint that lets
-    // pollResponseToCompletion know this is a Gemini interaction. Deleting
-    // it kills recoverability. Flagged in Pro round-2 review 2026-04-21.
-    const isTerminalRemote = result.status === "failed" || result.status === "cancelled"
-    if (partialPath && isTerminalRemote) completePartial(partialPath, { delete: true })
+    // Keep failed and locally interrupted receipts available to recovery.
     return {
       model,
-      content: "",
-      responseId: interactionId,
+      ...retained,
       durationMs: Date.now() - startTime,
       error: result.error,
     }
@@ -281,13 +350,14 @@ async function queryWithPolling(
 
   if (onToken && result.content) onToken(result.content)
   // Keep completed partials on disk; SIGKILL-recovery cache. See above.
-  if (partialPath) completePartial(partialPath, { delete: false, usage: result.usage })
+  if (partialPath) {
+    appendPartial(partialPath, retained.content)
+    completePartial(partialPath, { delete: false, usage: retained.usage, cost_usd: retained.cost_usd })
+  }
 
   return {
     model,
-    content: result.content,
-    responseId: interactionId,
-    usage: result.usage,
+    ...retained,
     durationMs: Date.now() - startTime,
   }
 }
@@ -312,16 +382,20 @@ export async function pollForGeminiCompletion(
 ): Promise<{
   status: string
   content: string
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-  }
+  usage?: ModelResponse["usage"]
+  cost_usd?: number
   error?: string
 }> {
   const { intervalMs = 10_000, maxAttempts = 120, abortSignal } = options
   const { sleepAbortable } = await import("./openai-deep")
   const startTime = Date.now()
+  const partial = findPartialByResponseId(interactionId)
+  let latest: Pick<ModelResponse, "content" | "usage" | "cost_usd"> = {
+    content: "",
+    usage: partial?.metadata.usage,
+    cost_usd: partial?.metadata.cost_usd,
+  }
+  let lastError: string | undefined
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (abortSignal?.aborted) {
@@ -330,26 +404,36 @@ export async function pollForGeminiCompletion(
       // for recovery partial cleanup.
       return {
         status: "aborted",
-        content: "",
+        ...latest,
         error: `Polling aborted: ${String(abortSignal.reason ?? "local-interrupt")}`,
       }
     }
 
+    let retrieved = false
     try {
       const interaction = await getInteraction(interactionId)
+      retrieved = true
+      latest = {
+        ...latest,
+        content: extractText(interaction) || latest.content,
+        usage: extractUsage(interaction) ?? latest.usage,
+        ...statedCharge(interaction.usage, "google"),
+        ...statedCharge(interaction, "google"),
+      }
+      lastError = undefined
+      if (partial) updatePartialMetadata(partial.path, latest)
 
       if (interaction.status === "completed") {
         return {
           status: "completed",
-          content: extractText(interaction),
-          usage: extractUsage(interaction),
+          ...latest,
         }
       }
 
       if (interaction.status === "failed") {
         return {
           status: "failed",
-          content: "",
+          ...latest,
           error: interaction.error?.message || "Research failed",
         }
       }
@@ -357,7 +441,7 @@ export async function pollForGeminiCompletion(
       if (interaction.status === "cancelled") {
         return {
           status: "cancelled",
-          content: "",
+          ...latest,
           error: "Research was cancelled",
         }
       }
@@ -368,7 +452,7 @@ export async function pollForGeminiCompletion(
       if (interaction.status === "expired") {
         return {
           status: "expired",
-          content: "",
+          ...latest,
           error: "Research expired",
         }
       }
@@ -376,6 +460,19 @@ export async function pollForGeminiCompletion(
       // Still in progress - wait and retry
       options.onProgress?.(interaction.status || "in_progress", Date.now() - startTime)
     } catch (err) {
+      if (err instanceof Error && err.cause && typeof err.cause === "object") {
+        const interaction = err.cause as InteractionResponse
+        latest = {
+          ...latest,
+          usage: extractUsage(interaction) ?? latest.usage,
+          ...statedCharge(interaction.usage, "google"),
+          ...statedCharge(interaction, "google"),
+        }
+      }
+      lastError = err instanceof Error ? err.message : String(err)
+      // A failed local write is not a transient provider read; return the
+      // accepted receipt and the actual path error instead of polling again.
+      if (retrieved) return { status: "error", ...latest, error: lastError }
       // Network errors during polling are transient - keep trying
       options.onProgress?.(
         `error (retrying): ${err instanceof Error ? err.message : String(err)}`,
@@ -387,9 +484,11 @@ export async function pollForGeminiCompletion(
   }
 
   return {
-    status: "timeout",
-    content: "",
-    error: `Timed out after ${maxAttempts} attempts (${Math.round((maxAttempts * intervalMs) / 1000)}s)`,
+    status: abortSignal?.aborted ? "aborted" : lastError === undefined ? "timeout" : "error",
+    ...latest,
+    error: abortSignal?.aborted
+      ? `Polling aborted: ${String(abortSignal.reason ?? "local-interrupt")}`
+      : (lastError ?? `Timed out after ${maxAttempts} attempts (${Math.round((maxAttempts * intervalMs) / 1000)}s)`),
   }
 }
 

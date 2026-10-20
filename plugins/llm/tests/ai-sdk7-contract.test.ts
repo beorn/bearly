@@ -83,7 +83,7 @@ describe("AI SDK 7 bearly response contract", () => {
     expect(response.reasoning).toBe("kept reasoning")
   })
 
-  it("keeps fixed SDK usage and estimates it without inventing a stated charge", async () => {
+  it("keeps SDK counts and estimates without inventing a total or stated charge", async () => {
     makeTestEnv()
     generateTextMock.mockResolvedValueOnce({
       text: "ok",
@@ -101,7 +101,6 @@ describe("AI SDK 7 bearly response contract", () => {
     expect(response.usage).toEqual({
       promptTokens: 100,
       completionTokens: 50,
-      totalTokens: 150,
       classes: { input: 100, output: 50 },
     })
     const cost = totalResponseCost([response])
