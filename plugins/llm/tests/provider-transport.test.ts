@@ -16,6 +16,79 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  // 30170 requires every invoked call, including SDK and context retries, in both totals.
+  // Final-result mocks cannot reveal a failed HTTP attempt hidden by a successful retry.
+  it.each([
+    { kind: "SDK", status: 500, stream: false },
+    { kind: "SDK", status: 500, stream: true },
+    { kind: "context", status: 400, stream: false },
+  ])("retains unknown earlier spending after $kind retry stream=$stream", async ({ kind, status, stream }) => {
+    const env = makeTestEnv()
+    vi.stubEnv("XDG_CACHE_HOME", env.tmpDir)
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const usage = { input_tokens: 100, output_tokens: 50, total_tokens: 150, cost: 0.125 }
+    const responseBody = {
+      id: "resp_retry_cost",
+      created_at: 1,
+      model: "moonshotai/kimi-k2.6",
+      output: [
+        {
+          type: "message",
+          id: "msg_retry_cost",
+          role: "assistant",
+          content: [{ type: "output_text", text: "answer", annotations: [] }],
+        },
+      ],
+      usage,
+    }
+    const events = [
+      { type: "response.created", response: { id: responseBody.id, created_at: 1, model: responseBody.model } },
+      { type: "response.output_text.delta", item_id: "msg_retry_cost", output_index: 0, delta: "answer" },
+      { type: "response.completed", response: { usage } },
+    ]
+    const message =
+      kind === "context"
+        ? "This endpoint's maximum context length is 262144 tokens. However, you requested about 262150 tokens (1000 of text input, 261150 in the output). Please reduce the length of either one."
+        : "temporary provider failure"
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message, type: "invalid_request_error" } }), {
+          status,
+          headers: { "content-type": "application/json", "retry-after-ms": "1" },
+        }),
+      )
+      .mockImplementation(
+        async () =>
+          new Response(
+            stream
+              ? events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
+              : JSON.stringify(responseBody),
+            { headers: { "content-type": stream ? "text/event-stream" : "application/json" } },
+          ),
+      )
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const { resolveResponseCost } = await import("../src/lib/pricing")
+    const { response } = await queryModel({
+      question: "probe",
+      model: getModel("moonshotai/kimi-k2.6")!,
+      stream,
+      onToken: vi.fn(),
+    })
+    expect(response.error).toBeUndefined()
+    expect(response.content).toBe("answer")
+    expect(response.usage?.raw).toEqual(usage)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const costs = resolveResponseCost(response)
+    expect.soft(costs.charged).not.toHaveProperty("usd")
+    expect.soft(costs.listEquivalent).not.toHaveProperty("usd")
+    expect(costs.listEquivalentBasis).toEqual(
+      expect.arrayContaining([expect.objectContaining({ matchedModelId: "moonshotai/kimi-k2.6" })]),
+    )
+  })
+
   it("retains the last Ollama receipt when a later stream record is malformed", async () => {
     makeTestEnv()
     const raw = { done: false, prompt_eval_count: 7, eval_count: 3, cost_usd: 0, invoice: "before-stream-error" }
