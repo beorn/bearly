@@ -29,9 +29,10 @@
  */
 
 import { z } from "zod"
-import { aggregateCosts, averageCost, deserializeCost, serializeCost } from "./cost"
+import { aggregateCosts, averageCost, deserializeCost, serializeCost, type CostFields } from "./cost"
+import { formatCostColumns } from "./format"
 import { resolveResponseCost } from "./pricing"
-import { getModel, getEndpoint, type Model } from "./types"
+import { getModel, getEndpoint, type Model, type ModelResponse } from "./types"
 import { isProviderRoutable } from "./providers"
 import { createLogger } from "loggily"
 
@@ -1116,14 +1117,17 @@ export interface BacktestPerQueryResult {
   newWinner?: "a" | "b" | "c" | "d" | "tie"
   oldTotal?: number // judge total for OLD config's best leg
   newTotal?: number // judge total for NEW config's best leg
-  oldCost?: number
-  newCost?: number
+  oldCalls: ModelResponse[]
+  newCalls: ModelResponse[]
+  /** A failed dispatch skips scoring, but its original receipts still count. */
+  error?: string
   oldTimeMs?: number
   newTimeMs?: number
 }
 
 export interface BacktestReport {
   sampleSize: number
+  scoredQueries: number
   oldAvgScore: number
   newAvgScore: number
   scoreDelta: number
@@ -1131,8 +1135,9 @@ export interface BacktestReport {
   oldWins: number
   ties: number
   regressions: BacktestPerQueryResult[]
-  oldAvgCost: number
-  newAvgCost: number
+  old: { total: CostFields; average: CostFields }
+  new: { total: CostFields; average: CostFields }
+  total: CostFields
   oldAvgTimeMs: number
   newAvgTimeMs: number
   perQuery: BacktestPerQueryResult[]
@@ -1144,24 +1149,25 @@ export interface BacktestReport {
  * markdown-ready report shape.
  */
 export function aggregateBacktest(perQuery: readonly BacktestPerQueryResult[]): BacktestReport {
-  const n = perQuery.length || 1
+  const scored = perQuery.filter((row) => row.error === undefined)
+  const n = scored.length || 1
+  const oldCalls = perQuery.flatMap((row) => row.oldCalls)
+  const newCalls = perQuery.flatMap((row) => row.newCalls)
+  const oldCost = aggregateCosts(oldCalls.map(resolveResponseCost))
+  const newCost = aggregateCosts(newCalls.map(resolveResponseCost))
   let oldScoreSum = 0
   let newScoreSum = 0
-  let oldCostSum = 0
-  let newCostSum = 0
   let oldTimeSum = 0
   let newTimeSum = 0
   let newWins = 0
   let oldWins = 0
   let ties = 0
   const regressions: BacktestPerQueryResult[] = []
-  for (const r of perQuery) {
+  for (const r of scored) {
     const o = r.oldTotal ?? 0
     const ne = r.newTotal ?? 0
     oldScoreSum += o
     newScoreSum += ne
-    oldCostSum += r.oldCost ?? 0
-    newCostSum += r.newCost ?? 0
     oldTimeSum += r.oldTimeMs ?? 0
     newTimeSum += r.newTimeMs ?? 0
     if (Math.abs(ne - o) < 0.5) ties++
@@ -1175,6 +1181,7 @@ export function aggregateBacktest(perQuery: readonly BacktestPerQueryResult[]): 
   const newAvgScore = newScoreSum / n
   return {
     sampleSize: perQuery.length,
+    scoredQueries: scored.length,
     oldAvgScore,
     newAvgScore,
     scoreDelta: newAvgScore - oldAvgScore,
@@ -1182,8 +1189,9 @@ export function aggregateBacktest(perQuery: readonly BacktestPerQueryResult[]): 
     oldWins,
     ties,
     regressions,
-    oldAvgCost: oldCostSum / n,
-    newAvgCost: newCostSum / n,
+    old: { total: serializeCost(oldCost), average: serializeCost(averageCost(oldCost, perQuery.length)) },
+    new: { total: serializeCost(newCost), average: serializeCost(averageCost(newCost, perQuery.length)) },
+    total: serializeCost(aggregateCosts([...oldCalls, ...newCalls].map(resolveResponseCost))),
     oldAvgTimeMs: oldTimeSum / n,
     newAvgTimeMs: newTimeSum / n,
     perQuery: [...perQuery],
@@ -1193,12 +1201,12 @@ export function aggregateBacktest(perQuery: readonly BacktestPerQueryResult[]): 
 /** Format the backtest report as markdown for human review. */
 export function formatBacktestReport(report: BacktestReport): string {
   const fmt = (n: number) => n.toFixed(2)
-  const fmtCost = (n: number) => `$${n.toFixed(3)}`
   const fmtTime = (n: number) => `${(n / 1000).toFixed(1)}s`
   const lines: string[] = []
   lines.push("# Backtest report")
   lines.push("")
   lines.push(`Sample size: **${report.sampleSize}** queries`)
+  lines.push(`Scored: ${report.scoredQueries}; dispatch failures: ${report.sampleSize - report.scoredQueries}`)
   lines.push("")
   lines.push("## Score")
   lines.push("")
@@ -1214,8 +1222,11 @@ export function formatBacktestReport(report: BacktestReport): string {
   lines.push("")
   lines.push("## Cost / latency")
   lines.push("")
-  lines.push(`- OLD avg cost: ${fmtCost(report.oldAvgCost)}`)
-  lines.push(`- NEW avg cost: ${fmtCost(report.newAvgCost)}`)
+  lines.push(`- All invoked calls: ${formatCostColumns(report.total)}`)
+  lines.push(`- OLD total: ${formatCostColumns(report.old.total)}`)
+  lines.push(`- NEW total: ${formatCostColumns(report.new.total)}`)
+  lines.push(`- OLD mean per sampled query: ${formatCostColumns(report.old.average)}`)
+  lines.push(`- NEW mean per sampled query: ${formatCostColumns(report.new.average)}`)
   lines.push(`- OLD avg time: ${fmtTime(report.oldAvgTimeMs)}`)
   lines.push(`- NEW avg time: ${fmtTime(report.newAvgTimeMs)}`)
   if (report.regressions.length > 0) {

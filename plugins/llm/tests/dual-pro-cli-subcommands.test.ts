@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { BacktestReport } from "../src/lib/dual-pro"
 
 const generateTextMock = vi.fn()
 vi.mock("ai", () => ({
@@ -89,6 +90,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.doUnmock("../src/lib/research")
   rmSync(homeDir, { recursive: true, force: true })
   if (prevHome !== undefined) process.env.HOME = prevHome
   else delete process.env.HOME
@@ -221,6 +223,115 @@ describe("bun llm pro --promote-review", () => {
 })
 
 describe("bun llm pro --backtest", () => {
+  // Spending survives scoring failures; the existing happy path only checks score/report persistence.
+  it.each(["paid-invalid-judge", "thrown-opinion", "thrown-judge"])(
+    "retains actual backtest receipts for %s",
+    async (failure) => {
+      const dir = memoryDir(homeDir)
+      seedAbPro(homeDir, [{ schema: "ab-pro/v2", question: "receipt question" }])
+      writeFileSync(join(dir, "dual-pro-config.json"), JSON.stringify({ mainstays: ["gpt-5-nano", "gpt-5-nano"] }))
+      const { getModel } = await import("../src/lib/types")
+      const configured = getModel("gpt-5-nano")
+      if (!configured) throw new Error("fixture requires registered gpt-5-nano")
+      const model = { ...configured, modelId: "fixture-backtest" }
+      const { savePricingCache } = await import("../src/lib/pricing")
+      savePricingCache({
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        models: {
+          "fixture-backtest": {
+            inputPricePerM: 2,
+            outputPricePerM: 3,
+            rateSource: "litellm",
+            rateDate: "2026-01-01T00:00:00.000Z",
+            matchedModelId: "priced-fixture",
+          },
+        },
+      })
+      let invoked = 0
+      const ask = vi.fn(async (prompt: string) => {
+        const call = ++invoked
+        if (failure === "thrown-opinion" && call === 3) throw new Error("fixture transport threw")
+        if (failure === "thrown-judge" && call === 5) throw new Error("fixture judge threw")
+        return {
+          model,
+          content: prompt.includes("STRICT JSON")
+            ? call === 5
+              ? "paid invalid judge"
+              : JSON.stringify({
+                  a: { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 },
+                  b: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+                  winner: "a",
+                })
+            : "answer",
+          cost_usd: call / 10,
+          usage: {
+            promptTokens: 1000,
+            completionTokens: 1000,
+            totalTokens: 2000,
+            classes: { input: 1000, output: 1000 },
+            raw: { invoice: `bill-${call}` },
+          },
+          durationMs: 10,
+        }
+      })
+      vi.doMock("../src/lib/research", () => ({ ask }))
+      const { setJsonMode } = await import("../src/lib/output-mode")
+      setJsonMode(true)
+      const { runBacktest } = await import("../src/cmd/leaderboard")
+      await runBacktest({ sample: 1, quick: true, noChallenger: true, skipConfirm: true })
+      const saved = JSON.parse(readFileSync(join(dir, "backtest-runs.jsonl"), "utf8").trim()) as {
+        report: BacktestReport
+      }
+      const report = saved.report
+      expect((JSON.parse(io.stdout.at(-1)!) as { report: BacktestReport }).report).toEqual(report)
+      expect(report).not.toHaveProperty("oldAvgCost")
+      expect(report).not.toHaveProperty("newAvgCost")
+      expect(report.perQuery).toHaveLength(1)
+      const row = report.perQuery[0]!
+      expect(row.oldCalls[0]?.usage?.raw?.invoice).toBe("bill-1")
+      const { formatBacktestReport } = await import("../src/lib/dual-pro")
+      const human = formatBacktestReport(report)
+      expect(human).toContain("All invoked calls:")
+      expect(human).toContain("charged")
+      expect(human).toContain("list-equivalent")
+      if (failure === "paid-invalid-judge") {
+        expect(invoked).toBe(6)
+        expect(row.oldCalls).toHaveLength(3)
+        expect(row.newCalls).toHaveLength(3)
+        expect(row.oldCalls[2]?.content).toBe("paid invalid judge")
+        expect(report.old.total.cost_usd).toBeCloseTo(0.8)
+        expect(report.new.total.cost_usd).toBeCloseTo(1.3)
+        expect(report.total.cost_usd).toBeCloseTo(2.1)
+        expect(report.total.list_equivalent_usd).toBeCloseTo(0.03)
+        expect(report.total.list_equivalent_basis).toHaveLength(6)
+        expect(report.new.average.cost_usd).toBeCloseTo(1.3)
+        expect(human).toContain("priced-fixture")
+        expect(human).toContain("2026-01-01")
+      } else if (failure === "thrown-opinion") {
+        expect(invoked).toBe(3)
+        expect(row.oldCalls).toHaveLength(2)
+        expect(row.newCalls).toHaveLength(1)
+        expect(row.newCalls[0]?.error).toMatch(/fixture transport threw/)
+        expect(row.error).toMatch(/fixture transport threw/)
+        expect(report.old.total.cost_usd).toBeCloseTo(0.3)
+        expect(report.total).not.toHaveProperty("cost_usd")
+        expect(report.total.cost_usd_reason).toMatch(/1 of 3 invoked calls/)
+        expect(report.total).not.toHaveProperty("list_equivalent_usd")
+        expect(report.scoredQueries).toBe(0)
+      } else {
+        expect(invoked).toBe(6)
+        expect(row.oldCalls).toHaveLength(3)
+        expect(row.oldCalls[2]?.error).toMatch(/fixture judge threw/)
+        expect(row.newCalls).toHaveLength(3)
+        expect(report.new.total.cost_usd).toBeCloseTo(1.3)
+        expect(report.total).not.toHaveProperty("cost_usd")
+        expect(report.total.cost_usd_reason).toMatch(/1 of 6 invoked calls/)
+        expect(report.total).not.toHaveProperty("list_equivalent_usd")
+        expect(human).toContain("unknown")
+      }
+    },
+  )
+
   it("emits empty status when ab-pro.jsonl has no entries", async () => {
     await runCli(["pro", "--backtest", "--quick", "--sample", "2"])
     expect(io.stderr.join("\n")).toMatch(/No ab-pro\.jsonl entries available/)

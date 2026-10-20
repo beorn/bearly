@@ -4,7 +4,7 @@
  */
 
 import { ask } from "../lib/research"
-import { getModel } from "../lib/types"
+import { getModel, type Model, type ModelResponse } from "../lib/types"
 import { emitJson, isJsonMode } from "../lib/output-mode"
 import type { LeaderboardRow } from "../lib/dual-pro"
 import { confirmOrExit, promptChoice } from "../ui/confirm"
@@ -201,10 +201,11 @@ export async function runBacktest(opts: {
     (model) => model !== undefined,
   )
   const planned = opinionModels.map((model) => ({ model, input: 1500, output: 1500 }))
-  if (judgeModel)
+  if (judgeModel) {
     for (let i = 0; i < (opts.noOldFire ? 1 : 2); i++) {
       planned.push({ model: judgeModel, input: 4000, output: 800 })
     }
+  }
   const estimates = planned.map(({ model, input, output }) =>
     resolveCostForModel(model, {
       input: input * sample.length,
@@ -214,10 +215,11 @@ export async function runBacktest(opts: {
   const forecast = aggregateCosts(estimates)
   forecast.charged = { reason: "forecast; no call dispatched" }
   const unpriced = planned.filter((_, i) => "reason" in estimates[i]!.listEquivalent)
-  if (unpriced.length)
+  if (unpriced.length) {
     forecast.listEquivalent = {
       reason: `rates unavailable for ${unpriced.map((call) => call.model.displayName).join(", ")}`,
     }
+  }
   const totalEst = "usd" in forecast.listEquivalent ? forecast.listEquivalent.usd : undefined
 
   console.error(
@@ -240,41 +242,72 @@ export async function runBacktest(opts: {
     console.error(`  [${i}/${sample.length}] ${q.slice(0, 60)}...`)
 
     let oldA, oldB, newA, newB, newC
+    const oldCalls: ModelResponse[] = []
+    const newCalls: ModelResponse[] = []
+    const fire = async (prompt: string, model: Model, calls: ModelResponse[], level: "standard" | "quick") => {
+      const started = Date.now()
+      try {
+        const response = await ask(prompt, level, { modelOverride: model.modelId, stream: false })
+        calls.push(response)
+        return response
+      } catch (error) {
+        calls.push({
+          model,
+          content: "",
+          durationMs: Date.now() - started,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
+    }
     try {
       if (!opts.noOldFire) {
-        if (champion) oldA = await ask(q, "standard", { modelOverride: champion.modelId, stream: false })
-        if (runner) oldB = await ask(q, "standard", { modelOverride: runner.modelId, stream: false })
+        if (champion) oldA = await fire(q, champion, oldCalls, "standard")
+        if (runner) oldB = await fire(q, runner, oldCalls, "standard")
       }
-      if (champion) newA = await ask(q, "standard", { modelOverride: champion.modelId, stream: false })
-      if (runner) newB = await ask(q, "standard", { modelOverride: runner.modelId, stream: false })
-      if (challenger) newC = await ask(q, "standard", { modelOverride: challenger.modelId, stream: false })
+      if (champion) newA = await fire(q, champion, newCalls, "standard")
+      if (runner) newB = await fire(q, runner, newCalls, "standard")
+      if (challenger) newC = await fire(q, challenger, newCalls, "standard")
     } catch (e) {
-      console.error(`    skip — fire failed: ${e instanceof Error ? e.message : String(e)}`)
+      const error = e instanceof Error ? e.message : String(e)
+      console.error(`    skip scoring — fire failed: ${error}; invoked-call receipts retained`)
+      perQueryResults.push({ question: q, oldCalls, newCalls, error })
       continue
     }
 
-    const judgeFor = async (responses: { id: "a" | "b" | "c"; model: string; content: string }[]) => {
+    const judgeFor = async (
+      responses: { id: "a" | "b" | "c"; model: string; content: string }[],
+      calls: ModelResponse[],
+    ) => {
       if (!judgeModel || responses.length === 0) return undefined
       const prompt = dualPro.buildJudgePrompt({ question: q, responses, rubric: cfg.rubric })
       try {
-        const r = await ask(prompt, "quick", { modelOverride: judgeModel.modelId, stream: false })
-        return dualPro.parseJudgeResponse(r.content)
-      } catch {
+        const r = await fire(prompt, judgeModel, calls, "quick")
+        const parsed = dualPro.parseJudgeResponse(r.content)
+        if (!parsed) {
+          console.error(`    backtest judge ${judgeModel.modelId} returned unparseable scores; receipt retained`)
+        }
+        return parsed
+      } catch (error) {
+        console.error(
+          `    backtest judge ${judgeModel.modelId} failed: ${error instanceof Error ? error.message : String(error)}; receipt retained`,
+        )
         return undefined
       }
     }
 
     const oldResponses: { id: "a" | "b" | "c"; model: string; content: string }[] = []
-    if (oldA?.content) oldResponses.push({ id: "a", model: champion!.displayName, content: oldA.content })
-    if (oldB?.content) oldResponses.push({ id: "b", model: runner!.displayName, content: oldB.content })
+    if (oldA?.content) oldResponses.push({ id: "a", model: oldA.model.displayName, content: oldA.content })
+    if (oldB?.content) oldResponses.push({ id: "b", model: oldB.model.displayName, content: oldB.content })
     const newResponses: { id: "a" | "b" | "c"; model: string; content: string }[] = []
-    if (newA?.content) newResponses.push({ id: "a", model: champion!.displayName, content: newA.content })
-    if (newB?.content) newResponses.push({ id: "b", model: runner!.displayName, content: newB.content })
-    if (newC?.content && challenger)
+    if (newA?.content) newResponses.push({ id: "a", model: newA.model.displayName, content: newA.content })
+    if (newB?.content) newResponses.push({ id: "b", model: newB.model.displayName, content: newB.content })
+    if (newC?.content && challenger) {
       newResponses.push({ id: "c", model: challenger.displayName, content: newC.content })
+    }
 
-    const oldJudge = opts.noOldFire ? undefined : await judgeFor(oldResponses)
-    const newJudge = await judgeFor(newResponses)
+    const oldJudge = opts.noOldFire ? undefined : await judgeFor(oldResponses, oldCalls)
+    const newJudge = await judgeFor(newResponses, newCalls)
 
     const bestTotal = (j?: import("../lib/dual-pro").JudgeResult) => {
       if (!j) return undefined
@@ -286,6 +319,8 @@ export async function runBacktest(opts: {
     }
     perQueryResults.push({
       question: q,
+      oldCalls,
+      newCalls,
       oldWinner: oldJudge?.winner,
       newWinner: newJudge?.winner,
       oldTotal,

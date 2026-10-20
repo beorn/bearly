@@ -465,9 +465,9 @@ describe("sampleBacktestEntries — stratified backtest sampling", () => {
 describe("aggregateBacktest — backtest report aggregation", () => {
   it("computes deltas, wins/losses, regressions", () => {
     const perQuery: BacktestPerQueryResult[] = [
-      { question: "q1", oldTotal: 12, newTotal: 16, oldCost: 0.5, newCost: 0.6, oldTimeMs: 8000, newTimeMs: 9000 },
-      { question: "q2", oldTotal: 18, newTotal: 14, oldCost: 0.7, newCost: 1.0, oldTimeMs: 12000, newTimeMs: 14000 },
-      { question: "q3", oldTotal: 15, newTotal: 15.2, oldCost: 0.4, newCost: 0.4, oldTimeMs: 6000, newTimeMs: 7000 },
+      { question: "q1", oldTotal: 12, newTotal: 16, oldCalls: [], newCalls: [], oldTimeMs: 8000, newTimeMs: 9000 },
+      { question: "q2", oldTotal: 18, newTotal: 14, oldCalls: [], newCalls: [], oldTimeMs: 12000, newTimeMs: 14000 },
+      { question: "q3", oldTotal: 15, newTotal: 15.2, oldCalls: [], newCalls: [], oldTimeMs: 6000, newTimeMs: 7000 },
     ]
     const r = aggregateBacktest(perQuery)
     expect(r.sampleSize).toBe(3)
@@ -481,8 +481,8 @@ describe("aggregateBacktest — backtest report aggregation", () => {
 
   it("formats a markdown report including regression list", () => {
     const r = aggregateBacktest([
-      { question: "regression-query", oldTotal: 18, newTotal: 14 },
-      { question: "win-query", oldTotal: 10, newTotal: 16 },
+      { question: "regression-query", oldTotal: 18, newTotal: 14, oldCalls: [], newCalls: [] },
+      { question: "win-query", oldTotal: 10, newTotal: 16, oldCalls: [], newCalls: [] },
     ])
     const md = formatBacktestReport(r)
     expect(md).toMatch(/# Backtest report/)
@@ -496,6 +496,9 @@ describe("aggregateBacktest — backtest report aggregation", () => {
     const r = aggregateBacktest([])
     expect(r.sampleSize).toBe(0)
     expect(r.newWins + r.oldWins + r.ties).toBe(0)
+    expect(r.total.cost_usd).toBe(0) // no invocation means no spending
+    expect(r.old.average).not.toHaveProperty("cost_usd")
+    expect(r.old.average.cost_usd_reason).toMatch(/no observations/)
   })
 })
 
