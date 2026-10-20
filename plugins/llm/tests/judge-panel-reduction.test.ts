@@ -56,12 +56,6 @@ const JUDGE_JSON = JSON.stringify({
 })
 
 describe("24533 — a failed leg reduces the panel, it never cancels the verdict", () => {
-  /** Mirrors dispatch.ts:appendAbProLog — CLAUDE_PROJECT_DIR or cwd, /-encoded. */
-  function abProLogPath(home: string): string {
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
-    return join(home, ".claude/projects", projectRoot.replace(/\//g, "-"), "memory/ab-pro.jsonl")
-  }
-
   /** Run `pro` with 3 legs and return the rendered report plus the ab-pro entry. */
   async function runPro(
     env: TestEnv,
@@ -85,8 +79,9 @@ describe("24533 — a failed leg reduces the panel, it never cancels the verdict
       `pro must emit its output envelope; stderr was: ${env.stderr.join(" | ").slice(0, 400)}`,
     ).toBeDefined()
     const report = readFileSync((JSON.parse(jsonLine!) as { file: string }).file, "utf-8")
-    const abPath = abProLogPath(env.homeDir)
-    expect(existsSync(abPath), "the A/B log must be written even on a degraded run").toBe(true)
+    const { getMemoryDir } = await import("../src/lib/dual-pro")
+    const abPath = join(getMemoryDir(), "ab-pro.jsonl")
+    expect(existsSync(abPath), `the A/B log must be written even on a degraded run: ${abPath}`).toBe(true)
     const lines = readFileSync(abPath, "utf-8").trim().split("\n")
     return {
       report,
