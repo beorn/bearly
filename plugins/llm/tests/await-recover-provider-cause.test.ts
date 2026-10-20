@@ -66,6 +66,67 @@ describe("29325 a failed stored response keeps its provider cause", () => {
     retrieveMock.mockResolvedValue(recordedFailedResponse())
   })
 
+  // The error-only cases below cannot catch a paid failure losing its receipt
+  // or recovery deleting the only durable copy of that original charge.
+  it.each(["failed", "cancelled", "expired", "incomplete", "completed", "error", "aborted"])(
+    "both commands retain a billed %s response and its saved receipt",
+    async (status) => {
+      vi.resetModules()
+      const persistence = await import("../src/lib/persistence")
+      const path = persistence.getPartialPath(RESPONSE_ID)
+      const raw = { input_tokens: 20, output_tokens: 8, total_tokens: 28, cost_usd: 0, invoice: "failed-original" }
+      const savedUsage = {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        raw: { invoice: "last-saved", cost_usd: 0 },
+      }
+      persistence.writePartialHeader(path, {
+        responseId: RESPONSE_ID,
+        model: "GPT-5.4 Pro",
+        modelId: "gpt-5.4-pro",
+        topic: "paid failure",
+        startedAt: new Date().toISOString(),
+        usage: savedUsage,
+        cost_usd: 0,
+      })
+      persistence.appendPartial(path, "unfinished body")
+      if (status === "aborted") {
+        retrieveMock.mockImplementation(async () => {
+          process.emit("SIGINT")
+          return { status: "in_progress", output: [], usage: raw }
+        })
+      } else if (status === "error") retrieveMock.mockRejectedValue(new Error("retrieval unavailable"))
+      else retrieveMock.mockResolvedValue({ status, output: [], usage: raw })
+      const { setJsonMode } = await import("../src/lib/output-mode")
+      setJsonMode(true)
+      const { runAwait, runRecover } = await import("../src/cmd/recover")
+      for (const command of ["await", "recover"]) {
+        env.stdout.length = 0
+        const run =
+          command === "await"
+            ? runAwait({ responseId: RESPONSE_ID })
+            : runRecover({ responseId: RESPONSE_ID, clean: false, cleanStale: false, includeAll: false })
+        await expect(run).rejects.toThrow(status === "aborted" && command === "recover" ? "__exit_130" : "__exit_1")
+        const lines = env.stdout.filter((line) => line.trim().startsWith("{"))
+        expect(lines).toHaveLength(1)
+        const envelope = JSON.parse(lines[0]!)
+        expect(envelope).toMatchObject({
+          status: "failed",
+          responseId: RESPONSE_ID,
+          cost_usd: 0,
+          usage: { raw: status === "error" ? savedUsage.raw : raw },
+        })
+        const saved = persistence.findPartialByResponseId(RESPONSE_ID)
+        expect(saved?.metadata.cost_usd).toBe(0)
+        expect(saved?.metadata.usage?.raw).toEqual(status === "error" ? savedUsage.raw : raw)
+        expect(saved?.metadata.completedAt).toBeUndefined()
+        expect(saved?.content).toContain("unfinished body")
+      }
+      expect(retrieveMock).toHaveBeenCalledTimes(2)
+    },
+  )
+
   it("(a) retrieveResponse surfaces the provider code and message", async () => {
     const { retrieveResponse } = await import("../src/lib/openai-deep")
     const result = await retrieveResponse(RESPONSE_ID)

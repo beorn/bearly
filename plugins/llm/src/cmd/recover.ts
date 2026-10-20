@@ -10,7 +10,7 @@
  */
 
 import { retrieveResponse, pollForCompletion } from "../lib/openai-deep"
-import { listPartials, findPartialByResponseId, cleanupPartials } from "../lib/persistence"
+import { listPartials, findPartialByResponseId, cleanupPartials, updatePartialMetadata } from "../lib/persistence"
 import { getModel, type ModelResponse } from "../lib/types"
 import { outputTokenStop } from "../lib/format"
 import { emitContent, emitJson } from "../lib/output-mode"
@@ -120,6 +120,15 @@ export async function pollResponseToCompletion(
   // OpenAI (historical default, consistent with external callers passing in
   // resp_* IDs directly).
   const partial = findPartialByResponseId(responseId)
+  const retain = (result: Awaited<ReturnType<typeof retrieveResponse>>) => {
+    const receipt = {
+      ...result,
+      usage: result.usage ?? partial?.metadata.usage,
+      cost_usd: result.cost_usd ?? partial?.metadata.cost_usd,
+    }
+    if (partial) updatePartialMetadata(partial.path, receipt)
+    return receipt
+  }
   const persistedModel = partial ? getModel(partial.metadata.modelId) : undefined
   const isGemini = persistedModel?.provider === "google"
 
@@ -137,12 +146,12 @@ export async function pollResponseToCompletion(
       onProgress: makePollProgress({ silent: silentProgress }),
     })
     if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
-    return result
+    return retain(result)
   }
 
   const initial = await retrieveResponse(responseId)
   if (initial.status !== "in_progress" && initial.status !== "queued") {
-    return initial
+    return retain(initial)
   }
   const maxAttempts = resolveMaxAttempts()
   if (!silentProgress) {
@@ -158,7 +167,7 @@ export async function pollResponseToCompletion(
     onProgress: makePollProgress({ silent: silentProgress }),
   })
   if (!silentProgress && process.stderr.isTTY) process.stderr.write("\n")
-  return result
+  return retain({ ...result, usage: result.usage ?? initial.usage, cost_usd: result.cost_usd ?? initial.cost_usd })
 }
 
 /**
@@ -215,7 +224,7 @@ export function classifyRecovery(
   // be running; re-running `recover` later should still work. "cancelled"
   // is reserved for remote provider-terminated runs.
   if (result.status === "aborted") {
-    return { kind: "aborted", status: result.status, error: result.error }
+    return { ...result, kind: "aborted" }
   }
   if (result.status === "completed" && result.content) {
     return { ...result, kind: "completed" }
@@ -223,7 +232,12 @@ export function classifyRecovery(
   // "completed && !content" = provider returned completion but no body.
   // Treated as error rather than success so callers surface the failure.
   if (result.status === "completed" && !result.content) {
-    return { kind: "error", status: "completed-empty", error: result.error ?? "completed with empty content" }
+    return {
+      ...result,
+      kind: "error",
+      status: "completed-empty",
+      error: result.error ?? "completed with empty content",
+    }
   }
   if (
     result.status === "failed" ||
@@ -231,13 +245,13 @@ export function classifyRecovery(
     result.status === "expired" ||
     result.status === "incomplete"
   ) {
-    return { kind: "failed", status: result.status, error: result.error }
+    return { ...result, kind: "failed" }
   }
   if (result.status === "timeout") {
-    return { kind: "error", status: result.status, error: result.error ?? "polling timed out" }
+    return { ...result, kind: "error", error: result.error ?? "polling timed out" }
   }
   if (result.error) {
-    return { kind: "error", status: result.status, error: result.error }
+    return { ...result, kind: "error" }
   }
   // Normalize running states: queued/in_progress/running/processing/submitted
   // all count as "still going".
@@ -245,11 +259,11 @@ export function classifyRecovery(
   if (runningStates.includes(result.status)) {
     const ageMs = partial ? Date.now() - new Date(partial.metadata.startedAt).getTime() : undefined
     if (ageMs !== undefined && ageMs > STALE_THRESHOLD_MS) {
-      return { kind: "stale", status: result.status, ageMs }
+      return { ...result, kind: "stale", ageMs }
     }
-    return { kind: "pending", status: result.status, ageMs }
+    return { ...result, kind: "pending", ageMs }
   }
-  return { kind: "unknown", status: result.status }
+  return { ...result, kind: "unknown" }
 }
 
 /**
@@ -303,22 +317,18 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
           emitContent(outcome.content)
           if (outcome.usage) console.error(`\n[Recovered: ${outcome.usage.totalTokens} tokens]`)
           // Keep partial on disk as a recovery cache. cleanupPartials(24h) ages out.
-          if (outcome.kind === "completed") completePartial(partial.path, { delete: false, usage: outcome.usage })
+          if (outcome.kind === "completed") completePartial(partial.path, { delete: false, ...outcome })
           console.error(`\n--- End Recovered Response ---\n`)
           break
         }
         case "failed": {
-          console.error(
-            `    ❌ Response ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""} — removing stale partial`,
-          )
-          completePartial(partial.path, { delete: true })
+          console.error(`    ❌ Response ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""} — receipt kept`)
           break
         }
         case "stale": {
           console.error(
-            `    ⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale, removing`,
+            `    ⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale, receipt kept`,
           )
-          completePartial(partial.path, { delete: true })
           break
         }
         case "pending": {
@@ -357,8 +367,21 @@ export async function checkAndRecoverPartials(skipRecover: boolean, skipConfirm:
  * the same JSON whichever rail reports the failure: `llm await`, the recover
  * `error` branch, and the recover `failed` branch all print this shape (29325).
  */
-function emitFailedEnvelope(reason: string, pollStatus: string, responseId: string): void {
-  emitJson({ error: reason, status: "failed", pollStatus, responseId })
+function emitFailedEnvelope(
+  reason: string,
+  pollStatus: string,
+  responseId: string,
+  receipt: Pick<ModelResponse, "usage" | "cost_usd">,
+  modelId?: string,
+): void {
+  emitJson({
+    ...serializeCost(resolveResponseCost({ model: { modelId }, usage: receipt.usage, cost_usd: receipt.cost_usd })),
+    usage: receipt.usage,
+    error: reason,
+    status: "failed",
+    pollStatus,
+    responseId,
+  })
 }
 
 /** Run recover/partials command */
@@ -463,16 +486,13 @@ export async function runRecover(options: {
         // Mark completed but don't delete — re-runs of `bun llm recover <id>`
         // should keep working from local cache. cleanupPartials(24h) ages out.
         if (localPartial) {
-          completePartial(localPartial.path, { delete: false, usage: outcome.usage })
+          completePartial(localPartial.path, { delete: false, ...outcome })
         }
         break
       }
       case "failed": {
         console.error(`\nResponse ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}`)
-        if (localPartial) {
-          completePartial(localPartial.path, { delete: true })
-          console.error("Cleaned up stale partial file.")
-        }
+        if (localPartial) console.error("Saved response receipt kept.")
         // A failed terminal must not read as success. Emit the same single JSON
         // envelope as runAwait and the sibling `error` branch, then exit non-zero,
         // so a script can tell a failed response from a finished one (29325).
@@ -480,15 +500,14 @@ export async function runRecover(options: {
           outcome.error ? `Response failed: ${outcome.error}` : "Response failed",
           outcome.status,
           responseId,
+          outcome,
+          localPartial?.metadata.modelId,
         )
         process.exit(1)
       }
       case "stale": {
         console.error(`\n⚠️  Still ${outcome.status} after ${Math.round(outcome.ageMs / 60000)}m — likely stale`)
-        if (localPartial) {
-          completePartial(localPartial.path, { delete: true })
-          console.error("Cleaned up stale partial file.")
-        }
+        if (localPartial) console.error("Saved response receipt kept.")
         break
       }
       case "pending": {
@@ -502,18 +521,25 @@ export async function runRecover(options: {
         // Exit 130 (SIGINT convention) so wrapping scripts can distinguish a
         // user interrupt from success. Flagged by K2.6 round-3 review.
         console.error(`\n⚠️  Recovery aborted locally — partial kept for future retry`)
+        emitFailedEnvelope(
+          outcome.error ?? "Recovery aborted locally",
+          outcome.status,
+          responseId,
+          outcome,
+          localPartial?.metadata.modelId,
+        )
         process.exit(130)
       }
       case "error": {
-        if (!localPartial) {
-          // Match runAwait's error envelope — include responseId + status so
-          // scripts and the `bun llm await` caller can reason about the
-          // failure without re-deriving context.
-          emitFailedEnvelope(`Failed to retrieve: ${outcome.error}`, outcome.status, responseId)
-          process.exit(1)
-        }
         console.error(`\n⚠️  Could not retrieve from OpenAI (${responseId}): ${outcome.error}`)
-        break
+        emitFailedEnvelope(
+          `Failed to retrieve: ${outcome.error}`,
+          outcome.status,
+          responseId,
+          outcome,
+          localPartial?.metadata.modelId,
+        )
+        process.exit(1)
       }
       case "unknown": {
         console.error(`Response ${outcome.status}${result.error ? `: ${result.error}` : ""}`)
@@ -609,17 +635,17 @@ export async function runAwait(options: { responseId: string | undefined }): Pro
     if (localPartial) {
       const { completePartial } = await import("../lib/persistence")
       // Keep on disk for re-recovery; cleanupPartials(24h) ages out.
-      completePartial(localPartial.path, { delete: false, usage: result.usage })
+      completePartial(localPartial.path, { delete: false, ...result })
     }
     return
   }
 
-  const errorPayload: Record<string, unknown> = {
-    error: result.error ?? `Response ${result.status}`,
-    status: "failed",
-    pollStatus: result.status,
+  emitFailedEnvelope(
+    result.error ?? `Response ${result.status}`,
+    result.status,
     responseId,
-  }
-  emitJson(errorPayload)
+    result,
+    localPartial?.metadata.modelId,
+  )
   process.exit(1)
 }
