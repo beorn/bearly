@@ -2736,8 +2736,9 @@ export async function preserveSlotState(
       parentLinks.set(repo.parent === "." ? repo.path : repo.path.slice(repo.parent.length + 1), saved)
       overrides.set(repo.parent, parentLinks)
     }
-    if (sha === undefined || refShort === undefined)
+    if (sha === undefined || refShort === undefined) {
       throw new Error("preserve: child recovery did not produce its root recovery ref")
+    }
   } catch (cause) {
     const failure = cause instanceof Error ? cause.message : String(cause)
     const refs = written.map((entry) => `${entry.repo}:${entry.ref}@${entry.sha}`).join(", ")
