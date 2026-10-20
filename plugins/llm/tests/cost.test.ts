@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { resolveCost, resolveSubscriptionCost, averageCost, aggregateCosts, type ModelRates } from "../src/lib/cost"
+import { resolveCost, averageCost, aggregateCosts, type ModelRates } from "../src/lib/cost"
 import { parseLiteLLMMap, matchLiteLLMEntry } from "../src/lib/litellm"
 
 const RATES: ModelRates = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
@@ -81,7 +81,11 @@ describe("resolveCost keeps charged dollars and list-equivalent estimates indepe
   // @level l0 @consumer The shared resolver's independent known/unknown amounts.
   // Previous provider precedence does not retain a separate computable column.
   it("keeps a subscription charge unknown while retaining an available estimate", () => {
-    const result = resolveSubscriptionCost({ usage: { input: 1_000_000 }, rates: RATES })
+    const result = resolveCost({
+      usage: { input: 1_000_000 },
+      rates: RATES,
+      chargedUnavailableReason: "subscription route has no stated API-key charge",
+    })
     expect(result.charged).toEqual({ reason: "subscription route has no stated API-key charge" })
     expect(result.listEquivalent).toEqual({ usd: 3 })
   })
