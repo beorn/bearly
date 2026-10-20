@@ -76,10 +76,13 @@ function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "f
  * number, because "we do not know" and "about five dollars" are different facts.
  */
 function estimateFleetCost(models: readonly Model[], inputTokens: number, outputTokens: number): { text: string } {
-  const costs = models.map((model) => resolveCostForModel(model, { input: inputTokens, output: outputTokens }))
-  const forecast = aggregateCosts(costs)
+  const priced = models.map((model) => ({
+    model,
+    cost: resolveCostForModel(model, { input: inputTokens, output: outputTokens }),
+  }))
+  const forecast = aggregateCosts(priced.map(({ cost }) => cost))
   forecast.charged = { reason: "forecast; no call dispatched" }
-  const unpriced = models.filter((_, i) => "reason" in costs[i]!.listEquivalent).map((model) => model.displayName)
+  const unpriced = priced.filter(({ cost }) => "reason" in cost.listEquivalent).map(({ model }) => model.displayName)
   if (unpriced.length) forecast.listEquivalent = { reason: `rates unavailable for ${unpriced.join(", ")}` }
   return { text: formatCostColumns(forecast) }
 }
@@ -634,7 +637,9 @@ export async function runProDual(options: {
   let judgeError: string | undefined
   const judgeResponses: import("../lib/types").ModelResponse[] = []
   let judgeModelId: string | undefined
-  const okLegs = legOutcomes.filter((l) => l.ok)
+  // The dispatch outcome sets ok only after receiving a valid ModelResponse.
+  type AnsweredLeg = LegOutcome & { response: import("../lib/types").ModelResponse }
+  const okLegs = legOutcomes.filter((l): l is AnsweredLeg => l.ok)
   /**
    * 24533 defect 1. The judge used to be gated on leg A (`anyLegOk && legA.ok`),
    * so one dead anchor model turned every dispatch into unjudged opinions that
@@ -647,7 +652,7 @@ export async function runProDual(options: {
    * because there is nothing to compare it against; that is REPORTED rather than
    * silently skipped.
    */
-  const judgeAnchor: LegOutcome | undefined = legA.ok ? legA : okLegs[0]
+  const judgeAnchor = okLegs.find((leg) => leg.id === "a") ?? okLegs[0]
   const judgeRequired =
     !options.noJudge && okLegs.length >= 2 && judgeAnchor
       ? okLegs.filter((l) => l.id !== judgeAnchor.id).map((l) => `${judgeAnchor.id}${l.id}`)
@@ -674,7 +679,7 @@ export async function runProDual(options: {
       // names BOTH slots (`ab`, `bc`, …) so a reduced panel is self-describing;
       // only the A-anchored ids coincide with the legacy ab/ac/ad keys.
       const contenders = okLegs.filter((l) => l.id !== judgeAnchor.id)
-      const pairs: { id: string; contender: LegOutcome }[] = contenders.map((contender) => ({
+      const pairs: { id: string; contender: AnsweredLeg }[] = contenders.map((contender) => ({
         id: `${judgeAnchor.id}${contender.id}`,
         contender,
       }))
@@ -687,7 +692,7 @@ export async function runProDual(options: {
       )
       const judgeOnce = async (
         pairId: string,
-        contender: LegOutcome,
+        contender: AnsweredLeg,
       ): Promise<{
         id: typeof pairId
         result?: import("../lib/dual-pro").PairwiseJudgeResult
@@ -696,8 +701,8 @@ export async function runProDual(options: {
         const prompt = dualPro.buildPairwiseJudgePrompt({
           question,
           pair: {
-            a: { model: judgeAnchor.model.displayName, content: judgeAnchor.response!.content },
-            b: { model: contender.model.displayName, content: contender.response!.content },
+            a: { model: judgeAnchor.model.displayName, content: judgeAnchor.response.content },
+            b: { model: contender.model.displayName, content: contender.response.content },
           },
           rubric: cfg.rubric,
         })
@@ -1350,8 +1355,8 @@ async function appendAbProLog(entry: {
                 rubric: entry.rubric,
                 a: byId.get("a")?.score ?? null,
                 b: byId.get("b")?.score ?? null,
-                c: byId.has("c") ? (byId.get("c")!.score ?? null) : undefined,
-                d: byId.has("d") ? (byId.get("d")!.score ?? null) : undefined,
+                c: byId.has("c") ? (byId.get("c")?.score ?? null) : undefined,
+                d: byId.has("d") ? (byId.get("d")?.score ?? null) : undefined,
                 // v3 — pairwise results, the actual judge output.
                 ab: entry.pairwise.ab,
                 ac: entry.pairwise.ac,

@@ -1,5 +1,6 @@
 /**
  * Regression: --json flag produces the canonical envelope on stdout.
+ * @reach fs-walk <fixture-only: enumerates isolated per-test LLM cache files>
  *
  * Bead km-bearly.llm-cli-json-output. Skill consumers (pro / deep / ask)
  * used to regex stderr for the output path, which broke whenever the
@@ -14,7 +15,8 @@
  *     stderr = "Output written to: ..." + progress
  *
  * Schema:
- *   { file, model, tokens: {prompt, completion, total}, cost,
+ *   { file, model, tokens: {prompt, completion, total}, cost_usd?, cost_usd_reason?,
+ *     list_equivalent_usd?, list_equivalent_reason?, list_equivalent_basis,
  *     durationMs, responseId?, status, chars, query? }
  *
  * For dual-pro, additionally: { a: {...}, b: {...} }

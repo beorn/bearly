@@ -223,7 +223,7 @@ export const ModelResponseSchema = z.object({
   responseId: z.string().optional(),
   reasoning: z.string().optional(),
   /** Validated stated API-key charge, independent of token-based estimates. */
-  cost_usd: z.number().finite().nonnegative().optional(),
+  cost_usd: z.number().nonnegative().optional(),
   /** Replayed original facts do not establish a charge for this cache lookup. */
   cacheHit: z.boolean().optional(),
   citations: z
@@ -305,9 +305,9 @@ export const ConsensusResultSchema = z.object({
   agreements: z.array(z.string()).optional(),
   disagreements: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
-  cost_usd: z.number().finite().nonnegative().optional(),
+  cost_usd: z.number().nonnegative().optional(),
   cost_usd_reason: z.string().optional(),
-  list_equivalent_usd: z.number().finite().nonnegative().optional(),
+  list_equivalent_usd: z.number().nonnegative().optional(),
   list_equivalent_reason: z.string().optional(),
   list_equivalent_basis: z.array(
     z.object({

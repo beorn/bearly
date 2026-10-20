@@ -209,18 +209,3 @@ export function resolveCost(opts: CostOptions): ResolvedCost {
   if (!Number.isFinite(usd)) return unknownEstimate("list-equivalent calculation is not finite")
   return { charged, listEquivalent: { usd }, listEquivalentBasis, breakdown }
 }
-
-/**
- * A subscription has no stated API-key charge. Its list-equivalent estimate
- * still uses the actual served model's rates/usage when the caller has them.
- */
-export function resolveSubscriptionCost(
-  opts: Pick<CostOptions, "usage" | "rates" | "basis"> = { usage: {} },
-): ResolvedCost {
-  return resolveCost({
-    usage: opts.usage,
-    rates: opts.rates,
-    basis: opts.basis,
-    chargedUnavailableReason: "subscription route has no stated API-key charge",
-  })
-}
