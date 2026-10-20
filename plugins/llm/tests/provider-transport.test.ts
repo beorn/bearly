@@ -18,6 +18,89 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  // A local observation-store failure happens after the paid HTTP response.
+  // The caller must receive both the original receipt and the local failure.
+  it.each([
+    { modelId: "moonshotai/kimi-k2.6", api: "responses" },
+    { modelId: "o3-deep-research-2025-06-26", api: "responses" },
+    { modelId: "deep-research-pro-preview-12-2025", api: "interactions" },
+    { modelId: "qwen2.5:7b", api: "ollama" },
+  ])("retains $modelId receipts when observation persistence fails", async ({ modelId, api }) => {
+    makeTestEnv()
+    const usage =
+      api === "ollama"
+        ? { prompt_eval_count: 100, eval_count: 50, cost_usd: 0.125, done: true }
+        : api === "interactions"
+          ? { total_input_tokens: 100, total_output_tokens: 50, cost_usd: 0.125, invoice: "original" }
+          : { input_tokens: 100, output_tokens: 50, total_tokens: 150, cost: 0.125, cost_usd: 0.125 }
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify(
+            api === "ollama"
+              ? { ...usage, message: { role: "assistant", content: "offline answer" } }
+              : api === "interactions"
+                ? {
+                    id: "offline-paid-receipt",
+                    status: "completed",
+                    usage,
+                    steps: [{ type: "model_output", content: [{ type: "text", text: "offline answer" }] }],
+                  }
+                : {
+                    id: "offline-paid-receipt",
+                    created_at: 1,
+                    model: modelId,
+                    output: [
+                      {
+                        type: "message",
+                        id: "msg_offline",
+                        role: "assistant",
+                        content: [{ type: "output_text", text: "offline answer", annotations: [] }],
+                      },
+                    ],
+                    usage,
+                  },
+          ),
+          { headers: { "content-type": "application/json" } },
+        ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const { parseOllamaModel } = await import("../src/lib/ollama")
+    const { resolveResponseCost } = await import("../src/lib/pricing")
+    for (const fail of [false, true]) {
+      const write = vi.fn(async () => {
+        if (fail) throw new Error("EIO observation write failed sk-test-openai")
+      })
+      const path = "/offline/provider-observation.json"
+      const { response } = await queryModel({
+        question: "offline receipt probe",
+        model: api === "ollama" ? parseOllamaModel(modelId) : getModel(modelId)!,
+        stream: false,
+        observationStore: {
+          pathFor: () => path,
+          read: async () => ({ status: "absent" as const, path }),
+          write,
+        },
+      })
+      expect(write).toHaveBeenCalledOnce()
+      expect(response.content).toBe("offline answer")
+      expect(response.usage?.raw).toEqual(usage)
+      expect(resolveResponseCost(response).charged).toEqual({ usd: 0.125 })
+      if (api === "responses" && modelId === "moonshotai/kimi-k2.6") {
+        expect(response.calls).toHaveLength(1)
+        expect(response.calls?.[0]?.usage?.raw).toEqual(usage)
+      }
+      if (fail) {
+        expect(response.error).toContain("EIO observation write failed")
+        expect(response.error).not.toContain("sk-test-openai")
+        expect(response.failure).toBeUndefined()
+      } else expect(response.error).toBeUndefined()
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   // 30170 requires every invoked call, including SDK and context retries, in both totals.
   // Final-result mocks cannot reveal a failed HTTP attempt hidden by a successful retry.
   it.each([

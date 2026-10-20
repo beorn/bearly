@@ -350,7 +350,19 @@ async function finishQuery(
           },
         }
       : response
-  await recordQueryObservation(store, model, withFailure, describedFailure)
+  try {
+    await recordQueryObservation(store, model, withFailure, describedFailure)
+  } catch (error) {
+    // The provider has already answered. A local persistence failure must be
+    // visible without discarding its content, usage, charge or physical calls.
+    const message = redactSecrets(error instanceof Error ? error.message : String(error))
+    return {
+      response: {
+        ...withFailure,
+        error: [withFailure.error, `Provider observation persistence failed: ${message}`].filter(Boolean).join("; "),
+      },
+    }
+  }
   return { response: withFailure }
 }
 
