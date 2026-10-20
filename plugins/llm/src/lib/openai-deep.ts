@@ -242,6 +242,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     })
 
     const responseId = initialResponse.id
+    const initialUsage = usageFacts(initialResponse.usage)
     let partialPath = ""
 
     if (responseId && !noPersist) {
@@ -252,7 +253,7 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
         modelId: model.modelId,
         topic,
         startedAt: new Date().toISOString(),
-        ...usageFacts(initialResponse.usage),
+        ...initialUsage,
         ...completionFacts(initialResponse),
         appliedMaxOutputTokens: maxOutputTokens,
       })
@@ -289,13 +290,19 @@ export async function queryOpenAIDeepResearch(options: DeepResearchOptions): Pro
     // 50-minute ceiling (600 × 5s) matches dispatch-side recovery; historical
     // 180 × 5s = 15min timed out on long Pro deep runs. LLM_RECOVER_MAX_ATTEMPTS overrides.
     log.info?.("Research in progress...")
-    const pollResult = await pollForCompletion(responseId, {
+    const polled = await pollForCompletion(responseId, {
       intervalMs: 5_000,
       abortSignal: options.abortSignal,
       onProgress: (status, elapsed) => {
         process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
       },
     })
+
+    const pollResult = {
+      ...polled,
+      usage: polled.usage ?? initialUsage.usage,
+      cost_usd: polled.cost_usd ?? initialUsage.cost_usd,
+    }
 
     if (partialPath) updatePartialMetadata(partialPath, pollResult)
 
@@ -424,6 +431,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     })
 
     const responseId = initialResponse.id
+    const initialUsage = usageFacts(initialResponse.usage)
     let partialPath = ""
 
     if (responseId && !noPersist) {
@@ -434,7 +442,7 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
         modelId: model.modelId,
         topic,
         startedAt: new Date().toISOString(),
-        ...usageFacts(initialResponse.usage),
+        ...initialUsage,
         ...completionFacts(initialResponse),
         appliedMaxOutputTokens: maxOutputTokens,
       })
@@ -469,13 +477,19 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
     // Happy path: poll until complete. Matches the 50-min ceiling used by
     // deep research — a standard Pro call is much shorter in practice but
     // we prefer one behaviour across paths over bespoke per-model tuning.
-    const pollResult = await pollForCompletion(responseId, {
+    const polled = await pollForCompletion(responseId, {
       intervalMs: 5_000,
       abortSignal: options.abortSignal,
       onProgress: (status, elapsed) => {
         process.stderr.write(`\r⏳ ${status} (${Math.round(elapsed / 1000)}s elapsed)`)
       },
     })
+
+    const pollResult = {
+      ...polled,
+      usage: polled.usage ?? initialUsage.usage,
+      cost_usd: polled.cost_usd ?? initialUsage.cost_usd,
+    }
 
     if (partialPath) updatePartialMetadata(partialPath, pollResult)
 
@@ -608,22 +622,31 @@ export async function pollForCompletion(
   const defaultMax = Number.isFinite(envMax) && envMax > 0 ? envMax : 600
   const { intervalMs = 5_000, maxAttempts = defaultMax, abortSignal } = options
   const startTime = Date.now()
+  let latest: Awaited<ReturnType<typeof retrieveResponse>> | undefined
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (abortSignal?.aborted) {
       // "aborted" = local client cancellation; distinct from "cancelled"
       // which is reserved for remote provider-terminated runs. The
       // distinction matters for recovery: a local Ctrl-C during `recover`
-      // must NOT delete the partial file, while a remote-cancelled run
-      // should. Flagged in Pro round-2 review 2026-04-21.
+      // leaves remote work running. Both local and remote stops retain any
+      // observed usage and billing receipt for recovery/accounting.
       return {
+        ...latest,
         status: "aborted",
-        content: "",
+        content: latest?.content ?? "",
         error: `Polling aborted: ${String(abortSignal.reason ?? "local-interrupt")}`,
       }
     }
 
-    const result = await retrieveResponse(responseId)
+    const observed = await retrieveResponse(responseId)
+    const result = {
+      ...observed,
+      content: observed.status === "error" ? observed.content || latest?.content || "" : observed.content,
+      usage: observed.usage ?? latest?.usage,
+      cost_usd: observed.cost_usd ?? latest?.cost_usd,
+    }
+    latest = result
 
     if (result.error) {
       return result
@@ -644,8 +667,9 @@ export async function pollForCompletion(
   }
 
   return {
+    ...latest,
     status: "timeout",
-    content: "",
+    content: latest?.content ?? "",
     error: `Timed out after ${maxAttempts} attempts (${Math.round((maxAttempts * intervalMs) / 1000)}s)`,
   }
 }

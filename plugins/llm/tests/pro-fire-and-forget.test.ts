@@ -47,6 +47,53 @@ beforeEach(() => {
 })
 
 describe("queryOpenAIBackground — persistence and recovery", () => {
+  // Poll observations belong to the original request; a local stop or failed
+  // retrieval cannot erase its last available receipt or create a new bill.
+  it.each(["aborted", "timeout", "error"])("keeps last poll facts on %s", async (status) => {
+    makeTestEnv()
+    vi.resetModules()
+    const raw = { input_tokens: 7, output_tokens: 3, cost_usd: 0, invoice: "last-poll" }
+    responsesRetrieveMock.mockResolvedValueOnce({
+      status: "in_progress",
+      usage: raw,
+      output: [{ type: "message", content: [{ type: "output_text", text: "pending original" }] }],
+    })
+    if (status === "error") responsesRetrieveMock.mockRejectedValueOnce(new Error("retrieval failed"))
+    const ac = new AbortController()
+    const { pollForCompletion } = await import("../src/lib/openai-deep")
+    const result = await pollForCompletion("resp_last_receipt", {
+      intervalMs: 0,
+      maxAttempts: status === "timeout" ? 1 : 2,
+      abortSignal: ac.signal,
+      onProgress: () => {
+        if (status === "aborted") ac.abort("local stop")
+      },
+    })
+    expect(result).toMatchObject({ status, content: "pending original", cost_usd: 0, usage: { raw } })
+    expect(responsesRetrieveMock).toHaveBeenCalledTimes(status === "error" ? 2 : 1)
+  })
+
+  it.each(["background", "deep"])("retains the initial create receipt if %s polling aborts", async (route) => {
+    makeTestEnv()
+    vi.resetModules()
+    const raw = { input_tokens: 7, output_tokens: 3, cost_usd: 0, invoice: "initial-create" }
+    responsesCreateMock.mockResolvedValue({ id: "resp_initial_receipt", status: "queued", usage: raw })
+    const ac = new AbortController()
+    ac.abort("local stop")
+    const api = await import("../src/lib/openai-deep")
+    const model = (await import("../src/lib/types")).getModel("gpt-5.4-pro")!
+    const result =
+      route === "background"
+        ? await api.queryOpenAIBackground({ model, prompt: "question", abortSignal: ac.signal })
+        : await api.queryOpenAIDeepResearch({ model, topic: "question", background: true, abortSignal: ac.signal })
+    expect(result).toMatchObject({ cost_usd: 0, usage: { raw } })
+    expect(result.error).toContain("aborted")
+    expect(responsesRetrieveMock).not.toHaveBeenCalled()
+    const partial = (await import("../src/lib/persistence")).findPartialByResponseId("resp_initial_receipt")
+    expect(partial?.metadata.usage?.raw).toEqual(raw)
+    expect(partial?.metadata.cost_usd).toBe(0)
+  })
+
   it.each(["background", "deep-sync", "deep-poll", "background-fire-and-forget", "deep-fire-and-forget"])(
     "preserves a terminal output-token stop through %s and await",
     async (route) => {
