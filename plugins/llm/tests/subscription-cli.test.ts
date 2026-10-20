@@ -309,17 +309,44 @@ describe("dispatch", () => {
     await expect(querySubscriptionCli(modelOf("gpt-5.4"), { question: "hi" })).rejects.toThrow(/EISDIR/)
   })
 
+  // CLI usage is a provider receipt, not a zero-cost placeholder. Existing
+  // complete fixtures miss absent counts and a manufactured subscription bill.
+  it.each(
+    [
+      { raw: {}, counts: {} },
+      { raw: { input_tokens: 7 }, counts: { promptTokens: 7 } },
+      { raw: { output_tokens: 3 }, counts: { completionTokens: 3 } },
+      { raw: { input_tokens: 0, output_tokens: 0 }, counts: { promptTokens: 0, completionTokens: 0 } },
+    ].flatMap((item) => ["codex", "agy"].map((cli) => ({ ...item, cli }))),
+  )("preserves $cli partial usage $raw", async ({ raw, counts, cli }) => {
+    const original = { ...raw, invoice: "cli-original" }
+    writeBin(
+      cli,
+      cli === "codex"
+        ? OK_CODEX.replace('{"input_tokens":7,"output_tokens":3}', JSON.stringify(original))
+        : OK_AGY.replace('{"input_tokens":5,"output_tokens":2,"total_tokens":7}', JSON.stringify(original)),
+    )
+    resetSubscriptionCliProbe()
+    const response = await querySubscriptionCli(modelOf(cli === "codex" ? "gpt-5.4" : "gemini-2.5-pro"), {
+      question: "probe",
+    })
+    expect(response.error).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(response.usage))).toEqual({ ...counts, raw: original })
+    expect(response.cost_usd).toBeUndefined()
+  })
+
   it("answers an OpenAI model through the codex CLI with no API key", async () => {
     const argvFile = join(fakeDir, "codex-argv.txt")
     process.env.FAKE_CODEX_ARGV = argvFile
-    writeBin("codex", OK_CODEX)
+    writeBin("codex", OK_CODEX.replace('"input_tokens":7', '"input_tokens":7,"cached_input_tokens":2'))
     resetSubscriptionCliProbe()
 
     const response = await querySubscriptionCli(modelOf("gpt-5.4"), { question: "hello" })
     expect(response.error).toBeUndefined()
     expect(response.content).toBe("CODEX-FAKE-OK")
-    expect(response.usage?.estimatedCost).toBe(0)
-    expect(response.usage?.totalTokens).toBe(10)
+    expect(response.usage).not.toHaveProperty("estimatedCost")
+    expect(response.usage).not.toHaveProperty("totalTokens")
+    expect(response.usage?.classes).toEqual({ input: 5, cache_read: 2, output: 3 })
     expect(response.servedBy).toEqual({ route: "subscription-cli", cli: "codex", model: "gpt-5.5" })
     const argv = readFileSync(argvFile, "utf8")
     expect(argv).toContain("exec")

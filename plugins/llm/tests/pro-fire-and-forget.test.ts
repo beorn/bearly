@@ -47,6 +47,45 @@ beforeEach(() => {
 })
 
 describe("queryOpenAIBackground — persistence and recovery", () => {
+  // REST receipts may omit counts even though the SDK's static response type
+  // requires them. Complete fixtures miss synthetic totals and NaN classes.
+  it.each([
+    { raw: {}, counts: {}, classes: {} },
+    { raw: { input_tokens: 7 }, counts: { promptTokens: 7 }, classes: { input: 7 } },
+    { raw: { output_tokens: 3 }, counts: { completionTokens: 3 }, classes: { output: 3 } },
+    {
+      raw: { input_tokens: 7, output_tokens: 3 },
+      counts: { promptTokens: 7, completionTokens: 3 },
+      classes: { input: 7, output: 3 },
+    },
+    {
+      raw: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      counts: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      classes: { input: 0, output: 0 },
+    },
+  ])("preserves reported REST counts without filling gaps: $raw", async ({ raw, counts, classes }) => {
+    makeTestEnv()
+    vi.resetModules()
+    const original = { ...raw, cost_usd: 0, invoice: "partial-rest" }
+    const originalResponse = {
+      id: "resp_partial_counts",
+      status: "completed",
+      usage: original,
+      output: [{ type: "message", content: [{ type: "output_text", text: "original answer" }] }],
+    }
+    responsesCreateMock.mockResolvedValue(originalResponse)
+    responsesRetrieveMock.mockResolvedValue(originalResponse)
+    const { queryOpenAIBackground } = await import("../src/lib/openai-deep")
+    const { getModel } = await import("../src/lib/types")
+    const model = getModel("gpt-5.4-pro")
+    if (!model) throw new Error("required gpt-5.4-pro fixture model absent")
+    const response = await queryOpenAIBackground({ prompt: "probe", model })
+    expect(response.error).toBeUndefined()
+    expect(response.cost_usd).toBe(0)
+    expect(JSON.parse(JSON.stringify(response.usage))).toEqual({ ...counts, classes, raw: original })
+    const { findPartialByResponseId } = await import("../src/lib/persistence")
+    expect(findPartialByResponseId("resp_partial_counts")?.metadata.usage).toEqual(response.usage)
+  })
   // A failed disk write must not erase the paid response already accepted
   // from the provider. Normal successful persistence never exercises this.
   it.each([
@@ -316,7 +355,7 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
     expect(cachedPartial).not.toBeNull()
     expect(cachedPartial!.content).toContain("hello from pro")
     expect(cachedPartial!.metadata.completedAt).toBeDefined()
-    expect(cachedPartial!.metadata.usage?.totalTokens).toBe(15)
+    expect(cachedPartial!.metadata.usage?.totalTokens).toBeUndefined()
     expect(cachedPartial!.metadata.usage?.raw).toEqual({
       input_tokens: 10,
       output_tokens: 5,
@@ -569,58 +608,74 @@ describe("recover <id> fast-path: completed local partial bypasses OpenAI re-pol
   //      ultimately fails. Fast-path: return the cached partial directly,
   //      skip the re-poll. The OpenAI response object's lifecycle is its own
   //      problem; the local cache is canonical.
-  it("returns legacy cached content without inventing a historical charge or calling OpenAI", async () => {
-    const env = makeTestEnv()
-    const responseId = "resp_pro_cached_recovery"
+  it.each([
+    {
+      header: "usage_prompt: 42\nusage_completion: 100\nusage_total: 142",
+      tokens: { prompt: 42, completion: 100, total: 142 },
+      priced: true,
+    },
+    { header: "usage_prompt: 42", tokens: { prompt: 42 }, priced: false },
+    { header: "usage_completion: 100", tokens: { completion: 100 }, priced: false },
+    { header: "usage_total: 142", tokens: { total: 142 }, priced: false },
+    { header: "usage_prompt: 0", tokens: { prompt: 0 }, priced: false },
+  ])(
+    "returns legacy cached content without inventing counts or charge: $header",
+    async ({ header, tokens, priced }) => {
+      const env = makeTestEnv()
+      const responseId = "resp_pro_cached_recovery"
 
-    // Seed a completed partial on disk as queryOpenAIBackground would now write.
-    vi.resetModules()
-    const persistence = await import("../src/lib/persistence")
-    const path = persistence.getPartialPath(responseId)
-    persistence.writePartialHeader(path, {
-      responseId,
-      model: "GPT-5.4 Pro",
-      modelId: "gpt-5.4-pro",
-      topic: "cached-recovery-test",
-      startedAt: new Date(Date.now() - 60_000).toISOString(),
-    })
-    persistence.appendPartial(path, "cached pro response body")
-    persistence.completePartial(path, {
-      delete: false,
-      usage: { promptTokens: 42, completionTokens: 100, totalTokens: 142 },
-    })
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8").replace(/^receipt: .*$/m, "usage_prompt: 42\nusage_completion: 100\nusage_total: 142"),
-    )
+      // Seed a completed partial on disk as queryOpenAIBackground would now write.
+      vi.resetModules()
+      const persistence = await import("../src/lib/persistence")
+      const path = persistence.getPartialPath(responseId)
+      persistence.writePartialHeader(path, {
+        responseId,
+        model: "GPT-5.4 Pro",
+        modelId: "gpt-5.4-pro",
+        topic: "cached-recovery-test",
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+      })
+      persistence.appendPartial(path, "cached pro response body")
+      persistence.completePartial(path, {
+        delete: false,
+        usage: { promptTokens: 42, completionTokens: 100, totalTokens: 142 },
+      })
+      writeFileSync(path, readFileSync(path, "utf8").replace(/^receipt: .*$/m, header))
 
-    // Both OpenAI mock paths MUST stay unused. If runRecover re-polls
-    // OpenAI for a partial we already have, that's the bug.
-    responsesCreateMock.mockReset()
-    responsesRetrieveMock.mockReset()
-    responsesRetrieveMock.mockRejectedValue(new Error("SHOULD NOT BE CALLED"))
+      // Both OpenAI mock paths MUST stay unused. If runRecover re-polls
+      // OpenAI for a partial we already have, that's the bug.
+      responsesCreateMock.mockReset()
+      responsesRetrieveMock.mockReset()
+      responsesRetrieveMock.mockRejectedValue(new Error("SHOULD NOT BE CALLED"))
 
-    const { runRecover } = await import("../src/cmd/recover")
-    await runRecover({
-      responseId,
-      clean: false,
-      cleanStale: false,
-      includeAll: false,
-    })
+      const { runRecover } = await import("../src/cmd/recover")
+      await runRecover({
+        responseId,
+        clean: false,
+        cleanStale: false,
+        includeAll: false,
+      })
 
-    expect(responsesRetrieveMock).not.toHaveBeenCalled()
-    expect(responsesCreateMock).not.toHaveBeenCalled()
-    const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
-    expect(recovered).not.toHaveProperty("cost_usd")
-    expect(recovered).toHaveProperty("cost_usd_reason", expect.stringMatching(/\S/))
-    expect(recovered).toHaveProperty("usage", { promptTokens: 42, completionTokens: 100, totalTokens: 142 })
+      expect(responsesRetrieveMock).not.toHaveBeenCalled()
+      expect(responsesCreateMock).not.toHaveBeenCalled()
+      const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
+      expect(recovered).toHaveProperty("tokens", tokens)
+      expect(recovered).toHaveProperty(priced ? "list_equivalent_usd" : "list_equivalent_reason")
+      expect(recovered).not.toHaveProperty("cost_usd")
+      expect(recovered).toHaveProperty("cost_usd_reason", expect.stringMatching(/\S/))
+      expect(recovered).toHaveProperty("usage", {
+        ...(tokens.prompt === undefined ? {} : { promptTokens: tokens.prompt }),
+        ...(tokens.completion === undefined ? {} : { completionTokens: tokens.completion }),
+        ...(tokens.total === undefined ? {} : { totalTokens: tokens.total }),
+      })
 
-    // Partial stays on disk for the NEXT recovery — re-runs of `bun llm
-    // recover <id>` should keep working from the same cache.
-    const stillCached = persistence.findPartialByResponseId(responseId)
-    expect(stillCached).not.toBeNull()
-    expect(stillCached!.content).toContain("cached pro response body")
-  })
+      // Partial stays on disk for the NEXT recovery — re-runs of `bun llm
+      // recover <id>` should keep working from the same cache.
+      const stillCached = persistence.findPartialByResponseId(responseId)
+      expect(stillCached).not.toBeNull()
+      expect(stillCached!.content).toContain("cached pro response body")
+    },
+  )
 })
 
 describe("isOpenAIBackgroundCapable", () => {

@@ -16,6 +16,48 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  it("retains the last Ollama receipt when a later stream record is malformed", async () => {
+    makeTestEnv()
+    const raw = { done: false, prompt_eval_count: 7, eval_count: 3, cost_usd: 0, invoice: "before-stream-error" }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ ...raw, message: { content: "partial answer" } }) + '\n{"broken"\n'),
+      ),
+    )
+    const { ollamaChat } = await import("../src/lib/ollama")
+    const response = await ollamaChat({ model: "local-fixture", question: "probe", stream: true })
+    expect(response.error).toContain("stream")
+    expect(response.content).toBe("partial answer")
+    expect(response.usage?.raw).toEqual(raw)
+    expect(response.cost_usd).toBe(0)
+  })
+
+  // Ollama reports independent counts, not an implicit normalized total.
+  // Both transport modes must retain a reported zero and original usage facts.
+  it.each(
+    [
+      { raw: {}, counts: {} },
+      { raw: { prompt_eval_count: 7 }, counts: { promptTokens: 7 } },
+      { raw: { eval_count: 3 }, counts: { completionTokens: 3 } },
+      { raw: { prompt_eval_count: 0, eval_count: 0 }, counts: { promptTokens: 0, completionTokens: 0 } },
+      { raw: { prompt_eval_count: 7, eval_count: 3 }, counts: { promptTokens: 7, completionTokens: 3 } },
+    ].flatMap((item) => [false, true].map((stream) => ({ ...item, stream }))),
+  )("keeps Ollama counts stream=$stream raw=$raw", async ({ raw, counts, stream }) => {
+    makeTestEnv()
+    const facts = { done: true, ...raw, invoice: "ollama-original", cost_usd: 0 }
+    const body = { ...facts, message: { content: "answer" } }
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body) + (stream ? "\n" : "")))
+    vi.stubGlobal("fetch", fetchMock)
+    const { ollamaChat } = await import("../src/lib/ollama")
+    const response = await ollamaChat({ model: "local-fixture", question: "probe", stream })
+    expect(response.error).toBeUndefined()
+    expect(response.content).toBe("answer")
+    expect(JSON.parse(JSON.stringify(response.usage))).toEqual({ ...counts, raw: facts })
+    expect(response.cost_usd).toBe(0)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   // 30170: the Interactions API reports optional usage/steps. SDK-only fixtures
   // cannot detect REST field mismatches or a completed partial with no saved text.
   it.each([

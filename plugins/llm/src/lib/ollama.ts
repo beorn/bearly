@@ -6,6 +6,7 @@
  */
 
 import type { Model, ModelResponse } from "./types"
+import { statedCharge } from "./cost"
 import { describeDispatchFailure } from "./dispatch-error"
 import {
   createProviderObservationStore,
@@ -142,6 +143,7 @@ export async function ollamaChat(options: OllamaChatOptions): Promise<ModelRespo
     isDeepResearch: false,
     costTier: "local",
   }
+  const retained: Pick<ModelResponse, "content" | "usage" | "cost_usd"> = { content: "" }
 
   try {
     let maxOutputTokens: number | undefined
@@ -181,9 +183,6 @@ export async function ollamaChat(options: OllamaChatOptions): Promise<ModelRespo
 
     if (stream && resp.body) {
       // Parse NDJSON stream
-      let fullText = ""
-      let promptTokens = 0
-      let completionTokens = 0
 
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
@@ -205,33 +204,39 @@ export async function ollamaChat(options: OllamaChatOptions): Promise<ModelRespo
               done?: boolean
               prompt_eval_count?: number
               eval_count?: number
+              [key: string]: unknown
+            }
+            if (
+              chunk.done ||
+              chunk.prompt_eval_count !== undefined ||
+              chunk.eval_count !== undefined ||
+              "cost_usd" in chunk
+            ) {
+              const { message: _message, ...raw } = chunk
+              retained.usage = {
+                ...(chunk.prompt_eval_count === undefined ? {} : { promptTokens: chunk.prompt_eval_count }),
+                ...(chunk.eval_count === undefined ? {} : { completionTokens: chunk.eval_count }),
+                raw,
+              }
+              Object.assign(retained, statedCharge(chunk, "ollama"))
             }
             if (chunk.message?.content) {
               const token = chunk.message.content
-              fullText += token
+              retained.content += token
               onToken?.(token)
             }
-            if (chunk.done) {
-              promptTokens = chunk.prompt_eval_count ?? 0
-              completionTokens = chunk.eval_count ?? 0
-            }
-          } catch {
-            // Skip malformed lines
+          } catch (cause) {
+            throw new Error(
+              `Ollama /api/chat stream failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+              { cause },
+            )
           }
         }
       }
 
       return {
         model: ollamaModel,
-        content: fullText,
-        usage:
-          promptTokens || completionTokens
-            ? {
-                promptTokens,
-                completionTokens,
-                totalTokens: promptTokens + completionTokens,
-              }
-            : undefined,
+        ...retained,
         durationMs: Date.now() - startTime,
       }
     }
@@ -241,35 +246,35 @@ export async function ollamaChat(options: OllamaChatOptions): Promise<ModelRespo
       message?: { content?: string }
       prompt_eval_count?: number
       eval_count?: number
+      [key: string]: unknown
     }
 
-    const content = data.message?.content ?? ""
-    const promptTokens = data.prompt_eval_count ?? 0
-    const completionTokens = data.eval_count ?? 0
+    const { message, ...raw } = data
+    retained.content = message?.content ?? ""
+    retained.usage = {
+      ...(data.prompt_eval_count === undefined ? {} : { promptTokens: data.prompt_eval_count }),
+      ...(data.eval_count === undefined ? {} : { completionTokens: data.eval_count }),
+      raw,
+    }
+    Object.assign(retained, statedCharge(data, "ollama"))
 
     return {
       model: ollamaModel,
-      content,
-      usage:
-        promptTokens || completionTokens
-          ? {
-              promptTokens,
-              completionTokens,
-              totalTokens: promptTokens + completionTokens,
-            }
-          : undefined,
+      ...retained,
       durationMs: Date.now() - startTime,
     }
   } catch (err) {
     const message =
       err instanceof Error
-        ? err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed")
+        ? !retained.usage &&
+          !retained.content &&
+          (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed"))
           ? `Ollama not running. Start it with: ollama serve`
           : err.message
         : String(err)
     return {
       model: ollamaModel,
-      content: "",
+      ...retained,
       durationMs: Date.now() - startTime,
       error: message,
     }
