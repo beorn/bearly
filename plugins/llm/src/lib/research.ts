@@ -28,7 +28,7 @@ import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
 import type { Model, ModelResponse, ThinkingLevel } from "./types"
 import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
-import { describeDispatchFailure, type DispatchFailureDescription } from "./dispatch-error"
+import { describeDispatchFailure, redactSecrets, type DispatchFailureDescription } from "./dispatch-error"
 import { missingApiKeyError } from "./env-preflight"
 import {
   decideOpenRouterRoutePin,
@@ -545,9 +545,9 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   }
   const calls: NonNullable<ModelResponse["calls"]> = []
   const recordFailure = (call: (typeof calls)[number], error: unknown) => {
-    call.error = error instanceof Error ? error.message : String(error)
+    call.error = redactSecrets(error instanceof Error ? error.message : String(error))
     if (error && typeof error === "object" && "responseBody" in error && typeof error.responseBody === "string") {
-      call.responseBody = error.responseBody
+      call.responseBody = redactSecrets(error.responseBody)
     }
   }
   const languageModel = wrapLanguageModel({
