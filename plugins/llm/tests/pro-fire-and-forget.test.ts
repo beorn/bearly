@@ -251,8 +251,8 @@ describe("queryOpenAIBackground — persistence and recovery", () => {
       includeAll: false,
     })
     const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
-    expect(recovered.cost_usd).toBe(0)
-    expect(recovered.usage).toEqual(cachedPartial!.metadata.usage)
+    expect(recovered).toHaveProperty("cost_usd", 0)
+    expect(recovered).toHaveProperty("usage", cachedPartial!.metadata.usage)
     expect(responsesRetrieveMock).toHaveBeenCalledTimes(1)
   })
 
@@ -515,9 +515,9 @@ describe("recover <id> fast-path: completed local partial bypasses OpenAI re-pol
     expect(responsesRetrieveMock).not.toHaveBeenCalled()
     expect(responsesCreateMock).not.toHaveBeenCalled()
     const recovered = JSON.parse(env.stdout.filter((line) => line.startsWith("{")).at(-1)!)
-    expect(recovered.cost_usd).toBeUndefined()
-    expect(recovered.cost_usd_reason).toBeTruthy()
-    expect(recovered.usage).toEqual({ promptTokens: 42, completionTokens: 100, totalTokens: 142 })
+    expect(recovered).not.toHaveProperty("cost_usd")
+    expect(recovered).toHaveProperty("cost_usd_reason", expect.stringMatching(/\S/))
+    expect(recovered).toHaveProperty("usage", { promptTokens: 42, completionTokens: 100, totalTokens: 142 })
 
     // Partial stays on disk for the NEXT recovery — re-runs of `bun llm
     // recover <id>` should keep working from the same cache.
