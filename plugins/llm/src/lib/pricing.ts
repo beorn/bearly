@@ -264,12 +264,24 @@ export function resolveCostForModel(
 ): ResolvedCost {
   const modelId = typeof model === "string" ? model : model?.modelId
   const lookup = modelId === undefined ? null : lookupModelRates(modelId)
-  return resolveCost({
+  const resolved = resolveCost({
     usage,
     ...(lookup ? { rates: lookup.rates, basis: [lookup.basis] } : {}),
     ...(reportedUsd !== undefined ? { reportedUsd } : {}),
     ...(chargedUnavailableReason !== undefined ? { chargedUnavailableReason } : {}),
   })
+  const missing = ["input", "output"].filter((key) => usage[key] === undefined)
+  const unsupported = Object.entries(usage)
+    .filter(([key, count]) => !["input", "output", "cache_read", "cache_write", "reasoning"].includes(key) && count > 0)
+    .map(([key]) => key)
+  const reason = unsupported.length
+    ? `unsupported positive usage classes: ${unsupported.join(", ")}`
+    : missing.length
+      ? `provider did not report complete ${missing.join(" and ")} token counts`
+      : undefined
+  return reason === undefined
+    ? resolved
+    : { charged: resolved.charged, listEquivalent: { reason }, listEquivalentBasis: resolved.listEquivalentBasis }
 }
 
 /** Resolve current rates for the actual served model, retaining independent original charge facts. */
@@ -279,7 +291,13 @@ export function resolveResponseCost(
   const usage = response.usage
   return resolveCostForModel(
     response.servedBy?.model ?? response.model.modelId,
-    usage?.classes ?? (usage ? { input: usage.promptTokens, output: usage.completionTokens } : {}),
+    usage?.classes ??
+      (usage
+        ? {
+            ...(usage.promptTokens === undefined ? {} : { input: usage.promptTokens }),
+            ...(usage.completionTokens === undefined ? {} : { output: usage.completionTokens }),
+          }
+        : {}),
     response.cost_usd,
     response.cacheHit
       ? "cached answer does not state a new charge"

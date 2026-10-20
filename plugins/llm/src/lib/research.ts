@@ -92,9 +92,9 @@ function responseUsage(usage: LanguageModelUsage | undefined): ModelResponse["us
     }).filter((entry): entry is [string, number] => entry[1] !== undefined),
   )
   return {
-    promptTokens: usage.inputTokens ?? 0,
-    completionTokens: usage.outputTokens ?? 0,
-    totalTokens: usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+    ...(usage.inputTokens === undefined ? {} : { promptTokens: usage.inputTokens }),
+    ...(usage.outputTokens === undefined ? {} : { completionTokens: usage.outputTokens }),
+    ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
     classes,
     ...(usage.raw === undefined ? {} : { raw: usage.raw }),
   }
@@ -755,13 +755,8 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
             rawFinishReason: retryResult.rawFinishReason,
             appliedMaxOutputTokens: correctedCap,
             reasoning: retryResult.finalStep.reasoningText,
-            usage: retryResult.usage
-              ? {
-                  promptTokens: retryResult.usage.inputTokens ?? 0,
-                  completionTokens: retryResult.usage.outputTokens ?? 0,
-                  totalTokens: (retryResult.usage.inputTokens ?? 0) + (retryResult.usage.outputTokens ?? 0),
-                }
-              : undefined,
+            usage: responseUsage(retryResult.finalStep.usage ?? retryResult.usage),
+            ...statedCharge((retryResult.finalStep.usage ?? retryResult.usage)?.raw, model.provider),
             durationMs: Date.now() - startTime,
           })
         } catch (retryError) {

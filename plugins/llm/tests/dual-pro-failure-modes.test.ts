@@ -407,7 +407,7 @@ describe("dual-pro failure modes", () => {
     generateTextMock.mockResolvedValueOnce({
       text: "second unranked opinion",
       finalStep: { reasoningText: undefined },
-      usage: { inputTokens: 10, outputTokens: 20 },
+      usage: { inputTokens: 10, raw: { cost_usd: 0, invoice: "partial-panel" } },
     })
     generateTextMock.mockResolvedValue({
       text: specimenJudge,
@@ -435,6 +435,14 @@ describe("dual-pro failure modes", () => {
     expect(report).toContain("first unranked opinion")
     expect(report).toContain("second unranked opinion")
     expect(report).toContain("scoreA.scores.correctness")
+    // One invoked opinion has no output/total counts: a known peer cannot fill
+    // those gaps, and the per-leg raw receipt must survive the panel serializer.
+    const envelope = JSON.parse(env.stdout.filter((line) => line.trim().startsWith("{")).at(-1)!)
+    expect(envelope).toHaveProperty("tokens", { prompt: 20 })
+    expect(envelope).toHaveProperty("b.tokens", { prompt: 10 })
+    expect(envelope).toHaveProperty("b.usage.raw", { cost_usd: 0, invoice: "partial-panel" })
+    expect(envelope).toHaveProperty("b.cost_usd", 0)
+    expect(report).toContain("unknown tokens")
     const ab = JSON.parse(readFileSync(abProLogPath(env.homeDir), "utf8").trim()) as {
       judge: { error: string; winner?: string }
       a: { content: string }

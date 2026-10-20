@@ -40,14 +40,23 @@ vi.mock("../src/lib/openai-deep", async () => {
   return { ...actual, queryOpenAIBackground: queryBackgroundMock }
 })
 
-function resetMocks(stopped = false, empty = false) {
+function resetMocks(
+  stopped = false,
+  empty = false,
+  usage: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    raw?: Record<string, unknown>
+  } = { inputTokens: 10, outputTokens: 5, totalTokens: 15, raw: { cost_usd: 0.125, invoice: "original-cli" } },
+) {
   generateTextMock.mockReset()
   generateTextMock.mockResolvedValue({
     text: empty ? "" : "ok",
     finishReason: stopped ? "length" : "stop",
     rawFinishReason: stopped ? "max_output_tokens" : undefined,
     finalStep: { reasoningText: undefined },
-    usage: { inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125, invoice: "original-cli" } },
+    usage,
   })
   streamTextMock.mockReset()
   streamTextMock.mockImplementation(() => ({
@@ -55,7 +64,7 @@ function resetMocks(stopped = false, empty = false) {
       if (!empty) yield "ok"
     })(),
     finalStep: Promise.resolve({ response: undefined }),
-    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5, raw: { cost_usd: 0.125, invoice: "original-cli" } }),
+    usage: Promise.resolve(usage),
     finishReason: Promise.resolve(stopped ? "length" : "stop"),
     rawFinishReason: Promise.resolve(stopped ? "max_output_tokens" : undefined),
   }))
@@ -106,9 +115,9 @@ describe("buildResultJson — envelope schema", () => {
     expect(env.tokens).toEqual({ total: 42 })
   })
 
-  it("computes total from prompt+completion when total omitted", () => {
+  it("keeps an omitted total absent even with known input and output", () => {
     const env = buildResultJson("body", { tokens: { prompt: 7, completion: 3 } })
-    expect(env.tokens).toEqual({ prompt: 7, completion: 3, total: 10 })
+    expect(JSON.parse(JSON.stringify(env.tokens))).toEqual({ prompt: 7, completion: 3 })
   })
 
   it("emits a/b leg sections for dual-pro", () => {
@@ -198,6 +207,41 @@ describe("output-mode singleton", () => {
 })
 
 describe("--json mode end-to-end", () => {
+  // The actual SDK-normalization -> command -> file boundary used to invent zero counts.
+  // Pure schema/pricing cases cannot catch that coercion or the file writer's own defaults.
+  it.each([
+    { name: "raw only", usage: {}, tokens: {} },
+    { name: "input only", usage: { inputTokens: 10 }, tokens: { prompt: 10 } },
+    { name: "output only", usage: { outputTokens: 5 }, tokens: { completion: 5 } },
+    {
+      name: "complete without total",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      tokens: { prompt: 10, completion: 5 },
+    },
+  ])("keeps $name counts absent across the actual CLI and saved receipt", async ({ usage, tokens }) => {
+    const env = makeTestEnv()
+    resetMocks(false, true, { ...usage, raw: { cost_usd: 0, invoice: "partial-cli" } })
+    vi.resetModules()
+    process.argv = ["node", "cli.ts", "--json", "--full-paths", "ping"]
+    const mod = await import("../src/cli")
+    await expect(mod.main()).rejects.toThrow("__exit_1")
+    const lines = env.stdout.filter((line) => line.trim().startsWith("{"))
+    expect(lines).toHaveLength(1)
+    const envelope = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(envelope.tokens).toEqual(tokens)
+    expect(envelope.cost_usd).toBe(0)
+    expect(envelope).toHaveProperty("usage.raw", { cost_usd: 0, invoice: "partial-cli" })
+    if (tokens.prompt === undefined || tokens.completion === undefined) {
+      expect(envelope).not.toHaveProperty("list_equivalent_usd")
+      expect(envelope.list_equivalent_reason).toEqual(expect.stringContaining("token counts"))
+    }
+    const saved = readFileSync(envelope.file as string, "utf8")
+    const metadata = saved.match(/^<!-- llm-meta: (.+) -->/)
+    expect(JSON.parse(metadata![1]!)).toHaveProperty("usage", envelope.usage)
+    if (tokens.prompt === undefined) expect(saved).toContain("prompt=unknown")
+    if (tokens.completion === undefined) expect(saved).toContain("completion=unknown")
+  })
+
   it.each([
     { name: "ask", argv: ["ping"], stopped: false, empty: false },
     {

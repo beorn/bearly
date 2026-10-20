@@ -237,9 +237,9 @@ export const ModelResponseSchema = z.object({
     .optional(),
   usage: z
     .object({
-      promptTokens: z.number(),
-      completionTokens: z.number(),
-      totalTokens: z.number(),
+      promptTokens: z.number().optional(),
+      completionTokens: z.number().optional(),
+      totalTokens: z.number().optional(),
       estimatedCost: z.number().optional(),
       /** Disjoint priced classes; reasoning is a subset of output. */
       classes: z.record(z.string(), z.number()).optional(),
