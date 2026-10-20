@@ -499,7 +499,7 @@ function classifyDispatchFailure(
 /** One redaction pass, so every surface that shows provider text shows the
  *  same, already-redacted value — the message, the envelope field and the
  *  cached response record all read from here (27038). */
-function redactSecrets(text: string): string {
+export function redactSecrets(text: string): string {
   return text
     .replace(/("(?:api[_-]?key|access[_-]?token|token|authorization|password|secret)"\s*:\s*")[^"]*/giu, "$1[REDACTED]")
     .replace(/\bBearer\s+[^\s"',}]+/giu, "Bearer [REDACTED]")

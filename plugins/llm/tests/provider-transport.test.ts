@@ -52,10 +52,12 @@ describe("provider transport across AI SDK upgrades", () => {
       kind === "context"
         ? "This endpoint's maximum context length is 262144 tokens. However, you requested about 262150 tokens (1000 of text input, 261150 in the output). Please reduce the length of either one."
         : "temporary provider failure"
+    const secret = "sk-or-v1-0123456789abcdef"
+    const providerMessage = `${message} ${secret}`
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: { message, type: "invalid_request_error" } }), {
+        new Response(JSON.stringify({ error: { message: providerMessage, type: "invalid_request_error" } }), {
           status,
           headers: { "content-type": "application/json", "retry-after-ms": "1" },
         }),
@@ -85,6 +87,8 @@ describe("provider transport across AI SDK upgrades", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(response.calls).toHaveLength(2)
     expect(response.calls?.[0]?.responseBody).toContain(message)
+    expect(JSON.stringify(response.calls)).not.toContain(secret)
+    expect(JSON.stringify(response.calls)).toContain("[REDACTED]")
     expect(response.calls?.[1]?.usage?.raw).toEqual(usage)
     expect(response.usage?.promptTokens).toBeUndefined()
     expect(response.usage?.completionTokens).toBeUndefined()
@@ -126,7 +130,7 @@ describe("provider transport across AI SDK upgrades", () => {
       // The actual ask cache merge must not leave a final-call charge beside an unknown aggregate reason.
       vi.stubEnv("LLM_NO_CACHE", "0")
       fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: { message, type: "invalid_request_error" } }), {
+        new Response(JSON.stringify({ error: { message: providerMessage, type: "invalid_request_error" } }), {
           status,
           headers: { "content-type": "application/json", "retry-after-ms": "1" },
         }),

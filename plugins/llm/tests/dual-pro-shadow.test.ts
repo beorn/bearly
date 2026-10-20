@@ -90,6 +90,23 @@ describe("buildLeaderboard — leaderboard math", () => {
         { a: { model: "known", ok: false, cost_usd: 3, list_equivalent_usd: 4, list_equivalent_basis: [] } },
         { a: { model: "known", ok: false, invoked: false } },
         { a: { model: "legacy", ok: true, cost: 99 } },
+        // A failed logical result can retain a paid physical call without top-level usage.
+        // Serialized unknowns must not hide facts available for current-rate projection.
+        {
+          a: {
+            model: "gpt-5-nano",
+            ok: false,
+            cost_usd_reason: "old unknown charge",
+            list_equivalent_reason: "old unknown estimate",
+            calls: [
+              {
+                model: { provider: "openai", modelId: "gpt-5-nano" },
+                cost_usd: 0,
+                usage: { promptTokens: 20, completionTokens: 5, raw: { invoice: "retained physical call" } },
+              },
+            ],
+          },
+        },
       ],
       { ...FLAT_WEIGHTS, cost: 1 },
     )
@@ -105,6 +122,9 @@ describe("buildLeaderboard — leaderboard math", () => {
     expect(legacy.costRanking).toBe("unavailable")
     expect(legacy.rankScore).toBeUndefined()
     expect(legacy.costCoverage).toEqual({ charged: { known: 0, total: 1 }, listEquivalent: { known: 0, total: 1 } })
+    const physical = rows.find((row) => row.model === "gpt-5-nano")
+    expect(physical?.average.cost_usd).toBe(0)
+    expect(physical?.average.list_equivalent_usd).toBeGreaterThan(0)
   })
 
   it("aggregates multi-leg entries into per-model averages", () => {

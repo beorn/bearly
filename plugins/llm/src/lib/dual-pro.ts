@@ -896,7 +896,11 @@ export function buildLeaderboard(entries: readonly AbProEntry[], weights: ScoreW
     const s = stats.get(leg.model) ?? { calls: 0, success: 0, scoreSum: 0, costs: [], timeSum: 0 }
     s.calls += 1
     if (leg.invoked !== false) {
-      s.costs.push(leg.usage ? resolveResponseCost({ ...leg, model: { modelId: leg.model } }) : deserializeCost(leg))
+      s.costs.push(
+        leg.usage || leg.calls?.length
+          ? resolveResponseCost({ ...leg, model: { modelId: leg.model } })
+          : deserializeCost(leg),
+      )
     }
     if (leg.ok) {
       s.success += 1
