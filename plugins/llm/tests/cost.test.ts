@@ -6,25 +6,25 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { resolveCost, type ModelRates } from "../src/lib/cost"
+import { resolveCost, resolveSubscriptionCost, type ModelRates } from "../src/lib/cost"
 import { parseLiteLLMMap, matchLiteLLMEntry } from "../src/lib/litellm"
 
 const RATES: ModelRates = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
 
-describe("resolveCost precedence (reported > computed > unknown)", () => {
+describe("resolveCost keeps charged dollars and list-equivalent estimates independent", () => {
   it("computes per-class cost with distinct cache rates (write > input > read)", () => {
     const result = resolveCost({
       usage: { input: 1_000_000, output: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000 },
       rates: RATES,
     })
-    expect(result.source).toBe("computed")
-    expect(result.usd).toBeCloseTo(3 + 15 + 0.3 + 3.75, 10)
+    expect(result.charged).toEqual({ reason: "provider did not state a charge" })
+    expect(result.listEquivalent).toEqual({ usd: 3 + 15 + 0.3 + 3.75 })
     expect(result.breakdown).toEqual({ input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 })
   })
 
   it("two-rate math matches the legacy estimateCost shape", () => {
     const result = resolveCost({ usage: { input: 500, output: 1000 }, rates: { inputPerM: 2.5, outputPerM: 10 } })
-    expect(result.usd).toBeCloseTo(2.5 * (500 / 1e6) + 10 * (1000 / 1e6), 12)
+    expect(result.listEquivalent).toEqual({ usd: expect.closeTo(0.01125, 12) })
   })
 
   it("missing cache rates fall back to the input rate (LiteLLM convention)", () => {
@@ -35,28 +35,51 @@ describe("resolveCost precedence (reported > computed > unknown)", () => {
     expect(result.breakdown).toEqual({ cache_read: 3, cache_write: 3 })
   })
 
-  it("provider-reported cost wins over computable tokens", () => {
+  it("preserves a stated charge beside a deliberately different computable estimate", () => {
     const result = resolveCost({ usage: { input: 1_000_000, output: 1_000_000 }, rates: RATES, reportedUsd: 1.23 })
-    expect(result).toEqual({ usd: 1.23, source: "provider" })
+    expect(result.charged).toEqual({ usd: 1.23 })
+    expect(result.listEquivalent).toEqual({ usd: 18 })
+    expect(result).not.toHaveProperty("usd")
+    expect(result).not.toHaveProperty("source")
   })
 
   it("a genuine reported $0 is provider-sourced, not unknown", () => {
     const result = resolveCost({ usage: { input: 10 }, reportedUsd: 0 })
-    expect(result.source).toBe("provider")
-    expect(result.usd).toBe(0)
+    expect(result.charged).toEqual({ usd: 0 })
+    expect(result.listEquivalent).toEqual({ reason: "model rates are unavailable" })
   })
 
   it("no rates and no reported cost → unknown provenance, not a synthetic $0", () => {
     const result = resolveCost({ usage: { input: 500, output: 1000 } })
-    expect(result.source).toBe("unknown")
+    expect(result.charged).toEqual({ reason: "provider did not state a charge" })
+    expect(result.listEquivalent).toEqual({ reason: "model rates are unavailable" })
   })
 
   it("reasoning tokens are informational — never priced on top of output", () => {
     const withReasoning = resolveCost({ usage: { input: 100, output: 1_000, reasoning: 900 }, rates: RATES })
     const withoutReasoning = resolveCost({ usage: { input: 100, output: 1_000 }, rates: RATES })
-    expect(withReasoning.usd).toBeCloseTo(withoutReasoning.usd, 12)
+    expect(withReasoning.listEquivalent).toEqual({ usd: expect.closeTo(0.0153, 12) })
+    expect(withoutReasoning.listEquivalent).toEqual({ usd: expect.closeTo(0.0153, 12) })
     expect(withReasoning.breakdown).not.toHaveProperty("reasoning")
   })
+
+  // @failure A subscription or invalid stated amount is treated as a charge.
+  // @level l0 @consumer The shared resolver's independent known/unknown amounts.
+  // Previous provider precedence does not retain a separate computable column.
+  it("keeps a subscription charge unknown while retaining an available estimate", () => {
+    const result = resolveSubscriptionCost({ usage: { input: 1_000_000 }, rates: RATES })
+    expect(result.charged).toEqual({ reason: "subscription route has no stated API-key charge" })
+    expect(result.listEquivalent).toEqual({ usd: 3 })
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])(
+    "does not treat invalid stated charge %s as money or discard the estimate",
+    (reportedUsd) => {
+      const result = resolveCost({ usage: { input: 1_000_000 }, rates: RATES, reportedUsd })
+      expect(result.charged).toEqual({ reason: "provider stated an invalid charge" })
+      expect(result.listEquivalent).toEqual({ usd: 3 })
+    },
+  )
 })
 
 describe("LiteLLM map parsing + matching", () => {

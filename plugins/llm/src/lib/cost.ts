@@ -2,8 +2,8 @@
  * Canonical LLM usage/cost substrate (km bead 19899 Phase 0, policy P1–P5).
  *
  * One contract for every cost consumer (/llm commands, /ask prose, external
- * apps): resolve a cost from an open usage-class map with an explicit
- * provenance label.
+ * apps): retain a stated charge independently from a list-equivalent estimate
+ * derived from an open usage-class map and its rate basis.
  *
  * SOURCE-SELECTION DECISION (recorded per bead @km/bearly/20798):
  * price data comes from LiteLLM's community-maintained
@@ -21,9 +21,9 @@
  *     `input` is always NON-CACHED input; cache classes are disjoint from it.
  *     `reasoning` is informational — it is a subset of `output` on every
  *     provider that reports it, so it is never priced separately here.
- *  P2 cost precedence: provider-reported > computed > unknown. Unknown is a
- *     first-class result (`source: "unknown"`); display paths render it as the
- *     unknown label ("—"), never a synthetic "$0".
+ *  P2 charged and list-equivalent dollars are independent. An unavailable
+ *     amount has a reason, never a synthetic numeric zero. A stated zero is
+ *     known; a subscription allowance is not a stated API-key charge.
  *  P3 cache classes are priced at their own rates; a missing cache rate
  *     falls back to the input rate (LiteLLM's own convention).
  */
@@ -50,14 +50,30 @@ export interface ModelRates {
   cacheWritePerM?: number
 }
 
-export type CostSource = "provider" | "computed" | "unknown" | "subscription"
+export type CostAmount = { usd: number } | { reason: string }
+
+export interface CostBasis {
+  rateSource: "litellm" | "sku" | "unrecorded"
+  rateDate?: string
+  matchedModelId?: string
+}
 
 export interface ResolvedCost {
-  /** USD. Meaningful only when `source !== "unknown"` (0 there is a default, not a price). */
-  usd: number
-  source: CostSource
-  /** Per-class USD contributions (computed source only). */
+  charged: CostAmount
+  listEquivalent: CostAmount
+  listEquivalentBasis: CostBasis[]
+  /** Per-class list-equivalent USD contributions; reasoning is an output subset. */
   breakdown?: Partial<Record<UsageClass, number>>
+}
+
+interface CostOptions {
+  usage: UsageMap
+  rates?: ModelRates | null
+  /** A validated stated charge from the actual API-key route, not an estimate. */
+  reportedUsd?: number
+  basis?: readonly CostBasis[]
+  /** Subscription/cache reuse cannot restate an original bill as a new charge. */
+  chargedUnavailableReason?: string
 }
 
 /** Priced classes and the rate each bills at. `reasoning` is deliberately
@@ -79,43 +95,59 @@ function classRate(rates: ModelRates, cls: UsageClass): number | undefined {
 }
 
 /**
- * Resolve a cost with explicit provenance (P2: reported > computed > unknown).
- *
- * - `reportedUsd` defined (including a genuine 0) → `source: "provider"`.
- * - else `rates` present → `source: "computed"` with a per-class breakdown.
- * - else → `source: "unknown"` — callers must not render `usd` as a dollar
- *   figure (render the unknown label instead).
+ * Resolve both meanings without precedence or pre-display rounding.
+ * Missing charge facts do not suppress a computable estimate, and a stated
+ * charge does not supply missing rates or usage.
  */
-export function resolveCost(opts: { usage: UsageMap; rates?: ModelRates | null; reportedUsd?: number }): ResolvedCost {
-  if (opts.reportedUsd !== undefined) {
-    return { usd: opts.reportedUsd, source: "provider" }
-  }
+export function resolveCost(opts: CostOptions): ResolvedCost {
+  const charged: CostAmount =
+    opts.chargedUnavailableReason !== undefined
+      ? { reason: opts.chargedUnavailableReason }
+      : opts.reportedUsd === undefined
+        ? { reason: "provider did not state a charge" }
+        : !Number.isFinite(opts.reportedUsd) || opts.reportedUsd < 0
+          ? { reason: "provider stated an invalid charge" }
+          : { usd: opts.reportedUsd }
   const rates = opts.rates
-  if (rates) {
-    const breakdown: Partial<Record<UsageClass, number>> = {}
-    let usd = 0
-    for (const cls of ["input", "output", "cache_read", "cache_write"] as const) {
-      const tokens = opts.usage[cls]
-      if (tokens === undefined || tokens === 0) continue
-      const rate = classRate(rates, cls)
-      if (rate === undefined) continue
-      const contribution = rate * (tokens / 1_000_000)
-      breakdown[cls] = contribution
-      usd += contribution
+  const listEquivalentBasis = opts.basis ? [...opts.basis] : rates ? [{ rateSource: "unrecorded" as const }] : []
+  const unknownEstimate = (reason: string): ResolvedCost => ({
+    charged,
+    listEquivalent: { reason },
+    listEquivalentBasis,
+  })
+  if (!rates) return unknownEstimate("model rates are unavailable")
+  const breakdown: Partial<Record<UsageClass, number>> = {}
+  let usd = 0
+  let hasPricedUsage = false
+  for (const cls of ["input", "output", "cache_read", "cache_write"] as const) {
+    const tokens = opts.usage[cls]
+    if (tokens === undefined) continue
+    hasPricedUsage = true
+    const rate = classRate(rates, cls)
+    if (!Number.isFinite(tokens) || tokens < 0) return unknownEstimate(`${cls} token count is invalid`)
+    if (rate === undefined || !Number.isFinite(rate) || rate < 0) {
+      return unknownEstimate(`${cls} token rate is invalid`)
     }
-    return { usd, source: "computed", breakdown }
+    const contribution = rate * (tokens / 1_000_000)
+    if (tokens !== 0) breakdown[cls] = contribution
+    usd += contribution
   }
-  return { usd: 0, source: "unknown" }
+  if (!hasPricedUsage) return unknownEstimate("no priced token classes were reported")
+  if (!Number.isFinite(usd)) return unknownEstimate("list-equivalent calculation is not finite")
+  return { charged, listEquivalent: { usd }, listEquivalentBasis, breakdown }
 }
 
 /**
- * Cost of an answer served by a SUBSCRIPTION CLI (bead 29147): 0 USD, with a
- * source that NAMES the subscription. A subscription spends no per-token money,
- * so pricing such an answer at the SKU's API rates would be a fabricated cost;
- * the tokens the CLI reported are still carried on the usage object, only the
- * dollar figure is zero. `source: "subscription"` is distinct from "provider"
- * so the envelope reads honestly rather than as a $0 provider bill.
+ * A subscription has no stated API-key charge. Its list-equivalent estimate
+ * still uses the actual served model's rates/usage when the caller has them.
  */
-export function resolveSubscriptionCost(): ResolvedCost {
-  return { usd: 0, source: "subscription" }
+export function resolveSubscriptionCost(
+  opts: Pick<CostOptions, "usage" | "rates" | "basis"> = { usage: {} },
+): ResolvedCost {
+  return resolveCost({
+    usage: opts.usage,
+    rates: opts.rates,
+    basis: opts.basis,
+    chargedUnavailableReason: "subscription route has no stated API-key charge",
+  })
 }

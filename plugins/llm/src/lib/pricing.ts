@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
 import { SKUS, setPricingOverlay, type Model, type SkuConfig } from "./types"
-import { resolveCost, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
+import { resolveCost, type CostBasis, type ModelRates, type ResolvedCost, type UsageMap } from "./cost.ts"
 
 // Cache location (in user's home directory)
 const CACHE_DIR = join(process.env.HOME ?? "~", ".cache", "tools")
@@ -44,7 +44,7 @@ interface PricingCache {
 }
 
 /** Where a model's rates came from. `unrecorded` is a cache row with no basis fields. */
-export type RateSource = "litellm" | "sku" | "unrecorded"
+export type RateSource = CostBasis["rateSource"]
 
 export interface ModelRateLookup {
   modelId: string
