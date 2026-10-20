@@ -403,7 +403,79 @@ describe("--json mode end-to-end", () => {
     expect(b.tokens).toBeTruthy()
     expect(b.status).toBe("completed")
     expect(envelope.status).toBe("completed")
+    // Actual Pro dispatch, serialization and saved history must retain both columns.
+    // Single-model envelopes never pass through this separate multi-call writer.
+    const legs = [envelope.a, envelope.b, envelope.c, envelope.d].filter(Boolean)
+    expect(envelope.cost_usd).toBeCloseTo(0.125 * legs.length)
+    for (const leg of [a, b]) {
+      expect(leg.cost_usd).toBe(0.125)
+      expect(leg.list_equivalent_usd).toBeGreaterThan(0)
+      expect(leg.list_equivalent_basis).toHaveLength(1)
+      expect(leg).not.toHaveProperty("cost")
+    }
+    const { readAbProLog } = await import("../src/lib/dual-pro")
+    const saved = (await readAbProLog()).at(-1)!
+    expect(saved.a).toMatchObject({ cost_usd: 0.125, list_equivalent_basis: expect.any(Array) })
+    expect(saved.a).not.toHaveProperty("cost")
   }, 10_000)
+
+  // @failure A paid schema-retry judge disappears from Pro totals or saved history.
+  // @level l3 @consumer Actual Pro command including its judge retry and log writer.
+  it.each([
+    { known: true, valid: true },
+    { known: false, valid: true },
+    { known: true, valid: false },
+  ])(
+    "pro retains judge retries: known=$known, valid=$valid",
+    async ({ known, valid }) => {
+      const env = makeTestEnv()
+      resetMocks()
+      let judgeCalls = 0
+      generateTextMock.mockImplementation(async ({ messages }: { messages: { content: unknown }[] }) => {
+        const judge = messages.some((m) => typeof m.content === "string" && m.content.includes('"scoreA"'))
+        if (judge) judgeCalls++
+        const score = { scores: { specificity: 4, actionability: 4, correctness: 4, depth: 4 }, total: 16 }
+        return {
+          text:
+            judge && judgeCalls > 1 && valid
+              ? JSON.stringify({ scoreA: score, scoreB: score, winner: "tie", reasoning: "equal" })
+              : "{}",
+          finishReason: "stop",
+          finalStep: { reasoningText: undefined },
+          usage: {
+            inputTokens: 10,
+            outputTokens: 5,
+            raw: !judge ? { cost_usd: 0.125 } : judgeCalls === 1 ? { cost_usd: 0.3 } : known ? { cost_usd: 0.4 } : {},
+          },
+        }
+      })
+      vi.resetModules()
+      process.argv = ["node", "cli.ts", "--json", "pro", "--legs", "2", "-y", "test"]
+      const mod = await import("../src/cli")
+      if (valid) await mod.main()
+      else await expect(mod.main()).rejects.toThrow("__exit_1")
+      const lines = env.stdout.filter((line) => line.trim().startsWith("{"))
+      expect(lines).toHaveLength(1)
+      const result = JSON.parse(lines[0]!) as Record<string, unknown>
+      expect(result.status).toBe(valid ? "completed" : "incomplete")
+      expect(judgeCalls).toBe(2)
+      if (known) expect(result.cost_usd).toBeCloseTo(0.95)
+      else {
+        expect(result).not.toHaveProperty("cost_usd")
+        expect(result.cost_usd_reason).toBe("charged unavailable for 1 of 4 invoked calls")
+      }
+      expect(result.list_equivalent_basis).toHaveLength(4)
+      const judgeEnvelope = result.judge as Record<string, unknown>
+      if (known) expect(judgeEnvelope.cost_usd).toBeCloseTo(0.7)
+      else expect(judgeEnvelope.cost_usd_reason).toBe("charged unavailable for 1 of 2 invoked calls")
+      const { readAbProLog } = await import("../src/lib/dual-pro")
+      const saved = (await readAbProLog()).at(-1)! as unknown as Record<string, unknown>
+      const judge = saved.judge as Record<string, unknown>
+      expect(judge.responses).toHaveLength(2)
+      expect(judge).not.toHaveProperty("cost")
+    },
+    10_000,
+  )
 
   it("invalid argv: error envelope on stdout (status: failed) + human msg on stderr", async () => {
     const env = makeTestEnv()

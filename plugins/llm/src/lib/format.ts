@@ -10,12 +10,25 @@ import { deniedProviders } from "./denied-providers"
 import { createLogger } from "loggily"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import * as os from "os"
-import { type ServedBy, type ModelResponse } from "./types"
+import { formatCost, type ServedBy, type ModelResponse } from "./types"
 import { resolveResponseCost } from "./pricing.ts"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "./cost"
 import { emitJson, formatEnvelopeFile, isFullPaths, isJsonMode } from "./output-mode"
 
 const log = createLogger("bearly:llm")
+
+/** Human display retains the independent amounts and the selected rate basis. */
+export function formatCostColumns(cost: ResolvedCost): string {
+  const amount = (value: ResolvedCost["charged"]) =>
+    "usd" in value ? formatCost(value.usd) : `unknown (${value.reason})`
+  const basis =
+    cost.listEquivalentBasis
+      .map(
+        (row) => `${row.rateSource}; date ${row.rateDate ?? "unrecorded"}; model ${row.matchedModelId ?? "unrecorded"}`,
+      )
+      .join(" | ") || "unrecorded"
+  return `charged ${amount(cost.charged)}; list-equivalent ${amount(cost.listEquivalent)} [${basis}]`
+}
 
 /**
  * Per-leg metadata for dual-pro envelopes. Each leg ships independently

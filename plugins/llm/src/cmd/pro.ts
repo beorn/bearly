@@ -46,6 +46,9 @@ import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "..
 import { confirmOrExit } from "../ui/confirm"
 import { askAndFinish } from "./ask"
 import { outputTokenStop, type ProCompletion } from "../lib/format"
+import { formatCostColumns } from "../lib/format"
+import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
+import { resolveResponseCost } from "../lib/pricing"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -611,17 +614,10 @@ export async function runProDual(options: {
   const legC = legOutcomes.find((l) => l.id === "c")
   const legD = legOutcomes.find((l) => l.id === "d")
 
-  // Per-leg cost — failed legs cost zero (no usage payload). A subscription-CLI
-  // leg (bead 29147) spent no per-token money, so it prices at 0 rather than the
-  // SKU's API rates, even though the CLI reported tokens.
-  const costForLeg = (l: LegOutcome) =>
-    l.response?.servedBy
-      ? 0
-      : l.response?.usage
-        ? estimateCost(l.model, l.response.usage.promptTokens, l.response.usage.completionTokens)
-        : 0
-  const legCosts = new Map<string, number>(legOutcomes.map((l) => [l.id, costForLeg(l)]))
-  const totalLegCost = Array.from(legCosts.values()).reduce((s, c) => s + c, 0)
+  const legCosts = new Map(
+    legOutcomes.map((leg) => [leg.id, resolveResponseCost(leg.response ?? { model: leg.model })]),
+  )
+  const invokedLegCosts = legOutcomes.filter((leg) => !preflightMissing.has(leg.id)).map((leg) => legCosts.get(leg.id)!)
 
   // Pairwise judge — three cheap calls in parallel (B-vs-A, C-vs-A, D-vs-A).
   // Each pair sends only TWO responses to the judge — sidesteps N-way
@@ -641,7 +637,7 @@ export async function runProDual(options: {
    */
   const pairByContender = new Map<"a" | "b" | "c" | "d", import("../lib/dual-pro").PairwiseJudgeResult>()
   let judgeError: string | undefined
-  let judgeCost = 0
+  const judgeResponses: import("../lib/types").ModelResponse[] = []
   let judgeModelId: string | undefined
   const okLegs = legOutcomes.filter((l) => l.ok)
   /**
@@ -700,7 +696,6 @@ export async function runProDual(options: {
       ): Promise<{
         id: typeof pairId
         result?: import("../lib/dual-pro").PairwiseJudgeResult
-        cost: number
         error?: string
       }> => {
         const prompt = dualPro.buildPairwiseJudgePrompt({
@@ -713,18 +708,24 @@ export async function runProDual(options: {
         })
         try {
           const askJudge = async (text: string) => {
-            const raw = await ask(text, "quick", {
-              modelObject: judgeModel,
-              maxOutputTokens: options.maxOutputTokens,
-              stream: false,
-            })
-            // Judge cost is zero when the judge answered over its subscription
-            // CLI (bead 29147) — never the SKU's API rates — else the SKU's
-            // rates from the tokens the SDK reported.
-            const cost =
-              raw.servedBy || !raw.usage
-                ? 0
-                : estimateCost(judgeModel, raw.usage.promptTokens, raw.usage.completionTokens)
+            const started = Date.now()
+            let raw: import("../lib/types").ModelResponse
+            try {
+              raw = await ask(text, "quick", {
+                modelObject: judgeModel,
+                maxOutputTokens: options.maxOutputTokens,
+                stream: false,
+              })
+            } catch (error) {
+              judgeResponses.push({
+                model: judgeModel,
+                content: "",
+                durationMs: Date.now() - started,
+                error: error instanceof Error ? error.message : String(error),
+              })
+              throw error
+            }
+            judgeResponses.push(raw)
             if (raw.error) {
               const retry = options.retryCommand
               raw.error = formatBudgetRetry(
@@ -746,18 +747,17 @@ export async function runProDual(options: {
               stopped === undefined
                 ? dualPro.parsePairwiseJudgeResponseDetailed(raw.content)
                 : { ok: false as const, kind: "output-token-limit" as const, message: stopped }
-            return { raw, cost, parsed }
+            return { raw, parsed }
           }
-          let { raw, cost, parsed } = await askJudge(prompt)
+          let { raw, parsed } = await askJudge(prompt)
           if (!parsed.ok && parsed.kind === "schema") {
             const retry = await askJudge(
               `${prompt}\n\nPREVIOUS JSON FAILED SCHEMA VALIDATION:\n${parsed.message}\nRe-emit STRICT JSON only, including every required field named in that error.`,
             )
-            cost += retry.cost
             raw = retry.raw
             parsed = retry.parsed
           }
-          if (parsed.ok) return { id: pairId, result: parsed.value, cost }
+          if (parsed.ok) return { id: pairId, result: parsed.value }
           const artifactPath = `${outputFile}.judge-${pairId}.json`
           const unavailableMetadata = ["requestId", "rawProviderResponse"]
           if (raw.finishReason === undefined) unavailableMetadata.push("finishReason")
@@ -790,16 +790,14 @@ export async function runProDual(options: {
           }
           return {
             id: pairId,
-            cost,
             error: `${description}; ${metadata}; ${evidence}${raw.error ? `; ${raw.error}` : ""}`,
           }
         } catch (e) {
-          return { id: pairId, cost: 0, error: e instanceof Error ? e.message : String(e) }
+          return { id: pairId, error: e instanceof Error ? e.message : String(e) }
         }
       }
       const settled = await Promise.all(pairs.map((p) => judgeOnce(p.id, p.contender)))
       for (const r of settled) {
-        judgeCost += r.cost
         if (!r.result) {
           judgeFailed.push({ pair: r.id, cause: r.error ?? "judge returned no result" })
           continue
@@ -839,6 +837,10 @@ export async function runProDual(options: {
       `a panel of one cannot be scored. Missing: ${lost.join(", ")}`
     console.error(`  ⚠ ${judgeError}`)
   }
+
+  const judgeCosts = judgeResponses.map(resolveResponseCost)
+  const judgeCost = aggregateCosts(judgeCosts)
+  const totalCost = aggregateCosts([...invokedLegCosts, ...judgeCosts])
 
   // Synthesize an N-way `judge.{a,b,c,d,winner}` shape for v2 consumers
   // (leaderboard, judge-history, backtest). Pull leg-specific scores from
@@ -941,8 +943,7 @@ export async function runProDual(options: {
   }
   parts.push(`**Question**: ${question}\n`)
   parts.push(`**Models**: ${legOutcomes.map((l) => l.model.displayName).join(" + ")}`)
-  const costBreakdown = legOutcomes.map((l) => formatCost(legCosts.get(l.id) ?? 0)).join(" + ")
-  parts.push(`**Total cost**: ${formatCost(totalLegCost)} (${costBreakdown})\n`)
+  parts.push(`**All invoked calls**: ${formatCostColumns(totalCost)}\n`)
 
   for (let i = 0; i < legOutcomes.length; i++) {
     const leg = legOutcomes[i]!
@@ -952,8 +953,7 @@ export async function runProDual(options: {
     parts.push(`## ${leg.model.displayName}${tag}`)
     if (leg.response?.content.trim()) {
       if (!leg.ok) parts.push(`⚠️  Incomplete: ${leg.error ?? "unusable opinion"}\n`)
-      const cost = legCosts.get(leg.id) ?? 0
-      const meta = `_${leg.response.usage?.totalTokens ?? 0} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCost(cost)}_`
+      const meta = `_${leg.response.usage?.totalTokens ?? 0} tokens · ${Math.round(leg.response.durationMs / 1000)}s · ${formatCostColumns(legCosts.get(leg.id)!)}_`
       parts.push(meta + "\n")
       parts.push(leg.response.content.trim())
     } else {
@@ -1001,10 +1001,9 @@ export async function runProDual(options: {
 
   // Dual-pro envelope ships per-leg sections so skill consumers can branch
   // on which leg produced what without re-parsing the combined report.
-  type EnvelopeLeg = {
+  type EnvelopeLeg = CostFields & {
     model: string
     tokens?: { prompt: number; completion: number; total: number }
-    cost: number
     durationMs?: number
     status: "completed" | "incomplete" | "failed"
     error?: string
@@ -1022,7 +1021,7 @@ export async function runProDual(options: {
           total: leg.response.usage.totalTokens,
         }
       : undefined,
-    cost: legCosts.get(leg.id) ?? 0,
+    ...serializeCost(legCosts.get(leg.id)!),
     durationMs: leg.response?.durationMs,
     status: leg.ok ? "completed" : leg.missingCause === "output-token-limit" ? "incomplete" : "failed",
     finishReason: leg.response?.finishReason,
@@ -1038,7 +1037,7 @@ export async function runProDual(options: {
 
   // Combine prompt/completion totals across legs so the top-level `tokens`
   // is the canonical {prompt, completion, total} shape (mirrors single-model
-  // emission). Total cost stays a single USD number.
+  // emission). Cost columns also include every invoked judge and retry.
   const combinedTokens = legOutcomes.some((l) => l.response?.usage)
     ? {
         prompt: legOutcomes.reduce((s, l) => s + (l.response?.usage?.promptTokens ?? 0), 0),
@@ -1069,8 +1068,7 @@ export async function runProDual(options: {
     query: question,
     model: `dual-pro (${legOutcomes.map((l) => l.model.displayName).join(" + ")})`,
     tokens: combinedTokens,
-    cost: formatCost(totalLegCost + judgeCost),
-    costUsd: totalLegCost + judgeCost,
+    ...serializeCost(totalCost),
     durationMs: Math.max(0, ...legOutcomes.map((l) => l.response?.durationMs ?? 0)),
     status,
     completion,
@@ -1091,10 +1089,10 @@ export async function runProDual(options: {
           ab: pairwise.ab,
           ac: pairwise.ac,
           ad: pairwise.ad,
-          cost: judgeCost,
+          ...serializeCost(judgeCost),
         }
       : judgeError
-        ? { error: judgeError }
+        ? { error: judgeError, ...serializeCost(judgeCost) }
         : undefined,
     leaderboardSnapshot: leaderboardSnapshot.slice(0, 10).map((r) => r as unknown as Record<string, unknown>),
   })
@@ -1113,7 +1111,7 @@ export async function runProDual(options: {
       model: l.model,
       response: l.response,
       error: l.error,
-      cost: legCosts.get(l.id) ?? 0,
+      costs: serializeCost(legCosts.get(l.id)!),
       score: breakdownFor(l.id as "a" | "b" | "c" | "d"),
     })),
     pairwise,
@@ -1122,6 +1120,7 @@ export async function runProDual(options: {
     judgeReasoning: judgeResult?.reasoning,
     judgeError,
     judgeCost,
+    judgeResponses,
     rubric: cfg.rubric,
   })
 
@@ -1233,7 +1232,7 @@ async function appendAbProLog(entry: {
     model: Model
     response: import("../lib/types").ModelResponse | undefined
     error: string | undefined
-    cost: number
+    costs: CostFields
     score: import("../lib/dual-pro").JudgeBreakdown | null
   }[]
   pairwise: {
@@ -1245,18 +1244,14 @@ async function appendAbProLog(entry: {
   judgeWinner?: "a" | "b" | "c" | "d" | "tie"
   judgeReasoning?: string
   judgeError?: string
-  judgeCost?: number
+  judgeCost: ResolvedCost
+  judgeResponses: import("../lib/types").ModelResponse[]
   rubric?: string
 }): Promise<void> {
+  const { getMemoryDir } = await import("../lib/dual-pro")
+  const dir = getMemoryDir()
   try {
-    const os = await import("os")
     const fs = await import("fs")
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
-    const encoded = projectRoot.replace(/\//g, "-")
-    // Prefer HOME env (test isolation respects it; os.homedir() reads from
-    // getuid() and ignores HOME, leaking writes into the real user profile).
-    const home = process.env.HOME || os.homedir()
-    const dir = `${home}/.claude/projects/${encoded}/memory`
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 
     // Build a compact leg snapshot. Inline content so retroactive judging
@@ -1275,7 +1270,8 @@ async function appendAbProLog(entry: {
       durationMs: l.response?.durationMs,
       chars: l.response?.content?.length,
       content: l.response?.content,
-      cost: l.cost,
+      usage: l.response?.usage,
+      ...l.costs,
       servedBy: l.response?.servedBy,
       finishReason: l.response?.finishReason,
       rawFinishReason: l.response?.rawFinishReason,
@@ -1321,7 +1317,7 @@ async function appendAbProLog(entry: {
               completionTokens: legA.response?.usage?.completionTokens,
               durationMs: legA.response?.durationMs,
               chars: legA.response?.content?.length,
-              cost: legA.cost,
+              ...legA.costs,
             }
           : undefined,
         kimi: legB
@@ -1334,7 +1330,7 @@ async function appendAbProLog(entry: {
               completionTokens: legB.response?.usage?.completionTokens,
               durationMs: legB.response?.durationMs,
               chars: legB.response?.content?.length,
-              cost: legB.cost,
+              ...legB.costs,
             }
           : undefined,
         // v2/v3 — a/b/c/d + judge.
@@ -1351,7 +1347,8 @@ async function appendAbProLog(entry: {
                 winner: entry.judgeWinner,
                 reasoning: entry.judgeReasoning,
                 error: entry.judgeError,
-                cost: entry.judgeCost,
+                ...serializeCost(entry.judgeCost),
+                responses: entry.judgeResponses,
                 rubric: entry.rubric,
                 a: byId.get("a")?.score ?? null,
                 b: byId.get("b")?.score ?? null,
@@ -1365,7 +1362,9 @@ async function appendAbProLog(entry: {
             : undefined,
       }) + "\n"
     fs.appendFileSync(`${dir}/ab-pro.jsonl`, line)
-  } catch {
-    // Best-effort log
+  } catch (error) {
+    console.error(
+      `Failed to preserve Pro call history at ${dir}/ab-pro.jsonl: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
