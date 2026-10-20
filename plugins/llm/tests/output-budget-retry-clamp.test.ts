@@ -20,7 +20,11 @@ const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
   streamTextMock: vi.fn(),
 }))
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: streamTextMock }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: streamTextMock,
+}))
 
 const { ask, MAX_USEFUL_OUTPUT_TOKENS } = await import("../src/lib/research")
 

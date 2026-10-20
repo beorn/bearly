@@ -785,6 +785,7 @@ export interface AbProLegEntry extends Partial<import("./cost").CostFields> {
   cost?: number
   invoked?: boolean
   usage?: import("./types").ModelResponse["usage"]
+  calls?: import("./types").ModelResponse["calls"]
   servedBy?: import("./types").ModelResponse["servedBy"]
   durationMs?: number
   /** Inline response content (added 2026-04-27 for retroactive judging).

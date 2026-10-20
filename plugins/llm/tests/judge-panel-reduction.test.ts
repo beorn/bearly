@@ -29,7 +29,11 @@ import type { ProCompletion } from "../src/lib/format"
 
 const generateTextMock = vi.fn()
 const queryBackgroundMock = vi.fn()
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: vi.fn() }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: vi.fn(),
+}))
 vi.mock("../src/lib/openai-deep", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
   return { ...actual, queryOpenAIBackground: queryBackgroundMock }

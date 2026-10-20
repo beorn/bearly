@@ -18,7 +18,8 @@ import { join } from "node:path"
 import type { BacktestReport } from "../src/lib/dual-pro"
 
 const generateTextMock = vi.fn()
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
   generateText: generateTextMock,
   streamText: vi.fn(),
 }))

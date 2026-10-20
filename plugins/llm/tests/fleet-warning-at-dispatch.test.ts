@@ -21,7 +21,11 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const generateTextMock = vi.fn()
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: vi.fn() }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: vi.fn(),
+}))
 
 // Keep both opinions local: the warning test must not dispatch a real
 // recoverable OpenAI request or rely on an incomplete panel exiting zero.

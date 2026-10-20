@@ -39,6 +39,7 @@ export function formatCostColumns(value: ResolvedCost | CostFields): string {
 export interface LegMeta extends Partial<CostFields> {
   model?: string
   usage?: ModelResponse["usage"]
+  calls?: ModelResponse["calls"]
   tokens?: { prompt?: number; completion?: number; total?: number }
   durationMs?: number
   status?: "completed" | "incomplete" | "failed"
@@ -73,6 +74,7 @@ export interface OutputMeta extends Partial<CostFields> {
   model?: string
   /** Original token classes and provider extras; totals are only a human summary. */
   usage?: ModelResponse["usage"]
+  calls?: ModelResponse["calls"]
   /**
    * Total tokens (legacy single-number field) OR structured prompt/completion
    * pair (preferred for the JSON envelope schema). Both forms are accepted;
@@ -210,6 +212,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   result.chars = content.length
   if (meta?.model) result.model = meta.model
   if (meta?.usage !== undefined) result.usage = meta.usage
+  if (meta?.calls !== undefined) result.calls = meta.calls
 
   if (meta?.tokens != null) {
     if (typeof meta.tokens === "number") {
@@ -241,6 +244,7 @@ function legToEnvelope(leg: LegMeta): Record<string, unknown> {
   const out: Record<string, unknown> = { ...costMeta(leg) }
   if (leg.model) out.model = leg.model
   if (leg.usage !== undefined) out.usage = leg.usage
+  if (leg.calls !== undefined) out.calls = leg.calls
   if (leg.tokens) {
     out.tokens = {
       prompt: leg.tokens.prompt,
@@ -304,6 +308,7 @@ export function persistToResearch(content: string, sessionTag: string, meta?: Ou
       meta.model ? `model: ${JSON.stringify(meta.model)}` : null,
       ...Object.entries(costMeta(meta)).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
       meta.usage === undefined ? null : `usage: ${JSON.stringify(meta.usage)}`,
+      meta.calls === undefined ? null : `calls: ${JSON.stringify(meta.calls)}`,
       tokensTotal != null ? `tokens: ${tokensTotal}` : null,
       meta.durationMs ? `duration_ms: ${meta.durationMs}` : null,
       `timestamp: ${JSON.stringify(now.toISOString())}`,
@@ -329,6 +334,7 @@ export function buildMetaComment(sessionTag: string, meta?: OutputMeta): string 
   if (meta?.query) obj.query = meta.query
   Object.assign(obj, costMeta(meta))
   if (meta?.usage !== undefined) obj.usage = meta.usage
+  if (meta?.calls !== undefined) obj.calls = meta.calls
   if (meta?.tokens != null) {
     // Both legacy number form and structured {prompt, completion} form
     // appear in the meta-comment unchanged — JSON.stringify handles both.
@@ -462,7 +468,7 @@ export async function finishResponse(
   servedBy?: OutputMeta["servedBy"],
   completion?: Pick<
     ModelResponse,
-    "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd" | "cacheHit"
+    "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd" | "cacheHit" | "calls"
   >,
   /** The panel slot this call answered for (27038). A failed leg names it, so
    *  a reader can match the error back to the panel header without guessing. */
@@ -473,7 +479,14 @@ export async function finishResponse(
   failure?: { httpStatus?: number; providerCode?: string },
 ): Promise<void> {
   const costs = serializeCost(
-    resolveResponseCost({ model, usage, cost_usd: completion?.cost_usd, cacheHit: completion?.cacheHit, servedBy }),
+    resolveResponseCost({
+      model,
+      usage,
+      cost_usd: completion?.cost_usd,
+      calls: completion?.calls,
+      cacheHit: completion?.cacheHit,
+      servedBy,
+    }),
   )
   const stopped = completion === undefined ? undefined : outputTokenStop(completion)
   if (stopped === undefined && (!content || content.trim().length === 0)) {
@@ -525,6 +538,7 @@ export async function finishResponse(
       query,
       model: model.displayName,
       usage,
+      calls: completion?.calls,
       tokens: usage?.totalTokens,
       durationMs,
     }
@@ -546,6 +560,7 @@ export async function finishResponse(
       file: formatEnvelopeFile(outputFile, { fullPaths: isFullPaths(), cwd: process.cwd() }),
       model: model.displayName,
       usage,
+      calls: completion?.calls,
       tokens: usage
         ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
         : { total: 0 },
@@ -564,6 +579,7 @@ export async function finishResponse(
     query,
     model: model.displayName,
     usage,
+    calls: completion?.calls,
     tokens: usage
       ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
       : undefined,
@@ -589,7 +605,7 @@ export async function finishResponse(
 
 /** Compute total cost across multiple model responses */
 export function totalResponseCost(
-  responses: Array<Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy" | "cacheHit">>,
+  responses: Array<Pick<ModelResponse, "model" | "usage" | "cost_usd" | "servedBy" | "cacheHit" | "calls">>,
 ): ResolvedCost {
   return aggregateCosts(responses.map(resolveResponseCost))
 }

@@ -23,11 +23,9 @@ import { makeTestEnv } from "./helpers"
 const generateTextMock = vi.fn()
 const streamTextMock = vi.fn()
 
-vi.mock("ai", () => {
-  return {
-    generateText: generateTextMock,
-    streamText: streamTextMock,
-  }
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>()
+  return { ...actual, generateText: generateTextMock, streamText: streamTextMock }
 })
 
 function resetMocksToOk() {

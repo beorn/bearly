@@ -31,7 +31,11 @@ const { generateTextMock, streamTextMock, queryOpenAIDeepResearchMock } = vi.hoi
   streamTextMock: vi.fn(),
   queryOpenAIDeepResearchMock: vi.fn(),
 }))
-vi.mock("ai", () => ({ generateText: generateTextMock, streamText: streamTextMock }))
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
+  generateText: generateTextMock,
+  streamText: streamTextMock,
+}))
 vi.mock("../src/lib/openai-deep", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/openai-deep")>("../src/lib/openai-deep")
   return { ...actual, queryOpenAIDeepResearch: queryOpenAIDeepResearchMock }
