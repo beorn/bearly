@@ -14,6 +14,7 @@ import { join } from "node:path"
 
 import { buildDiagnostics } from "../src/lib/dispatch"
 import type { AbProEntry, AbProLegEntry } from "../src/lib/dual-pro"
+import type { DiagnosticsReport } from "../src/cmd/diagnostics"
 
 interface CapturedIo {
   stderr: string[]
@@ -173,24 +174,62 @@ describe("buildDiagnostics — pure aggregator", () => {
     expect(r.failureRate[0]!.warn).toBe(true)
   })
 
-  it("computes cost distribution at the ≥10-call threshold and skips below", () => {
+  it("keeps independent cost distributions, basis and missing coverage at the ≥10-call threshold", () => {
     const entries: AbProEntry[] = []
     // 12 successful cost entries for 'pricey'.
     for (let i = 1; i <= 12; i++) {
-      entries.push({ a: { model: "pricey", ok: true, cost: i * 0.1 } })
+      entries.push({
+        a: {
+          model: "pricey",
+          ok: true,
+          cost_usd: i * 0.1,
+          list_equivalent_usd: i * 0.001,
+          list_equivalent_basis: [
+            { rateSource: "litellm", rateDate: "2026-10-20", matchedModelId: "actual-priced-model" },
+          ],
+        },
+      })
     }
     // Only 5 successful cost entries for 'tooFew'.
     for (let i = 1; i <= 5; i++) {
       entries.push({ a: { model: "tooFew", ok: true, cost: 0.05 } })
     }
+    // Older bare scalars cannot become stated bills; one missing estimate
+    // cannot make the other nine calls look like a complete distribution.
+    for (let i = 0; i < 10; i++)
+      entries.push({
+        a: {
+          model: "partial",
+          ok: true,
+          cost: 0.5,
+          cost_usd: 0,
+          ...(i < 9 ? { list_equivalent_usd: 0.002 } : {}),
+        },
+      })
+    for (let i = 0; i < 10; i++) entries.push({ a: { model: "legacy", ok: true, cost: 0.5 } })
     const r = buildDiagnostics(entries)
     const pricey = r.costDist.find((x) => x.model === "pricey")
     expect(pricey).toBeDefined()
     expect(pricey!.calls).toBe(12)
     // avg of 0.1..1.2 step 0.1 = 0.65
-    expect(pricey!.avgUsd).toBeCloseTo(0.65, 5)
-    expect(pricey!.p99Usd).toBeGreaterThan(pricey!.p95Usd)
-    expect(pricey!.p95Usd).toBeGreaterThan(pricey!.p50Usd)
+    expect(pricey!.average.cost_usd).toBeCloseTo(0.65, 5)
+    expect(pricey!.average.list_equivalent_usd).toBeCloseTo(0.0065, 8)
+    expect(pricey!.average.list_equivalent_basis).toContainEqual({
+      rateSource: "litellm",
+      rateDate: "2026-10-20",
+      matchedModelId: "actual-priced-model",
+    })
+    expect(pricey!.p99.cost_usd).toBeGreaterThan(pricey!.p95.cost_usd!)
+    expect(pricey!.p95.cost_usd).toBeGreaterThan(pricey!.p50.cost_usd!)
+    const partial = r.costDist.find((x) => x.model === "partial")!
+    expect(partial.average.cost_usd).toBe(0)
+    expect(partial.average.list_equivalent_usd).toBeUndefined()
+    expect(partial.average.list_equivalent_reason).toMatch(/1 of 10/)
+    expect(partial.coverage).toEqual({ chargedKnown: 10, listEquivalentKnown: 9 })
+    const legacy = r.costDist.find((x) => x.model === "legacy")!
+    expect(legacy.average.cost_usd).toBeUndefined()
+    expect(legacy.average.list_equivalent_usd).toBeUndefined()
+    expect(legacy.coverage).toEqual({ chargedKnown: 0, listEquivalentKnown: 0 })
     expect(r.costDist.find((x) => x.model === "tooFew")).toBeUndefined()
   })
 
@@ -250,12 +289,7 @@ describe("bun llm pro --diagnostics — CLI", () => {
 
     await runCli(["pro", "--diagnostics", "--json"])
     expect(io.stdout).toHaveLength(1)
-    const env = JSON.parse(io.stdout[0]!) as {
-      status: string
-      speed: { model: string; calls: number; avgMs: number; p50Ms: number; p95Ms: number }[]
-      failureRate: { model: string; calls: number; failureRate: number; warn: boolean }[]
-      costDist: { model: string; calls: number; avgUsd: number; p50Usd: number; p95Usd: number; p99Usd: number }[]
-    }
+    const env = JSON.parse(io.stdout[0]!) as DiagnosticsReport
     expect(env.status).toBe("ok")
     expect(env.speed.find((r) => r.model === "pricey")).toBeDefined()
     expect(env.speed.find((r) => r.model === "fast")).toBeDefined()
@@ -268,7 +302,20 @@ describe("bun llm pro --diagnostics — CLI", () => {
 
   it("prints three plain-text sections (Speed / Failure rate / Cost distribution)", async () => {
     const entries: object[] = []
-    entries.push(...makeEntries(12, { model: "pricey", ok: true, cost: 0.5, durationMs: 9000 }))
+    entries.push(
+      ...Array.from({ length: 12 }, () => ({
+        a: {
+          model: "pricey",
+          ok: true,
+          durationMs: 9000,
+          cost_usd: 0.125,
+          list_equivalent_usd: 0.002,
+          list_equivalent_basis: [
+            { rateSource: "litellm", rateDate: "2026-10-20", matchedModelId: "actual-priced-model" },
+          ],
+        },
+      })),
+    )
     seedAbPro(homeDir, entries)
 
     await runCli(["pro", "--diagnostics"])
@@ -278,5 +325,10 @@ describe("bun llm pro --diagnostics — CLI", () => {
     expect(all).toMatch(/Failure rate/)
     expect(all).toMatch(/Cost distribution/)
     expect(all).toMatch(/pricey/)
+    expect(all).toContain("charged $0.125")
+    expect(all).toContain("list-equivalent")
+    expect(all).toContain("litellm")
+    expect(all).toContain("2026-10-20")
+    expect(all).toContain("actual-priced-model")
   })
 })

@@ -8,6 +8,16 @@
  */
 
 import { legsOf } from "../lib/dual-pro"
+import {
+  aggregateCosts,
+  averageCost,
+  deserializeCost,
+  serializeCost,
+  type CostFields,
+  type ResolvedCost,
+} from "../lib/cost"
+import { formatCostColumns } from "../lib/format"
+import { resolveResponseCost } from "../lib/pricing"
 import type { FleetFailureReport } from "../lib/fleet-failure"
 import { FLEET_WARN_MIN_CALLS, FLEET_WARN_RATE, readFleetFailureReport } from "../lib/fleet-failure"
 import { emitJson, isJsonMode } from "../lib/output-mode"
@@ -34,10 +44,11 @@ export interface DiagnosticsFailureRow {
 export interface DiagnosticsCostRow {
   model: string
   calls: number
-  avgUsd: number
-  p50Usd: number
-  p95Usd: number
-  p99Usd: number
+  average: CostFields
+  p50: CostFields
+  p95: CostFields
+  p99: CostFields
+  coverage: { chargedKnown: number; listEquivalentKnown: number }
 }
 
 /** Aggregated diagnostics envelope — what `--diagnostics --json` emits. */
@@ -77,7 +88,7 @@ function quantile(values: number[], q: number): number {
  * - Cost distribution: avg/p50/p95/p99 over successful calls; rows with calls ≥ 10.
  */
 export function buildDiagnostics(entries: readonly import("../lib/dual-pro").AbProEntry[]): DiagnosticsReport {
-  type Stat = { calls: number; success: number; durations: number[]; costs: number[] }
+  type Stat = { calls: number; success: number; durations: number[]; costs: ResolvedCost[] }
   const stats = new Map<string, Stat>()
   const bumpLeg = (leg?: import("../lib/dual-pro").AbProLegEntry) => {
     if (!leg?.model) return
@@ -86,7 +97,11 @@ export function buildDiagnostics(entries: readonly import("../lib/dual-pro").AbP
     if (leg.ok) {
       s.success += 1
       if (leg.durationMs != null) s.durations.push(leg.durationMs)
-      if (leg.cost != null) s.costs.push(leg.cost)
+      s.costs.push(
+        leg.usage || leg.calls?.length
+          ? resolveResponseCost({ ...leg, model: { modelId: leg.model } })
+          : deserializeCost(leg),
+      )
     }
     stats.set(leg.model, s)
   }
@@ -119,22 +134,46 @@ export function buildDiagnostics(entries: readonly import("../lib/dual-pro").AbP
       failureRate: fr,
       warn: fr > FAILURE_WARN_RATE && s.calls >= FAILURE_WARN_MIN_CALLS,
     })
-    if (s.success >= COST_MIN_CALLS && s.costs.length > 0) {
-      const sum = s.costs.reduce((a, b) => a + b, 0)
+    if (s.success >= COST_MIN_CALLS) {
+      const total = aggregateCosts(s.costs)
+      const percentile = (q: number): CostFields => {
+        const amount = (column: "charged" | "listEquivalent") => {
+          const aggregate = total[column]
+          if ("reason" in aggregate) return aggregate
+          return {
+            usd: quantile(
+              s.costs.flatMap((cost) => {
+                const value = cost[column]
+                return "usd" in value ? [value.usd] : []
+              }),
+              q,
+            ),
+          }
+        }
+        return serializeCost({ ...total, charged: amount("charged"), listEquivalent: amount("listEquivalent") })
+      }
       costDist.push({
         model,
         calls: s.success,
-        avgUsd: sum / s.costs.length,
-        p50Usd: quantile(s.costs, 0.5),
-        p95Usd: quantile(s.costs, 0.95),
-        p99Usd: quantile(s.costs, 0.99),
+        average: serializeCost(averageCost(total, s.success)),
+        p50: percentile(0.5),
+        p95: percentile(0.95),
+        p99: percentile(0.99),
+        coverage: {
+          chargedKnown: s.costs.filter((cost) => "usd" in cost.charged).length,
+          listEquivalentKnown: s.costs.filter((cost) => "usd" in cost.listEquivalent).length,
+        },
       })
     }
   }
 
   speed.sort((a, b) => a.avgMs - b.avgMs)
   failureRate.sort((a, b) => b.failureRate - a.failureRate || b.calls - a.calls)
-  costDist.sort((a, b) => a.avgUsd - b.avgUsd)
+  costDist.sort(
+    (a, b) =>
+      (a.average.list_equivalent_usd ?? Number.POSITIVE_INFINITY) -
+        (b.average.list_equivalent_usd ?? Number.POSITIVE_INFINITY) || a.model.localeCompare(b.model),
+  )
 
   return { status: "ok", speed, failureRate, costDist }
 }
@@ -184,7 +223,6 @@ export async function runDiagnostics(): Promise<void> {
 
   const fmtMs = (n: number) => `${(n / 1000).toFixed(1)}s`
   const fmtPct = (n: number) => `${(n * 100).toFixed(0)}%`
-  const fmtCost = (n: number) => `$${n.toFixed(4)}`
 
   console.error(`\nDiagnostics — ${populationLine(entries.length, fleet)}\n`)
 
@@ -231,14 +269,18 @@ export async function runDiagnostics(): Promise<void> {
   if (report.costDist.length === 0) {
     console.error(`  (no models meet the \u2265${COST_MIN_CALLS}-call threshold yet)`)
   } else {
-    console.error(
-      `  ${"Model".padEnd(34)} ${"Calls".padStart(6)} ${"Avg".padStart(10)} ${"P50".padStart(10)} ${"P95".padStart(10)} ${"P99".padStart(10)}`,
-    )
-    console.error(`  ${"-".repeat(82)}`)
     for (const r of report.costDist) {
       console.error(
-        `  ${r.model.padEnd(34)} ${String(r.calls).padStart(6)} ${fmtCost(r.avgUsd).padStart(10)} ${fmtCost(r.p50Usd).padStart(10)} ${fmtCost(r.p95Usd).padStart(10)} ${fmtCost(r.p99Usd).padStart(10)}`,
+        `  ${r.model} — ${r.calls} successful calls; charged known ${r.coverage.chargedKnown}/${r.calls}, list-equivalent known ${r.coverage.listEquivalentKnown}/${r.calls}`,
       )
+      for (const [label, values] of [
+        ["Avg", r.average],
+        ["P50", r.p50],
+        ["P95", r.p95],
+        ["P99", r.p99],
+      ] as const) {
+        console.error(`    ${label}: ${formatCostColumns(values)}`)
+      }
     }
   }
   console.error("")
