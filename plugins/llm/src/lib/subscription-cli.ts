@@ -370,9 +370,21 @@ function parseCodexJsonl(jsonl: string): CodexParse {
     } else if (event.type === "item.completed" && event.item?.type === "agent_message") {
       if (typeof event.item.text === "string") text = event.item.text
     } else if (event.type === "turn.completed" && event.usage) {
-      const prompt = event.usage.input_tokens ?? 0
-      const completion = event.usage.output_tokens ?? 0
-      usage = { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion, estimatedCost: 0 }
+      const u = event.usage
+      usage = {
+        ...(u.input_tokens === undefined ? {} : { promptTokens: u.input_tokens }),
+        ...(u.output_tokens === undefined ? {} : { completionTokens: u.output_tokens }),
+        ...(u.cached_input_tokens === undefined
+          ? {}
+          : {
+              classes: {
+                ...(u.input_tokens === undefined ? {} : { input: u.input_tokens - u.cached_input_tokens }),
+                ...(u.output_tokens === undefined ? {} : { output: u.output_tokens }),
+                cache_read: u.cached_input_tokens,
+              },
+            }),
+        raw: { ...u },
+      }
     } else if (event.type === "error" && typeof event.message === "string") {
       failure = event.message
     } else if (event.type === "turn.failed") {
@@ -548,13 +560,11 @@ function parseAgyStreamJson(ndjson: string): AgyParse {
     error = event.result.error
     const u = event.result.usage
     if (u) {
-      const prompt = u.input_tokens ?? 0
-      const completion = u.output_tokens ?? 0
       usage = {
-        promptTokens: prompt,
-        completionTokens: completion,
-        totalTokens: u.total_tokens ?? prompt + completion,
-        estimatedCost: 0,
+        ...(u.input_tokens === undefined ? {} : { promptTokens: u.input_tokens }),
+        ...(u.output_tokens === undefined ? {} : { completionTokens: u.output_tokens }),
+        ...(u.total_tokens === undefined ? {} : { totalTokens: u.total_tokens }),
+        raw: { ...u },
       }
     }
   }

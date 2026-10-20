@@ -46,10 +46,10 @@ function usageFacts(usage: OpenAI.Responses.Response["usage"]): Pick<ModelRespon
     usage: {
       promptTokens: usage.input_tokens,
       completionTokens: usage.output_tokens,
-      totalTokens: usage.total_tokens ?? usage.input_tokens + usage.output_tokens,
+      totalTokens: usage.total_tokens,
       classes: {
-        input: usage.input_tokens - (cached ?? 0),
-        output: usage.output_tokens,
+        ...(usage.input_tokens === undefined ? {} : { input: usage.input_tokens - (cached ?? 0) }),
+        ...(usage.output_tokens === undefined ? {} : { output: usage.output_tokens }),
         ...(cached === undefined ? {} : { cache_read: cached }),
         ...(reasoning === undefined ? {} : { reasoning }),
       },

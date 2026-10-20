@@ -191,11 +191,13 @@ export function parsePartialFile(path: string): PartialFile | null {
       startedAt: metadata["started_at"] || "",
       lastSequence: metadata["last_sequence"] ? parseInt(metadata["last_sequence"], 10) : undefined,
       completedAt: metadata["completed_at"],
-      usage: metadata["usage_total"]
+      usage: ["usage_prompt", "usage_completion", "usage_total"].some((key) => metadata[key] !== undefined)
         ? {
-            promptTokens: parseInt(metadata["usage_prompt"] || "0", 10),
-            completionTokens: parseInt(metadata["usage_completion"] || "0", 10),
-            totalTokens: parseInt(metadata["usage_total"] || "0", 10),
+            ...(metadata["usage_prompt"] === undefined ? {} : { promptTokens: parseInt(metadata["usage_prompt"], 10) }),
+            ...(metadata["usage_completion"] === undefined
+              ? {}
+              : { completionTokens: parseInt(metadata["usage_completion"], 10) }),
+            ...(metadata["usage_total"] === undefined ? {} : { totalTokens: parseInt(metadata["usage_total"], 10) }),
           }
         : undefined,
       ...parseReceipt(metadata["receipt"], path),
