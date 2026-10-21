@@ -313,7 +313,9 @@ describe("remove names the cure for an uninitialized nested submodule (30529)", 
     // Run the exact command the refusal printed.
     const printed = /Initialize them first: (git .*?)(?: \(or |; no worktree was changed)/.exec(failure!)?.[1]?.trim()
     expect(printed).toBeDefined()
-    const [command, ...args] = printed!.split(/\s+/)
+    const words = printed!.split(/\s+/)
+    const command = words[0]!
+    const args = words.slice(1)
     // The fixture's submodule URLs are local paths; allow that transport in the
     // environment so the printed command still runs character for character.
     execFileSync(command, args, {
