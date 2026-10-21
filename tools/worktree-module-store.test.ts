@@ -120,7 +120,8 @@ describe("bearly worktree remove and a slot's module stores (30580)", () => {
       () => undefined,
     )
     const logged = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(logged).toContain("module store vendor/dep holds 1 commit(s)")
+    // With no remote nothing proves the base commit exists elsewhere either, so both commits count.
+    expect(logged).toContain("module store vendor/dep holds 2 commit(s)")
     expect(logged).toContain("has no remote to archive them to")
     expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
