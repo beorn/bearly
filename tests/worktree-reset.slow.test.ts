@@ -221,7 +221,7 @@ describe("worktree reset round-trip", () => {
   // #26139: the same recovery contract must hold at the exact registered path;
   // legacy-only round trips miss a reset recreating a differently named folder.
   test.each(["legacy", "relocated"] as const)(
-    "reset --force at %s path PRESERVES uncommitted + ahead commits to wip/…, leaves a clean slot at origin/main",
+    "reset --force at %s path PRESERVES uncommitted + ahead commits in published archives, leaves a clean slot at origin/main",
     async (location) => {
       const mainRepo = join(sandbox, "main")
 
@@ -291,17 +291,19 @@ describe("worktree reset round-trip", () => {
         expect(existsSync(join(worktreePath, "uncommitted.txt"))).toBe(false)
         expect(existsSync(join(worktreePath, "ahead.txt"))).toBe(false)
 
-        // …but the work is NOT gone — it was preserved to wip/<slot>-preserve-*
+        // …but the work is NOT gone — it was preserved in published archive custody.
         // (L5: no destructive step discards). The snapshot recovers the exact
         // uncommitted content, and its history carries the ahead commit + file.
         const refsOut = (
-          await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname)"} ${"refs/heads/wip/" + worktreeName + "-preserve-*"}`.text()
+          await $`cd ${mainRepo} && git for-each-ref --format=${"%(refname)"} ${"refs/archive/*/worktree/" + worktreeName + "-preserve-*"}`.text()
         )
           .trim()
           .split("\n")
           .filter(Boolean)
         expect(refsOut.length).toBe(1)
         const preserveRef = refsOut[0]!
+        const localSnapshot = (await $`git -C ${mainRepo} rev-parse ${preserveRef}`.text()).trim()
+        expect((await $`git -C ${upstreamRepo} rev-parse ${preserveRef}`.text()).trim()).toBe(localSnapshot)
         const recoveredDirt = await $`cd ${mainRepo} && git show ${preserveRef}:uncommitted.txt`.text()
         expect(recoveredDirt).toBe("dirt-after-commit\n")
         const recoveredAhead = await $`cd ${mainRepo} && git show ${preserveRef}:ahead.txt`.text()
@@ -389,7 +391,7 @@ describe("worktree reset round-trip", () => {
     }
   }, 30_000)
 
-  test("reset --save-ahead-as <slug> saves ahead commits to wip/<slug> before discarding", async () => {
+  test("reset --save-ahead-as <slug> publishes an archive of ahead commits before discarding", async () => {
     const mainRepo = join(sandbox, "main")
 
     await initRepo(mainRepo)
@@ -416,7 +418,7 @@ describe("worktree reset round-trip", () => {
       const aheadTipSha = (await $`cd ${worktreePath} && git rev-parse HEAD`.text()).trim()
       expect(aheadTipSha.length).toBe(40)
 
-      // Reset with save-ahead — should preserve the 2 commits on wip/<slug>
+      // Reset with save-ahead — the slug labels the published archive.
       await resetWorktree(worktreeName, {
         force: true,
         saveAheadAs: "demo",
@@ -425,12 +427,20 @@ describe("worktree reset round-trip", () => {
         hooks: false,
       })
 
-      // Save branch exists in main repo and points at the pre-reset tip
-      const saveBranchSha = (await $`cd ${mainRepo} && git rev-parse refs/heads/wip/demo`.text()).trim()
-      expect(saveBranchSha).toBe(aheadTipSha)
+      // The archive exists locally and at origin with the exact pre-reset tip.
+      const saveRefs = (
+        await $`git -C ${mainRepo} for-each-ref --format=${"%(refname)"} ${"refs/archive/*/worktree/demo-*"}`.text()
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+      expect(saveRefs.length).toBe(1)
+      const saveRef = saveRefs[0]!
+      expect((await $`git -C ${mainRepo} rev-parse ${saveRef}`.text()).trim()).toBe(aheadTipSha)
+      expect((await $`git -C ${upstreamRepo} rev-parse ${saveRef}`.text()).trim()).toBe(aheadTipSha)
 
-      // Save branch contains both ahead commits
-      const saveLog = await $`cd ${mainRepo} && git log refs/heads/wip/demo --format='%s' -3`.text()
+      // The archive contains both ahead commits.
+      const saveLog = await $`git -C ${mainRepo} log ${saveRef} --format='%s' -3`.text()
       expect(saveLog).toContain("ahead-commit-1")
       expect(saveLog).toContain("ahead-commit-2")
 

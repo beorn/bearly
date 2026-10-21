@@ -206,6 +206,11 @@ describe("worktree submodule isolation round-trip", () => {
       await commitAll(mainRepo, "main-init")
       await $`cd ${mainRepo} && git -c protocol.file.allow=always submodule add ${subRepo} vendor/sub`.quiet()
       await commitAll(mainRepo, "add-sub")
+      // Removal publishes archive custody before discarding the isolated checkout.
+      const upstreamRepo = join(sandbox, "origin.git")
+      await $`git init --bare -q -b main ${upstreamRepo}`.quiet()
+      await $`git -C ${mainRepo} remote add origin ${upstreamRepo}`.quiet()
+      await $`git -C ${mainRepo} push -q origin main`.quiet()
 
       // Record the main repo's submodule file content before worktree work
       const mainSubFile = join(mainRepo, "vendor/sub/file.txt")
