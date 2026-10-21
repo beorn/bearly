@@ -51,7 +51,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve, sep } from "path"
 import { $ } from "bun"
-import { worktreeHomeRoot } from "git-super"
+import { describeModuleStores, worktreeHomeRoot } from "git-super"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
@@ -2986,6 +2986,9 @@ async function removeWorktreeWithAdmission(
 
   if (admitOnly) {
     for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
+    for (const line of describeModuleStores(inspection.moduleStores)) {
+      info(`${line} (removal plan; nothing was pushed)`)
+    }
     return
   }
 
@@ -3015,9 +3018,16 @@ async function removeWorktreeWithAdmission(
   info("Removing worktree...")
   const mechanics = poolWorktreeMechanics(gitRoot)
   try {
-    await mechanics.remove(worktreePath, {
+    await createLocalGitWorktreeStore({
+      repo: gitRoot,
+      // The deleting function prints every module store the library archives or releases (30580); with no
+      // sink the library prints archive lines only, to stderr.
+      report: (line) => info(line.trimEnd()),
+    }).remove(worktreePath, {
       operation: `pool worktree remove ${worktreePath}`,
       excludedSubmodules: options.excludedSubmodules,
+      // `reset` passes the absolute path as `name`; the slot name is what both callers mean.
+      archiveActor: slotNameFromResolvedPath(gitRoot, worktreePath),
     })
   } catch (cause) {
     error("Failed to remove worktree")
