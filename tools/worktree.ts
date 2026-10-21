@@ -2917,6 +2917,7 @@ async function removeWorktreeWithAdmission(
     reset?.base,
     callerRegeneratedOutputs(worktreePath, options.regenerates),
     options.excludedSubmodules,
+    admitOnly,
   )
 
   // Get branch name before removing
@@ -3113,8 +3114,21 @@ async function assertIgnoredContent(
   base?: string,
   regenerates: readonly string[] = [],
   excludedSubmodules: readonly string[] = [],
+  admitOnly = false,
 ): Promise<RemovalInspection> {
   const inspection = await poolWorktreeMechanics(worktreePath).inspectRemoval(worktreePath, { excludedSubmodules })
+  if (admitOnly) {
+    // The read-only answer to "what did you classify?": every included component
+    // gets a line, so an uninitialized one is visible before the refusal, not as
+    // one bare path in an error (30529).
+    for (const entry of inspection.consultedRepositories) {
+      if (entry.path === ".") continue
+      info(`${entry.path}: initialized; contents classified for ignored payload`)
+    }
+    for (const path of inspection.uninitializedSubmodules) {
+      info(`${path}: uninitialized; contents cannot be classified`)
+    }
+  }
   const incomplete = inspection.notCompared.filter((entry) => entry.reason !== "excluded")
   if (incomplete.length > 0) {
     throw new Error(
@@ -3125,8 +3139,14 @@ async function assertIgnoredContent(
   }
   const missing = inspection.uninitializedSubmodules
   if (missing.length > 0) {
+    const init = `git -C ${worktreePath} submodule update --init ${missing.join(" ")}`
     throw new Error(
-      `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}; no worktree was changed`,
+      `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}.` +
+        ` Initialize them first: ${init}` +
+        (excludedSubmodules.length === 0
+          ? " (or pass --exclude-submodule <path> for a declared empty component)"
+          : "") +
+        "; no worktree was changed",
     )
   }
   const repositories = inspection.consultedRepositories.map((entry) => entry.root)
@@ -3306,6 +3326,7 @@ export async function resetWorktree(name: string, options: ResetOptions = {}): P
     base,
     regenerated,
     options.excludedSubmodules,
+    admitOnly,
   )
 
   // Drift check (skipped under --force).
@@ -3647,6 +3668,7 @@ ${BOLD}REMOVE OPTIONS${RESET}
   --exclude-submodule <path>  Skip a declared empty component (repeatable)
   --admit           Read-only: check target, inputs/label, ignored content and dirt;
                     exit 0 admitted, 2 refused; no preservation or teardown
+  --dry-run         Alias of --admit: the same read-only classification, no mutation
   --regenerates <json>  One JSON array of relative outputs recreated by the caller
   --delete-branch   Also delete the branch
   -f, --force       Remove despite uncommitted changes — preserves them to wip/… first
@@ -3654,6 +3676,7 @@ ${BOLD}REMOVE OPTIONS${RESET}
 ${BOLD}RESET OPTIONS${RESET}
   --exclude-submodule <path>  Skip a declared empty component (repeatable)
   --admit                Check admission only: exit 0 admitted, 2 refused; no mutation
+  --dry-run              Alias of --admit: the same read-only classification, no mutation
   --regenerates <json>    One JSON array of relative outputs recreated by the caller
   -f, --force            Recreate despite dirt/ahead — PRESERVES to wip/… first (never discards)
                          Retains distinct author branches; recuts only the branch recreated
@@ -3736,6 +3759,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     maxPositionals: 1,
     flags: {
       "--admit": {},
+      "--dry-run": {},
       "--delete-branch": {},
       "--force": {},
       "-f": {},
@@ -3748,6 +3772,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     maxPositionals: 1,
     flags: {
       "--admit": {},
+      "--dry-run": {},
       "--delete-branch": {},
       "--force": {},
       "-f": {},
@@ -3760,6 +3785,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
     maxPositionals: 1,
     flags: {
       "--admit": {},
+      "--dry-run": {},
       "--regenerates": { value: true },
       "--exclude-submodule": { value: true },
       "--force": {},
@@ -3917,7 +3943,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
         options: {
           deleteBranch: flags.has("--delete-branch"),
           ...(excludedSubmodules.length === 0 ? {} : { excludedSubmodules }),
-          ...(flags.has("--admit") ? { admitOnly: true } : {}),
+          ...(flags.has("--admit") || flags.has("--dry-run") ? { admitOnly: true } : {}),
           ...(regenerates === undefined ? {} : { regenerates }),
           force: flags.has("--force") || flags.has("-f"),
           // Optional ref-naming label; undefined → the default
@@ -3938,7 +3964,7 @@ export function planCliInvocation(argv: string[]): CliPlan {
           force: flags.has("--force") || flags.has("-f"),
           saveAheadAs: values.get("--save-ahead-as"),
           ...(excludedSubmodules.length === 0 ? {} : { excludedSubmodules }),
-          ...(flags.has("--admit") ? { admitOnly: true } : {}),
+          ...(flags.has("--admit") || flags.has("--dry-run") ? { admitOnly: true } : {}),
           ...(regenerates === undefined ? {} : { regenerates }),
           ...(values.has("--destination") ? { destination: values.get("--destination") } : {}),
           retargetOrigin: flags.has("--retarget-origin"),
@@ -4071,7 +4097,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "usage-error":
       error(plan.message)
       console.log(DIM + "Run `bun worktree --help` for usage." + RESET)
-      process.exit(["reset", "remove", "rm"].includes(argv[0] ?? "") && argv.includes("--admit") ? 2 : 1)
+      process.exit(
+        ["reset", "remove", "rm"].includes(argv[0] ?? "") && (argv.includes("--admit") || argv.includes("--dry-run"))
+          ? 2
+          : 1,
+      )
       break
     case "path": {
       const gitRoot = findGitRoot(process.cwd())

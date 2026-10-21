@@ -33,7 +33,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest"
-import { resetWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
+import { removeWorktree, resetWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
 
 const roots: string[] = []
 
@@ -148,5 +148,76 @@ describe("reset admits old setup-derived output across a drifted setup declarati
     )
     expect(failure).toMatch(/precious\.bin/)
     expect(failure).not.toMatch(/node_modules|packages\/dep\/dist|packages\/legacy/)
+  })
+})
+
+/**
+ * A pool slot whose nested submodule was never initialized — exactly the state
+ * a plain `git worktree add` leaves, and the state that refused removal with no
+ * way forward (30529).
+ */
+function slotWithUninitializedSubmodule(): { repo: string; slot: string } {
+  const root = mkdtempSync(join(tmpdir(), "bearly-wt-uninit-submodule-"))
+  roots.push(root)
+  const repo = join(root, "repo")
+  const nested = join(root, "nested")
+  const origin = join(root, "origin.git")
+  const pool = join(root, "pool")
+
+  git(root, ["init", "-q", "-b", "main", nested])
+  git(nested, ["config", "user.email", "t@example.test"])
+  git(nested, ["config", "user.name", "t"])
+  writeFileSync(join(nested, "nested.txt"), "nested\n")
+  git(nested, ["add", "-A"])
+  git(nested, ["commit", "-qm", "nested seed"])
+
+  git(root, ["init", "-q", "-b", "main", repo])
+  git(repo, ["config", "user.email", "t@example.test"])
+  git(repo, ["config", "user.name", "t"])
+  git(repo, ["config", "worktree.poolRoot", pool])
+  writeFileSync(join(repo, ".gitignore"), "node_modules\n")
+  writeFileSync(join(repo, "seed.txt"), "seed\n")
+  git(repo, ["add", "-A"])
+  git(repo, ["commit", "-qm", "seed"])
+  git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", nested, "components/nested"])
+  git(repo, ["commit", "-qm", "add nested submodule"])
+
+  git(root, ["init", "-q", "--bare", origin])
+  git(repo, ["remote", "add", "origin", origin])
+  git(repo, ["push", "-q", "origin", "main"])
+  git(repo, ["fetch", "-q", "origin", "main"])
+
+  const slotPath = resolveWorktreeTargetPath(repo, "wt0", { poolRoot: pool })
+  mkdirSync(slotPath, { recursive: true })
+  git(repo, ["worktree", "add", "-q", "-B", "wt0", slotPath, "origin/main"])
+  return { repo, slot: slotPath }
+}
+
+describe("remove names the cure for an uninitialized nested submodule (30529)", () => {
+  test("a plain remove refuses with the exact init command", async () => {
+    const { repo, slot } = slotWithUninitializedSubmodule()
+
+    process.chdir(repo)
+    const failure = await removeWorktree("wt0", {}).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+
+    expect(failure).toMatch(/uninitialized submodules/)
+    expect(failure).toContain(`git -C ${slot} submodule update --init components/nested`)
+  })
+
+  test("--admit prints the classification it used for each nested submodule", async () => {
+    const { repo } = slotWithUninitializedSubmodule()
+
+    process.chdir(repo)
+    const failure = await removeWorktree("wt0", { admitOnly: true }).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+
+    expect(failure).toMatch(/uninitialized submodules/)
+    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(named).toContain("components/nested: uninitialized; contents cannot be classified")
   })
 })
