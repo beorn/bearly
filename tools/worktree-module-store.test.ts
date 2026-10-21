@@ -35,8 +35,21 @@ afterEach(() => {
   for (const root of roots.splice(0)) safeRemoveSync(root, { within: tmpdir(), allowMissing: true })
 })
 
+// A cloned module store inherits no user config, and a CI runner has no global identity.
+const GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@example.test",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@example.test",
+}
+
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", args as string[], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+  return execFileSync("git", args as string[], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...GIT_IDENTITY },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
 }
 
 type StoreWork = "local" | "none" | "remoteless"
