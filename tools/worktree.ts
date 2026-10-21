@@ -2986,7 +2986,9 @@ async function removeWorktreeWithAdmission(
 
   if (admitOnly) {
     for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
-    for (const line of describeModuleStores(inspection.releasedStores)) info(`${line} (removal plan; nothing was pushed)`)
+    for (const line of describeModuleStores(inspection.releasedStores)) {
+      info(`${line} (removal plan; nothing was pushed)`)
+    }
     return
   }
 
@@ -3016,15 +3018,15 @@ async function removeWorktreeWithAdmission(
   info("Removing worktree...")
   const mechanics = poolWorktreeMechanics(gitRoot)
   try {
-  await createLocalGitWorktreeStore({
-    repo: gitRoot,
-    // The library reports every module store it archives or releases through this one line sink, so no
-    // caller can forget to say what happened to a repository destroyed with the slot (30580).
-    report: (line) => info(line.trimEnd()),
-  }).remove(worktreePath, {
+    await createLocalGitWorktreeStore({
+      repo: gitRoot,
+      // The deleting function prints every module store the library archives or releases (30580); with no
+      // sink the library prints archive lines only, to stderr.
+      report: (line) => info(line.trimEnd()),
+    }).remove(worktreePath, {
       operation: `pool worktree remove ${worktreePath}`,
       excludedSubmodules: options.excludedSubmodules,
-    archiveActor: name,
+      archiveActor: name,
     })
   } catch (cause) {
     error("Failed to remove worktree")
