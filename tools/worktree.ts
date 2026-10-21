@@ -3128,6 +3128,9 @@ async function assertIgnoredContent(
     for (const path of inspection.uninitializedSubmodules) {
       info(`${path}: uninitialized; contents cannot be classified`)
     }
+    for (const entry of inspection.notCompared.filter((candidate) => candidate.reason === "excluded")) {
+      info(`${entry.path}: excluded; not compared`)
+    }
   }
   const incomplete = inspection.notCompared.filter((entry) => entry.reason !== "excluded")
   if (incomplete.length > 0) {
@@ -3139,7 +3142,25 @@ async function assertIgnoredContent(
   }
   const missing = inspection.uninitializedSubmodules
   if (missing.length > 0) {
-    const init = `git -C ${worktreePath} submodule update --init ${missing.join(" ")}`
+    // Group by the repository that OWNS each gitlink. A second-level path such as
+    // km/apps/maddoc is a root pathspec inside submodule km, so
+    // `git -C <slot> submodule update --init km/apps/maddoc` is refused; the cure
+    // is one command per owner: `git -C <slot>/km submodule update --init apps/maddoc`.
+    // Never --recursive on an initialized parent: that would also move its checkout.
+    const owners = new Map<string, string[]>()
+    for (const path of missing) {
+      const owner = inspection.consultedRepositories
+        .filter((entry) => entry.path !== "." && (path === entry.path || path.startsWith(`${entry.path}/`)))
+        .sort((left, right) => right.path.length - left.path.length)[0]
+      const repository = owner === undefined ? worktreePath : owner.root
+      const relative = owner === undefined ? path : path.slice(owner.path.length + 1)
+      const bucket = owners.get(repository) ?? []
+      bucket.push(relative)
+      owners.set(repository, bucket)
+    }
+    const init = [...owners]
+      .map(([repository, paths]) => `git -C ${repository} submodule update --init ${paths.join(" ")}`)
+      .join("; ")
     throw new Error(
       `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}.` +
         ` Initialize them first: ${init}` +

@@ -28,7 +28,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeRemoveSync } from "removely"
@@ -193,6 +193,64 @@ function slotWithUninitializedSubmodule(): { repo: string; slot: string } {
   return { repo, slot: slotPath }
 }
 
+/**
+ * A pool slot whose SECOND-level submodule was never initialized: the slot has
+ * `components/outer` cloned, and `components/outer/inner` is still a bare
+ * gitlink. That is the shape the refusal got wrong — its cure named the
+ * second-level path from the slot root, which git reads as a pathspec inside
+ * `components/outer` and refuses (the reported case: `km/apps/maddoc`).
+ */
+function slotWithSecondLevelUninitializedSubmodule(): { repo: string; slot: string; owner: string } {
+  const root = mkdtempSync(join(tmpdir(), "bearly-wt-uninit-nested-"))
+  roots.push(root)
+  const repo = join(root, "repo")
+  const outer = join(root, "outer")
+  const inner = join(root, "inner")
+  const origin = join(root, "origin.git")
+  const pool = join(root, "pool")
+
+  git(root, ["init", "-q", "-b", "main", inner])
+  git(inner, ["config", "user.email", "t@example.test"])
+  git(inner, ["config", "user.name", "t"])
+  writeFileSync(join(inner, "inner.txt"), "inner\n")
+  git(inner, ["add", "-A"])
+  git(inner, ["commit", "-qm", "inner seed"])
+
+  git(root, ["init", "-q", "-b", "main", outer])
+  git(outer, ["config", "user.email", "t@example.test"])
+  git(outer, ["config", "user.name", "t"])
+  writeFileSync(join(outer, "outer.txt"), "outer\n")
+  git(outer, ["add", "-A"])
+  git(outer, ["commit", "-qm", "outer seed"])
+  git(outer, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "inner"])
+  git(outer, ["commit", "-qm", "add inner submodule"])
+
+  git(root, ["init", "-q", "-b", "main", repo])
+  git(repo, ["config", "user.email", "t@example.test"])
+  git(repo, ["config", "user.name", "t"])
+  git(repo, ["config", "worktree.poolRoot", pool])
+  writeFileSync(join(repo, ".gitignore"), "node_modules\n")
+  writeFileSync(join(repo, "seed.txt"), "seed\n")
+  git(repo, ["add", "-A"])
+  git(repo, ["commit", "-qm", "seed"])
+  git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", outer, "components/outer"])
+  git(repo, ["commit", "-qm", "add outer submodule"])
+
+  git(root, ["init", "-q", "--bare", origin])
+  git(repo, ["remote", "add", "origin", origin])
+  git(repo, ["push", "-q", "origin", "main"])
+  git(repo, ["fetch", "-q", "origin", "main"])
+
+  const slotPath = resolveWorktreeTargetPath(repo, "wt0", { poolRoot: pool })
+  mkdirSync(slotPath, { recursive: true })
+  git(repo, ["worktree", "add", "-q", "-B", "wt0", slotPath, "origin/main"])
+
+  // First level only: `components/outer/inner` stays a bare gitlink.
+  git(slotPath, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "components/outer"])
+  const owner = join(slotPath, "components", "outer")
+  return { repo, slot: slotPath, owner }
+}
+
 describe("remove names the cure for an uninitialized nested submodule (30529)", () => {
   test("a plain remove refuses with the exact init command", async () => {
     const { repo, slot } = slotWithUninitializedSubmodule()
@@ -219,5 +277,65 @@ describe("remove names the cure for an uninitialized nested submodule (30529)", 
     expect(failure).toMatch(/uninitialized submodules/)
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
     expect(named).toContain("components/nested: uninitialized; contents cannot be classified")
+  })
+
+  test("--admit names a declared-empty submodule as excluded, not compared", async () => {
+    const { repo } = slotWithUninitializedSubmodule()
+
+    process.chdir(repo)
+    const refused = await removeWorktree("wt0", {
+      admitOnly: true,
+      excludedSubmodules: ["components/nested"],
+    }).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+
+    expect(refused).toBeNull()
+    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(named).toContain("components/nested: excluded; not compared")
+  })
+
+  test("the printed cure runs for a second-level submodule, then --admit and remove proceed", async () => {
+    const { repo, slot, owner } = slotWithSecondLevelUninitializedSubmodule()
+
+    process.chdir(repo)
+    const failure = await removeWorktree("wt0", {}).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+
+    expect(failure).toMatch(/uninitialized submodules/)
+    expect(failure).toContain(`git -C ${owner} submodule update --init inner`)
+    expect(failure).not.toContain(`git -C ${slot} submodule update --init components/outer/inner`)
+    expect(failure).not.toContain("--recursive")
+
+    // Run the exact command the refusal printed.
+    const printed = /Initialize them first: (git .*?)(?: \(or |; no worktree was changed)/.exec(failure!)?.[1]?.trim()
+    expect(printed).toBeDefined()
+    const [command, ...args] = printed!.split(/\s+/)
+    // The fixture's submodule URLs are local paths; allow that transport in the
+    // environment so the printed command still runs character for character.
+    execFileSync(command, args, {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "protocol.file.allow",
+        GIT_CONFIG_VALUE_0: "always",
+      },
+    })
+
+    const refused = await removeWorktree("wt0", { admitOnly: true }).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+    expect(refused).toBeNull()
+    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(named).toContain("components/outer: initialized; contents classified for ignored payload")
+    expect(named).toContain("components/outer/inner: initialized; contents classified for ignored payload")
+
+    await removeWorktree("wt0", {})
+    expect(existsSync(slot)).toBe(false)
   })
 })
