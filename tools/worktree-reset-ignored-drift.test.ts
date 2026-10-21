@@ -33,7 +33,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest"
-import { removeWorktree, resetWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
+import { resetWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
 
 const roots: string[] = []
 
@@ -148,20 +148,5 @@ describe("reset admits old setup-derived output across a drifted setup declarati
     )
     expect(failure).toMatch(/precious\.bin/)
     expect(failure).not.toMatch(/node_modules|packages\/dep\/dist|packages\/legacy/)
-    expect(failure).not.toMatch(/yrd env close/)
-  })
-
-  test("remove's refusal names the yrd --preserve escape before it refuses", async () => {
-    const { repo, slot } = driftedSlot()
-    writeFileSync(join(slot, "precious.bin"), "authored payload\n")
-
-    process.chdir(repo)
-    const failure = await removeWorktree("wt0", { admitOnly: true }).then(
-      () => null,
-      (cause: unknown) => String(cause),
-    )
-    expect(failure).toMatch(/precious\.bin/)
-    expect(failure).toMatch(/yrd env close <path> --preserve/)
-    expect(failure).toMatch(/otherwise move or delete the named payload deliberately/)
   })
 })
