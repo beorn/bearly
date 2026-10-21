@@ -30,7 +30,7 @@
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest"
 import { removeWorktree, resetWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
@@ -54,7 +54,9 @@ afterEach(() => {
 })
 
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", args as string[], { cwd, encoding: "utf8" })
+  // Capture child output: a submodule init prints "Cloning into ..." on stderr, and the
+  // root vitest setup fails any test that leaks stdout/stderr.
+  return execFileSync("git", args as string[], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 }
 
 /**
@@ -251,32 +253,35 @@ function slotWithSecondLevelUninitializedSubmodule(): { repo: string; slot: stri
   return { repo, slot: slotPath, owner }
 }
 
-describe("remove names the cure for an uninitialized nested submodule (30529)", () => {
-  test("a plain remove refuses with the exact init command", async () => {
+describe("remove admits an uninitialized submodule that holds nothing (30529, 30563)", () => {
+  test("an empty uninitialized checkout no longer refuses removal (30563 AC1)", async () => {
     const { repo, slot } = slotWithUninitializedSubmodule()
 
     process.chdir(repo)
-    const failure = await removeWorktree("wt0", {}).then(
-      () => null,
-      (cause: unknown) => String(cause),
-    )
+    await removeWorktree("wt0", {})
 
-    expect(failure).toMatch(/uninitialized submodules/)
-    expect(failure).toContain(`git -C ${slot} submodule update --init components/nested`)
+    expect(existsSync(slot)).toBe(false)
   })
 
-  test("--admit prints the classification it used for each nested submodule", async () => {
+  test("an absent uninitialized checkout no longer refuses removal (30563 AC1)", async () => {
+    const { repo, slot } = slotWithUninitializedSubmodule()
+    safeRemoveSync(join(slot, "components", "nested"), { within: tmpdir(), allowMissing: false })
+    expect(existsSync(join(slot, "components", "nested"))).toBe(false)
+
+    process.chdir(repo)
+    await removeWorktree("wt0", {})
+
+    expect(existsSync(slot)).toBe(false)
+  })
+
+  test("--admit names the empty checkout as holding nothing", async () => {
     const { repo } = slotWithUninitializedSubmodule()
 
     process.chdir(repo)
-    const failure = await removeWorktree("wt0", { admitOnly: true }).then(
-      () => null,
-      (cause: unknown) => String(cause),
-    )
+    await expect(removeWorktree("wt0", { admitOnly: true })).resolves.toBeUndefined()
 
-    expect(failure).toMatch(/uninitialized submodules/)
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("components/nested: uninitialized; contents cannot be classified")
+    expect(named).toContain("components/nested: uninitialized and holds nothing; nothing to classify")
   })
 
   test("--admit names a declared-empty submodule as excluded, not compared", async () => {
@@ -296,8 +301,83 @@ describe("remove names the cure for an uninitialized nested submodule (30529)", 
     expect(named).toContain("components/nested: excluded; not compared")
   })
 
-  test("the printed cure runs for a second-level submodule, then --admit and remove proceed", async () => {
+  test("a second-level checkout that holds nothing admits removal without --recursive (30563 AC1)", async () => {
+    const { repo, slot } = slotWithSecondLevelUninitializedSubmodule()
+
+    process.chdir(repo)
+    await removeWorktree("wt0", {})
+
+    expect(existsSync(slot)).toBe(false)
+  })
+
+  test("a second-level checkout whose directory is absent also admits removal (30563 AC1)", async () => {
     const { repo, slot, owner } = slotWithSecondLevelUninitializedSubmodule()
+    safeRemoveSync(join(owner, "inner"), { within: tmpdir(), allowMissing: false })
+
+    process.chdir(repo)
+    await removeWorktree("wt0", {})
+
+    expect(existsSync(slot)).toBe(false)
+  })
+
+  test("a nested checkout that holds nothing never hides a moved owner (30563 R2)", async () => {
+    const { repo, owner } = slotWithSecondLevelUninitializedSubmodule()
+    writeFileSync(join(owner, "owner-commit.txt"), "moved owner\n")
+    git(owner, ["add", "-A"])
+    git(owner, ["commit", "-qm", "owner commit"])
+    // The owner's pin has now moved; the nested checkout goes absent afterwards, so the
+    // owner's dirt is exactly the moved gitlink plus a nested checkout that holds nothing.
+    safeRemoveSync(join(owner, "inner"), { within: tmpdir(), allowMissing: false })
+
+    process.chdir(repo)
+    const failure = await removeWorktree("wt0", { admitOnly: true }).then(
+      () => null,
+      (cause: unknown) => String(cause),
+    )
+
+    // The absent nested checkout is still classified as holding nothing, and yet the
+    // owner's own moved gitlink (` M components/outer`) is real dirt that refuses.
+    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(named).toContain("components/outer/inner: uninitialized and holds nothing")
+    expect(failure).toContain("has uncommitted changes")
+  })
+
+  test.each([
+    ["deinit", (slot: string) => git(slot, ["submodule", "deinit", "-f", "--", "components/nested"])],
+    [
+      "rm -rf",
+      (slot: string) => safeRemoveSync(join(slot, "components", "nested"), { within: tmpdir(), allowMissing: false }),
+    ],
+  ])(
+    "a %s checkout whose module repository survives still refuses, and the repository survives (30563 R1)",
+    async (_name, remove) => {
+      const { repo, slot } = slotWithUninitializedSubmodule()
+      const target = join(slot, "components", "nested")
+      git(slot, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "components/nested"])
+      writeFileSync(join(target, "unpushed.txt"), "unpushed work\n")
+      git(target, ["add", "-A"])
+      git(target, ["commit", "-qm", "unpushed commit"])
+      const declared = git(slot, ["rev-parse", "--git-path", "modules/components/nested"]).trim()
+      const moduleDir = isAbsolute(declared) ? declared : join(slot, declared)
+      expect(existsSync(moduleDir)).toBe(true)
+      remove(slot)
+
+      process.chdir(repo)
+      const failure = await removeWorktree("wt0", {}).then(
+        () => null,
+        (cause: unknown) => String(cause),
+      )
+
+      expect(failure).toContain("its repository exists at")
+      expect(failure).toContain(`git -C ${slot} submodule update --init components/nested`)
+      expect(existsSync(moduleDir)).toBe(true)
+      expect(existsSync(slot)).toBe(true)
+    },
+  )
+
+  test("a directory that exists with contents still refuses, naming its own per-owner init command (30563 AC2)", async () => {
+    const { repo, slot } = slotWithUninitializedSubmodule()
+    writeFileSync(join(slot, "components", "nested", "authored.txt"), "authored payload\n")
 
     process.chdir(repo)
     const failure = await removeWorktree("wt0", {}).then(
@@ -305,39 +385,24 @@ describe("remove names the cure for an uninitialized nested submodule (30529)", 
       (cause: unknown) => String(cause),
     )
 
-    expect(failure).toMatch(/uninitialized submodules/)
-    expect(failure).toContain(`git -C ${owner} submodule update --init inner`)
-    expect(failure).not.toContain(`git -C ${slot} submodule update --init components/outer/inner`)
-    expect(failure).not.toContain("--recursive")
+    expect(failure).toContain(`git -C ${slot} submodule update --init components/nested`)
+    expect(existsSync(join(slot, "components", "nested", "authored.txt"))).toBe(true)
+  })
 
-    // Run the exact command the refusal printed.
-    const printed = /Initialize them first: (git .*?)(?: \(or |; no worktree was changed)/.exec(failure!)?.[1]?.trim()
-    expect(printed).toBeDefined()
-    const words = printed!.split(/\s+/)
-    const command = words[0]!
-    const args = words.slice(1)
-    // The fixture's submodule URLs are local paths; allow that transport in the
-    // environment so the printed command still runs character for character.
-    execFileSync(command, args, {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "protocol.file.allow",
-        GIT_CONFIG_VALUE_0: "always",
-      },
-    })
+  test("a second-level directory with contents names its owner repository, never --recursive (30563 AC2)", async () => {
+    const { repo, slot, owner } = slotWithSecondLevelUninitializedSubmodule()
+    mkdirSync(join(owner, "inner"), { recursive: true })
+    writeFileSync(join(owner, "inner", "authored.txt"), "authored payload\n")
 
-    const refused = await removeWorktree("wt0", { admitOnly: true }).then(
+    process.chdir(repo)
+    const failure = await removeWorktree("wt0", {}).then(
       () => null,
       (cause: unknown) => String(cause),
     )
-    expect(refused).toBeNull()
-    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("components/outer: initialized; contents classified for ignored payload")
-    expect(named).toContain("components/outer/inner: initialized; contents classified for ignored payload")
 
-    await removeWorktree("wt0", {})
-    expect(existsSync(slot)).toBe(false)
+    expect(failure).toContain(`git -C ${owner} submodule update --init inner`)
+    expect(failure).not.toContain(`git -C ${slot} submodule update --init components/outer/inner`)
+    expect(failure).not.toContain("--recursive")
+    expect(existsSync(join(owner, "inner", "authored.txt"))).toBe(true)
   })
 })

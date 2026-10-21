@@ -300,7 +300,10 @@ export async function getWorktreeStatus(
     $`cd ${worktreePath} && git status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null`,
   )
 
-  const changes = result.stdout.trim().split("\n").filter(Boolean)
+  // Trim the trailing newline only: `trim()` also eats the leading status column of
+  // the first porcelain record, so ` D components/nested` became `D components/nested`
+  // and no caller could match a record against its path (30563).
+  const changes = result.stdout.replace(/\n+$/u, "").split("\n").filter(Boolean)
   return { dirty: changes.length > 0, changes }
 }
 
@@ -2927,16 +2930,36 @@ async function removeWorktreeWithAdmission(
   // Check for uncommitted changes
   if (!force) {
     const status = await getWorktreeStatus(worktreePath, { excludedSubmodules: options.excludedSubmodules })
-    if (status.dirty) {
+    // An uninitialized checkout whose directory is absent is a deletion record of its
+    // gitlink path (` D components/nested`): nothing was ever checked out there, so the
+    // record proves no authored payload and must not refuse removal (30563). Every other
+    // record still does; the path has to be one the inspection classified as holding
+    // nothing, matched exactly, never by prefix. A checkout nested inside an initialized
+    // component reports only its owner (` M components/outer`), because a root status never
+    // descends through a gitlink; that owner record is dropped only when the same
+    // inspection descends and finds no other dirt under it.
+    const emptyCheckouts = inspection.uninitializedSubmodules
+    const holdsNothingRecord = (change: string): boolean => {
+      const path = change.slice(3)
+      if (change.startsWith(" D ") && emptyCheckouts.includes(path)) return true
+      if (!change.startsWith(" M ") && !change.startsWith(" D ")) return false
+      if (!emptyCheckouts.some((checkout) => checkout.startsWith(`${path}/`))) return false
+      // The owner's own gitlink moving is real dirt, and it produces the SAME root record
+      // (` M components/outer`) as a nested checkout that holds nothing: refuse it.
+      if (inspection.records.some((record) => record.slice(3) === path)) return false
+      return !inspection.records.some((record) => record.slice(3).startsWith(`${path}/`))
+    }
+    const changes = status.changes.filter((change) => !holdsNothingRecord(change))
+    if (changes.length > 0) {
       if (admitOnly) {
         throw new Error(`Worktree ${worktreePath} has uncommitted changes; use --force to admit preserved dirt`)
       }
       warn("Worktree has uncommitted changes:")
-      for (const change of status.changes.slice(0, 10)) {
+      for (const change of changes.slice(0, 10)) {
         console.log(DIM + `  ${change}` + RESET)
       }
-      if (status.changes.length > 10) {
-        console.log(DIM + `  ... and ${status.changes.length - 10} more` + RESET)
+      if (changes.length > 10) {
+        console.log(DIM + `  ... and ${changes.length - 10} more` + RESET)
       }
       console.log(DIM + "Use --force to remove anyway" + RESET)
       process.exit(admitOnly ? 2 : 1)
@@ -3126,7 +3149,7 @@ async function assertIgnoredContent(
       info(`${entry.path}: initialized; contents classified for ignored payload`)
     }
     for (const path of inspection.uninitializedSubmodules) {
-      info(`${path}: uninitialized; contents cannot be classified`)
+      info(`${path}: uninitialized and holds nothing; nothing to classify`)
     }
     for (const entry of inspection.notCompared.filter((candidate) => candidate.reason === "excluded")) {
       info(`${entry.path}: excluded; not compared`)
@@ -3140,36 +3163,11 @@ async function assertIgnoredContent(
         .join("; ")}; no worktree was changed`,
     )
   }
-  const missing = inspection.uninitializedSubmodules
-  if (missing.length > 0) {
-    // Group by the repository that OWNS each gitlink. A second-level path such as
-    // km/apps/maddoc is a root pathspec inside submodule km, so
-    // `git -C <slot> submodule update --init km/apps/maddoc` is refused; the cure
-    // is one command per owner: `git -C <slot>/km submodule update --init apps/maddoc`.
-    // Never --recursive on an initialized parent: that would also move its checkout.
-    const owners = new Map<string, string[]>()
-    for (const path of missing) {
-      const owner = inspection.consultedRepositories
-        .filter((entry) => entry.path !== "." && path.startsWith(`${entry.path}/`))
-        .sort((left, right) => right.path.length - left.path.length)[0]
-      const repository = owner === undefined ? worktreePath : owner.root
-      const relative = owner === undefined ? path : path.slice(owner.path.length + 1)
-      const bucket = owners.get(repository) ?? []
-      bucket.push(relative)
-      owners.set(repository, bucket)
-    }
-    const init = [...owners]
-      .map(([repository, paths]) => `git -C ${repository} submodule update --init ${paths.join(" ")}`)
-      .join(" && ")
-    throw new Error(
-      `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}.` +
-        ` Initialize them first: ${init}` +
-        (excludedSubmodules.length === 0
-          ? " (or pass --exclude-submodule <path> for a declared empty component)"
-          : "") +
-        "; no worktree was changed",
-    )
-  }
+  // An uninitialized checkout whose directory is absent or empty holds nothing, so
+  // there is no ignored content to classify and nothing to refuse (30563). git-super
+  // reports those here and reports a directory that exists WITH contents as its own
+  // submodule problem, whose per-owner init command names the cure before this layer
+  // runs -- one implementation of that cure, not two.
   const repositories = inspection.consultedRepositories.map((entry) => entry.root)
   const ignored: Array<{ repository: string; paths: string[] }> = []
   for (const repository of repositories) {
