@@ -2986,7 +2986,7 @@ async function removeWorktreeWithAdmission(
 
   if (admitOnly) {
     for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
-    for (const line of describeModuleStores(inspection.releasedStores)) {
+    for (const line of describeModuleStores(inspection.moduleStores)) {
       info(`${line} (removal plan; nothing was pushed)`)
     }
     return
