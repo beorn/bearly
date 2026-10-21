@@ -3506,24 +3506,71 @@ async function printWorktreeEntry(
   console.log("")
 }
 
-export async function listWorktrees(detailed = false): Promise<void> {
+export type ListWorktreesOptions = Readonly<{
+  /** Machine-readable rows: name, path, branch, detached, primary, current. */
+  json?: boolean
+  /** Case-insensitive substring of the slot name or path. */
+  name?: string
+  /** Text rows to print before the cap line; defaults to DEFAULT_LIST_LIMIT. */
+  limit?: number
+}>
+
+/**
+ * Text mode prints at most this many slots. The pool reached 307 entries by
+ * 2026-10-21, so every reader piped the whole list through grep and re-learned
+ * the shape (30535): a bounded, filtered listing is the default surface.
+ */
+export const DEFAULT_LIST_LIMIT = 40
+
+export async function listWorktrees(options: ListWorktreesOptions = {}): Promise<void> {
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
     error("Not in a git repository")
     process.exit(1)
   }
 
+  const worktrees = await getWorktrees(gitRoot)
+  const needle = options.name?.toLowerCase()
+  const matched =
+    needle === undefined
+      ? worktrees
+      : worktrees.filter(
+          (wt) => basename(wt.path).toLowerCase().includes(needle) || wt.path.toLowerCase().includes(needle),
+        )
+
+  if (options.json) {
+    const currentDir = process.cwd()
+    const rows = matched.map((wt) => ({
+      name: basename(wt.path),
+      path: wt.path,
+      branch: wt.branch,
+      detached: wt.isDetached,
+      primary: wt.path === gitRoot,
+      current: wt.path === currentDir || currentDir.startsWith(wt.path + "/"),
+    }))
+    console.log(JSON.stringify(rows, null, 2))
+    return
+  }
+
+  const limit = options.limit ?? DEFAULT_LIST_LIMIT
+  const shown = matched.slice(0, limit)
+
   console.log(CYAN + "Git Worktrees" + RESET)
   console.log("")
 
-  const worktrees = await getWorktrees(gitRoot)
-
-  for (const wt of worktrees) {
-    await printWorktreeEntry(wt, gitRoot, detailed)
+  for (const wt of shown) {
+    await printWorktreeEntry(wt, gitRoot, true)
   }
 
   console.log("")
-  console.log(DIM + `${worktrees.length} worktree(s)` + RESET)
+  console.log(DIM + `${matched.length} worktree(s)` + RESET)
+  if (shown.length < matched.length) {
+    // Stderr, not stdout: `bun worktree list | grep <slot>` must still find a
+    // slot past the cap, and the notice must survive that pipe (30535).
+    console.error(
+      DIM + `showing ${shown.length} of ${matched.length}; narrow with --name <substring> or read --json` + RESET,
+    )
+  }
 }
 
 export async function showDefaultInfo(): Promise<void> {
@@ -3707,6 +3754,11 @@ ${BOLD}RESET OPTIONS${RESET}
   --no-direnv            Skip direnv allow on recreate
   --no-hooks             Skip hook install on recreate
 
+${BOLD}LIST OPTIONS${RESET}
+  --json                    Machine-readable rows: name, path, branch, detached, primary, current
+  --name <substring>        Only slots whose name or path contains it (case-insensitive)
+  --limit <n>               Text rows to print before the cap line (default ${DEFAULT_LIST_LIMIT})
+
 ${BOLD}GC OPTIONS${RESET}
   --root <dir>             Directory to scan (default: <gitRoot>/.claude/worktrees)
   --dry-run                Show what would be deleted, don't delete
@@ -3821,8 +3873,8 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
   },
   preserve: { maxPositionals: 1, flags: { "--json": {} } },
   path: { maxPositionals: 1, flags: {} },
-  list: { maxPositionals: 0, flags: {} },
-  ls: { maxPositionals: 0, flags: {} },
+  list: { maxPositionals: 0, flags: { "--json": {}, "--name": { value: true }, "--limit": { value: true } } },
+  ls: { maxPositionals: 0, flags: { "--json": {}, "--name": { value: true }, "--limit": { value: true } } },
   audit: {
     maxPositionals: 0,
     flags: { "--json": {}, "--behind-threshold": { value: true }, "--stale-days": { value: true } },
@@ -3854,7 +3906,7 @@ export type CliPlan =
   | { action: "reset"; name: string; options: ResetOptions }
   | { action: "preserve"; name: string; options: PreservePlanOptions }
   | { action: "path"; name: string }
-  | { action: "list" }
+  | { action: "list"; options: ListWorktreesOptions }
   | { action: "audit"; options: AuditOptions }
   | { action: "gc"; options: GcOptions }
 
@@ -4006,8 +4058,21 @@ export function planCliInvocation(argv: string[]): CliPlan {
       return { action: "path", name }
     }
     case "list":
-    case "ls":
-      return { action: "list" }
+    case "ls": {
+      const limitRaw = values.get("--limit")
+      const limit = limitRaw === undefined ? undefined : Number(limitRaw)
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+        return { action: "usage-error", message: "--limit must be a positive number" }
+      }
+      return {
+        action: "list",
+        options: {
+          ...(flags.has("--json") ? { json: true } : {}),
+          ...(values.get("--name") === undefined ? {} : { name: values.get("--name") }),
+          ...(limit === undefined ? {} : { limit }),
+        },
+      }
+    }
     case "audit": {
       let behindThreshold: number | undefined
       const behindRaw = values.get("--behind-threshold")
@@ -4156,7 +4221,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await preserveWorktreeState(plan.name, plan.options)
       return
     case "list":
-      await listWorktrees(true)
+      await listWorktrees(plan.options)
       return
     case "audit": {
       const findings = await auditWorktrees(plan.options)
