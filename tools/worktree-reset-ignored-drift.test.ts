@@ -324,6 +324,8 @@ describe("remove admits an uninitialized submodule that holds nothing (30529, 30
     const { repo, owner } = slotWithSecondLevelUninitializedSubmodule()
     writeFileSync(join(owner, "owner-commit.txt"), "moved owner\n")
     git(owner, ["add", "-A"])
+    git(owner, ["config", "user.email", "t@example.test"])
+    git(owner, ["config", "user.name", "t"])
     git(owner, ["commit", "-qm", "owner commit"])
     // The owner's pin has now moved; the nested checkout goes absent afterwards, so the
     // owner's dirt is exactly the moved gitlink plus a nested checkout that holds nothing.
@@ -356,6 +358,8 @@ describe("remove admits an uninitialized submodule that holds nothing (30529, 30
       git(slot, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "components/nested"])
       writeFileSync(join(target, "unpushed.txt"), "unpushed work\n")
       git(target, ["add", "-A"])
+      git(target, ["config", "user.email", "t@example.test"])
+      git(target, ["config", "user.name", "t"])
       git(target, ["commit", "-qm", "unpushed commit"])
       const declared = git(slot, ["rev-parse", "--git-path", "modules/components/nested"]).trim()
       const moduleDir = isAbsolute(declared) ? declared : join(slot, declared)
