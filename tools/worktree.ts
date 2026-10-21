@@ -51,7 +51,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, dirname, basename, isAbsolute, relative, resolve, sep } from "path"
 import { $ } from "bun"
-import { describeReleasedStores, worktreeHomeRoot } from "git-super"
+import { describeModuleStores, worktreeHomeRoot } from "git-super"
 import { materializeSubmodulesFromLocalWorktreeParallel } from "git-super/submodules"
 import { ensureCommitObject } from "git-super/objects"
 import { createLocalGitWorktreeStore, type WorktreeAdd } from "git-super/worktree"
@@ -2986,7 +2986,7 @@ async function removeWorktreeWithAdmission(
 
   if (admitOnly) {
     for (const entry of inspection.notCompared) info(`${entry.path}: skipped by declaration; ${entry.message}`)
-    for (const line of describeReleasedStores(inspection.released)) info(`${line} (would be released)`)
+    for (const line of describeModuleStores(inspection.releasedStores)) info(`${line} (removal plan; nothing was pushed)`)
     return
   }
 
@@ -3016,9 +3016,15 @@ async function removeWorktreeWithAdmission(
   info("Removing worktree...")
   const mechanics = poolWorktreeMechanics(gitRoot)
   try {
-    await mechanics.remove(worktreePath, {
+  await createLocalGitWorktreeStore({
+    repo: gitRoot,
+    // The library reports every module store it archives or releases through this one line sink, so no
+    // caller can forget to say what happened to a repository destroyed with the slot (30580).
+    report: (line) => info(line.trimEnd()),
+  }).remove(worktreePath, {
       operation: `pool worktree remove ${worktreePath}`,
       excludedSubmodules: options.excludedSubmodules,
+    archiveActor: name,
     })
   } catch (cause) {
     error("Failed to remove worktree")
@@ -3026,9 +3032,6 @@ async function removeWorktreeWithAdmission(
     process.exit(1)
   }
   success("Worktree removed")
-  // A module repository no gitlink names is destroyed with the slot. Admission proved each one reproducible,
-  // and this names what went, so the loss is never silent (30580).
-  for (const line of describeReleasedStores(inspection.released)) info(line)
 
   // Prune
   await mechanics.prune({ operation: `pool worktree prune after removing ${worktreePath}` })

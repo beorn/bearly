@@ -1,11 +1,12 @@
 /**
- * 30580 — a slot's own module repositories are destroyed with the slot. When a submodule was dropped from a
- * later commit, its store survived with local branches, unpushed commits and stashes while `worktree remove`
- * deleted it without ever looking. Removal now refuses a store no HEAD declaration names unless every commit
- * it holds is on a remote-tracking ref, and names every store it releases.
+ * 30580 — a slot's own module repositories are destroyed with the slot. A submodule dropped from a later
+ * commit leaves its store behind with local branches, unpushed commits and stashes, and `worktree remove`
+ * deleted it without ever looking. The operator's value test (2026-10-21) decides: work not on the store's
+ * remote main and not under an archive ref is archived on that remote first, then removed; and removal names
+ * every store it archives or releases. Nothing refuses on value alone.
  *
- * @failure `bearly worktree remove` destroys a module repository holding unpushed commits, or destroys a
- *          reproducible one without saying so.
+ * @failure `bearly worktree remove` destroys a module repository holding work nothing durable names, or
+ *          destroys a reproducible one without saying so, or deletes on a failed archive.
  * @level   l2
  * @consumer @i/26-environments/30580-worktree-remove-enumerate-slot
  * @testonly none
@@ -21,6 +22,7 @@ import { removeWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
 const roots: string[] = []
 let info: MockInstance<(...args: unknown[]) => void>
 let cwd: string
+const DATE = new Date().toISOString().slice(0, 10)
 
 beforeEach(() => {
   cwd = process.cwd()
@@ -37,12 +39,14 @@ function git(cwd: string, args: readonly string[]): string {
   return execFileSync("git", args as string[], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 }
 
+type StoreWork = "local" | "none" | "remoteless"
+
 /**
  * A pool slot whose declared submodule `vendor/dep` was dropped from its own HEAD afterwards — the shape that
- * leaves a store no gitlink names inside `<git-dir>/modules/vendor/dep`. `pushWork` puts the store's local
- * commit on its remote first, which is the reproducible case.
+ * leaves a store no gitlink names inside `<git-dir>/modules/vendor/dep`. `local` commits work in the store,
+ * `none` leaves it exactly on its remote main, and `remoteless` commits work and removes the store's remote.
  */
-function slotWithDroppedSubmodule(pushWork: boolean): { repo: string; slot: string } {
+function slotWithDroppedSubmodule(work: StoreWork): { repo: string; dep: string; slot: string; moduleDir: string } {
   const root = mkdtempSync(join(tmpdir(), "bearly-wt-module-store-"))
   roots.push(root)
   const repo = join(root, "repo")
@@ -72,40 +76,52 @@ function slotWithDroppedSubmodule(pushWork: boolean): { repo: string; slot: stri
   mkdirSync(slot, { recursive: true })
   git(repo, ["worktree", "add", "-q", "-B", "wt0", slot, "origin/main"])
   git(slot, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "vendor/dep"])
+  const moduleDir = git(join(slot, "vendor/dep"), ["rev-parse", "--absolute-git-dir"]).trim()
 
-  const child = join(slot, "vendor/dep")
-  writeFileSync(join(child, "local.txt"), "bytes that exist only here\n")
-  git(child, ["add", "-A"])
-  git(child, ["commit", "-qm", "local work"])
-  if (pushWork) {
-    git(child, ["push", "-q", "origin", "HEAD:refs/heads/local-work"])
-    git(child, ["fetch", "-q", "origin"])
+  if (work !== "none") {
+    const child = join(slot, "vendor/dep")
+    writeFileSync(join(child, "local.txt"), "bytes that exist only here\n")
+    git(child, ["add", "-A"])
+    git(child, ["commit", "-qm", "local work"])
   }
+  if (work === "remoteless") git(repo, ["--git-dir", moduleDir, "config", "--remove-section", "remote.origin"])
   git(slot, ["submodule", "deinit", "-f", "--", "vendor/dep"])
   git(slot, ["rm", "-fq", "vendor/dep"])
   git(slot, ["commit", "-qm", "drop vendor/dep"])
-  return { repo, slot }
+  return { repo, dep, slot, moduleDir }
 }
 
 describe("bearly worktree remove and a slot's module stores (30580)", () => {
-  test("a store holding an unpushed commit refuses, and the slot survives", async () => {
-    const { repo, slot } = slotWithDroppedSubmodule(false)
-    process.chdir(repo)
-    const failure = await removeWorktree("wt0", {}).then(
-      () => null,
-      (cause: unknown) => String(cause),
-    )
-    expect(failure).toContain("module store vendor/dep")
-    expect(failure).toContain("holds 1 commit(s) no remote-tracking ref holds")
-    expect(failure).toContain("bundle create")
-    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
-  })
-
-  test("a store whose commits are all on its remote is removed and named", async () => {
-    const { repo } = slotWithDroppedSubmodule(true)
+  test("a store holding local work is archived on its remote, named, and only then removed", async () => {
+    const { repo, dep, slot, moduleDir } = slotWithDroppedSubmodule("local")
+    const tip = git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()
     process.chdir(repo)
     await expect(removeWorktree("wt0", {})).resolves.toBeUndefined()
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("module store vendor/dep released: every commit is held by origin")
+    expect(named).toContain("module store vendor/dep archived: 1 commit(s) to refs/archive/")
+    expect(git(dep, ["rev-parse", `refs/archive/${DATE}/wt0/vendor/dep/HEAD`]).trim()).toBe(tip)
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).not.toContain(slot)
+  })
+
+  test("a store whose work is all on its remote main is released and named", async () => {
+    const { repo } = slotWithDroppedSubmodule("none")
+    process.chdir(repo)
+    await expect(removeWorktree("wt0", {})).resolves.toBeUndefined()
+    const named = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(named).toContain("module store vendor/dep released: origin main and archive refs hold it, 0 commits unique")
+  })
+
+  test("a store holding work with no remote stops removal and names the store", async () => {
+    const { repo, slot } = slotWithDroppedSubmodule("remoteless")
+    process.chdir(repo)
+    // The CLI reports the refusal and exits; the line it prints is the contract here.
+    await removeWorktree("wt0", {}).then(
+      () => undefined,
+      () => undefined,
+    )
+    const logged = info.mock.calls.map((call) => String(call[0])).join("\n")
+    expect(logged).toContain("module store vendor/dep holds 1 commit(s)")
+    expect(logged).toContain("has no remote to archive them to")
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
 })
