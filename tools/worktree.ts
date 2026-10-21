@@ -3150,7 +3150,7 @@ async function assertIgnoredContent(
     const owners = new Map<string, string[]>()
     for (const path of missing) {
       const owner = inspection.consultedRepositories
-        .filter((entry) => entry.path !== "." && (path === entry.path || path.startsWith(`${entry.path}/`)))
+        .filter((entry) => entry.path !== "." && path.startsWith(`${entry.path}/`))
         .sort((left, right) => right.path.length - left.path.length)[0]
       const repository = owner === undefined ? worktreePath : owner.root
       const relative = owner === undefined ? path : path.slice(owner.path.length + 1)
@@ -3160,7 +3160,7 @@ async function assertIgnoredContent(
     }
     const init = [...owners]
       .map(([repository, paths]) => `git -C ${repository} submodule update --init ${paths.join(" ")}`)
-      .join("; ")
+      .join(" && ")
     throw new Error(
       `${verb} cannot classify ignored content in uninitialized submodules: ${missing.map((path) => join(worktreePath, path)).join(", ")}.` +
         ` Initialize them first: ${init}` +
