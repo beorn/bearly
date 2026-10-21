@@ -13,13 +13,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest"
-import { listWorktrees, resolveWorktreeTargetPath } from "./worktree.ts"
+import { listWorktrees, planCliInvocation, resolveWorktreeTargetPath } from "./worktree.ts"
 
 const roots: string[] = []
 let log: MockInstance<(...args: unknown[]) => void>
+let warn: MockInstance<(...args: unknown[]) => void>
 
 beforeEach(() => {
   log = vi.spyOn(console, "log").mockImplementation(() => {})
+  warn = vi.spyOn(console, "error").mockImplementation(() => {})
 })
 
 afterEach(() => {
@@ -33,6 +35,10 @@ function git(cwd: string, args: readonly string[]): string {
 
 function output(): string {
   return log.mock.calls.map((call) => call.map((part) => String(part)).join(" ")).join("\n")
+}
+
+function notices(): string {
+  return warn.mock.calls.map((call) => call.map((part) => String(part)).join(" ")).join("\n")
 }
 
 /** A repo plus three pool slots, so a four-row listing is the whole estate. */
@@ -66,7 +72,10 @@ describe("worktree list is bounded, filterable and machine-readable (30535)", ()
 
     const printed = output()
     expect(printed).toContain("4 worktree(s)")
-    expect(printed).toContain("showing 2 of 4; narrow with --name <substring> or read --json")
+    // The cap notice goes to stderr so `list | grep <slot>` still sees every
+    // row the cap withheld, and the notice itself survives the pipe.
+    expect(notices()).toContain("showing 2 of 4; narrow with --name <substring> or read --json")
+    expect(printed).not.toContain("showing 2 of 4")
   })
 
   test("--name returns only the matching slots", async () => {
@@ -90,5 +99,11 @@ describe("worktree list is bounded, filterable and machine-readable (30535)", ()
     expect(rows).toHaveLength(4)
     expect(rows.map((row) => row.name)).toEqual(expect.arrayContaining(["repo", "repo-wt0", "repo-wt1", "repo-wt2"]))
     expect(rows.find((row) => row.name === "repo-wt1")?.branch).toBe("wt1")
+  })
+
+  test("--limit rejects a numeric prefix that is not a number", () => {
+    // parseInt("10abc") is 10; a slot reader asking for a number gets the error.
+    expect(planCliInvocation(["list", "--limit", "10abc"])).toMatchObject({ action: "usage-error" })
+    expect(planCliInvocation(["list", "--limit", "2"])).toMatchObject({ action: "list", options: { limit: 2 } })
   })
 })

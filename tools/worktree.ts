@@ -3523,7 +3523,9 @@ export async function listWorktrees(options: ListWorktreesOptions = {}): Promise
   console.log("")
   console.log(DIM + `${matched.length} worktree(s)` + RESET)
   if (shown.length < matched.length) {
-    console.log(
+    // Stderr, not stdout: `bun worktree list | grep <slot>` must still find a
+    // slot past the cap, and the notice must survive that pipe (30535).
+    console.error(
       DIM + `showing ${shown.length} of ${matched.length}; narrow with --name <substring> or read --json` + RESET,
     )
   }
@@ -4011,8 +4013,8 @@ export function planCliInvocation(argv: string[]): CliPlan {
     case "list":
     case "ls": {
       const limitRaw = values.get("--limit")
-      const limit = limitRaw === undefined ? undefined : parseInt(limitRaw, 10)
-      if (limit !== undefined && (Number.isNaN(limit) || limit < 1)) {
+      const limit = limitRaw === undefined ? undefined : Number(limitRaw)
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
         return { action: "usage-error", message: "--limit must be a positive number" }
       }
       return {
