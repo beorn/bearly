@@ -115,6 +115,7 @@ describe("bearly worktree remove and a slot's module stores (30580)", () => {
     const { repo, slot } = slotWithDroppedSubmodule("remoteless")
     process.chdir(repo)
     // The CLI reports the refusal and exits; the line it prints is the contract here.
+    const failed = vi.spyOn(console, "error").mockImplementation(() => {})
     await removeWorktree("wt0", {}).then(
       () => undefined,
       () => undefined,
@@ -123,6 +124,7 @@ describe("bearly worktree remove and a slot's module stores (30580)", () => {
     // With no remote nothing proves the base commit exists elsewhere either, so both commits count.
     expect(logged).toContain("module store vendor/dep holds 2 commit(s)")
     expect(logged).toContain("has no remote to archive them to")
+    expect(failed.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Failed to remove worktree")
     expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
 })
