@@ -108,7 +108,9 @@ describe("bearly worktree remove and a slot's module stores (30580)", () => {
     process.chdir(repo)
     await expect(removeWorktree("wt0", {})).resolves.toBeUndefined()
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("module store vendor/dep released: origin main and archive refs hold it, 0 commits unique")
+    expect(named).toContain(
+      "module store vendor/dep released: origin main, archive refs and tags hold it, 0 commits unique",
+    )
   })
 
   test("a store holding work with no remote stops removal and names the store", async () => {
