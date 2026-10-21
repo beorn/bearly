@@ -3026,7 +3026,8 @@ async function removeWorktreeWithAdmission(
     }).remove(worktreePath, {
       operation: `pool worktree remove ${worktreePath}`,
       excludedSubmodules: options.excludedSubmodules,
-      archiveActor: name,
+      // `reset` passes the absolute path as `name`; the slot name is what both callers mean.
+      archiveActor: slotNameFromResolvedPath(gitRoot, worktreePath),
     })
   } catch (cause) {
     error("Failed to remove worktree")
