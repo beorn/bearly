@@ -1012,13 +1012,14 @@ export async function inspectProcessCwdsInProc(
 }
 
 /**
- * The one predicate for a denied same-uid process (hh 26990 line 60, @cto adce5a62 and c1e73bcd). Four identities
+ * The one predicate for a denied same-uid process (hh 26990 line 60, @cto adce5a62 and c1e73bcd). Five identities
  * leave their context non-dumpable, so their sources deny the census for their whole life while their name and command
  * line stay readable. Each is carried as the predicates it replaces matched it, never narrowed:
  * - `systemd` with `--user` anywhere in its argv: the PAM-spawned user session manager;
  * - `(sd-pam)`, by name or as its whole argv: the session manager's PAM sibling;
  * - `sshd-session`, by name: this user's ssh connection after its privilege transitions (2026-08-26, 73 leaked roots);
- * - `ssh-agent`, by name: non-dumpable for its whole life, it kept every nightly sweep blind on 2026-09-24 (25342).
+ * - `ssh-agent`, by name: non-dumpable for its whole life, it kept every nightly sweep blind on 2026-09-24 (25342);
+ * - `gpg-agent`, by name: non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) for its whole life under `gpg-agent.socket` (@chief b6300774).
  * Each clears an entry recorded as "denied, cleared by identity". An entry of another uid, without a uid, or with any
  * issue other than a denial is a refusal. Returns the identity that cleared it, or undefined.
  */
@@ -1034,6 +1035,7 @@ export function clearedByIdentity(
   if (entry.comm === "(sd-pam)" || (argv.length === 1 && first === "(sd-pam)")) return "(sd-pam)"
   if (entry.comm === "sshd-session") return "sshd-session"
   if (entry.comm === "ssh-agent") return "ssh-agent"
+  if (entry.comm === "gpg-agent") return "gpg-agent"
   return undefined
 }
 

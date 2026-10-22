@@ -1496,11 +1496,12 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
     expect(clearedByIdentity(denied("(sd-pam)", ["(sd-pam)"]), identity)).toBe("(sd-pam)")
     expect(clearedByIdentity(denied("(sd-pam)", []), identity)).toBe("(sd-pam)")
     expect(clearedByIdentity(denied("sshd-session", ["sshd-session: hh@notty"]), identity)).toBe("sshd-session")
-    // ssh-agent by name whatever its argv: an agent started another way would reopen 25342.
+    // ssh-agent and gpg-agent by name whatever their argv: non-dumpable daemons would otherwise blind every sweep (25342, @chief b6300774).
     expect(clearedByIdentity(denied("ssh-agent", ["ssh-agent", "-s"]), identity)).toBe("ssh-agent")
     expect(
       clearedByIdentity(denied("ssh-agent", ["/usr/bin/ssh-agent", "-D", "-a", "/run/agent.sock"]), identity),
     ).toBe("ssh-agent")
+    expect(clearedByIdentity(denied("gpg-agent", ["gpg-agent", "--supervised"]), identity)).toBe("gpg-agent")
     // Every other entry is a refusal: another command, the system systemd, another uid, no uid, an unanswered read.
     expect(clearedByIdentity(denied("mystery", ["mystery"]), identity)).toBeUndefined()
     expect(clearedByIdentity(denied("systemd", ["/usr/lib/systemd/systemd"]), identity)).toBeUndefined()
