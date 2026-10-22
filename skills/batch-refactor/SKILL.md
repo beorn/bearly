@@ -137,9 +137,10 @@ ls **/repo*.ts 2>/dev/null || echo "No existing repo files"
 ```
 
 **For each conflict**, document resolution:
-| Conflict | Resolution |
-|----------|------------|
-| `widget.ts` → `repo.ts` (exists) | Merge and delete |
+
+| Conflict                               | Resolution                  |
+| -------------------------------------- | --------------------------- |
+| `widget.ts` → `repo.ts` (exists)       | Merge and delete            |
 | `createWidget` → `createRepo` (exists) | Update references, keep new |
 
 **Never use --skip without explicit user approval.**

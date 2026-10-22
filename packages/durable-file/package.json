@@ -32,7 +32,6 @@
     "./cas": "./src/cas.ts"
   },
   "publishConfig": {
-    "access": "public",
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
@@ -46,7 +45,8 @@
         "types": "./dist/cas.d.mts",
         "import": "./dist/cas.mjs"
       }
-    }
+    },
+    "access": "public"
   },
   "scripts": {
     "build": "tsdown",
@@ -60,7 +60,7 @@
   "devDependencies": {
     "@types/bun": "1.4.3",
     "removely": "workspace:*",
-    "tsdown": "0.22.13",
+    "tsdown": "0.23.0",
     "typescript": "6.0.3",
     "vitest": "5.0.4"
   },

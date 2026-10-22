@@ -31,7 +31,6 @@
     "./testing": "./src/testing.ts"
   },
   "publishConfig": {
-    "access": "public",
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
@@ -41,7 +40,8 @@
         "types": "./dist/testing.d.mts",
         "import": "./dist/testing.mjs"
       }
-    }
+    },
+    "access": "public"
   },
   "scripts": {
     "build": "tsdown",
@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
-    "tsdown": "0.22.13"
+    "tsdown": "0.23.0"
   },
   "tsdown": {
     "clean": true,

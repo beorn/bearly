@@ -20,13 +20,13 @@
     ".": "./src/index.ts"
   },
   "publishConfig": {
-    "access": "public",
     "exports": {
       ".": {
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs"
       }
-    }
+    },
+    "access": "public"
   },
   "scripts": {
     "build": "tsdown",
@@ -34,7 +34,7 @@
     "test": "bunx --bun vitest run"
   },
   "devDependencies": {
-    "tsdown": "0.22.13",
+    "tsdown": "0.23.0",
     "typescript": "6.0.3",
     "vitest": "5.0.4"
   },
