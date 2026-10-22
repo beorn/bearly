@@ -13,14 +13,14 @@ The fleet is CONFIG-DRIVEN: `~/.config/llm/dual-pro-config.json` (documented inl
 
 ## Decision table
 
-| User says                  | Mode                   | Command                                                                         |
-| -------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
-| `/pro "question"`          | multi-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`               |
-| `pro, <question>`          | multi-leg dispatch + judge | same — casual form                                                          |
-| `/pro review <pkg>`        | code review (fast)     | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
-| `/pro review --deep <pkg>` | code review (deep)     | add `--deep` to the above — promotes to `/deep` semantics                       |
-| `/pro review` (no arg)     | discover + cost        | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
-| `/pro "q" --no-challenger` | cheaper 2-leg mode     | skips the rotating challenger                                                   |
+| User says                  | Mode                       | Command                                                                         |
+| -------------------------- | -------------------------- | ------------------------------------------------------------------------------- |
+| `/pro "question"`          | multi-leg dispatch + judge | `bun llm pro -y --no-recover --context-file <ctx> "question"`                   |
+| `pro, <question>`          | multi-leg dispatch + judge | same — casual form                                                              |
+| `/pro review <pkg>`        | code review (fast)         | `bun llm pro -y --no-recover --context-file <pkg-ctx> "review <pkg>"`           |
+| `/pro review --deep <pkg>` | code review (deep)         | add `--deep` to the above — promotes to `/deep` semantics                       |
+| `/pro review` (no arg)     | discover + cost            | see [discover.md](discover.md) — package scan + cost estimate + AskUserQuestion |
+| `/pro "q" --no-challenger` | cheaper 2-leg mode         | skips the rotating challenger                                                   |
 
 ## Cost guidance
 
@@ -54,6 +54,7 @@ The fleet is CONFIG-DRIVEN: `~/.config/llm/dual-pro-config.json` (documented inl
 - A targeted follow-up writes a separate result; it does not edit the original report or completion record. Collect retained and new results in the approval packet. If approval requires a complete judged review, wait until that packet contains every required opinion and judge result.
 
 ## Dual-pro mode (3-leg dispatch)
+
 ## Dual-pro mode (multi-leg dispatch)
 
 `bun llm pro "..."` fires **the config's mainstays plus split-test slots** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
