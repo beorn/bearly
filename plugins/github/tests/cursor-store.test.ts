@@ -24,7 +24,7 @@
  * at the caller-supplied legacy path is adopted exactly once (and removed);
  * an empty legacy stub is removed without being adopted. No ancestor walk of
  * any kind remains — the caller passes one fixed legacy path, or none.
- * @reach fs-walk .beads/**
+ * @reach fs-walk <fixture-only: per-test mkdtemp .beads trees>
  */
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs"
