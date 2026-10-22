@@ -2620,15 +2620,15 @@ export async function preserveSlotState(
     let dirty =
       (await preserveGit(repo.root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]))
         .length > 0
-    if (opts.excludedSubmodules !== undefined) {
-      const staged = await $`git -C ${repo.root} --no-optional-locks diff --cached --quiet --ignore-submodules=dirty`
-        .nothrow()
-        .quiet()
-      if (staged.exitCode > 1) {
-        throw new Error(`preserve: cannot read staged parent metadata in ${repo.root}: ${staged.stderr.toString()}`)
-      }
-      dirty ||= staged.exitCode !== 0
+    // `--ignore-submodules=all` above also hides a STAGED gitlink move, which removal refuses, so the staged index is
+    // read for every repository, not only one with a declared exclusion (30715).
+    const staged = await $`git -C ${repo.root} --no-optional-locks diff --cached --quiet --ignore-submodules=dirty`
+      .nothrow()
+      .quiet()
+    if (staged.exitCode > 1) {
+      throw new Error(`preserve: cannot read staged parent metadata in ${repo.root}: ${staged.stderr.toString()}`)
     }
+    dirty ||= staged.exitCode !== 0
     let ahead = false
     if (repo.path === ".") {
       if (includeAhead) {

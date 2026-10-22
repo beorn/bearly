@@ -186,6 +186,37 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     )
   })
 
+  /** @failure 30715: a slot whose only change is a STAGED gitlink read as clean (the staged check ran only under a
+   *   declared exclusion), so `env close --preserve` went on to a removal that refused that same change
+   * @level l2 @consumer yrd env close --preserve, through the preserve CLI @testonly none */
+  test("the preserve CLI preserves a slot whose only change is a staged gitlink (30715)", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const destination = join(sandbox, "candidate")
+    await $`git -C ${mainRepo} worktree add --detach ${destination} HEAD`.quiet()
+    await $`git -C ${destination} -c protocol.file.allow=always submodule update --init vendor/sub`.quiet()
+    const component = join(sandbox, "sub")
+    writeFileSync(join(component, "file.txt"), "next fixture pin\n")
+    await commitAll(component, "next fixture pin")
+    const pin = (await $`git -C ${component} rev-parse HEAD`.text()).trim()
+    // The pin is published and already in the primary store, so the child itself holds nothing unique.
+    await $`git -C ${join(mainRepo, "vendor/sub")} fetch -q origin`.quiet()
+    await $`git -C ${join(destination, "vendor/sub")} fetch -q origin`.quiet()
+    await $`git -C ${join(destination, "vendor/sub")} checkout -q --detach ${pin}`.quiet()
+    await $`git -C ${destination} add vendor/sub`.quiet()
+    expect((await $`git -C ${destination} status --porcelain`.text()).trim()).toBe("M  vendor/sub")
+    const cli = fileURLToPath(new URL("../tools/worktree.ts", import.meta.url))
+
+    const run = spawnSync("bun", [cli, "preserve", destination, "--json"], {
+      cwd: mainRepo,
+      encoding: "utf8",
+      timeout: 20_000,
+    })
+    expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0)
+    const receipt = JSON.parse(run.stdout.trim()) as { preserved: boolean; ref: string }
+    expect(receipt).toMatchObject({ schema: "bearly-worktree-preserve/1", preserved: true, reason: "dirty" })
+    expect(await $`git -C ${mainRepo} ls-tree ${receipt.ref} -- vendor/sub`.text()).toContain(pin)
+  })
+
   /** @failure reset forwards exclusions to removal but reopens the private reference or initializes its replacement (27058 AC3/AC5)
    * @level l2 @consumer Bearly reset recreation @testonly none */
   test("reset recreation leaves the excluded checkout empty and its common store unchanged", async () => {
