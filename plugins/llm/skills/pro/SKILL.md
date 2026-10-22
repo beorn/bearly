@@ -53,8 +53,6 @@ The fleet is CONFIG-DRIVEN: `~/.config/llm/dual-pro-config.json` (documented inl
 - Or hand on a partial review: give the returned/requested count, list missing models and judge pairs, and say `unjudged` if no verdict exists or judging is unfinished. Example: `partial, 1 of 2 opinions, unjudged; missing model B`. Keep available scores with that qualification.
 - A targeted follow-up writes a separate result; it does not edit the original report or completion record. Collect retained and new results in the approval packet. If approval requires a complete judged review, wait until that packet contains every required opinion and judge result.
 
-## Dual-pro mode (3-leg dispatch)
-
 ## Dual-pro mode (multi-leg dispatch)
 
 `bun llm pro "..."` fires **the config's mainstays plus split-test slots** in parallel by default. A judge model rates all legs on a rubric (specificity / actionability / correctness / depth). A/B log at `~/.claude/projects/<project>/memory/ab-pro.jsonl`.
