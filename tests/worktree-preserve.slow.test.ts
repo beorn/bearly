@@ -298,7 +298,12 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     const originalCwd = process.cwd()
     try {
       process.chdir(mainRepo)
-      await expect(removeWorktree(destination, { force: true, admitOnly: true })).rejects.toThrow("uninitialized")
+      // An empty uninitialized checkout holds nothing, so it is admitted even without the
+      // exclusion and named as such (30563); the store and registration still stay untouched.
+      await expect(removeWorktree(destination, { force: true, admitOnly: true })).resolves.toBeUndefined()
+      expect(consoleLogSpy.mock.calls.flat().join("\n")).toContain(
+        "vendor/sub: uninitialized and holds nothing; nothing to classify",
+      )
       const selected = {
         force: true,
         admitOnly: true,
@@ -1306,7 +1311,10 @@ process.exit(result.exitCode)
       expect(refused.stderr).toContain("uncommitted changes")
       const admitted = admit("--force")
       expect(admitted.status, admitted.stderr).toBe(0)
-      expect(admitted.stdout).toBe("")
+      // --admit names each classified component and nothing else (30529).
+      expect(admitted.stdout).toBe(
+        "\x1b[34m→\x1b[0m vendor/sub: initialized; contents classified for ignored payload\n",
+      )
       expect(readFileSync(join(worktreeSub, "file.txt"), "utf8")).toBe("modified-in-worktree\n")
       expect(readFileSync(join(worktreeSub, "extra.txt"), "utf8")).toBe("untracked-precious\n")
       expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(refsBefore)
