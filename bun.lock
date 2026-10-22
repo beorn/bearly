@@ -16,7 +16,7 @@
         "@termless/xtermjs": "0.10.2",
         "ai": "7.0.126",
         "commander": "^15.0.0",
-        "git-super": "0.8.0",
+        "git-super": "0.9.0",
         "loggily": "0.13.0",
         "openai": "^6.46.0",
         "removely": "workspace:*",
@@ -689,7 +689,7 @@
 
     "gifenc": ["gifenc@1.0.3", "", {}, "sha512-xdr6AdrfGBcfzncONUOlXMBuc5wJDtOueE3c5rdG0oNgtINLD+f2iFZltrBRZYzACRbKr+mSVU/x98zv2u3jmw=="],
 
-    "git-super": ["git-super@0.8.0", "", { "dependencies": { "@bearly/flock": "0.2.2", "@bearly/pacing": "^0.1.0", "@silvery/command": "0.23.2", "@silvery/commander": "0.23.2", "gitomic": "^0.4.0", "loggily": "^0.10.2", "react": "19.3.1", "silvery": "0.23.2" }, "bin": { "git-super": "bin/git-super" } }, "sha512-A4ue417ptB9VA00XDWO9sfBEqF1y4pHQ+MAAqOHuC39JZROQtuWgmLlrlBESQgM0OYbR5IkXQ3hVpjnHksFjRQ=="],
+    "git-super": ["git-super@0.9.0", "", { "dependencies": { "@bearly/flock": "0.2.2", "@bearly/pacing": "^0.1.0", "@silvery/command": "0.23.2", "@silvery/commander": "0.23.2", "gitomic": "^0.4.0", "loggily": "^0.10.2", "react": "19.3.1", "silvery": "0.23.2" }, "bin": { "git-super": "bin/git-super" } }, "sha512-4KwJSh2mGUxD+Cg24lFdvZ/DRKpHQf1P1ls2t3g6XRP7L7Sblh69ejXYbukTVbrfdyh4JXQkI/OCLTSsrwQ4JA=="],
 
     "gitomic": ["gitomic@0.4.0", "", { "dependencies": { "@bearly/flock": "^0.1.1" }, "peerDependencies": { "isomorphic-git": "^1.38.7" }, "optionalPeers": ["isomorphic-git"], "bin": { "gitomic": "dist/bin.js" } }, "sha512-0CTr4tFftYFM8OQhRS1tXhhkkRHHH6wTAyGyiwKrMflPaGOIkpkwxHndG6VpP9qVion+ORKidm4FjnyL2qHeDg=="],
 
