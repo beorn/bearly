@@ -39,6 +39,14 @@ export function estimateFleetCost(
   outputTokens: number,
   hasImage = false,
 ): { text: string } {
+  if (models.length === 1 && models[0]?.modelId === "perplexity/sonar-deep-research") {
+    // OpenRouter metadata read 2026-10-22. Retrieved/citation context is billed input;
+    // internal reasoning and search add separate charges. This is illustrative, not a bound.
+    const estimate = (62000 * 2) / 1_000_000 + (8000 * 8) / 1_000_000 + (30000 * 3) / 1_000_000 + 30 * 0.005
+    return {
+      text: `charged unknown (forecast; no call dispatched); illustrative research estimate $${estimate.toFixed(3)}; illustrative range $0.23–$0.73, not a cap; assumed 62K input including retrieved/citation context at $2/M + 8K output at $8/M + 30K internal reasoning at $3/M + 30 searches at $0.005/search; current prompt estimate ${inputTokens} tokens, output request ${outputTokens} tokens; output-token limit does not cap research/search/reasoning charges`,
+    }
+  }
   const priced = models.map((model) => {
     const subscription = resolveSubscriptionRoute(model, { hasImage }) !== undefined
     return {
@@ -499,7 +507,7 @@ export async function finishResponse(
   servedBy?: OutputMeta["servedBy"],
   completion?: Pick<
     ModelResponse,
-    "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd" | "cacheHit" | "calls"
+    "finishReason" | "rawFinishReason" | "appliedMaxOutputTokens" | "cost_usd" | "cacheHit" | "calls" | "citations"
   >,
   /** The panel slot this call answered for (27038). A failed leg names it, so
    *  a reader can match the error back to the panel header without guessing. */
@@ -594,7 +602,9 @@ export async function finishResponse(
       calls: completion?.calls,
       tokens: usage
         ? { prompt: usage.promptTokens, completion: usage.completionTokens, total: usage.totalTokens }
-        : { total: 0 },
+        : model.modelId === "perplexity/sonar-deep-research"
+          ? undefined
+          : { total: 0 },
       durationMs,
     }
     if (query) result.query = query
@@ -605,7 +615,15 @@ export async function finishResponse(
 
     process.exit(1)
   }
-  await finalizeOutput(content ?? "", outputFile, sessionTag, {
+  const researchPartialError =
+    model.modelId === "perplexity/sonar-deep-research" ? error?.trim() || undefined : undefined
+  const incomplete = stopped ?? researchPartialError
+  // Render observed source evidence only after empty-failure handling; sources alone are not research content.
+  const sources = model.modelId === "perplexity/sonar-deep-research" ? completion?.citations : undefined
+  const savedContent = sources?.length
+    ? `${content ?? ""}\n\n## Sources\n\n${sources.map(({ title, url }) => `- ${title ? `${title}: ` : ""}${url}`).join("\n")}`
+    : (content ?? "")
+  await finalizeOutput(savedContent, outputFile, sessionTag, {
     ...costs,
     query,
     model: model.displayName,
@@ -617,13 +635,17 @@ export async function finishResponse(
     ...(servedBy ? { servedBy } : {}),
     durationMs,
     responseId,
-    status: stopped === undefined ? "completed" : "incomplete",
-    ...(stopped === undefined ? {} : { error: stopped }),
+    status: incomplete === undefined ? "completed" : "incomplete",
+    ...(incomplete === undefined ? {} : { error: incomplete }),
     finishReason: completion?.finishReason,
     rawFinishReason: completion?.rawFinishReason,
     appliedMaxOutputTokens: completion?.appliedMaxOutputTokens,
     ...(quota ? { quota } : {}),
   })
+  if (researchPartialError !== undefined && stopped === undefined) {
+    log.error?.(researchPartialError)
+    process.exit(1)
+  }
   if (stopped !== undefined) {
     const retry =
       completion?.appliedMaxOutputTokens === undefined

@@ -114,7 +114,12 @@ export async function runDeep(options: {
     // (e.g. a client-side timeout after the server accepted the request),
     // fall through to the error path — otherwise scripts parsing stdout see
     // a false success. Flagged by K2.6 round-3 review.
-    if (response.responseId && !response.error && outputTokenStop(response) === undefined) {
+    if (
+      deepModel.modelId !== "perplexity/sonar-deep-research" &&
+      response.responseId &&
+      !response.error &&
+      outputTokenStop(response) === undefined
+    ) {
       // Emit a machine-readable status line on stdout so scripts and callers
       // can harvest the responseId without parsing stderr. Mirrors the
       // normal completion path (which emits JSON via finalizeOutput). The

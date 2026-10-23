@@ -277,6 +277,15 @@ export function resolveCostForModel(
     ...(reportedUsd !== undefined ? { reportedUsd } : {}),
     ...(chargedUnavailableReason !== undefined ? { chargedUnavailableReason } : {}),
   })
+  if (modelId === "perplexity/sonar-deep-research") {
+    return {
+      charged: resolved.charged,
+      listEquivalent: {
+        reason: "Sonar research search and separately billed reasoning are not fully priced by token-only rates",
+      },
+      listEquivalentBasis: resolved.listEquivalentBasis,
+    }
+  }
   const missing = ["input", "output"].filter((key) => usage[key] === undefined)
   const unsupported = Object.entries(usage)
     .filter(([key, count]) => !["input", "output", "cache_read", "cache_write", "reasoning"].includes(key) && count > 0)

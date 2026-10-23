@@ -27,7 +27,7 @@ import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
 import type { Model, ModelResponse, ThinkingLevel } from "./types"
-import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, MODELS } from "./types"
+import { getModelsForLevel, getModel, getEndpoint, getProviderEnvVar, getBestAvailableModel } from "./types"
 import { describeDispatchFailure, redactSecrets, type DispatchFailureDescription } from "./dispatch-error"
 import { missingApiKeyError } from "./env-preflight"
 import {
@@ -605,6 +605,23 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     },
   })
   const finishSdkResponse = (response: ModelResponse, failure?: DispatchFailureDescription) => {
+    if (model.modelId === "perplexity/sonar-deep-research" && !response.error && !response.content.trim()) {
+      response = {
+        ...response,
+        error: `${model.displayName} returned no research content; no background job was created.`,
+      }
+    }
+    if (
+      model.modelId === "perplexity/sonar-deep-research" &&
+      !response.error &&
+      response.content.trim() &&
+      !response.citations?.length
+    ) {
+      response = {
+        ...response,
+        error: `${model.displayName} returned text but no recognized URL citations in the SDK source events; citation completeness is unresolved.`,
+      }
+    }
     if (calls.length > 1) {
       const usage = { ...response.usage }
       for (const key of ["promptTokens", "completionTokens", "totalTokens"] as const) {
@@ -720,6 +737,15 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // an invalid Google key and an exhausted OpenAI balance both printed "unclassified provider error"
   // (28886). Declared out here so the catch can see it.
   let streamFailure: DispatchFailureDescription | undefined
+  // This synchronous route has observed URL source events even when terminal promises abort.
+  const preserveResearchPartial = model.modelId === "perplexity/sonar-deep-research"
+  const citations: NonNullable<ModelResponse["citations"]> = []
+  let fullText = ""
+  const keepSource = (source: { sourceType: string; url?: string; title?: string }) => {
+    if (source.sourceType === "url" && source.url) {
+      citations.push({ url: source.url, ...(source.title === undefined ? {} : { title: source.title }) })
+    }
+  }
 
   try {
     maxOutputTokens = computeMaxOutputTokens(model, messages, systemPrompt, options.maxOutputTokens)
@@ -751,13 +777,20 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         abortSignal,
         ...(maxOutputTokens ? { maxOutputTokens } : {}),
         ...(hasProviderOptions ? { providerOptions } : {}),
+        onChunk: ({ chunk }) => {
+          if (preserveResearchPartial && chunk.type === "source") keepSource(chunk)
+        },
+        onAbort: () => {
+          if (preserveResearchPartial) {
+            streamFailure = describeDispatchFailure(abortSignal?.reason ?? new Error("Research aborted"), model)
+          }
+        },
         onError: ({ error }) => {
           streamFailure = describeDispatchFailure(error, model)
         },
       })
 
       // Consume the stream and call onToken for each part
-      let fullText = ""
       for await (const part of result.textStream) {
         onToken(part)
         fullText += part
@@ -780,7 +813,10 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
         appliedMaxOutputTokens: maxOutputTokens,
         // Only surface the stream error when nothing came back — a partial
         // completion that errored late still gives the user usable content.
-        ...streamFailureField(streamFailure, fullText),
+        ...(preserveResearchPartial && streamFailure
+          ? { error: streamFailure.message }
+          : streamFailureField(streamFailure, fullText)),
+        ...(citations.length ? { citations } : {}),
         usage: responseUsage(usage),
         ...statedCharge(usage?.raw, model.provider),
         durationMs: Date.now() - startTime,
@@ -803,6 +839,13 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
       return await finishSdkResponse({
         model,
         content: result.text,
+        ...(preserveResearchPartial
+          ? {
+              citations: result.sources
+                ?.filter((source) => source.sourceType === "url")
+                .map((source) => ({ url: source.url, ...(source.title === undefined ? {} : { title: source.title }) })),
+            }
+          : {}),
         finishReason: result.finishReason,
         rawFinishReason: result.rawFinishReason,
         appliedMaxOutputTokens: maxOutputTokens,
@@ -825,6 +868,19 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
     // evidence-free "no output generated" wrapper. Keep the provider's description (28886).
     const describedFailure =
       streamFailure && isSyntheticStreamError(error) ? streamFailure : describeDispatchFailure(error, model)
+    if (preserveResearchPartial) {
+      return finishSdkResponse(
+        {
+          model,
+          content: fullText,
+          ...(citations.length ? { citations } : {}),
+          appliedMaxOutputTokens: maxOutputTokens,
+          durationMs: Date.now() - startTime,
+          error: describedFailure.message,
+        },
+        describedFailure,
+      )
+    }
     const capInfo = parseContextLengthError(errorMsg)
     if (capInfo && model.reasoning?.contextWindow) {
       const SAFETY = 4096
@@ -1016,15 +1072,8 @@ export async function research(topic: string, options: ResearchCallOptions = {})
       throw new Error(`Unknown model: ${options.modelOverride}`)
     }
   } else {
-    // Prefer deep research models, fall back to strong standard models
-    const deepModels = MODELS.filter((m) => m.isDeepResearch && isProviderAvailable(m.provider))
-    const strongModels = MODELS.filter(
-      (m) => !m.isDeepResearch && m.costTier === "high" && isProviderAvailable(m.provider),
-    )
-    model = deepModels[0] || strongModels[0]
-    if (!model) {
-      throw new Error("No deep research or high-tier models available")
-    }
+    model = getBestAvailableModel("deep", isProviderAvailable).model
+    if (!model) throw new Error("No deep research or high-tier models available")
   }
 
   // Models with the `webSearch` capability: route through the OpenAI Responses

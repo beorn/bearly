@@ -583,3 +583,87 @@ describe("--json mode end-to-end", () => {
     expect(envelope.error).toMatch(/not in registry/i)
   }, 10_000)
 })
+
+// 30826 R1: mapper-only tests cannot see the last hop into the actual saved research body.
+it.each(["complete", "partial", "abort", "source-free", "empty", "empty-id"] as const)(
+  "Deep saved research carries source evidence and status: %s",
+  async (mode) => {
+    const env = makeTestEnv()
+    vi.resetModules()
+    resetMocks()
+    const { runDeep } = await import("../src/cmd/deep")
+    const { getModel } = await import("../src/lib/types")
+    const source = {
+      type: "source",
+      sourceType: "url",
+      id: "fixture-nasa",
+      url: "https://cneos.jpl.nasa.gov/faq/new.html",
+      title: "Frequently Asked Questions (FAQ) - Nasa CNEOS",
+    }
+    streamTextMock.mockImplementationOnce((options) => ({
+      textStream: (async function* () {
+        if (mode !== "source-free") options.onChunk?.({ chunk: source })
+        if (mode !== "empty") yield "original partial research"
+        if (mode === "partial" || mode === "abort") {
+          const error = new Error("fixture research abort")
+          if (mode === "abort") options.onAbort?.({ steps: [] })
+          else options.onError({ error })
+          throw error
+        }
+      })(),
+      finalStep: Promise.resolve({}),
+      usage: Promise.resolve(undefined),
+      finishReason: Promise.resolve("stop"),
+      rawFinishReason: Promise.resolve("stop"),
+    }))
+    const file = join(env.tmpDir, "deep.md")
+    if (mode === "empty-id") {
+      const researchModule = await import("../src/lib/research")
+      vi.spyOn(researchModule, "research").mockResolvedValueOnce({
+        model: getModel("perplexity/sonar-deep-research")!,
+        content: "",
+        durationMs: 1,
+        responseId: "fixture-not-a-background-job",
+      })
+    }
+    const empty = mode === "empty" || mode === "empty-id"
+    let failure: unknown
+    try {
+      await runDeep({
+        topic: "NASA",
+        modelOverride: getModel("perplexity/sonar-deep-research"),
+        buildContext: async () => undefined,
+        outputFile: file,
+        sessionTag: "deep-test",
+        skipRecover: true,
+        skipConfirm: true,
+        dryRun: false,
+        streamToken: () => {},
+      })
+    } catch (error) {
+      failure = error
+    }
+    const saved = readFileSync(file, "utf8")
+    const result = JSON.parse(env.stdout.at(-1)!) as { status: string; error?: string; tokens?: unknown }
+    if (!empty) expect(saved).toContain("original partial research")
+    if (mode === "complete" || mode === "partial" || mode === "abort") {
+      expect(saved).toContain(source.url)
+      expect(saved).toContain(source.title)
+    }
+    expect(result.status).toBe(mode === "complete" ? "completed" : empty ? "failed" : "incomplete")
+    if (mode === "complete") expect(failure).toBeUndefined()
+    else {
+      expect(failure).toBeTruthy()
+      expect(result.error).toBeTruthy()
+      expect(env.exitCodes).toContain(1)
+      if (mode === "empty-id") expect(saved).toContain("# LLM Error: Empty Response")
+      else expect(saved).toContain(result.error)
+      if (!empty) expect(saved).toContain('"status":"incomplete"')
+    }
+    expect(result.status).not.toBe("background")
+    if (empty) {
+      expect(result.tokens).toBeUndefined()
+      expect(saved).not.toContain("## Sources")
+    }
+  },
+)

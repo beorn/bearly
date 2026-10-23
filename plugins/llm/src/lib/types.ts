@@ -942,6 +942,17 @@ const SKUS_DATA: SkuConfig[] = [
     reasoning: { contextWindow: 262144, maxOutputTokens: 235929 },
   },
 
+  // OpenRouter research route; token headline rates exclude search/reasoning charges.
+  {
+    modelId: "perplexity/sonar-deep-research",
+    displayName: "Perplexity Sonar Deep Research (OpenRouter)",
+    isDeepResearch: true,
+    costTier: "high",
+    inputPricePerM: 2,
+    outputPricePerM: 8,
+    reasoning: { contextWindow: 128000 },
+  },
+
   // Perplexity
   {
     modelId: "sonar",
@@ -1147,6 +1158,11 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
   "meituan/longcat-2.0": { provider: "openrouter", capabilities: NO_CAPS },
   "thinkingmachines/inkling": { provider: "openrouter", capabilities: NO_CAPS },
   "moonshotai/kimi-k2.7-code": { provider: "openrouter", capabilities: NO_CAPS },
+
+  "perplexity/sonar-deep-research": {
+    provider: "openrouter",
+    capabilities: { ...NO_CAPS, deepResearch: true },
+  },
 
   // Perplexity Sonar has internal web search, but dispatch goes through the
   // standard Vercel AI SDK path (generateText) — `webSearch` capability flags
@@ -1662,10 +1678,14 @@ export function requiresConfirmation(model: Model | SkuConfig, threshold = 0.1):
 
 export const BEST_MODELS = {
   default: ["gpt-5.4", "gemini-2.5-pro", "claude-sonnet-4-6", "grok-4-1-fast-reasoning"],
-  // Deep research — GPT-5.4 via Responses API + web_search is the best deep
-  // research model. The "dedicated" deep research models (o3, gemini) are
-  // kept as fallbacks only.
-  deep: ["gpt-5.4", "o3-deep-research-2025-06-26", "deep-research-pro-preview-12-2025", "sonar-deep-research"],
+  // Curated Deep order shared by CLI and library; native routes remain explicit fallbacks.
+  deep: [
+    "perplexity/sonar-deep-research",
+    "gpt-5.4",
+    "o3-deep-research-2025-06-26",
+    "deep-research-pro-preview-12-2025",
+    "sonar-deep-research",
+  ],
   opinion: ["gemini-2.5-pro", "gpt-5.4", "grok-4-1-fast-reasoning"],
   debate: ["gpt-5.4", "gemini-2.5-pro", "grok-4-1-fast-reasoning", "claude-sonnet-4-6"],
   quick: ["gpt-5-nano", "gemini-2.0-flash-lite", "grok-3-fast", "claude-haiku-4-5-20251001"],
@@ -1694,6 +1714,15 @@ export function getBestAvailableModel(
       }
       return { model, warning }
     }
+  }
+
+  // Preserve the library's existing high-tier fallthrough in the shared selector.
+  if (mode === "deep") {
+    const model = MODELS.find(
+      (candidate) =>
+        !candidate.isDeepResearch && candidate.costTier === "high" && isProviderAvailable(candidate.provider),
+    )
+    if (model) return { model, warning: `No curated Deep model available; using ${model.displayName}` }
   }
 
   const envVars = candidates

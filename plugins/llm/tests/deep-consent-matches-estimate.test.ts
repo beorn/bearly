@@ -14,9 +14,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { runDeep } from "../src/cmd/deep"
-import { runDebate } from "../src/cmd/debate"
-import { getModel, type Model } from "../src/lib/types"
+import type { Model } from "../src/lib/types"
+import { makeTestEnv } from "./helpers"
+
+let runDeep: typeof import("../src/cmd/deep").runDeep
+let runDebate: typeof import("../src/cmd/debate").runDebate
+let getModel: typeof import("../src/lib/types").getModel
 
 function modelAt(costTier: Model["costTier"]): Model {
   return {
@@ -34,7 +37,20 @@ function modelAt(costTier: Model["costTier"]): Model {
 let errors: string[]
 let stderr: ReturnType<typeof vi.spyOn>
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Forecast controls must not inherit the operator's persisted pricing cache.
+  makeTestEnv()
+  vi.resetModules()
+  const [deep, debate, types, pricing] = await Promise.all([
+    import("../src/cmd/deep"),
+    import("../src/cmd/debate"),
+    import("../src/lib/types"),
+    import("../src/lib/pricing"),
+  ])
+  runDeep = deep.runDeep
+  runDebate = debate.runDebate
+  getModel = types.getModel
+  pricing.savePricingCache({ updatedAt: "2026-10-22T00:00:00Z", models: {} })
   errors = []
   stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
     errors.push(parts.map(String).join(" "))
@@ -127,3 +143,39 @@ describe("the /deep consent gate states the price the command computed (24577)",
     }
   })
 })
+
+it.each([1024, 8192])(
+  "Deep research forecast/consent exposes separate billing, not a cap: %s",
+  async (maxOutputTokens) => {
+    await runDeep({
+      topic: "NASA",
+      modelOverride: getModel("perplexity/sonar-deep-research")!,
+      buildContext: async () => undefined,
+      outputFile: "/dev/null",
+      sessionTag: "test",
+      skipRecover: true,
+      skipConfirm: true,
+      dryRun: true,
+      streamToken: () => {},
+      maxOutputTokens,
+    })
+    const printed = errors
+      .find((line) => line.startsWith("Estimated cost:"))!
+      .replace("Estimated cost: ", "")
+      .trim()
+    expect(errors.find((line) => line.includes("Would ask:"))).toContain(printed)
+    for (const text of [
+      "$0.428",
+      "$0.23–$0.73",
+      "not a cap",
+      "62K input",
+      "8K output",
+      "30K internal reasoning",
+      "30 searches",
+      "charged unknown",
+      `output request ${maxOutputTokens} tokens`,
+    ]) {
+      expect(printed).toContain(text)
+    }
+  },
+)

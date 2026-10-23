@@ -301,3 +301,15 @@ describe("performPricingUpdate writes nothing when nothing is accepted", () => {
     expect(readFileSync(cachePath(env.homeDir), "utf8")).toBe(before)
   })
 })
+
+it("Deep retains stated charge independently of incomplete search/reasoning pricing", async () => {
+  makeTestEnv()
+  const { resolveCostForModel } = await pricing()
+  const usage = { input: 62000, output: 8000, reasoning: 30000 }
+  const stated = resolveCostForModel("perplexity/sonar-deep-research", usage, 0.41)
+  expect(stated.charged).toEqual({ usd: 0.41 })
+  expect(stated.listEquivalent).toEqual({ reason: expect.stringContaining("search and separately billed reasoning") })
+  expect(resolveCostForModel("perplexity/sonar-deep-research", usage).charged).toEqual({
+    reason: "provider did not state a charge",
+  })
+})

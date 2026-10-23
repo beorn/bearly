@@ -64,3 +64,35 @@ describe("openrouter registry expansion", () => {
     expect(SKUS.find((sku) => sku.modelId === unknown)).toBeUndefined()
   })
 })
+
+// 30826: registry join alone passes when the intended Deep route is absent.
+it("registers the approved OpenRouter Deep identity and preserves native Sonar", async () => {
+  const { getModel, getEndpoint, getBestAvailableModel, BEST_MODELS } = await import("../src/lib/types")
+  expect(getModel("perplexity/sonar-deep-research")).toMatchObject({
+    provider: "openrouter",
+    isDeepResearch: true,
+    inputPricePerM: 2,
+    outputPricePerM: 8,
+    reasoning: { contextWindow: 128000 },
+  })
+  expect(getEndpoint("perplexity/sonar-deep-research")?.capabilities).toMatchObject({
+    webSearch: false,
+    backgroundApi: false,
+    deepResearch: true,
+  })
+  expect(getBestAvailableModel("deep", () => true).model?.modelId).toBe("perplexity/sonar-deep-research")
+  expect(getModel("sonar-deep-research")).toMatchObject({
+    provider: "perplexity",
+    inputPricePerM: 5,
+    outputPricePerM: 20,
+  })
+  expect(getModel("o3-deep-research-2025-06-26")?.typicalLatencyMs).toBe(180000)
+  expect(BEST_MODELS.pro).toEqual([
+    "gpt-5.4-pro",
+    "moonshotai/kimi-k2.6",
+    "gpt-5.5-pro",
+    "o3-pro",
+    "claude-opus-4-6",
+    "gpt-5.2-pro",
+  ])
+})
