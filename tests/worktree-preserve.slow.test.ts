@@ -190,6 +190,54 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure 30814: a known-incompatible later root destination is checked only after an earlier child publishes.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected destinations reject later incompatible ancestry before child publication", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
+      const child = join(worktreePath, "vendor/sub")
+      await $`git -C ${child} switch -q -c task/issue`.quiet()
+      writeFileSync(join(child, "file.txt"), "child dirt before later refusal\n")
+      const childRemote = join(sandbox, "sub")
+      const rootHead = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      const unrelated = (
+        await $`git -C ${mainRepo} -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -m unrelated`.text()
+      ).trim()
+      await $`git -C ${mainRepo} push -q origin ${`${unrelated}:refs/heads/${slot}`}`.quiet()
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async () =>
+            new Map([
+              [
+                ".",
+                { ref: `refs/heads/${slot}`, remote: "origin", expectedLocal: rootHead, expectedRemote: unrelated },
+              ],
+              [
+                "vendor/sub",
+                { ref: "refs/heads/task/issue", remote: "origin", expectedLocal: null, expectedRemote: null },
+              ],
+            ]),
+        }),
+      ).rejects.toThrow(/remote destination.*not an ancestor/u)
+      expect((await $`git -C ${join(sandbox, "origin.git")} rev-parse refs/heads/${slot}`.text()).trim()).toBe(
+        unrelated,
+      )
+      expect((await $`git -C ${childRemote} show-ref --heads task/issue`.nothrow().quiet()).exitCode).not.toBe(0)
+      expect(
+        (await $`git -C ${join(mainRepo, "vendor/sub")} show-ref --heads task/issue`.nothrow().quiet()).exitCode,
+      ).not.toBe(0)
+      expect(readFileSync(join(child, "file.txt"), "utf8")).toBe("child dirt before later refusal\n")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   /** @failure 30814: a root branch can outlive removal while its child object and parent gitlink do not.
    * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
   test("selected child and parent branches retain the child graph and overridden pin", async () => {
@@ -230,6 +278,9 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
       const childRemote = join(sandbox, "sub")
       expect(await $`git -C ${childRemote} show refs/heads/task/issue:file.txt`.text()).toBe("child working\n")
       expect(await $`git -C ${childRemote} show refs/heads/task/issue^2:file.txt`.text()).toBe("child staged\n")
+      expect(
+        (await $`git -C ${childRemote} merge-base --is-ancestor ${childHead} ${saved}`.nothrow().quiet()).exitCode,
+      ).toBe(0)
       const parentRemote = join(sandbox, "origin.git")
       expect(await $`git -C ${parentRemote} ls-tree refs/heads/${slot} vendor/sub`.text()).toContain(saved)
       expect(await preserveRefs(mainRepo, slot)).toEqual([])

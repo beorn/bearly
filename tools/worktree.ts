@@ -2523,6 +2523,24 @@ async function preserveCommonStore(repo: string): Promise<string> {
   return realpathSync(path)
 }
 
+async function requirePreserveAncestor(
+  repo: string,
+  old: string,
+  saved: string,
+  scope: string,
+  ref: string,
+): Promise<void> {
+  const result = await safeExec($`git -C ${repo} merge-base --is-ancestor ${old} ${saved}`)
+  if (result.exitCode === 1) {
+    throw new Error(`preserve: ${scope} destination ${ref}@${old} is not an ancestor of ${saved} in ${repo}`)
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `preserve: cannot prove ${scope} destination ${ref}@${old} ancestry to ${saved} in ${repo}: ${gitCommandError(result)}`,
+    )
+  }
+}
+
 /** Preservation reads and writes must never turn a failed Git command into empty state. */
 async function preserveGit(repo: string, args: string[]): Promise<string> {
   const result = await safeExec($`git -C ${repo} ${args}`)
@@ -2800,6 +2818,15 @@ export async function preserveSlotState(
           anchor: false,
         })
       }
+      if ((await preserveCommonStore(repo.primary)) !== (await preserveCommonStore(repo.root))) {
+        await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: repo.head, anchor: false })
+      }
+      for (const [scope, old] of [
+        ["remote", destination.expectedRemote],
+        ["primary", destination.expectedLocal],
+      ] as const) {
+        if (old !== null) await requirePreserveAncestor(repo.primary, old, repo.head, scope, destination.ref)
+      }
     }
   }
   const preservedSubs: PreservedSubmodule[] = []
@@ -2859,17 +2886,12 @@ export async function preserveSlotState(
         if (primaryStore !== environmentStore) {
           await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
         }
+        await requirePreserveAncestor(repo.primary, repo.head, saved, "environment head", refFull)
         for (const [scope, old] of [
           ["remote", destination.expectedRemote],
           ["primary", destination.expectedLocal],
         ] as const) {
-          if (old === null) continue
-          const ancestor = await safeExec($`git -C ${repo.primary} merge-base --is-ancestor ${old} ${saved}`)
-          if (ancestor.exitCode !== 0) {
-            throw new Error(
-              `preserve: ${scope} destination ${refFull}@${old} is not an ancestor of ${saved} in ${repo.primary}: ${gitCommandError(ancestor)}`,
-            )
-          }
+          if (old !== null) await requirePreserveAncestor(repo.primary, old, saved, scope, refFull)
         }
         const publication = await superPush({
           repo: repo.primary,
