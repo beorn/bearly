@@ -2792,13 +2792,14 @@ export async function preserveSlotState(
           `preserve: remote destination ${destination.ref} at ${destination.remote} changed from captured ${destination.expectedRemote} to ${remote}; no refs written`,
         )
       }
-      if (remote !== null)
+      if (remote !== null) {
         await ensureCommitObject({
           repository: repo.primary,
           remote: destination.remote,
           commit: remote,
           anchor: false,
         })
+      }
     }
   }
   const preservedSubs: PreservedSubmodule[] = []
@@ -2880,8 +2881,9 @@ export async function preserveSlotState(
         if (publication.state !== "updated" && publication.state !== "unchanged") {
           // A push can be accepted before its caller sees a transport error.
           const observed = await preserveRemoteRef(repo.primary, destination.remote, refFull)
-          if (observed === saved)
+          if (observed === saved) {
             written.push({ repo: `${repo.primary}->${destination.remote}`, ref: refFull, sha: saved })
+          }
           throw new Error(
             `preserve: real-branch publication failed in ${repo.primary} for ${refFull}@${saved}; remote now ${observed}: ${JSON.stringify(publication)}`,
           )
