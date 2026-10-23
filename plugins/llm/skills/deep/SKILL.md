@@ -1,56 +1,30 @@
 ---
-description: "Long-running web-search research with citations via OpenAI's Deep Research API (~$2-5, 2-15 min, fire-and-forget). Use when prior art / external citations matter. NOT DeepSeek. For multi-model judging without web search use /pro."
+description: "Provider-dependent deep web research with citations. Use when external sources or broad research matter; use /pro for multi-model judging without web research."
 argument-hint: <topic>
 ---
 
-# /deep — OpenAI Deep Research (web search + citations)
+# /deep — web research with citations
 
-OpenAI's Deep Research API: web search + extended reasoning + citations. **NOT** DeepSeek (despite the name). Fire-and-forget — exits in ~5s with a response ID, recover later.
+Use `/deep` when a question needs web research and cited evidence. The selected provider determines how the request runs: OpenAI and Gemini dedicated research models use their research APIs; Perplexity Sonar research models use the standard model request, which can stream. This is web research, while `/pro` compares model answers and uses a judge.
 
-**Keywords**: deep research, thorough research, web search, citations
-
-## Decision table
-
-| User says                                | Command                                                         | Cost              |
-| ---------------------------------------- | --------------------------------------------------------------- | ----------------- |
-| `/deep "<topic>"`                        | `bun llm --deep -y --no-recover --context-file <ctx> "<topic>"` | ~$2-5, 2-15 min   |
-| `/deep pro "<topic>"`                    | add `--model gpt-5.4-pro`                                       | ~$5-15, 30-50 min |
-| `/deep <topic>` (research only, no code) | omit `--context-file`; topic alone                              | ~$2-5             |
-
-`pro` keyword does NOT work with `--deep` (gets absorbed into topic text). Use `--model gpt-5.4-pro` instead.
-
-## Context-file rules
-
-- **Always `--context-file`, never `--context`** — backticks/`$(...)`/quotes in source break shell quoting.
-- **Full files, not snippets** — 20-50KB is the sweet spot. Include source + types + callers + test code + exact error output.
-- **Always include the silvery positioning brief** for silvery questions: `--context-file docs/silvery-positioning-brief.md`.
-- **Always `--no-recover`** for fresh research — avoids stale results from prior calls.
-
-## Recovery
-
-Deep research is fire-and-forget — the command prints the response ID and exits in ~5s. Research runs server-side at OpenAI.
+## Run
 
 ```bash
-bun llm --deep -y --no-recover --context-file /tmp/ctx.md "<topic>"
-# → Response ID: resp_abc123...
-
-# Recover later (15-30 min):
-bun llm recover <id>      # interactive, TTY spinner
-bun llm await <id>        # silent block, prints file path — better for background
+bearly-llm --deep --dry-run --no-recover "<topic>"
+bearly-llm --deep --no-recover --context-file <path> "<topic>"
+bearly-llm --deep --no-recover --model <model-id> "<topic>"
 ```
 
-If you forgot the ID: `bun llm recover` lists all partial responses.
+The first command previews the selected model and consent details without dispatching research. `--no-recover` prevents the preview from checking or recovering old partial requests. Without `--model`, the command uses the CLI's available-model selection. Use `--model <model-id>` to override that selection; use an ID supported by the CLI.
 
-**NEVER restart an interrupted deep call** — it continues server-side and completes remotely. Just recover.
+Use `--context-file` for relevant source, types, callers, tests, or observed errors. Include enough surrounding material to support the question, and keep the file focused. `--max-output-tokens N` can lower the output reservation; the default applies when omitted. Check `bearly-llm --help` for current flag syntax.
 
-## Anti-patterns
+## Completion and recovery
 
-- `Bash(command='bun llm --deep ...', run_in_background=true)` — output pipe truncates, response ID lost. Run normally; it exits in ~5s.
-- Restarting after Escape/timeout/crash — wastes $2-5 and 15 minutes.
-- Polling with `sleep 30 && wc -c output.txt` — wastes turns.
-- Trimmed snippets with `...` — the trimmed part is often where the bug is.
-- Confirmation questions ("is my fix right?") — anchors the researcher on your mental model. Ask discovery questions instead ("what mechanism could cause X?", "what invariant am I violating?").
+Some provider paths continue server-side. When the CLI identifies a recoverable background request, preserve its response ID and use `bearly-llm recover <id>` or `bearly-llm await <id>`. A provider response ID alone does not establish that these commands can recover the request.
 
-## Presenting results
+Other paths finish synchronously or stream the result. Perplexity Sonar deep research follows this shape and does not provide the OpenAI background response ID described above. If a run stops or reports an error, inspect its output file, status, and terminal error before deciding what to do. Do not blindly start a second paid request; recovery is possible only when the output provides a recoverable response ID.
 
-Deep research costs $2-5+. After it completes, **read the full output file and present a comprehensive ~40-line report** — preserve code snippets, specific recommendations, trade-offs, and citations. Don't reduce to a brief summary. Always show the output file path at the end.
+## Report findings
+
+Read the complete output file. Give a concise answer that distinguishes sourced facts from inference, preserves relevant citations and trade-offs, and points to the output file. Include code excerpts when they are needed to explain a technical finding; choose report length to fit the question and evidence.
