@@ -950,7 +950,7 @@ const SKUS_DATA: SkuConfig[] = [
     costTier: "high",
     inputPricePerM: 2,
     outputPricePerM: 8,
-    reasoning: { contextWindow: 128000 },
+    reasoning: { contextWindow: 128000, maxOutputTokens: 115200 },
   },
 
   // Perplexity
