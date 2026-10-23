@@ -2469,6 +2469,58 @@ export interface PreserveOptions {
    * ahead of it. remove and reset leave it unset and keep the print.
    */
   quiet?: boolean
+  /** Select already-authorized real branches for every store that needs custody. Called once, before ref writes. */
+  selectDestinations?: (
+    repositories: readonly PreserveRepository[],
+  ) => Promise<ReadonlyMap<string, PreserveDestination>>
+}
+
+export interface PreserveRepository {
+  path: string
+  root: string
+  primary: string
+  head: string
+  needsPreserve: boolean
+}
+
+export interface PreserveDestination {
+  /** The attached issue branch in this repository, as a full refs/heads name. */
+  ref: string
+  /** The caller's authorized owning push destination. */
+  remote: string
+  /** Captured primary-store branch tip; null means observed absent. */
+  expectedLocal: string | null
+  /** Captured remote branch tip; null means observed absent. */
+  expectedRemote: string | null
+}
+
+const PRESERVE_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u
+
+async function preserveOptionalRef(repo: string, ref: string): Promise<string | null> {
+  const result = await safeExec($`git -C ${repo} rev-parse --verify --quiet ${ref + "^{commit}"}`)
+  if (result.exitCode === 0 && PRESERVE_OID.test(result.stdout.trim())) return result.stdout.trim()
+  if (result.exitCode === 1 && result.stdout === "" && result.stderr === "") return null
+  throw new Error(`preserve: cannot read ${ref} in ${repo}: ${gitCommandError(result)}`)
+}
+
+async function preserveRemoteRef(repo: string, remote: string, ref: string): Promise<string | null> {
+  const result = await safeExec($`git -C ${repo} ls-remote --exit-code ${remote} ${ref}`)
+  if (result.exitCode === 2 && result.stdout === "" && result.stderr === "") return null
+  if (result.exitCode !== 0) {
+    throw new Error(`preserve: cannot read ${ref} at ${remote} from ${repo}: ${gitCommandError(result)}`)
+  }
+  const lines = result.stdout.trim().split("\n")
+  const match = lines.length === 1 ? lines[0]?.split("\t") : undefined
+  const oid = match?.[0]
+  if (match?.[1] !== ref || oid === undefined || !PRESERVE_OID.test(oid)) {
+    throw new Error(`preserve: invalid remote readback for ${ref} at ${remote} from ${repo}`)
+  }
+  return oid
+}
+
+async function preserveCommonStore(repo: string): Promise<string> {
+  const path = await preserveGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+  return realpathSync(path)
 }
 
 /** Preservation reads and writes must never turn a failed Git command into empty state. */
@@ -2617,6 +2669,11 @@ export async function preserveSlotState(
     }
     const head = await preserveGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"])
     const primaryHead = await preserveGit(primary, ["rev-parse", "--verify", "HEAD^{commit}"])
+    // The selector's caller verifies this captured target against its authoritative remote.
+    const defaultTarget =
+      opts.selectDestinations === undefined
+        ? undefined
+        : await preserveGit(primary, ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"])
     let dirty =
       (await preserveGit(repo.root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]))
         .length > 0
@@ -2632,7 +2689,7 @@ export async function preserveSlotState(
     let ahead = false
     if (repo.path === ".") {
       if (includeAhead) {
-        const count = await preserveGit(repo.root, ["rev-list", "--count", "origin/main..HEAD"])
+        const count = await preserveGit(repo.root, ["rev-list", "--count", `${defaultTarget ?? "origin/main"}..HEAD`])
         if (!/^\d+$/.test(count)) throw new Error(`preserve: invalid ahead count in ${repo.root}: ${count}`)
         ahead = Number(count) > 0
       }
@@ -2644,10 +2701,16 @@ export async function preserveSlotState(
       } else if (object.exitCode !== 0) {
         throw new Error(`preserve: cannot read child commit ${head} in ${primary}: ${gitCommandError(object)}`)
       } else {
-        // Child-store refs survive removal; only the ROOT slot branch is deleted.
-        const retainedRefs = await preserveGit(primary, ["for-each-ref", `--contains=${head}`, "--format=%(refname)"])
+        // The selector mode needs proof against the primary checkout's target,
+        // not an arbitrary ref that happens to contain this off-target child.
+        const retainedRefs =
+          opts.selectDestinations === undefined
+            ? await preserveGit(primary, ["for-each-ref", `--contains=${head}`, "--format=%(refname)"])
+            : ""
         if (retainedRefs.length === 0) {
-          const ancestry = await safeExec($`git -C ${primary} merge-base --is-ancestor ${head} ${primaryHead}`)
+          const ancestry = await safeExec(
+            $`git -C ${primary} merge-base --is-ancestor ${head} ${defaultTarget ?? primaryHead}`,
+          )
           if (ancestry.exitCode !== 0 && ancestry.exitCode !== 1) {
             throw new Error(`preserve: cannot prove ${head} reachable in ${primary}: ${gitCommandError(ancestry)}`)
           }
@@ -2660,13 +2723,84 @@ export async function preserveSlotState(
         (candidate) =>
           candidate.path !== "." && candidate.path !== repo.path && repo.path.startsWith(candidate.path + "/"),
       )?.path ?? "."
-    repositories.push({ ...repo, primary, head, dirty, ahead, parent })
+    repositories.push({ ...repo, primary, head, dirty, ahead, parent, defaultTarget })
   }
   const dirty = repositories.some((repo) => repo.dirty)
   const ahead = repositories.some((repo) => repo.ahead)
   const skippedObservation = skipped.length === 0 ? {} : { skipped }
+  const required = new Set(repositories.filter((repo) => repo.dirty || repo.ahead).map((repo) => repo.path))
+  for (const repo of [...repositories].reverse()) {
+    if (required.has(repo.path) && repo.path !== ".") required.add(repo.parent)
+  }
+  const destinations =
+    opts.selectDestinations === undefined
+      ? undefined
+      : await opts.selectDestinations(
+          repositories.map((repo) => ({
+            path: repo.path,
+            root: repo.root,
+            primary: repo.primary,
+            head: repo.head,
+            needsPreserve: required.has(repo.path),
+          })),
+        )
+  if (destinations !== undefined) {
+    for (const repo of repositories) {
+      const now = await preserveGit(repo.primary, ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"])
+      if (now !== repo.defaultTarget) {
+        throw new Error(
+          `preserve: default target for ${repo.path} changed from captured ${repo.defaultTarget} to ${now}; no refs written`,
+        )
+      }
+    }
+  }
   if (!dirty && !ahead) return { ...empty, ...observations, ...skippedObservation }
   const reason: NonNullable<PreserveResult["reason"]> = dirty && ahead ? "dirty+ahead" : dirty ? "dirty" : "ahead"
+  // Validate the complete batch before creating even one recovery ref. Null is
+  // an observed absent ref; a failed read never becomes null.
+  if (destinations !== undefined) {
+    for (const repo of repositories) {
+      if (!required.has(repo.path)) continue
+      const destination = destinations.get(repo.path)
+      if (destination === undefined) throw new Error(`preserve: missing destination for ${repo.path}; no refs written`)
+      if (!destination.ref.startsWith("refs/heads/") || destination.ref === "refs/heads/") {
+        throw new Error(`preserve: invalid branch destination for ${repo.path}: ${destination.ref}`)
+      }
+      await preserveGit(repo.primary, ["check-ref-format", destination.ref])
+      if (
+        !destination.remote ||
+        (destination.expectedLocal !== null && !PRESERVE_OID.test(destination.expectedLocal)) ||
+        (destination.expectedRemote !== null && !PRESERVE_OID.test(destination.expectedRemote))
+      ) {
+        throw new Error(`preserve: invalid deciding destination value for ${repo.path}`)
+      }
+      const attached = await preserveGit(repo.root, ["symbolic-ref", "-q", "HEAD"])
+      if (attached !== destination.ref) {
+        throw new Error(
+          `preserve: ${repo.path} is attached to ${attached}, expected ${destination.ref}; no refs written`,
+        )
+      }
+      const local = await preserveOptionalRef(repo.primary, destination.ref)
+      if (local !== destination.expectedLocal) {
+        throw new Error(
+          `preserve: local destination ${destination.ref} in ${repo.primary} changed from captured ${destination.expectedLocal} to ${local}; no refs written`,
+        )
+      }
+      const remote = await preserveRemoteRef(repo.primary, destination.remote, destination.ref)
+      if (remote !== destination.expectedRemote) {
+        throw new Error(
+          `preserve: remote destination ${destination.ref} at ${destination.remote} changed from captured ${destination.expectedRemote} to ${remote}; no refs written`,
+        )
+      }
+      if (remote !== null)
+        await ensureCommitObject({
+          repository: repo.primary,
+          remote: destination.remote,
+          commit: remote,
+          anchor: false,
+        })
+    }
+  }
   const preservedSubs: PreservedSubmodule[] = []
   const overrides = new Map<string, Map<string, string>>()
   const written: { repo: string; ref: string; sha: string }[] = []
@@ -2688,32 +2822,81 @@ export async function preserveSlotState(
           ? await snapshotDirtyRepo(repo.root, `preserve ${label} (${repo.path})`, gitlinks, localExclusions)
           : { sha: repo.head, unmerged: [] }
       const saved = snapshot.sha
-      const refFull = archiveRefFor(`${label}-${saved}`, "worktree", date)
+      const destination = destinations?.get(repo.path)
+      const refFull = destination?.ref ?? archiveRefFor(`${label}-${saved}`, "worktree", date)
       for (const entry of snapshot.unmerged) unmergedPaths.push({ repo: repo.path, ...entry })
-      const refRepo = repo.path === "." ? gitRoot : repo.root
-      await writeRecoveryRef(refRepo, refFull, saved, written)
-      if (refRepo !== repo.primary) {
-        await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
-        await writeRecoveryRef(repo.primary, refFull, saved, written)
-      }
-      // A clean push acknowledgement is not a separate read of the destination.
-      // Repeating the create-only operation reads identical custody as unchanged;
-      // an unreadable or conflicting destination retains the source.
-      for (const phase of ["publication", "readback"]) {
+      if (destination === undefined) {
+        const refRepo = repo.path === "." ? gitRoot : repo.root
+        await writeRecoveryRef(refRepo, refFull, saved, written)
+        if (refRepo !== repo.primary) {
+          await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
+          await writeRecoveryRef(repo.primary, refFull, saved, written)
+        }
+        // A clean push acknowledgement is not a separate read of the destination.
+        // Repeating the create-only operation reads identical custody as unchanged;
+        // an unreadable or conflicting destination retains the source.
+        for (const phase of ["publication", "readback"]) {
+          const publication = await superPush({
+            repo: repo.primary,
+            remote: "origin",
+            refspecs: [`${saved}:${refFull}`],
+            forceWithLease: [`${refFull}:`],
+            recurseSubmodules: "check",
+          })
+          if (
+            (publication.state !== "updated" && publication.state !== "unchanged") ||
+            (phase === "readback" && publication.state !== "unchanged")
+          ) {
+            throw new Error(
+              `preserve: archive publication/readback (${phase}) failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
+            )
+          }
+        }
+      } else {
+        const primaryStore = await preserveCommonStore(repo.primary)
+        const environmentStore = await preserveCommonStore(repo.root)
+        if (primaryStore !== environmentStore) {
+          await ensureCommitObject({ repository: repo.primary, remote: repo.root, commit: saved, anchor: false })
+        }
+        for (const [scope, old] of [
+          ["remote", destination.expectedRemote],
+          ["primary", destination.expectedLocal],
+        ] as const) {
+          if (old === null) continue
+          const ancestor = await safeExec($`git -C ${repo.primary} merge-base --is-ancestor ${old} ${saved}`)
+          if (ancestor.exitCode !== 0) {
+            throw new Error(
+              `preserve: ${scope} destination ${refFull}@${old} is not an ancestor of ${saved} in ${repo.primary}: ${gitCommandError(ancestor)}`,
+            )
+          }
+        }
         const publication = await superPush({
           repo: repo.primary,
-          remote: "origin",
+          remote: destination.remote,
           refspecs: [`${saved}:${refFull}`],
-          forceWithLease: [`${refFull}:`],
+          forceWithLease: [`${refFull}:${destination.expectedRemote ?? ""}`],
           recurseSubmodules: "check",
         })
-        if (
-          (publication.state !== "updated" && publication.state !== "unchanged") ||
-          (phase === "readback" && publication.state !== "unchanged")
-        ) {
+        if (publication.state !== "updated" && publication.state !== "unchanged") {
           throw new Error(
-            `preserve: archive publication/readback (${phase}) failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
+            `preserve: real-branch publication failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
           )
+        }
+        written.push({ repo: `${repo.primary}->${destination.remote}`, ref: refFull, sha: saved })
+        const readback = await preserveRemoteRef(repo.primary, destination.remote, refFull)
+        if (readback !== saved) {
+          throw new Error(
+            `preserve: independent remote readback for ${refFull} at ${destination.remote} found ${readback}, expected ${saved}`,
+          )
+        }
+        const localUpdates: Array<{ root: string; old: string | null }> = [
+          { root: repo.primary, old: destination.expectedLocal },
+        ]
+        if (primaryStore !== environmentStore) localUpdates.push({ root: repo.root, old: repo.head })
+        for (const update of localUpdates) {
+          const old = update.old ?? "0".repeat(saved.length)
+          await preserveGit(update.root, ["update-ref", refFull, saved, old])
+          written.push({ repo: update.root, ref: refFull, sha: saved })
         }
       }
       if (repo.path === ".") {
@@ -4123,6 +4306,29 @@ export function planCliInvocation(argv: string[]): CliPlan {
 /** `preserve`'s "nothing preserved" ending: non-zero so a caller never reads a no-op as success. */
 export const PRESERVE_NOTHING_EXIT = 3
 
+/** The public preserve result's existing CLI receipt, shared with composing callers. */
+export function preserveReceipt(slot: string, worktreePath: string, preserved: PreserveResult) {
+  const reason = preserved.reason ?? (existsSync(worktreePath) ? "clean" : "no such worktree")
+  return {
+    schema: "bearly-worktree-preserve/1",
+    slot,
+    path: worktreePath,
+    preserved: preserved.preserved,
+    reason,
+    ref: preserved.ref ?? null,
+    sha: preserved.sha ?? null,
+    ...(preserved.index === undefined ? {} : { index: preserved.index }),
+    submodules: preserved.submodules.map((entry) => ({
+      path: entry.path,
+      ref: entry.ref,
+      sha: entry.sha,
+      ...(entry.index === undefined ? {} : { index: entry.index }),
+    })),
+    // 29392: repositories shared main has no primary store for, skipped because they were clean on their recorded pin.
+    skipped: (preserved.skipped ?? []).map((entry) => ({ path: entry.path, head: entry.head, reason: entry.reason })),
+  }
+}
+
 /**
  * `preserve <slot>` — expose the ONE worktree preserve (preserveSlotState, the
  * choke point remove and reset already flow through) across the CLI boundary,
@@ -4147,25 +4353,8 @@ export async function preserveWorktreeState(name: string, options: { json?: bool
   const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
   const slot = slotNameFromResolvedPath(gitRoot, worktreePath)
   const preserved = await preserveSlotState(worktreePath, slot, gitRoot, { quiet: true })
-  const reason = preserved.reason ?? (existsSync(worktreePath) ? "clean" : "no such worktree")
-  const receipt = {
-    schema: "bearly-worktree-preserve/1",
-    slot,
-    path: worktreePath,
-    preserved: preserved.preserved,
-    reason,
-    ref: preserved.ref ?? null,
-    sha: preserved.sha ?? null,
-    ...(preserved.index === undefined ? {} : { index: preserved.index }),
-    submodules: preserved.submodules.map((entry) => ({
-      path: entry.path,
-      ref: entry.ref,
-      sha: entry.sha,
-      ...(entry.index === undefined ? {} : { index: entry.index }),
-    })),
-    // 29392: repositories shared main has no primary store for, skipped because they were clean on their recorded pin.
-    skipped: (preserved.skipped ?? []).map((entry) => ({ path: entry.path, head: entry.head, reason: entry.reason })),
-  }
+  const receipt = preserveReceipt(slot, worktreePath, preserved)
+  const reason = receipt.reason
   if (options.json === true) console.log(JSON.stringify(receipt))
   else if (preserved.preserved) {
     success(

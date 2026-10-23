@@ -126,6 +126,288 @@ afterEach(() => {
 }, 20_000)
 
 describe("worktree preserve-first (L5): destructive ops never discard", () => {
+  /** @failure 30814: a dirty environment close archives bytes instead of advancing its real issue branch.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected destination publishes staged and working state on the real branch", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const head = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "staged\n")
+      await $`git -C ${worktreePath} add README.md`.quiet()
+      writeFileSync(join(worktreePath, "README.md"), "working\n")
+      const selected: Array<{ path: string; head: string; needsPreserve: boolean }> = []
+      const result = await preserveSlotState(worktreePath, slot, mainRepo, {
+        quiet: true,
+        selectDestinations: async (repositories) => {
+          selected.push(...repositories)
+          return new Map([
+            [".", { ref: `refs/heads/${slot}`, remote: "origin", expectedLocal: head, expectedRemote: null }],
+          ])
+        },
+      })
+      expect(selected).toMatchObject([{ path: ".", head, needsPreserve: true }])
+      expect(result).toMatchObject({ preserved: true, ref: `refs/heads/${slot}` })
+      expect(await $`git -C ${join(sandbox, "origin.git")} show ${`refs/heads/${slot}:README.md`}`.text()).toBe(
+        "working\n",
+      )
+      expect(await $`git -C ${join(sandbox, "origin.git")} show ${`refs/heads/${slot}^2:README.md`}`.text()).toBe(
+        "staged\n",
+      )
+      expect(await preserveRefs(mainRepo, slot)).toEqual([])
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("working\n")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: a missing later-store destination can leave an earlier store's ref mutated.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected destinations preflight every required store before any branch write", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
+      writeFileSync(join(worktreePath, "vendor/sub/file.txt"), "child dirt\n")
+      const rootBefore = await $`git -C ${mainRepo} show-ref`.text()
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async () => new Map(),
+        }),
+      ).rejects.toThrow(/destination/u)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).toBe(rootBefore)
+      expect(readFileSync(join(worktreePath, "vendor/sub/file.txt"), "utf8")).toBe("child dirt\n")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: a root branch can outlive removal while its child object and parent gitlink do not.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected child and parent branches retain the child graph and overridden pin", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
+      const child = join(worktreePath, "vendor/sub")
+      await $`git -C ${child} switch -q -c task/issue`.quiet()
+      const childHead = (await $`git -C ${child} rev-parse HEAD`.text()).trim()
+      const rootHead = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(child, "file.txt"), "child staged\n")
+      await $`git -C ${child} add file.txt`.quiet()
+      writeFileSync(join(child, "file.txt"), "child working\n")
+      const result = await preserveSlotState(worktreePath, slot, mainRepo, {
+        quiet: true,
+        selectDestinations: async (repositories) => {
+          expect(repositories.map((repo) => [repo.path, repo.needsPreserve])).toEqual([
+            [".", true],
+            ["vendor/sub", true],
+          ])
+          return new Map([
+            [".", { ref: `refs/heads/${slot}`, remote: "origin", expectedLocal: rootHead, expectedRemote: null }],
+            [
+              "vendor/sub",
+              { ref: "refs/heads/task/issue", remote: "origin", expectedLocal: null, expectedRemote: null },
+            ],
+          ])
+        },
+      })
+      expect(result.ref).toBe(`refs/heads/${slot}`)
+      expect(result.submodules).toHaveLength(1)
+      const saved = result.submodules[0]!.sha
+      expect(saved).not.toBe(childHead)
+      const childRemote = join(sandbox, "sub")
+      expect(await $`git -C ${childRemote} show refs/heads/task/issue:file.txt`.text()).toBe("child working\n")
+      expect(await $`git -C ${childRemote} show refs/heads/task/issue^2:file.txt`.text()).toBe("child staged\n")
+      const parentRemote = join(sandbox, "origin.git")
+      expect(await $`git -C ${parentRemote} ls-tree refs/heads/${slot} vendor/sub`.text()).toContain(saved)
+      expect(await preserveRefs(mainRepo, slot)).toEqual([])
+      expect(await preserveRefs(join(mainRepo, "vendor/sub"), slot)).toEqual([])
+      expect(readFileSync(join(child, "file.txt"), "utf8")).toBe("child working\n")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: remote acceptance followed by a local CAS failure can hide saved bytes and claim success.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected branch keeps remote custody and source when local CAS refuses", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const head = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "working survives CAS refusal\n")
+      const common = (await $`git -C ${mainRepo} rev-parse --path-format=absolute --git-common-dir`.text()).trim()
+      const hook = join(common, "hooks/reference-transaction")
+      writeFileSync(
+        hook,
+        '#!/usr/bin/env bun\nif (process.argv[2] === "prepared" && (await Bun.stdin.text()).includes("refs/heads/wt7")) process.exit(1)\n',
+      )
+      chmodSync(hook, 0o755)
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async () =>
+            new Map([
+              [
+                ".",
+                {
+                  ref: `refs/heads/${slot}`,
+                  remote: "origin",
+                  expectedLocal: head,
+                  expectedRemote: null,
+                },
+              ],
+            ]),
+        }),
+      ).rejects.toThrow(/update-ref.*refs\/heads\/wt7/u)
+      expect((await $`git -C ${mainRepo} rev-parse refs/heads/${slot}`.text()).trim()).toBe(head)
+      const remote = join(sandbox, "origin.git")
+      expect(await $`git -C ${remote} show refs/heads/${slot}:README.md`.text()).toBe("working survives CAS refusal\n")
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("working survives CAS refusal\n")
+      expect(await preserveRefs(mainRepo, slot)).toEqual([])
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: a changed remote after accepted publication is mistaken for durable custody.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected branch rejects a changed independent remote readback", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const head = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "working before readback race\n")
+      const remote = join(sandbox, "origin.git")
+      const hook = join(remote, "hooks/post-receive")
+      writeFileSync(
+        hook,
+        `#!/usr/bin/env bun\nBun.spawnSync(["git", "update-ref", "refs/heads/wt7", ${JSON.stringify(head)}], { cwd: ${JSON.stringify(remote)} })\n`,
+      )
+      chmodSync(hook, 0o755)
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async () =>
+            new Map([
+              [
+                ".",
+                {
+                  ref: `refs/heads/${slot}`,
+                  remote: "origin",
+                  expectedLocal: head,
+                  expectedRemote: null,
+                },
+              ],
+            ]),
+        }),
+      ).rejects.toThrow(/readback|publication/u)
+      expect((await $`git -C ${mainRepo} rev-parse refs/heads/${slot}`.text()).trim()).toBe(head)
+      expect((await $`git -C ${remote} rev-parse refs/heads/${slot}`.text()).trim()).toBe(head)
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("working before readback race\n")
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: an arbitrary primary ref containing a clean off-target child hides required child and parent custody.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected destinations keep a clean off-target child even when another primary ref contains it", async () => {
+    const mainRepo = await buildSubmoduleMain()
+    const slot = "wt5"
+    const worktreePath = join(sandbox, "main-wt5")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { base: "HEAD", install: false, direnv: false, hooks: false })
+      const child = join(worktreePath, "vendor/sub")
+      const primary = join(mainRepo, "vendor/sub")
+      await $`git -C ${child} switch -q -c task/issue`.quiet()
+      writeFileSync(join(child, "file.txt"), "clean off target child\n")
+      await commitAll(child, "child off target")
+      const childHead = (await $`git -C ${child} rev-parse HEAD`.text()).trim()
+      await $`git -C ${primary} fetch -q ${child} ${childHead}`.quiet()
+      await $`git -C ${primary} update-ref refs/heads/unrelated ${childHead}`.quiet()
+      const rootHead = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      const result = await preserveSlotState(worktreePath, slot, mainRepo, {
+        quiet: true,
+        selectDestinations: async (repositories) => {
+          expect(repositories.map((repo) => [repo.path, repo.needsPreserve])).toEqual([
+            [".", true],
+            ["vendor/sub", true],
+          ])
+          return new Map([
+            [".", { ref: `refs/heads/${slot}`, remote: "origin", expectedLocal: rootHead, expectedRemote: null }],
+            [
+              "vendor/sub",
+              { ref: "refs/heads/task/issue", remote: "origin", expectedLocal: null, expectedRemote: null },
+            ],
+          ])
+        },
+      })
+      expect(result.submodules[0]).toMatchObject({ path: "vendor/sub", ref: "refs/heads/task/issue", sha: childHead })
+      expect(await $`git -C ${join(sandbox, "origin.git")} ls-tree refs/heads/${slot} vendor/sub`.text()).toContain(
+        childHead,
+      )
+      expect((await $`git -C ${join(sandbox, "sub")} rev-parse refs/heads/task/issue`.text()).trim()).toBe(childHead)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
+  /** @failure 30814: a clean no-op skips caller authority checks or accepts a target changed during selection.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected clean no-op still calls policy and refuses a changed default target", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const refsBefore = await $`git -C ${mainRepo} show-ref`.text()
+      let called = false
+      const newer = (
+        await $`git -C ${mainRepo} -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -p HEAD -m newer`.text()
+      ).trim()
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async (repositories) => {
+            called = true
+            expect(repositories).toMatchObject([{ path: ".", needsPreserve: false }])
+            await $`git -C ${mainRepo} update-ref refs/remotes/origin/main ${newer}`.quiet()
+            return new Map()
+          },
+        }),
+      ).rejects.toThrow(/default target.*changed/u)
+      expect(called).toBe(true)
+      expect(await $`git -C ${mainRepo} show-ref`.text()).not.toBe(refsBefore)
+      expect(await preserveRefs(mainRepo, slot)).toEqual([])
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
   /**
    * @failure 29073: the `preserve` CLI verb is the ONE preserve across a process boundary — the way
    *          yrd's `env close --preserve` reaches it without a workspace dependency (a workspace dep
