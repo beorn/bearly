@@ -286,6 +286,65 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure 30814: Git writes a selected local branch then exits nonzero, omitting completed custody from failure.
+   * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
+  test("selected branch failure reports a local ref written before Git returned failure", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt7"
+    const worktreePath = join(sandbox, "main-wt7")
+    const originalCwd = process.cwd()
+    const originalPath = process.env.PATH
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const head = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "saved despite git failure\n")
+      const git = Bun.which("git")
+      if (!git) throw new Error("fixture requires git on PATH")
+      const bin = join(sandbox, "git-bin")
+      mkdirSync(bin)
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bun
+const args = process.argv.slice(2)
+const result = Bun.spawnSync([${JSON.stringify(git)}, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+if (result.exitCode === 0 && args[1] === ${JSON.stringify(mainRepo)} && args.includes("update-ref") && args.includes("refs/heads/wt7")) process.exit(1)
+process.exit(result.exitCode)
+`,
+      )
+      chmodSync(join(bin, "git"), 0o755)
+      process.env.PATH = bin + ":" + originalPath
+      let failure: unknown
+      try {
+        await preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: async () =>
+            new Map([
+              [
+                ".",
+                {
+                  ref: `refs/heads/${slot}`,
+                  remote: "origin",
+                  expectedLocal: head,
+                  expectedRemote: null,
+                },
+              ],
+            ]),
+        })
+      } catch (cause) {
+        failure = cause
+      }
+      expect(failure).toBeInstanceOf(Error)
+      const saved = (await $`git -C ${mainRepo} rev-parse refs/heads/${slot}`.text()).trim()
+      expect(saved).not.toBe(head)
+      expect((failure as Error).message).toContain(`${mainRepo}:refs/heads/${slot}@${saved}`)
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("saved despite git failure\n")
+    } finally {
+      process.env.PATH = originalPath
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   /** @failure 30814: a changed remote after accepted publication is mistaken for durable custody.
    * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
   test("selected branch rejects a changed independent remote readback", async () => {

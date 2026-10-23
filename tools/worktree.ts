@@ -2878,8 +2878,12 @@ export async function preserveSlotState(
           recurseSubmodules: "check",
         })
         if (publication.state !== "updated" && publication.state !== "unchanged") {
+          // A push can be accepted before its caller sees a transport error.
+          const observed = await preserveRemoteRef(repo.primary, destination.remote, refFull)
+          if (observed === saved)
+            written.push({ repo: `${repo.primary}->${destination.remote}`, ref: refFull, sha: saved })
           throw new Error(
-            `preserve: real-branch publication failed in ${repo.primary} for ${refFull}@${saved}: ${JSON.stringify(publication)}`,
+            `preserve: real-branch publication failed in ${repo.primary} for ${refFull}@${saved}; remote now ${observed}: ${JSON.stringify(publication)}`,
           )
         }
         written.push({ repo: `${repo.primary}->${destination.remote}`, ref: refFull, sha: saved })
@@ -2895,7 +2899,16 @@ export async function preserveSlotState(
         if (primaryStore !== environmentStore) localUpdates.push({ root: repo.root, old: repo.head })
         for (const update of localUpdates) {
           const old = update.old ?? "0".repeat(saved.length)
-          await preserveGit(update.root, ["update-ref", refFull, saved, old])
+          try {
+            await preserveGit(update.root, ["update-ref", refFull, saved, old])
+          } catch (cause) {
+            // Git may report failure after its atomic ref write. Keep that
+            // completed ref in the partial-failure receipt, as archive mode does.
+            if ((await preserveOptionalRef(update.root, refFull)) === saved) {
+              written.push({ repo: update.root, ref: refFull, sha: saved })
+            }
+            throw cause
+          }
           written.push({ repo: update.root, ref: refFull, sha: saved })
         }
       }
