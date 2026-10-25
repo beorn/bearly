@@ -417,26 +417,51 @@ describe("cli-single-fire", () => {
    * @level l1
    * @consumer seats choosing a panel from the dry-run forecast.
    */
-  it("pro --dry-run counts a supplied context file in its input estimate", async () => {
+  it("pro --dry-run counts both supplied context files without execution side effects", async () => {
     const env = makeTestEnv()
+    vi.stubEnv("BEARLY_LLM_MEMORY_DIR", env.tmpDir)
+    afterEach(() => vi.unstubAllEnvs())
     resetGenerateTextToOk()
     const contextFile = join(env.tmpDir, "packet.md")
     const context = "x".repeat(8_000)
+    const secondContextFile = join(env.tmpDir, "second-packet.md")
+    const secondContext = "z".repeat(4_000)
     writeFileSync(contextFile, context)
+    writeFileSync(secondContextFile, secondContext)
+    const counterFile = join(env.tmpDir, "challenger-counter")
+    const logFile = join(env.tmpDir, "ab-pro.jsonl")
+    writeFileSync(counterFile, "7")
+    writeFileSync(logFile, "")
     const question = "ping"
     const beforeTmpFiles = listLlmTmpFiles()
+    const beforeMemoryFiles = readdirSync(env.tmpDir).sort()
 
-    const result = await runCli(["pro", "--dry-run", "-y", "--context-file", contextFile, question])
+    const result = await runCli([
+      "pro",
+      "--dry-run",
+      "-y",
+      "--context-file",
+      contextFile,
+      "--context-file",
+      secondContextFile,
+      question,
+    ])
 
     expect(result.error).toBeUndefined()
     expect(result.exited).toBeUndefined()
+    expect(queryBackgroundMock).not.toHaveBeenCalled()
     expect(generateTextMock).not.toHaveBeenCalled()
     expect(streamTextMock).not.toHaveBeenCalled()
+    expect(env.stdout).toHaveLength(0)
     expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
+    expect(readdirSync(env.tmpDir).sort()).toEqual(beforeMemoryFiles)
+    expect(readFileSync(counterFile, "utf8")).toBe("7")
+    expect(readFileSync(logFile, "utf8")).toBe("")
     const stderr = env.stderr.join("\n")
     const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
     expect(stderr).toMatch(/Dry run/)
-    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + context.length) / 4)))
+    const combinedContext = [context, secondContext].join("\n\n---\n\n")
+    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + combinedContext.length) / 4)))
   }, 10_000)
 
   /**
@@ -444,13 +469,24 @@ describe("cli-single-fire", () => {
    * @level l1
    * @consumer seats previewing one model before dispatch.
    */
-  it("explicit-model pro --dry-run counts a supplied context file too", async () => {
+  it("explicit-model pro --dry-run counts both supplied context files without execution side effects", async () => {
     const env = makeTestEnv()
+    vi.stubEnv("BEARLY_LLM_MEMORY_DIR", env.tmpDir)
+    afterEach(() => vi.unstubAllEnvs())
     resetGenerateTextToOk()
     const contextFile = join(env.tmpDir, "packet.md")
     const context = "y".repeat(4_000)
+    const secondContextFile = join(env.tmpDir, "second-packet.md")
+    const secondContext = "z".repeat(8_000)
     writeFileSync(contextFile, context)
+    writeFileSync(secondContextFile, secondContext)
+    const counterFile = join(env.tmpDir, "challenger-counter")
+    const logFile = join(env.tmpDir, "ab-pro.jsonl")
+    writeFileSync(counterFile, "7")
+    writeFileSync(logFile, "")
     const question = "preview"
+    const beforeTmpFiles = listLlmTmpFiles()
+    const beforeMemoryFiles = readdirSync(env.tmpDir).sort()
 
     const result = await runCli([
       "pro",
@@ -460,14 +496,25 @@ describe("cli-single-fire", () => {
       "google/gemini-2.5-pro",
       "--context-file",
       contextFile,
+      "--context-file",
+      secondContextFile,
       question,
     ])
 
     expect(result.error).toBeUndefined()
+    expect(result.exited).toBeUndefined()
+    expect(queryBackgroundMock).not.toHaveBeenCalled()
     expect(generateTextMock).not.toHaveBeenCalled()
+    expect(streamTextMock).not.toHaveBeenCalled()
+    expect(env.stdout).toHaveLength(0)
+    expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
+    expect(readdirSync(env.tmpDir).sort()).toEqual(beforeMemoryFiles)
+    expect(readFileSync(counterFile, "utf8")).toBe("7")
+    expect(readFileSync(logFile, "utf8")).toBe("")
     const stderr = env.stderr.join("\n")
     const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
-    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + context.length) / 4)))
+    const combinedContext = [context, secondContext].join("\n\n---\n\n")
+    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + combinedContext.length) / 4)))
   }, 10_000)
 
   /**
