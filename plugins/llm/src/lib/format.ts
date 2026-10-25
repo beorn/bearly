@@ -59,6 +59,16 @@ export function estimateFleetCost(
   })
   const forecast = aggregateCosts(priced.map(({ cost }) => cost))
   forecast.charged = { reason: "forecast; no call dispatched" }
+  // A cached rate kept from before provenance was recorded still answers the lookup, but the
+  // forecast must not present it as a listing (29465). The amount stays unknown, by model.
+  const unrecorded = priced
+    .filter(({ cost }) => cost.listEquivalentBasis.some((row) => row.rateSource === "unrecorded"))
+    .map(({ model }) => model.displayName)
+  if (unrecorded.length > 0) {
+    forecast.listEquivalent = {
+      reason: `cached rate with no recorded source for ${unrecorded.join(", ")}`,
+    }
+  }
   const unpriced = priced
     .filter(({ cost }) => "reason" in cost.listEquivalent)
     .map(({ model, subscription }) =>

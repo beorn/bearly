@@ -411,4 +411,80 @@ describe("cli-single-fire", () => {
     expect(stderr).toContain("assumed")
     expect(stderr).not.toContain("~$0 subscription")
   }, 10_000)
+
+  /**
+   * @failure A Pro dry-run estimates cost from the question alone while the dispatch sends a large context packet.
+   * @level l1
+   * @consumer seats choosing a panel from the dry-run forecast.
+   */
+  it("pro --dry-run counts a supplied context file in its input estimate", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const contextFile = join(env.tmpDir, "packet.md")
+    const context = "x".repeat(8_000)
+    writeFileSync(contextFile, context)
+    const question = "ping"
+    const beforeTmpFiles = listLlmTmpFiles()
+
+    const result = await runCli(["pro", "--dry-run", "-y", "--context-file", contextFile, question])
+
+    expect(result.error).toBeUndefined()
+    expect(result.exited).toBeUndefined()
+    expect(generateTextMock).not.toHaveBeenCalled()
+    expect(streamTextMock).not.toHaveBeenCalled()
+    expect(listLlmTmpFiles()).toEqual(beforeTmpFiles)
+    const stderr = env.stderr.join("\n")
+    const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
+    expect(stderr).toMatch(/Dry run/)
+    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + context.length) / 4)))
+  }, 10_000)
+
+  /**
+   * @failure The explicit-model Pro dry-run ignores the same context packet as the fleet dry-run.
+   * @level l1
+   * @consumer seats previewing one model before dispatch.
+   */
+  it("explicit-model pro --dry-run counts a supplied context file too", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const contextFile = join(env.tmpDir, "packet.md")
+    const context = "y".repeat(4_000)
+    writeFileSync(contextFile, context)
+    const question = "preview"
+
+    const result = await runCli([
+      "pro",
+      "--dry-run",
+      "-y",
+      "--model",
+      "google/gemini-2.5-pro",
+      "--context-file",
+      contextFile,
+      question,
+    ])
+
+    expect(result.error).toBeUndefined()
+    expect(generateTextMock).not.toHaveBeenCalled()
+    const stderr = env.stderr.join("\n")
+    const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
+    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + context.length) / 4)))
+  }, 10_000)
+
+  /**
+   * @failure A dry-run with a named context file that cannot be read prints a forecast instead of the
+   *          existing named refusal, so the seat believes it previewed the run it asked for.
+   * @level l1
+   * @consumer Pro/Deep/Debate dry-run callers naming context files.
+   */
+  it("pro --dry-run refuses a missing context file by name before any forecast", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const missing = join(env.tmpDir, "not-here.md")
+
+    const result = await runCli(["pro", "--dry-run", "-y", "--context-file", missing, "ping"])
+
+    expect(result.exited).toBe(1)
+    expect(env.stdout.join("\n")).toContain("Failed to read context file")
+    expect(env.stderr.join("\n")).not.toMatch(/Estimated cost/)
+  }, 10_000)
 })

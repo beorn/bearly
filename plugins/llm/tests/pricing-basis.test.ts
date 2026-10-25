@@ -313,3 +313,32 @@ it("Deep retains stated charge independently of incomplete search/reasoning pric
     reason: "provider did not state a charge",
   })
 })
+
+describe("forecast treatment of an unrecorded rate basis", () => {
+  /**
+   * @failure A cached numeric rate with no recorded source prints as a priced forecast, so a seat reads
+   *          a number that has no provenance as if it were a listing.
+   * @level l2
+   * @consumer Pro/Deep/Debate dry-run forecasts.
+   */
+  it("yields an explicitly unknown list-equivalent naming the model", async () => {
+    makeTestEnv()
+    const mod = await pricing()
+    mod.savePricingCache({
+      updatedAt: "2020-01-01T00:00:00.000Z",
+      models: { "gpt-5.4": { inputPricePerM: 4, outputPricePerM: 5 } },
+    })
+    expect(mod.lookupModelRates("gpt-5.4")?.basis).toEqual({ rateSource: "unrecorded" })
+
+    const { estimateFleetCost } = await import("../src/lib/format")
+    const { MODELS } = await import("../src/lib/types")
+    const model = MODELS.find((entry) => entry.modelId === "gpt-5.4")
+    if (!model) throw new Error("gpt-5.4 must be a known model")
+
+    const text = estimateFleetCost([model], 1_000, 1_000).text
+
+    expect(text).toContain("list-equivalent unknown")
+    expect(text).toContain(model.displayName)
+    expect(text).not.toMatch(/list-equivalent \$/)
+  })
+})

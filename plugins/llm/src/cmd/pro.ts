@@ -101,6 +101,15 @@ export async function runProDual(options: {
     skipConfirm,
     dryRun = false,
   } = options
+  // Dry-run forecasts must count the same context the dispatch sends (29465); the builder
+  // reads its files once and the live path reuses the same promise.
+  let builtContext: Promise<string | undefined> | undefined
+  const contextOnce = (): Promise<string | undefined> => (builtContext ??= buildContext(question))
+  /** The dispatch's own input assumption: question plus built context at 4 chars per token. */
+  function estimatedInputTokens(question: string, context: string | undefined): number {
+    return Math.max(200, Math.ceil((question.length + (context?.length ?? 0)) / 4))
+  }
+
   const { finalizeOutput, formatBudgetRetry, quotePosixArgument } = await import("../lib/format")
   const dualPro = await import("../lib/dual-pro")
 
@@ -108,9 +117,10 @@ export async function runProDual(options: {
   if (modelOverride) {
     assertDispatchableModelIds([modelOverride.modelId])
     if (dryRun) {
+      const context = await contextOnce()
       const estimate = estimateFleetCost(
         [modelOverride],
-        Math.max(200, Math.ceil(question.length / 4)),
+        estimatedInputTokens(question, context),
         options.maxOutputTokens ?? 1_000,
         imagePath !== undefined,
       ).text
@@ -245,9 +255,10 @@ export async function runProDual(options: {
     if (legCap >= 4 && slotDId) dryLegs.push({ id: "d", role: "split-test", modelId: slotDId, model: slotD })
     const knownLegs = dryLegs.filter((l): l is DryLeg & { model: Model } => Boolean(l.model))
     const dryProLegCount = knownLegs.filter((l) => l.model.costTier === "very-high").length
+    const dryContext = await contextOnce()
     const dryCost = estimateFleetCost(
       knownLegs.map((l) => l.model),
-      Math.max(200, Math.ceil(question.length / 4)),
+      estimatedInputTokens(question, dryContext),
       options.maxOutputTokens ?? 1_000,
       imagePath !== undefined,
     ).text
@@ -300,7 +311,7 @@ export async function runProDual(options: {
     throw new Error(`Dual-pro mainstay is not registered: ${!mainstay0 ? mainstay0Id : mainstay1Id}`)
   }
 
-  const context = await buildContext(question)
+  const context = await contextOnce()
   const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
 
@@ -382,7 +393,7 @@ export async function runProDual(options: {
   console.error(`[dual-pro] Querying ${legSlots.length} legs in parallel: ${fleetLabel}...`)
   // Cost estimate, derived from the models this call actually selected.
   const proLegCount = legSlots.filter((s) => s.model.costTier === "very-high").length
-  const estInputTokens = Math.max(200, Math.ceil((question.length + (context?.length ?? 0)) / 4))
+  const estInputTokens = estimatedInputTokens(question, context)
   const estOutputTokens = options.maxOutputTokens ?? 1_000
   const fleetEstimate = estimateFleetCost(
     legSlots.map((s) => s.model),
