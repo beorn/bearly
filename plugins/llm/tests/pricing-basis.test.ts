@@ -341,4 +341,31 @@ describe("forecast treatment of an unrecorded rate basis", () => {
     expect(text).toContain(model.displayName)
     expect(text).not.toMatch(/list-equivalent \$/)
   })
+
+  /**
+   * @failure A mixed fleet lets the unpriced reason overwrite the unrecorded-basis reason,
+   *          so one cause is silently lost from the forecast.
+   * @level l2
+   * @consumer Pro/Deep/Debate dry-run forecasts.
+   */
+  it("keeps both causes when one leg is unrecorded and another is unpriced", async () => {
+    makeTestEnv()
+    const mod = await pricing()
+    mod.savePricingCache({
+      updatedAt: "2020-01-01T00:00:00.000Z",
+      models: { "gpt-5.4": { inputPricePerM: 4, outputPricePerM: 5 } },
+    })
+
+    const { estimateFleetCost } = await import("../src/lib/format")
+    const { MODELS } = await import("../src/lib/types")
+    const unrecordedModel = MODELS.find((entry) => entry.modelId === "gpt-5.4")
+    if (!unrecordedModel) throw new Error("gpt-5.4 must be a known model")
+    const unpricedModel = { ...unrecordedModel, modelId: "zzz/no-such-sku", displayName: "Unpriced Test Model" }
+
+    const text = estimateFleetCost([unrecordedModel, unpricedModel], 1_000, 1_000).text
+
+    expect(text).toContain(`cached rate with no recorded source for ${unrecordedModel.displayName}`)
+    expect(text).toContain("rates unavailable for Unpriced Test Model")
+    expect(text).not.toMatch(/list-equivalent \$/)
+  })
 })
