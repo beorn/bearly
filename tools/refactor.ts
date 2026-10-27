@@ -47,6 +47,8 @@ import {
   findBrokenPackageJsonPaths,
 } from "./lib/backends/package-json"
 import { findTsConfigRefs, createTsConfigEditset } from "./lib/backends/tsconfig-json"
+import { existsSync } from "node:fs"
+import { basename, dirname, resolve } from "node:path"
 import { getBackends } from "./lib/backend"
 import {
   findPatterns as migrateFindPatterns,
@@ -265,6 +267,10 @@ COMMANDS
     --check-conflicts                     Check for naming conflicts only
     --skip <names>                        Comma-separated names to skip
     --output <file>                       Editset file (default: editset.json)
+    --tsconfig <path>                     tsconfig used for symbol discovery (default: ./tsconfig.json)
+                                          Warning: a root/monorepo tsconfig loads every package into
+                                          one ts-morph program - 32 GB RSS observed. Scope it with a
+                                          component tsconfig instead.
 
   file.rename                             Rename files + update imports
     --pattern <string> --replace <string> Required: pattern and replacement
@@ -367,7 +373,16 @@ async function main() {
 
   // Lazy project loading - only load when needed
   const tsConfigPath = getArg("--tsconfig") || "tsconfig.json"
-  const lazyProject = () => getProject(tsConfigPath)
+  const lazyProject = () => {
+    const resolvedTsConfig = resolve(tsConfigPath)
+    if (!existsSync(resolvedTsConfig)) {
+      error(
+        `No tsconfig found in ${dirname(resolvedTsConfig)} (looked for ${basename(resolvedTsConfig)}); ` +
+          `pass --tsconfig <path> to point at the tsconfig for the code you are renaming`,
+      )
+    }
+    return getProject(tsConfigPath)
+  }
 
   switch (command) {
     case "symbol.at": {
