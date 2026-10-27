@@ -17,6 +17,7 @@ import { safeRemoveSync } from "removely"
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest"
 import { removeWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
 
+const fixtureParent = process.env.KM_VITEST_RUN_ROOT ?? tmpdir()
 const roots: string[] = []
 let info: MockInstance<(...args: unknown[]) => void>
 let cwd: string
@@ -29,7 +30,9 @@ beforeEach(() => {
 afterEach(() => {
   process.chdir(cwd)
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) safeRemoveSync(root, { within: tmpdir(), allowMissing: true })
+  for (const root of roots.splice(0)) {
+    safeRemoveSync(root, { within: fixtureParent, allowMissing: true, allowedRoots: [fixtureParent] })
+  }
 })
 
 // A cloned module store inherits no user config, and a CI runner has no global identity.
@@ -57,7 +60,7 @@ type StoreWork = "local" | "none" | "remoteless"
  * `none` leaves it exactly on its remote main, and `remoteless` commits work and removes the store's remote.
  */
 function slotWithDroppedSubmodule(work: StoreWork): { repo: string; dep: string; slot: string; moduleDir: string } {
-  const root = mkdtempSync(join(tmpdir(), "bearly-wt-module-store-"))
+  const root = mkdtempSync(join(fixtureParent, "bearly-wt-module-store-"))
   roots.push(root)
   const repo = join(root, "repo")
   const dep = join(root, "dep")
@@ -103,7 +106,7 @@ function slotWithDroppedSubmodule(work: StoreWork): { repo: string; dep: string;
 
 describe("bearly worktree remove and a slot's module stores (31094)", () => {
   test("a store holding local work reports the compared refs and preserves the store and registration", async () => {
-    const { repo, slot, moduleDir } = slotWithDroppedSubmodule("local")
+    const { repo, dep, slot, moduleDir } = slotWithDroppedSubmodule("local")
     const tip = git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()
     process.chdir(repo)
     const failed = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -118,6 +121,7 @@ describe("bearly worktree remove and a slot's module stores (31094)", () => {
     expect(named).toContain("; worktree preserved. Owner value call: land, keep one real branch, or recorded delete.")
     expect(failed.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Failed to remove worktree")
     expect(git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()).toBe(tip)
+    expect(git(dep, ["for-each-ref", "--format=%(refname)", "refs/archive/"]).trim()).toBe("")
     expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
 
