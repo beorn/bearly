@@ -288,7 +288,9 @@ export async function runProDual(options: {
       )
     }
     for (const leg of harnessDry) {
-      console.error(`  • harness ${leg.harness} ${leg.model} (account ${leg.account})`)
+      console.error(
+        `  • harness ${leg.harness} ${leg.model} (account ${leg.account}); launcher ${cfg.harnessLauncher?.trim() ? `set to ${cfg.harnessLauncher}` : "unset"}`,
+      )
     }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
     console.error(`  • Config: ${cfgPath} (or built-in defaults if missing) + env overrides`)

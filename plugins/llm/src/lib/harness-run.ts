@@ -1,4 +1,5 @@
-import type { HarnessLeg } from "./dual-pro"
+import { join } from "node:path"
+import { getMemoryDir, type HarnessLeg } from "./dual-pro"
 
 /** A harness leg never waits longer than this, whatever the API leg timeout is. */
 export const HARNESS_RUN_TIMEOUT_CAP_MS = 300_000
@@ -67,10 +68,10 @@ export async function runHarnessLeg(
   request: HarnessRunRequest,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessRunOutcome> {
-  const context = `harnessLauncher ${JSON.stringify(request.launcher)} for leg ${request.leg.provider} ${request.leg.model}`
-  if (!request.launcher?.trim()) throw new Error(`${context} is required`)
+  const timeoutMs = harnessTimeoutMs(request.timeoutMs)
   let native: NativeRunModule
   try {
+    if (!request.launcher?.trim()) throw new Error("launcher is unset")
     const loaded: unknown = await import(request.launcher)
     if (
       !loaded ||
@@ -84,7 +85,17 @@ export async function runHarnessLeg(
     }
     native = loaded as NativeRunModule
   } catch (error) {
-    throw new Error(`${context} cannot load launcher: ${error instanceof Error ? error.message : String(error)}`)
+    return {
+      provider: "harness",
+      harness: request.leg.provider,
+      model: request.leg.model,
+      account: request.account,
+      ok: false,
+      error: `harnessLauncher ${JSON.stringify(request.launcher) ?? "unset"} in ${join(getMemoryDir(env), "dual-pro-config.json")} for leg ${request.leg.provider} ${request.leg.model}: ${error instanceof Error ? error.message : String(error)}; set harnessLauncher to a module exporting harnessLegLaunch and agCodeRunner`,
+      notes: [],
+      argv: [],
+      timeoutMs,
+    }
   }
   const harness = request.leg.provider === "codex" ? "codex" : "claude"
   const launch = native.harnessLegLaunch({
@@ -94,7 +105,6 @@ export async function runHarnessLeg(
     prompt: request.question,
     env,
   })
-  const timeoutMs = harnessTimeoutMs(request.timeoutMs)
   const result = await native.agCodeRunner(timeoutMs, { stdout: "full" })(launch.argv, launch.env)
   const base = {
     provider: "harness" as const,

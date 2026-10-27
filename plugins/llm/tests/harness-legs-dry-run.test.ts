@@ -188,6 +188,9 @@ describe("pro dry-run harness legs", () => {
     expect(listed).toContain("harness claude-code fable (account fake-claude-acct)")
     expect(listed).toContain("harness codex gpt-6-astra (account codex-login-name)")
     expect(listed).toContain("+2 harness legs on subscription quota")
+    expect(listed).toContain(`launcher set to ${launcher}`)
+    writeConfig({ harnessLegs: HARNESS_CONFIG.harnessLegs })
+    expect(await captureDryRun()).toContain("launcher unset")
     expect(listed).not.toContain("unknown model")
     for (const line of omitted.split("\n")) {
       if (line.includes("Estimated cost:")) {
@@ -347,14 +350,6 @@ describe("pro dry-run harness legs", () => {
 })
 
 describe("configured harness launcher boundary", () => {
-  it.each([undefined, "", "   "])(
-    "refuses legs without a usable harnessLauncher (%s) when loading config",
-    async (harnessLauncher) => {
-      writeConfig({ ...HARNESS_CONFIG, harnessLauncher })
-      await expect(loadConfig()).rejects.toThrow("harnessLauncher")
-    },
-  )
-
   it("delegates the capped request and supplied environment to the configured module", async () => {
     const env = { PATH: "/fixture/bin", REQUEST: "explicit" }
     const outcome = await runHarnessLeg(
@@ -379,18 +374,28 @@ describe("configured harness launcher boundary", () => {
   })
 
   it.each([
+    undefined,
+    "",
+    "   ",
     "node:path",
     new URL("./fixtures/incomplete-harness-launcher.ts", import.meta.url).href,
     "missing-launcher-for-test",
-  ])("refuses an invalid launcher loudly (%s)", async (specifier) => {
-    await expect(
-      runHarnessLeg({
-        launcher: specifier,
-        leg: { provider: "claude-code", model: "fable" },
-        account: "test",
-        question: "ping",
-        timeoutMs: 1,
-      }),
-    ).rejects.toThrow(new RegExp(`harnessLauncher.*${specifier}.*claude-code.*fable`))
+  ])("keeps an unusable launcher as an incomplete leg (%s)", async (specifier) => {
+    writeConfig({ ...HARNESS_CONFIG, harnessLauncher: specifier })
+    const cfg = await loadConfig()
+    expect(cfg.harnessLegs).toEqual(HARNESS_CONFIG.harnessLegs)
+    const outcome = await runHarnessLeg({
+      launcher: cfg.harnessLauncher,
+      leg: { provider: "claude-code", model: "fable" },
+      account: "test",
+      question: "ping",
+      timeoutMs: 1,
+    })
+    expect(outcome).toMatchObject({ ok: false, argv: [], notes: [], timeoutMs: 1 })
+    expect(outcome.error).toContain("harnessLauncher")
+    expect(outcome.error).toContain(join(getMemoryDir(), "dual-pro-config.json"))
+    expect(outcome.error).toContain("claude-code fable")
+    expect(outcome.error).toContain("set harnessLauncher to a module exporting harnessLegLaunch and agCodeRunner")
+    expect(nativeRunner).not.toHaveBeenCalled()
   })
 })
