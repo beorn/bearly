@@ -1,14 +1,12 @@
 /**
- * 30580 — a slot's own module repositories are destroyed with the slot. A submodule dropped from a later
- * commit leaves its store behind with local branches, unpushed commits and stashes, and `worktree remove`
- * deleted it without ever looking. The operator's value test (2026-10-21) decides: work not on the store's
- * remote main and not under an archive ref is archived on that remote first, then removed; and removal names
- * every store it archives or releases. Nothing refuses on value alone.
+ * 31094 — a dropped submodule can leave commits in its module store that are not covered by the compared
+ * remote refs, archive refs, or available tags. No-retention removal must preserve that store and report the
+ * value call; a store with no such commits can be released and named.
  *
- * @failure `bearly worktree remove` destroys a module repository holding work nothing durable names, or
- *          destroys a reproducible one without saying so, or deletes on a failed archive.
+ * @failure `bearly worktree remove` destroys a module repository with commits outside the compared refs, or
+ *          releases a no-value store without naming the comparison.
  * @level   l2
- * @consumer @i/26-environments/30580-worktree-remove-enumerate-slot
+ * @consumer @hh/tooling/31094-git-super-still-writes-archive
  * @testonly none
  */
 import { execFileSync } from "node:child_process"
@@ -22,7 +20,6 @@ import { removeWorktree, resolveWorktreeTargetPath } from "./worktree.ts"
 const roots: string[] = []
 let info: MockInstance<(...args: unknown[]) => void>
 let cwd: string
-const DATE = new Date().toISOString().slice(0, 10)
 
 beforeEach(() => {
   cwd = process.cwd()
@@ -104,42 +101,53 @@ function slotWithDroppedSubmodule(work: StoreWork): { repo: string; dep: string;
   return { repo, dep, slot, moduleDir }
 }
 
-describe("bearly worktree remove and a slot's module stores (30580)", () => {
-  test("a store holding local work is archived on its remote, named, and only then removed", async () => {
-    const { repo, dep, slot, moduleDir } = slotWithDroppedSubmodule("local")
+describe("bearly worktree remove and a slot's module stores (31094)", () => {
+  test("a store holding local work reports the compared refs and preserves the store and registration", async () => {
+    const { repo, slot, moduleDir } = slotWithDroppedSubmodule("local")
     const tip = git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()
     process.chdir(repo)
-    await expect(removeWorktree("wt0", {})).resolves.toBeUndefined()
+    const failed = vi.spyOn(console, "error").mockImplementation(() => {})
+    await removeWorktree("wt0", {}).then(
+      () => undefined,
+      () => undefined,
+    )
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
-    expect(named).toContain("module store vendor/dep archived: 1 commit(s) to refs/archive/")
-    expect(git(dep, ["rev-parse", `refs/archive/${DATE}/wt0/vendor/dep/HEAD`]).trim()).toBe(tip)
-    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).not.toContain(slot)
+    expect(named).toContain(`module store vendor/dep at ${moduleDir} holds 1 commit(s) outside compared refs (`)
+    expect(named).toContain("origin default main")
+    expect(named).not.toContain("refs/archive/")
+    expect(named).toContain("; worktree preserved. Owner value call: land, keep one real branch, or recorded delete.")
+    expect(failed.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Failed to remove worktree")
+    expect(git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()).toBe(tip)
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
 
   test("a store whose work is all on its remote main is released and named", async () => {
-    const { repo } = slotWithDroppedSubmodule("none")
+    const { repo, slot } = slotWithDroppedSubmodule("none")
     process.chdir(repo)
     await expect(removeWorktree("wt0", {})).resolves.toBeUndefined()
     const named = info.mock.calls.map((call) => String(call[0])).join("\n")
     expect(named).toContain(
-      "module store vendor/dep released: origin main, archive refs and tags hold it, 0 commits unique",
+      "module store vendor/dep released: origin default main, existing archive refs and available tags, 0 commits outside compared refs",
     )
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).not.toContain(slot)
   })
 
   test("a store holding work with no remote stops removal and names the store", async () => {
-    const { repo, slot } = slotWithDroppedSubmodule("remoteless")
+    const { repo, slot, moduleDir } = slotWithDroppedSubmodule("remoteless")
     process.chdir(repo)
-    // The CLI reports the refusal and exits; the line it prints is the contract here.
+    // The caller keeps its existing error channel; the compared-ref explanation is the contract here.
     const failed = vi.spyOn(console, "error").mockImplementation(() => {})
     await removeWorktree("wt0", {}).then(
       () => undefined,
       () => undefined,
     )
     const logged = info.mock.calls.map((call) => String(call[0])).join("\n")
-    // With no remote nothing proves the base commit exists elsewhere either, so both commits count.
-    expect(logged).toContain("module store vendor/dep holds 2 commit(s)")
-    expect(logged).toContain("has no remote to archive them to")
+    expect(logged).toContain(
+      `module store vendor/dep at ${moduleDir} holds 2 commit(s) outside compared refs (no remote refs (store has no remote))`,
+    )
+    expect(logged).toContain("; worktree preserved. Owner value call: land, keep one real branch, or recorded delete.")
     expect(failed.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Failed to remove worktree")
+    expect(git(repo, ["--git-dir", moduleDir, "rev-parse", "HEAD"]).trim()).toBeTruthy()
     expect(execFileSync("git", ["-C", repo, "worktree", "list"], { encoding: "utf8" })).toContain(slot)
   })
 })

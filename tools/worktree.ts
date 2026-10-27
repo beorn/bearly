@@ -3240,14 +3240,11 @@ async function removeWorktreeWithAdmission(
   try {
     await createLocalGitWorktreeStore({
       repo: gitRoot,
-      // The deleting function prints every module store the library archives or releases (30580); with no
-      // sink the library prints archive lines only, to stderr.
+      // The library names released stores; value-preservation failures use the existing error channel.
       report: (line) => info(line.trimEnd()),
     }).remove(worktreePath, {
       operation: `pool worktree remove ${worktreePath}`,
       excludedSubmodules: options.excludedSubmodules,
-      // `reset` passes the absolute path as `name`; the slot name is what both callers mean.
-      archiveActor: slotNameFromResolvedPath(gitRoot, worktreePath),
     })
   } catch (cause) {
     error("Failed to remove worktree")
