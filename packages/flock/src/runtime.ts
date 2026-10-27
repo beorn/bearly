@@ -1,7 +1,7 @@
 export interface FlockIo {
   readonly createParent: (path: string, mode: number) => void
   readonly exists: (path: string) => boolean
-  readonly open: (path: string, mode: number, noFollow: boolean) => number
+  readonly open: (path: string, mode: number, noFollow: boolean, create: boolean) => number
   readonly identity: (fd: number) => string
   readonly pathIdentity: (path: string) => string
   readonly flock: (
@@ -28,6 +28,8 @@ export interface FlockRuntimeOptions {
 export interface FlockOpenOptions {
   readonly body?: string | Uint8Array
   readonly fileMode?: number
+  /** False opens an existing file without creating parents or writing a diagnostic body. Defaults to true. */
+  readonly create?: boolean
   readonly createParent?: boolean
   readonly parentMode?: number
   /**
@@ -166,8 +168,12 @@ interface Candidate {
 }
 
 function openCandidate(io: FlockIo, path: string, options: FlockOpenOptions): Candidate {
-  if (options.createParent !== false) io.createParent(path, options.parentMode ?? 0o700)
-  const fd = io.open(path, options.fileMode ?? 0o600, options.noFollow === true)
+  if (options.create === false && options.body !== undefined) {
+    throw new TypeError(`flock create:false cannot write a diagnostic body: ${path}`)
+  }
+  const create = options.create !== false
+  if (create && options.createParent !== false) io.createParent(path, options.parentMode ?? 0o700)
+  const fd = io.open(path, options.fileMode ?? 0o600, options.noFollow === true, create)
   try {
     return { fd, identity: io.identity(fd), path }
   } catch (error) {

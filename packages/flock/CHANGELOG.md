@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `create: false` to acquire existing lock files without creating files or parents; diagnostic bodies are rejected before filesystem effects.
 - Add bounded synchronous flock acquisition with parked sleeps and the existing shared descriptor/errno lifecycle.
 
 ## 0.2.2

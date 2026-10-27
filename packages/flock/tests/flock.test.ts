@@ -42,6 +42,7 @@ describe("@bearly/flock", () => {
     try {
       await waitForFile(readyPath, holder, "holder")
       expect(tryAcquireFlock(lockPath)).toBeNull()
+      expect(tryAcquireFlock(lockPath, { create: false, noFollow: true })).toBeNull()
 
       holder.kill("SIGKILL")
       expect(await holder.exited).not.toBe(0)
@@ -81,6 +82,82 @@ describe("@bearly/flock", () => {
     expect(readFileSync(lockPath, "utf8")).toBe("live writer\n")
     lock?.replaceBody("successor\n")
     expect(readFileSync(lockPath, "utf8")).toBe("successor\n")
+  })
+
+  // Retained-store manifests certify these bytes: taking their lease must not
+  // create a file, replace its inode, or publish diagnostic bytes (#31146).
+  test("existing-only acquisition preserves bytes and inode through release and reacquisition", () => {
+    const path = join(tempRoot(), "writer.lock")
+    writeFileSync(path, "retained owner\n")
+    const before = lstatSync(path)
+    const options = { create: false, noFollow: true }
+    const lock = tryAcquireFlock(path, options)
+    expect(lock?.held).toBe(true)
+    expect(tryAcquireFlock(path, options)).toBeNull()
+    lock?.release()
+    using successor = tryAcquireFlock(path, options)
+    expect(successor?.held).toBe(true)
+    expect(readFileSync(path, "utf8")).toBe("retained owner\n")
+    expect(lstatSync(path).ino).toBe(before.ino)
+    expect(lstatSync(path).dev).toBe(before.dev)
+  })
+
+  test.each([false, true])(
+    "existing-only acquisition never creates a missing file or parent; noFollow=%s",
+    (noFollow) => {
+      const root = tempRoot()
+      for (const path of [join(root, "missing.lock"), join(root, "missing-parent", "writer.lock")]) {
+        expect(() => tryAcquireFlock(path, { create: false, noFollow })).toThrowError(
+          expect.objectContaining({ code: "ENOENT", path }),
+        )
+        expect(existsSync(path)).toBe(false)
+      }
+      expect(existsSync(join(root, "missing-parent"))).toBe(false)
+    },
+  )
+
+  test.each(["", new Uint8Array([1])])(
+    "existing-only acquisition rejects a diagnostic body before filesystem effects: %s",
+    (body) => {
+      const root = tempRoot()
+      const path = join(root, "missing-parent", "writer.lock")
+      expect(() => tryAcquireFlock(path, { create: false, body })).toThrow(TypeError)
+      expect(existsSync(join(root, "missing-parent"))).toBe(false)
+    },
+  )
+
+  test("existing-only acquisition does not recreate a file that disappears immediately before native open", () => {
+    const path = join(tempRoot(), "writer.lock")
+    writeFileSync(path, "retained owner\n")
+    const native = createNativeFlockRuntime()
+    let opened = false
+    const runtime = createFlockRuntime(
+      {
+        ...native.io,
+        open(...args: Parameters<FlockIo["open"]>) {
+          opened = true
+          rmSync(path)
+          return native.io.open(...args)
+        },
+      },
+      native,
+    )
+    expect(() => runtime.tryAcquire(path, { create: false, noFollow: true })).toThrowError(
+      expect.objectContaining({ code: "ENOENT", path }),
+    )
+    expect(opened).toBe(true)
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test("existing-only noFollow refuses a symlink without changing its target", () => {
+    const root = tempRoot()
+    const target = join(root, "target")
+    const path = join(root, "writer.lock")
+    writeFileSync(target, "keep")
+    symlinkSync(target, path)
+    expect(() => tryAcquireFlock(path, { create: false, noFollow: true })).toThrowError(/ELOOP/)
+    expect(lstatSync(path).isSymbolicLink()).toBe(true)
+    expect(readFileSync(target, "utf8")).toBe("keep")
   })
 
   test("release closes only the parent copy and preserves an inherited fd owner", async () => {
