@@ -50,6 +50,7 @@ import { formatCostColumns, estimateFleetCost } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
 import { resolveResponseCost } from "../lib/pricing"
 import { resolveClaudeHarnessAccount } from "../lib/harness-account"
+import { runHarnessLeg, type HarnessRunOutcome } from "../lib/harness-run"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -153,10 +154,6 @@ export async function runProDual(options: {
   // Load fleet config (file + env overrides). Legacy env LLM_DUAL_PRO_B and
   // LLM_CHALLENGER_POOL still work — applyEnvOverrides preserves them.
   const cfg = await dualPro.loadConfig({ writeOnMissing: !dryRun })
-  // Row 2 removes this. Until then a real run must not drop the rows and bill API legs only.
-  if (!dryRun && cfg.harnessLegs.length > 0) {
-    throw new Error("harness legs are dry-run only until #31112 row 2")
-  }
   assertDispatchableModelIds([
     ...cfg.mainstays,
     ...cfg.splitTestPool,
@@ -499,6 +496,19 @@ export async function runProDual(options: {
 
   // Fire ALL legs in parallel — single round trip, timing dominated by the
   // slowest leg. Streaming disabled (multi-stream interleave unreadable).
+  const harnessRuns =
+    cfg.harnessLegs.length === 0
+      ? Promise.resolve([] as HarnessRunOutcome[])
+      : Promise.all(
+          cfg.harnessLegs.map((leg) =>
+            runHarnessLeg({
+              leg,
+              account: leg.provider === "codex" ? leg.profile : resolveClaudeHarnessAccount(),
+              question: enrichedQuestion,
+              timeoutMs: legTimeoutMs,
+            }),
+          ),
+        )
   const settledResults = await withSignalAbort((outerSignal) =>
     Promise.allSettled(
       legSlots.map((slot) =>
@@ -526,6 +536,11 @@ export async function runProDual(options: {
     /** The provider's own text, before classification added a cure. */
     rawError?: string
     missingCause?: ProCompletion["missing"][number]["cause"]
+  }
+  const harnessOutcomes = await harnessRuns
+  for (const leg of harnessOutcomes) {
+    if (leg.ok) console.error(`  • harness ${leg.harness} ${leg.model} (account ${leg.account}) returned`)
+    else console.error(`  • harness ${leg.harness} ${leg.model} (account ${leg.account}) incomplete: ${leg.error}`)
   }
   const settledBySlot = new Map(legSlots.map((slot, i) => [slot.id, settledResults[i]!] as const))
   const legOutcomes: LegOutcome[] = requestedSlots.map((slot) => {
@@ -1015,6 +1030,15 @@ export async function runProDual(options: {
     parts.push(`_Judge unavailable: ${judgeError}_`)
   }
 
+  if (harnessOutcomes.length > 0) {
+    parts.push(`\n---\n`)
+    parts.push(`## Harness legs`)
+    for (const leg of harnessOutcomes) {
+      parts.push(`### ${leg.harness} ${leg.model} (account ${leg.account})`)
+      parts.push(leg.ok ? leg.content ?? "" : `⚠️  Incomplete: ${leg.error ?? "no content"}`)
+    }
+  }
+
   const combined = parts.join("\n")
 
   // Dual-pro envelope ships per-leg sections so skill consumers can branch
@@ -1156,6 +1180,7 @@ export async function runProDual(options: {
     judgeCost,
     judgeResponses,
     rubric: cfg.rubric,
+    harness: harnessOutcomes,
   })
 
   // Promotion banner: if the leaderboard now suggests the challenger has
@@ -1277,6 +1302,7 @@ async function appendAbProLog(entry: {
   }
   judgeModel?: string
   judgeWinner?: "a" | "b" | "c" | "d" | "tie"
+  harness?: HarnessRunOutcome[]
   judgeReasoning?: string
   judgeError?: string
   judgeCost: ResolvedCost
@@ -1375,6 +1401,15 @@ async function appendAbProLog(entry: {
         b,
         c,
         d,
+        harness: entry.harness?.map((leg) => ({
+          provider: leg.provider,
+          harness: leg.harness,
+          model: leg.model,
+          account: leg.account,
+          ok: leg.ok,
+          error: leg.error,
+          content: leg.content,
+        })),
         judge:
           entry.judgeWinner || entry.judgeError || entry.pairwise.ab || entry.pairwise.ac || entry.pairwise.ad
             ? {

@@ -18,6 +18,32 @@ import { NO_CLAUDE_LOGIN, resolveClaudeHarnessAccount } from "../src/lib/harness
 import { runProDual } from "../src/cmd/pro"
 
 const spawnMock = vi.hoisted(() => vi.fn())
+const nativeRunner = vi.hoisted(() => vi.fn(async () => ({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })))
+const nativeRunnerFactory = vi.hoisted(() => vi.fn(() => nativeRunner))
+const nativeArgv = vi.hoisted(() =>
+  vi.fn(
+    (
+      selection: { harness: string; label: string },
+      options: { flags?: readonly string[]; prompt?: string; hooks?: string },
+    ) => [
+      "ag",
+      "code",
+      `--harness=${selection.harness}`,
+      "--account",
+      selection.label,
+      "--no-tribe",
+      ...(options.hooks === "none" ? ["--hooks-none"] : []),
+      ...(options.flags ?? []),
+      "-p",
+      "--",
+      options.prompt ?? "",
+    ],
+  ),
+)
+vi.mock("@ag/cli/native-run", () => ({
+  agCodeArgv: nativeArgv,
+  agCodeRunner: nativeRunnerFactory,
+}))
 const askMock = vi.hoisted(() => vi.fn())
 const queryBackgroundMock = vi.hoisted(() => vi.fn())
 const costMock = vi.hoisted(() => vi.fn())
@@ -100,6 +126,11 @@ beforeEach(() => {
   vi.stubEnv("CLAUDE_CONFIG_DIR", "")
   vi.stubEnv("CLAUDE_PROFILE_ROOT", "")
   spawnMock.mockReset()
+  nativeRunner.mockReset()
+  nativeRunnerFactory.mockReset()
+  nativeArgv.mockReset()
+  nativeRunner.mockResolvedValue({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })
+  nativeRunnerFactory.mockImplementation(() => nativeRunner)
   askMock.mockReset()
   queryBackgroundMock.mockReset()
   costMock.mockReset()
@@ -186,11 +217,14 @@ describe("pro dry-run harness legs", () => {
     expect(queryBackgroundMock).not.toHaveBeenCalled()
   })
 
-  it("refuses a real run while harness legs are configured", async () => {
+  it("runs harness legs through agCodeRunner and does not spawn from bearly", async () => {
     writeConfig(HARNESS_CONFIG)
     vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
-    await expect(
-      runProDual({
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit ${code ?? ""}`)
+    }) as typeof process.exit)
+    try {
+      await runProDual({
         question: "ping",
         modelOverride: undefined,
         imagePath: undefined,
@@ -200,10 +234,28 @@ describe("pro dry-run harness legs", () => {
         sessionTag: "harness-real-run",
         skipConfirm: true,
         dryRun: false,
-      }),
-    ).rejects.toThrow("harness legs are dry-run only until #31112 row 2")
+      }).catch((error: unknown) => {
+        if (!(error instanceof Error) || !error.message.startsWith("exit ")) throw error
+      })
+    } finally {
+      exit.mockRestore()
+    }
     expect(spawnMock).not.toHaveBeenCalled()
-    expect(askMock).not.toHaveBeenCalled()
-    expect(queryBackgroundMock).not.toHaveBeenCalled()
+    expect(nativeRunnerFactory).toHaveBeenCalled()
+    for (const call of nativeRunnerFactory.mock.calls) {
+      expect(call[0]).toBeLessThanOrEqual(300_000)
+      expect(call[1]).toEqual({ stdout: "full" })
+    }
+    const argvs = nativeArgv.mock.calls.map((call) => call[1])
+    expect(argvs.length).toBeGreaterThanOrEqual(2)
+    for (const options of argvs) {
+      expect(options.hooks).toBe("none")
+      expect(options.flags).toContain("--max-turns")
+      expect(options.flags).toContain("1")
+    }
+    const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
+    expect(log).toContain('"provider":"harness"')
+    expect(log).toContain('"account":"fake-claude-acct"')
+    expect(log).toContain('"account":"codex-login-name"')
   })
 })
