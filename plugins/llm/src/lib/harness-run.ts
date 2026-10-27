@@ -3,8 +3,8 @@ import type { HarnessLeg } from "./dual-pro"
 /** A harness leg never waits longer than this, whatever the API leg timeout is. */
 export const HARNESS_RUN_TIMEOUT_CAP_MS = 300_000
 
-/** Print-mode turns. The ruled cap is 3. */
-export const HARNESS_MAX_TURNS = 1
+/** How many stderr lines an incomplete leg keeps. */
+const STDERR_TAIL_LINES = 20
 
 export interface HarnessRunRequest {
   readonly leg: HarnessLeg
@@ -21,42 +21,42 @@ export interface HarnessRunOutcome {
   readonly ok: boolean
   readonly content?: string
   readonly error?: string
+  readonly notes: readonly string[]
+  readonly stderrTail?: string
   readonly argv: readonly string[]
   readonly timeoutMs: number
 }
 
+type NativeExit = {
+  exitCode: number | null
+  timedOut: boolean
+  stdout?: string
+  stdoutOverCap?: boolean
+  stderrTail?: string
+  spawnError?: string
+  ms: number
+}
+
 type NativeRunModule = {
-  agCodeArgv: (
-    selection: {
-      kind: "account"
-      provider: "claude" | "codex"
-      label: string
-      current: boolean
-      default: boolean
-      stock: boolean
-      harness: "claude" | "codex"
-    },
-    options: { flags?: readonly string[]; prompt?: string; hooks?: "none" },
-  ) => string[]
-  agCodeRunner: (
-    timeoutMs?: number,
-    options?: { stdout?: "full" },
-  ) => (
-    argv: readonly string[],
-    env: NodeJS.ProcessEnv,
-  ) => Promise<{
-    exitCode: number | null
-    timedOut: boolean
-    stdout?: string
-    stdoutOverCap?: boolean
-    spawnError?: string
-    ms: number
-  }>
+  harnessLegLaunch: (input: {
+    harness: "claude" | "codex"
+    account: string
+    model: string
+    prompt: string
+    env?: NodeJS.ProcessEnv
+  }) => { argv: readonly string[]; env: NodeJS.ProcessEnv; notes: readonly string[] }
+  agCodeRunner: (timeoutMs?: number, options?: { stdout?: "full" }) => (argv: readonly string[], env: NodeJS.ProcessEnv) => Promise<NativeExit>
 }
 
 export function harnessTimeoutMs(requested: number): number {
   if (!Number.isFinite(requested) || requested <= 0) return HARNESS_RUN_TIMEOUT_CAP_MS
   return Math.min(requested, HARNESS_RUN_TIMEOUT_CAP_MS)
+}
+
+function stderrTail(text: string | undefined): string | undefined {
+  if (!text) return undefined
+  const lines = text.split("\n").slice(-STDERR_TAIL_LINES).join("\n").trim()
+  return lines.length > 0 ? lines : undefined
 }
 
 export async function runHarnessLeg(
@@ -72,30 +72,23 @@ export async function runHarnessLeg(
     )
   }
   const harness = request.leg.provider === "codex" ? "codex" : "claude"
-  const flags =
-    harness === "codex"
-      ? ["--skip-git-repo-check", "-c", "mcp_servers={}", "--max-turns", String(HARNESS_MAX_TURNS)]
-      : ["--max-turns", String(HARNESS_MAX_TURNS), "--output-format", "json"]
-  const argv = native.agCodeArgv(
-    {
-      kind: "account",
-      provider: harness,
-      label: request.account,
-      current: false,
-      default: false,
-      stock: false,
-      harness,
-    },
-    { flags, prompt: request.question, hooks: "none" },
-  )
+  const launch = native.harnessLegLaunch({
+    harness,
+    account: request.account,
+    model: request.leg.model,
+    prompt: request.question,
+    env,
+  })
   const timeoutMs = harnessTimeoutMs(request.timeoutMs)
-  const result = await native.agCodeRunner(timeoutMs, { stdout: "full" })(argv, env)
+  const result = await native.agCodeRunner(timeoutMs, { stdout: "full" })(launch.argv, launch.env)
   const base = {
     provider: "harness" as const,
     harness: request.leg.provider,
     model: request.leg.model,
     account: request.account,
-    argv,
+    notes: launch.notes,
+    stderrTail: stderrTail(result.stderrTail),
+    argv: launch.argv,
     timeoutMs,
   }
   if (result.spawnError) return { ...base, ok: false, error: `spawn failed: ${result.spawnError}` }

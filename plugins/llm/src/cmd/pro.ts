@@ -1134,6 +1134,17 @@ export async function runProDual(options: {
     c: cLegEnv,
     d: dLegEnv,
     legs: legSlots.length,
+    harness: harnessOutcomes.map((leg) => ({
+      provider: leg.provider,
+      harness: leg.harness,
+      model: leg.model,
+      account: leg.account,
+      ok: leg.ok,
+      error: leg.error,
+      notes: leg.notes,
+      stderrTail: leg.stderrTail,
+      content: leg.content,
+    })),
     judge: judgeResult
       ? {
           model: judgeModelId,
@@ -1408,6 +1419,8 @@ async function appendAbProLog(entry: {
           account: leg.account,
           ok: leg.ok,
           error: leg.error,
+          notes: leg.notes,
+          stderrTail: leg.stderrTail,
           content: leg.content,
         })),
         judge:

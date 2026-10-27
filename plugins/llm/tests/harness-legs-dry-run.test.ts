@@ -20,30 +20,10 @@ import { runProDual } from "../src/cmd/pro"
 const spawnMock = vi.hoisted(() => vi.fn())
 const nativeRunner = vi.hoisted(() => vi.fn(async () => ({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })))
 const nativeRunnerFactory = vi.hoisted(() => vi.fn(() => nativeRunner))
-const nativeArgv = vi.hoisted(() =>
-  vi.fn(
-    (
-      selection: { harness: string; label: string },
-      options: { flags?: readonly string[]; prompt?: string; hooks?: string },
-    ) => [
-      "ag",
-      "code",
-      `--harness=${selection.harness}`,
-      "--account",
-      selection.label,
-      "--no-tribe",
-      ...(options.hooks === "none" ? ["--hooks-none"] : []),
-      ...(options.flags ?? []),
-      "-p",
-      "--",
-      options.prompt ?? "",
-    ],
-  ),
-)
-vi.mock("@ag/cli/native-run", () => ({
-  agCodeArgv: nativeArgv,
-  agCodeRunner: nativeRunnerFactory,
-}))
+vi.mock("@ag/cli/native-run", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ag/cli/native-run")>()
+  return { ...actual, agCodeRunner: nativeRunnerFactory }
+})
 const askMock = vi.hoisted(() => vi.fn())
 const queryBackgroundMock = vi.hoisted(() => vi.fn())
 const costMock = vi.hoisted(() => vi.fn())
@@ -128,7 +108,6 @@ beforeEach(() => {
   spawnMock.mockReset()
   nativeRunner.mockReset()
   nativeRunnerFactory.mockReset()
-  nativeArgv.mockReset()
   nativeRunner.mockResolvedValue({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })
   nativeRunnerFactory.mockImplementation(() => nativeRunner)
   askMock.mockReset()
@@ -241,21 +220,68 @@ describe("pro dry-run harness legs", () => {
       exit.mockRestore()
     }
     expect(spawnMock).not.toHaveBeenCalled()
-    expect(nativeRunnerFactory).toHaveBeenCalled()
-    for (const call of nativeRunnerFactory.mock.calls) {
-      expect(call[0]).toBeLessThanOrEqual(300_000)
+    expect(nativeRunner).toHaveBeenCalled()
+    const factoryCalls = nativeRunnerFactory.mock.calls as unknown as unknown[][]
+    for (const call of factoryCalls) {
+      expect(call[0] as number).toBeLessThanOrEqual(300_000)
       expect(call[1]).toEqual({ stdout: "full" })
     }
-    const argvs = nativeArgv.mock.calls.map((call) => call[1])
-    expect(argvs.length).toBeGreaterThanOrEqual(2)
-    for (const options of argvs) {
-      expect(options.hooks).toBe("none")
-      expect(options.flags).toContain("--max-turns")
-      expect(options.flags).toContain("1")
-    }
+    const argvs = (nativeRunner.mock.calls as unknown as unknown[][]).map((call) => call[0] as string[])
+    const claude = argvs.find((argv) => argv.includes("--harness=claude"))
+    const codex = argvs.find((argv) => argv.includes("--harness=codex"))
+    expect(claude).toEqual(expect.arrayContaining(["--hooks-none", "--strict-mcp-config", "--max-turns", "1", "--model", "fable"]))
+    expect(codex).toEqual(expect.arrayContaining(["--model", "gpt-6-astra", "--skip-git-repo-check"]))
+    expect(codex).not.toContain("--hooks-none")
+    expect(codex).not.toContain("--max-turns")
     const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
     expect(log).toContain('"provider":"harness"')
     expect(log).toContain('"account":"fake-claude-acct"')
     expect(log).toContain('"account":"codex-login-name"')
+    expect(log).toContain("codex has no turn cap")
+    const report = await import("node:fs").then((fs) => fs.readFileSync(join(root, "never-written.txt"), "utf8"))
+    expect(report).toContain("## Harness legs")
+    expect(report).toContain("fake-claude-acct")
+    expect(report).toContain("codex-login-name")
+  })
+
+  it.each([
+    ["over-cap", { exitCode: 0, timedOut: false, ms: 1, stdoutOverCap: true, stdout: "A" }, "stdout exceeded 1 MiB"],
+    ["timeout", { exitCode: null, timedOut: true, ms: 1 }, "timed out after"],
+    ["nonzero exit", { exitCode: 2, timedOut: false, ms: 1, stdout: "nope", stderrTail: "line-a\nrefused" }, "exit 2"],
+    ["empty stdout", { exitCode: 0, timedOut: false, ms: 1, stdout: "  " }, "empty stdout"],
+    ["spawn error", { exitCode: null, timedOut: false, ms: 0, spawnError: "ENOENT" }, "spawn failed: ENOENT"],
+  ] as const)("records an incomplete harness leg on %s", async (_name, result, printed) => {
+    writeConfig({ harnessLegs: [{ provider: "claude-code", model: "fable" }] })
+    vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
+    nativeRunner.mockResolvedValue(result as never)
+    const lines: string[] = []
+    const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      lines.push(parts.map((part) => String(part)).join(" "))
+    })
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit ${code ?? ""}`)
+    }) as typeof process.exit)
+    try {
+      await runProDual({
+        question: "ping",
+        modelOverride: undefined,
+        imagePath: undefined,
+        streamToken: vi.fn(),
+        buildContext: async () => undefined,
+        outputFile: join(root, "never-written.txt"),
+        sessionTag: "harness-incomplete",
+        skipConfirm: true,
+        dryRun: false,
+      }).catch((error: unknown) => {
+        if (!(error instanceof Error) || !error.message.startsWith("exit ")) throw error
+      })
+    } finally {
+      stderr.mockRestore()
+      exit.mockRestore()
+    }
+    expect(lines.some((line) => line.includes(printed) && line.includes("incomplete"))).toBe(true)
+    const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
+    expect(log).toContain(printed.startsWith("timed out") ? "timed out after" : printed)
+    if ("stderrTail" in result && result.stderrTail) expect(log).toContain("refused")
   })
 })

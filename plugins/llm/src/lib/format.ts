@@ -152,6 +152,8 @@ export interface OutputMeta extends Partial<CostFields> {
   legs?: number
   /** Dual-pro: judge envelope (km-bearly.llm-dual-pro-shadow-test). */
   judge?: Record<string, unknown>
+  /** Subscription harness legs. Not scored by the API judge. */
+  harness?: ReadonlyArray<Record<string, unknown>>
   /** Dual-pro: top-N leaderboard snapshot at write time. */
   leaderboardSnapshot?: ReadonlyArray<Record<string, unknown>>
   /** Per-call rate-limit headers from THIS request (km-bearly.llm-quota-tracking).
@@ -284,6 +286,7 @@ export function buildResultJson(content: string, meta?: OutputMeta): Record<stri
   if (meta?.c) result.c = legToEnvelope(meta.c)
   if (meta?.d) result.d = legToEnvelope(meta.d)
   if (meta?.judge) result.judge = meta.judge
+  if (meta?.harness) result.harness = meta.harness
   if (meta?.leaderboardSnapshot) result.leaderboardSnapshot = meta.leaderboardSnapshot
   if (meta?.quota) result.quota = meta.quota
   return result
