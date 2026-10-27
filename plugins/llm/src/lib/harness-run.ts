@@ -45,7 +45,10 @@ type NativeRunModule = {
     prompt: string
     env?: NodeJS.ProcessEnv
   }) => { argv: readonly string[]; env: NodeJS.ProcessEnv; notes: readonly string[] }
-  agCodeRunner: (timeoutMs?: number, options?: { stdout?: "full" }) => (argv: readonly string[], env: NodeJS.ProcessEnv) => Promise<NativeExit>
+  agCodeRunner: (
+    timeoutMs?: number,
+    options?: { stdout?: "full" },
+  ) => (argv: readonly string[], env: NodeJS.ProcessEnv) => Promise<NativeExit>
 }
 
 export function harnessTimeoutMs(requested: number): number {

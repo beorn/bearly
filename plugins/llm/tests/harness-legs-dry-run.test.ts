@@ -18,7 +18,9 @@ import { NO_CLAUDE_LOGIN, resolveClaudeHarnessAccount } from "../src/lib/harness
 import { runProDual } from "../src/cmd/pro"
 
 const spawnMock = vi.hoisted(() => vi.fn())
-const nativeRunner = vi.hoisted(() => vi.fn(async () => ({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })))
+const nativeRunner = vi.hoisted(() =>
+  vi.fn(async () => ({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })),
+)
 const nativeRunnerFactory = vi.hoisted(() => vi.fn(() => nativeRunner))
 vi.mock("@ag/cli/native-run", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@ag/cli/native-run")>()
@@ -229,7 +231,9 @@ describe("pro dry-run harness legs", () => {
     const argvs = (nativeRunner.mock.calls as unknown as unknown[][]).map((call) => call[0] as string[])
     const claude = argvs.find((argv) => argv.includes("--harness=claude"))
     const codex = argvs.find((argv) => argv.includes("--harness=codex"))
-    expect(claude).toEqual(expect.arrayContaining(["--hooks-none", "--strict-mcp-config", "--max-turns", "1", "--model", "fable"]))
+    expect(claude).toEqual(
+      expect.arrayContaining(["--hooks-none", "--strict-mcp-config", "--max-turns", "1", "--model", "fable"]),
+    )
     expect(codex).toEqual(expect.arrayContaining(["--model", "gpt-6-astra", "--skip-git-repo-check"]))
     expect(codex).not.toContain("--hooks-none")
     expect(codex).not.toContain("--max-turns")

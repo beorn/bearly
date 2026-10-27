@@ -1035,7 +1035,7 @@ export async function runProDual(options: {
     parts.push(`## Harness legs`)
     for (const leg of harnessOutcomes) {
       parts.push(`### ${leg.harness} ${leg.model} (account ${leg.account})`)
-      parts.push(leg.ok ? leg.content ?? "" : `⚠️  Incomplete: ${leg.error ?? "no content"}`)
+      parts.push(leg.ok ? (leg.content ?? "") : `⚠️  Incomplete: ${leg.error ?? "no content"}`)
     }
   }
 
