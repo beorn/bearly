@@ -111,60 +111,66 @@ export type HarnessLeg = z.infer<typeof HarnessLegSchema>
  * which translates legacy → new on read. Saves on disk continue using the
  * new shape (renderStarterConfig).
  */
-export const DualProConfigInputSchema = z.object({
-  // --- v0.7+ shape ---
-  /** Two stable mainstays — frontier reasoning anchor + cheap proven baseline.
-   * Anchors judge calibration so split-test slots are scored against a low-
-   * variance reference. */
-  mainstays: z.tuple([z.string(), z.string()]).optional(),
-  /** Pool the split-test slots rotate through. Models added here get covered
-   * faster than the old single-challenger rotation. */
-  splitTestPool: z.array(z.string()).optional(),
-  /** How many split-test slots fire per call (0 = mainstays only, 1 = legacy
-   * 3-leg, 2 = full 2+2 fleet). Slot D rotates as "re-face the prior winner"
-   * (correlated re-test) — confirms wins reproduce, doesn't waste a slot on
-   * pure pool exploration. */
-  splitTestSlots: z.number().min(0).max(4).optional(),
-  /** Rotation strategy for split-test slot C. Slot D always uses correlated
-   * re-test (most-recent winner not in mainstays/slot-C; cold-start falls back
-   * to slot C strategy with a +1 round-robin offset). */
-  splitTestStrategy: ChallengerStrategySchema.optional(),
+export const DualProConfigInputSchema = z
+  .object({
+    // --- v0.7+ shape ---
+    /** Two stable mainstays — frontier reasoning anchor + cheap proven baseline.
+     * Anchors judge calibration so split-test slots are scored against a low-
+     * variance reference. */
+    mainstays: z.tuple([z.string(), z.string()]).optional(),
+    /** Pool the split-test slots rotate through. Models added here get covered
+     * faster than the old single-challenger rotation. */
+    splitTestPool: z.array(z.string()).optional(),
+    /** How many split-test slots fire per call (0 = mainstays only, 1 = legacy
+     * 3-leg, 2 = full 2+2 fleet). Slot D rotates as "re-face the prior winner"
+     * (correlated re-test) — confirms wins reproduce, doesn't waste a slot on
+     * pure pool exploration. */
+    splitTestSlots: z.number().min(0).max(4).optional(),
+    /** Rotation strategy for split-test slot C. Slot D always uses correlated
+     * re-test (most-recent winner not in mainstays/slot-C; cold-start falls back
+     * to slot C strategy with a +1 round-robin offset). */
+    splitTestStrategy: ChallengerStrategySchema.optional(),
 
-  // --- v0.6 legacy shape (back-compat read; never written) ---
-  champion: z.string().optional(),
-  runnerUp: z.string().optional(),
-  challengerPool: z.array(z.string()).optional(),
-  challengerStrategy: ChallengerStrategySchema.optional(),
+    // --- v0.6 legacy shape (back-compat read; never written) ---
+    champion: z.string().optional(),
+    runnerUp: z.string().optional(),
+    challengerPool: z.array(z.string()).optional(),
+    challengerStrategy: ChallengerStrategySchema.optional(),
 
-  // --- shared (both shapes) ---
-  judge: z.string().default("gpt-5-mini"),
-  rubric: RubricSchema.default("default"),
-  scoreWeights: ScoreWeightsSchema.default({
-    score: 1.0,
-    cost: 1.0,
-    costThreshold: 0.1,
-    time: 0.0,
-    qualityWarningThreshold: 5.0,
-  }),
-  /**
-   * List of model IDs to exclude from all dispatch paths (mainstays + split-test
-   * rotation). The leaderboard still tracks them — quality history doesn't
-   * disappear — but pickNextChallenger / pickSplitTestSlots filter them out so
-   * a junk model surfaced via the `⚠️` warning badge stops burning tokens.
-   *
-   * If a configured mainstay is in this list, dispatch logs a warning and uses
-   * it anyway — explicit config wins over implicit exclude (so you don't
-   * silently drop your mainstay because of a stale leaderboard).
-   *
-   * Env override: LLM_EXCLUDE=id1,id2,id3 (joins with config exclude).
-   */
-  exclude: z.array(z.string()).default([]),
-  /**
-   * Subscription CLI legs. `pro --dry-run` lists them. A real run refuses a
-   * non-empty list until headless dispatch exists.
-   */
-  harnessLegs: z.array(HarnessLegSchema).default([]),
-})
+    // --- shared (both shapes) ---
+    judge: z.string().default("gpt-5-mini"),
+    rubric: RubricSchema.default("default"),
+    scoreWeights: ScoreWeightsSchema.default({
+      score: 1.0,
+      cost: 1.0,
+      costThreshold: 0.1,
+      time: 0.0,
+      qualityWarningThreshold: 5.0,
+    }),
+    /**
+     * List of model IDs to exclude from all dispatch paths (mainstays + split-test
+     * rotation). The leaderboard still tracks them — quality history doesn't
+     * disappear — but pickNextChallenger / pickSplitTestSlots filter them out so
+     * a junk model surfaced via the `⚠️` warning badge stops burning tokens.
+     *
+     * If a configured mainstay is in this list, dispatch logs a warning and uses
+     * it anyway — explicit config wins over implicit exclude (so you don't
+     * silently drop your mainstay because of a stale leaderboard).
+     *
+     * Env override: LLM_EXCLUDE=id1,id2,id3 (joins with config exclude).
+     */
+    exclude: z.array(z.string()).default([]),
+    /**
+     * Subscription CLI legs. `pro --dry-run` lists them; real runs use harnessLauncher.
+     */
+    harnessLegs: z.array(HarnessLegSchema).default([]),
+    /** Module specifier exporting harnessLegLaunch and agCodeRunner. */
+    harnessLauncher: z.string().trim().min(1).optional(),
+  })
+  .refine((cfg) => cfg.harnessLegs.length === 0 || !!cfg.harnessLauncher, {
+    path: ["harnessLauncher"],
+    message: "harnessLauncher is required when harnessLegs is nonempty",
+  })
 export type DualProConfigInput = z.infer<typeof DualProConfigInputSchema>
 
 /**
@@ -181,6 +187,7 @@ export interface DualProConfig {
   scoreWeights: ScoreWeights
   exclude: string[]
   harnessLegs: HarnessLeg[]
+  harnessLauncher?: string
 }
 
 /**
@@ -222,6 +229,7 @@ export function normalizeConfig(raw: DualProConfigInput): DualProConfig {
     scoreWeights: raw.scoreWeights,
     exclude: raw.exclude,
     harnessLegs: raw.harnessLegs ?? [],
+    harnessLauncher: raw.harnessLauncher,
   }
 }
 
@@ -324,6 +332,7 @@ export async function loadConfig(opts: { writeOnMissing?: boolean } = {}): Promi
       // `challengerPool` still loads cleanly into the new internal shape.
       cfg = DualProConfigSchema.parse(parsed)
     } catch (e) {
+      if (e instanceof z.ZodError && e.issues.some((issue) => issue.path[0] === "harnessLauncher")) throw e
       log.warn?.("dual-pro-config.json malformed; using defaults", { error: String(e) })
       cfg = { ...DEFAULT_CONFIG }
     }
@@ -410,10 +419,16 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   // Env override: LLM_EXCLUDE=id1,id2,id3 (joins with this list).
   "exclude": ${JSON.stringify(cfg.exclude)},
 
-  // Harness legs — pro --dry-run lists these subscription CLIs. A real run
-  // refuses a non-empty list until headless dispatch exists. claude-code's
+  // Harness legs — pro --dry-run lists these subscription CLIs. claude-code's
   // account comes from CLAUDE_CONFIG_DIR. codex's account is its profile string.
-  "harnessLegs": ${JSON.stringify(cfg.harnessLegs)}
+  // Nonempty legs require harnessLauncher: a module specifier exporting
+  // harnessLegLaunch and agCodeRunner, for example "@your-org/harness-launcher".
+${
+  cfg.harnessLauncher
+    ? `  "harnessLauncher": ${JSON.stringify(cfg.harnessLauncher)},
+`
+    : ""
+}  "harnessLegs": ${JSON.stringify(cfg.harnessLegs)}
 }
 `
 }

@@ -1,5 +1,5 @@
 /**
- * @failure pro --dry-run omits configured harness legs, or a real run starts API legs while those rows are set.
+ * @failure pro omits configured harness legs, bypasses its launcher, or loses incomplete outcomes.
  * @level l1
  * @consumer seats previewing which Claude and Codex subscription logins a pro dry-run would use.
  * @testonly none
@@ -13,19 +13,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getMemoryDir } from "../src/lib/dual-pro"
+import { getMemoryDir, loadConfig } from "../src/lib/dual-pro"
 import { NO_CLAUDE_LOGIN, resolveClaudeHarnessAccount } from "../src/lib/harness-account"
 import { runProDual } from "../src/cmd/pro"
 
+import { nativeRunner, agCodeRunner as nativeRunnerFactory, harnessLegLaunch } from "./fixtures/harness-launcher"
+import { runHarnessLeg } from "../src/lib/harness-run"
+
 const spawnMock = vi.hoisted(() => vi.fn())
-const nativeRunner = vi.hoisted(() =>
-  vi.fn(async () => ({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })),
-)
-const nativeRunnerFactory = vi.hoisted(() => vi.fn(() => nativeRunner))
-vi.mock("@ag/cli/native-run", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@ag/cli/native-run")>()
-  return { ...actual, agCodeRunner: nativeRunnerFactory }
-})
+
+const launcher = new URL("./fixtures/harness-launcher.ts", import.meta.url).href
 const askMock = vi.hoisted(() => vi.fn())
 const queryBackgroundMock = vi.hoisted(() => vi.fn())
 const costMock = vi.hoisted(() => vi.fn())
@@ -33,6 +30,13 @@ const costMock = vi.hoisted(() => vi.fn())
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>()
   return { ...actual, spawn: spawnMock }
+})
+
+// This suite exercises subscription legs only. Unavailable API routes must
+// never reach dispatch; the throwing mocks below detect any bypass.
+vi.mock("../src/lib/providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/providers")>()
+  return { ...actual, isProviderRoutable: () => false }
 })
 
 vi.mock("../src/lib/research", async (importOriginal) => {
@@ -57,6 +61,7 @@ vi.mock("../src/lib/format", async (importOriginal) => {
 })
 
 const HARNESS_CONFIG = {
+  harnessLauncher: launcher,
   harnessLegs: [
     { provider: "claude-code", model: "fable" },
     { provider: "codex", model: "gpt-6-astra", profile: "codex-login-name" },
@@ -108,6 +113,7 @@ beforeEach(() => {
   vi.stubEnv("CLAUDE_CONFIG_DIR", "")
   vi.stubEnv("CLAUDE_PROFILE_ROOT", "")
   spawnMock.mockReset()
+  harnessLegLaunch.mockClear()
   nativeRunner.mockReset()
   nativeRunnerFactory.mockReset()
   nativeRunner.mockResolvedValue({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })
@@ -201,6 +207,12 @@ describe("pro dry-run harness legs", () => {
   it("runs harness legs through agCodeRunner and does not spawn from bearly", async () => {
     writeConfig(HARNESS_CONFIG)
     vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
+    const diagnostics: string[] = []
+    const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      diagnostics.push(parts.map(String).join(" "))
+    })
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {})
+    const fileNotice = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`exit ${code ?? ""}`)
     }) as typeof process.exit)
@@ -220,7 +232,27 @@ describe("pro dry-run harness legs", () => {
       })
     } finally {
       exit.mockRestore()
+      stderr.mockRestore()
     }
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        "  • harness claude-code fable (account fake-claude-acct) returned",
+        "  • harness codex gpt-6-astra (account codex-login-name) returned",
+      ]),
+    )
+    expect(stdout).toHaveBeenCalledTimes(1)
+    expect((JSON.parse(String(stdout.mock.calls[0]![0])) as { harness: unknown }).harness).toEqual([
+      expect.objectContaining({ harness: "claude-code", ok: true }),
+      expect.objectContaining({ harness: "codex", ok: true }),
+    ])
+    stdout.mockRestore()
+    expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual([
+      "\n",
+      `Output written to: ${join(root, "never-written.txt")}\n`,
+    ])
+    fileNotice.mockRestore()
+    expect(askMock).not.toHaveBeenCalled()
+    expect(queryBackgroundMock).not.toHaveBeenCalled()
     expect(spawnMock).not.toHaveBeenCalled()
     expect(nativeRunner).toHaveBeenCalled()
     const factoryCalls = nativeRunnerFactory.mock.calls as unknown as unknown[][]
@@ -228,20 +260,30 @@ describe("pro dry-run harness legs", () => {
       expect(call[0] as number).toBeLessThanOrEqual(300_000)
       expect(call[1]).toEqual({ stdout: "full" })
     }
-    const argvs = (nativeRunner.mock.calls as unknown as unknown[][]).map((call) => call[0] as string[])
-    const claude = argvs.find((argv) => argv.includes("--harness=claude"))
-    const codex = argvs.find((argv) => argv.includes("--harness=codex"))
-    expect(claude).toEqual(
-      expect.arrayContaining(["--hooks-none", "--strict-mcp-config", "--max-turns", "1", "--model", "fable"]),
-    )
-    expect(codex).toEqual(expect.arrayContaining(["--model", "gpt-6-astra", "--skip-git-repo-check"]))
-    expect(codex).not.toContain("--hooks-none")
-    expect(codex).not.toContain("--max-turns")
+    expect(harnessLegLaunch.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({
+        harness: "claude",
+        account: "fake-claude-acct",
+        model: "fable",
+        prompt: "ping",
+        env: process.env,
+      }),
+      expect.objectContaining({
+        harness: "codex",
+        account: "codex-login-name",
+        model: "gpt-6-astra",
+        prompt: "ping",
+        env: process.env,
+      }),
+    ])
+    for (const [index, launch] of harnessLegLaunch.mock.results.entries()) {
+      expect(nativeRunner.mock.calls[index]).toEqual([launch.value.argv, launch.value.env])
+    }
     const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
     expect(log).toContain('"provider":"harness"')
     expect(log).toContain('"account":"fake-claude-acct"')
     expect(log).toContain('"account":"codex-login-name"')
-    expect(log).toContain("codex has no turn cap")
+    expect(log).toContain("fixture codex launch")
     const report = await import("node:fs").then((fs) => fs.readFileSync(join(root, "never-written.txt"), "utf8"))
     expect(report).toContain("## Harness legs")
     expect(report).toContain("fake-claude-acct")
@@ -255,13 +297,15 @@ describe("pro dry-run harness legs", () => {
     ["empty stdout", { exitCode: 0, timedOut: false, ms: 1, stdout: "  " }, "empty stdout"],
     ["spawn error", { exitCode: null, timedOut: false, ms: 0, spawnError: "ENOENT" }, "spawn failed: ENOENT"],
   ] as const)("records an incomplete harness leg on %s", async (_name, result, printed) => {
-    writeConfig({ harnessLegs: [{ provider: "claude-code", model: "fable" }] })
+    writeConfig({ harnessLauncher: launcher, harnessLegs: [{ provider: "claude-code", model: "fable" }] })
     vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
     nativeRunner.mockResolvedValue(result as never)
     const lines: string[] = []
     const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
       lines.push(parts.map((part) => String(part)).join(" "))
     })
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {})
+    const fileNotice = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`exit ${code ?? ""}`)
     }) as typeof process.exit)
@@ -283,9 +327,70 @@ describe("pro dry-run harness legs", () => {
       stderr.mockRestore()
       exit.mockRestore()
     }
+    expect(stdout).toHaveBeenCalledTimes(1)
+    expect((JSON.parse(String(stdout.mock.calls[0]![0])) as { harness: unknown }).harness).toEqual([
+      expect.objectContaining({ harness: "claude-code", ok: false, error: expect.stringContaining(printed) }),
+    ])
+    stdout.mockRestore()
+    expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual([
+      "\n",
+      `Output written to: ${join(root, "never-written.txt")}\n`,
+    ])
+    fileNotice.mockRestore()
+    expect(askMock).not.toHaveBeenCalled()
+    expect(queryBackgroundMock).not.toHaveBeenCalled()
     expect(lines.some((line) => line.includes(printed) && line.includes("incomplete"))).toBe(true)
     const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
     expect(log).toContain(printed.startsWith("timed out") ? "timed out after" : printed)
     if ("stderrTail" in result && result.stderrTail) expect(log).toContain("refused")
+  })
+})
+
+describe("configured harness launcher boundary", () => {
+  it.each([undefined, "", "   "])(
+    "refuses legs without a usable harnessLauncher (%s) when loading config",
+    async (harnessLauncher) => {
+      writeConfig({ ...HARNESS_CONFIG, harnessLauncher })
+      await expect(loadConfig()).rejects.toThrow("harnessLauncher")
+    },
+  )
+
+  it("delegates the capped request and supplied environment to the configured module", async () => {
+    const env = { PATH: "/fixture/bin", REQUEST: "explicit" }
+    const outcome = await runHarnessLeg(
+      {
+        launcher,
+        leg: { provider: "codex", model: "test-model", profile: "test-account" },
+        account: "test-account",
+        question: "test question",
+        timeoutMs: 900_000,
+      },
+      env,
+    )
+    expect(harnessLegLaunch).toHaveBeenCalledWith({
+      harness: "codex",
+      account: "test-account",
+      model: "test-model",
+      prompt: "test question",
+      env,
+    })
+    expect(nativeRunnerFactory).toHaveBeenCalledWith(300_000, { stdout: "full" })
+    expect(outcome).toMatchObject({ ok: true, content: "harness opinion", timeoutMs: 300_000 })
+  })
+
+  it.each([
+    "node:path",
+    new URL("./fixtures/incomplete-harness-launcher.ts", import.meta.url).href,
+    "missing-launcher-for-test",
+  ])("refuses an invalid launcher loudly (%s)", async (specifier) => {
+    await expect(
+      runHarnessLeg({
+        launcher: specifier,
+        leg: { provider: "claude-code", model: "fable" },
+        account: "test",
+        question: "ping",
+        timeoutMs: 1,
+      }),
+    ).rejects.toThrow(new RegExp(`harnessLauncher.*${specifier}.*claude-code.*fable`))
   })
 })

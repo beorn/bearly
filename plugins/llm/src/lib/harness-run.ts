@@ -7,6 +7,7 @@ export const HARNESS_RUN_TIMEOUT_CAP_MS = 300_000
 const STDERR_TAIL_LINES = 20
 
 export interface HarnessRunRequest {
+  readonly launcher: string | undefined
   readonly leg: HarnessLeg
   readonly account: string
   readonly question: string
@@ -66,13 +67,24 @@ export async function runHarnessLeg(
   request: HarnessRunRequest,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessRunOutcome> {
+  const context = `harnessLauncher ${JSON.stringify(request.launcher)} for leg ${request.leg.provider} ${request.leg.model}`
+  if (!request.launcher?.trim()) throw new Error(`${context} is required`)
   let native: NativeRunModule
   try {
-    native = (await import("@ag/cli/native-run")) as NativeRunModule
+    const loaded: unknown = await import(request.launcher)
+    if (
+      !loaded ||
+      typeof loaded !== "object" ||
+      !("harnessLegLaunch" in loaded) ||
+      typeof loaded.harnessLegLaunch !== "function" ||
+      !("agCodeRunner" in loaded) ||
+      typeof loaded.agCodeRunner !== "function"
+    ) {
+      throw new Error("module must export harnessLegLaunch and agCodeRunner functions")
+    }
+    native = loaded as NativeRunModule
   } catch (error) {
-    throw new Error(
-      `harness leg ${request.leg.provider} ${request.leg.model} cannot load @ag/cli/native-run: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    throw new Error(`${context} cannot load launcher: ${error instanceof Error ? error.message : String(error)}`)
   }
   const harness = request.leg.provider === "codex" ? "codex" : "claude"
   const launch = native.harnessLegLaunch({
