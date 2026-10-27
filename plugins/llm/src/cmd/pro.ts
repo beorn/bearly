@@ -49,6 +49,7 @@ import { outputTokenStop, type ProCompletion } from "../lib/format"
 import { formatCostColumns, estimateFleetCost } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
 import { resolveResponseCost } from "../lib/pricing"
+import { resolveClaudeHarnessAccount } from "../lib/harness-account"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -152,6 +153,10 @@ export async function runProDual(options: {
   // Load fleet config (file + env overrides). Legacy env LLM_DUAL_PRO_B and
   // LLM_CHALLENGER_POOL still work — applyEnvOverrides preserves them.
   const cfg = await dualPro.loadConfig({ writeOnMissing: !dryRun })
+  // Row 2 removes this. Until then a real run must not drop the rows and bill API legs only.
+  if (!dryRun && cfg.harnessLegs.length > 0) {
+    throw new Error("harness legs are dry-run only until #31112 row 2")
+  }
   assertDispatchableModelIds([
     ...cfg.mainstays,
     ...cfg.splitTestPool,
@@ -253,6 +258,16 @@ export async function runProDual(options: {
     ]
     if (legCap >= 3 && slotCId) dryLegs.push({ id: "c", role: "split-test", modelId: slotCId, model: slotC })
     if (legCap >= 4 && slotDId) dryLegs.push({ id: "d", role: "split-test", modelId: slotDId, model: slotD })
+    const harnessDry = cfg.harnessLegs.map((leg) =>
+      leg.provider === "codex"
+        ? { provider: "harness" as const, harness: "codex" as const, model: leg.model, account: leg.profile }
+        : {
+            provider: "harness" as const,
+            harness: "claude-code" as const,
+            model: leg.model,
+            account: resolveClaudeHarnessAccount(),
+          },
+    )
     const knownLegs = dryLegs.filter((l): l is DryLeg & { model: Model } => Boolean(l.model))
     const dryProLegCount = knownLegs.filter((l) => l.model.costTier === "very-high").length
     const dryContext = await contextOnce()
@@ -275,12 +290,18 @@ export async function runProDual(options: {
         `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability}${subscription ? "; subscription route" : ""})`,
       )
     }
+    for (const leg of harnessDry) {
+      console.error(`  • harness ${leg.harness} ${leg.model} (account ${leg.account})`)
+    }
     const cfgPath = `${dualPro.getMemoryDir()}/dual-pro-config.json`
     console.error(`  • Config: ${cfgPath} (or built-in defaults if missing) + env overrides`)
     console.error(
       `  • Safety: one dispatch per leg with actionable quota/auth errors; ${Math.round(legTimeoutMs / 60_000)}m per-leg timeout`,
     )
-    console.error(`  • Estimated cost: ${dryCost} (${dryProLegCount} Pro-tier legs of ${dryLegs.length})`)
+    const costLine = `  • Estimated cost: ${dryCost} (${dryProLegCount} Pro-tier legs of ${dryLegs.length})`
+    console.error(
+      harnessDry.length === 0 ? costLine : `${costLine} +${harnessDry.length} harness legs on subscription quota`,
+    )
     if (options.noJudge) {
       console.error("  • Judge: disabled (--no-judge)")
     } else {

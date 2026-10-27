@@ -91,6 +91,19 @@ export const RubricSchema = z.union([
 ])
 export type Rubric = z.infer<typeof RubricSchema>
 
+const ClaudeHarnessLegSchema = z.object({
+  provider: z.literal("claude-code"),
+  model: z.string().min(1),
+})
+const CodexHarnessLegSchema = z.object({
+  provider: z.literal("codex"),
+  model: z.string().min(1),
+  /** Codex login, printed verbatim. Not looked up. */
+  profile: z.string().min(1),
+})
+export const HarnessLegSchema = z.discriminatedUnion("provider", [ClaudeHarnessLegSchema, CodexHarnessLegSchema])
+export type HarnessLeg = z.infer<typeof HarnessLegSchema>
+
 /**
  * Raw config shape — accepts BOTH the v0.7+ (mainstays/splitTestPool) shape
  * AND the v0.6 (champion/runnerUp/challengerPool) shape. Internal callers
@@ -146,6 +159,11 @@ export const DualProConfigInputSchema = z.object({
    * Env override: LLM_EXCLUDE=id1,id2,id3 (joins with config exclude).
    */
   exclude: z.array(z.string()).default([]),
+  /**
+   * Subscription CLI legs. `pro --dry-run` lists them. A real run refuses a
+   * non-empty list until headless dispatch exists.
+   */
+  harnessLegs: z.array(HarnessLegSchema).default([]),
 })
 export type DualProConfigInput = z.infer<typeof DualProConfigInputSchema>
 
@@ -162,6 +180,7 @@ export interface DualProConfig {
   rubric: Rubric
   scoreWeights: ScoreWeights
   exclude: string[]
+  harnessLegs: HarnessLeg[]
 }
 
 /**
@@ -202,6 +221,7 @@ export function normalizeConfig(raw: DualProConfigInput): DualProConfig {
     rubric: raw.rubric,
     scoreWeights: raw.scoreWeights,
     exclude: raw.exclude,
+    harnessLegs: raw.harnessLegs ?? [],
   }
 }
 
@@ -388,7 +408,12 @@ export function renderStarterConfig(cfg: DualProConfig): string {
   // warning badge in the leaderboard. Mainstays listed here log a stderr
   // warning but still dispatch (explicit config wins).
   // Env override: LLM_EXCLUDE=id1,id2,id3 (joins with this list).
-  "exclude": ${JSON.stringify(cfg.exclude)}
+  "exclude": ${JSON.stringify(cfg.exclude)},
+
+  // Harness legs — pro --dry-run lists these subscription CLIs. A real run
+  // refuses a non-empty list until headless dispatch exists. claude-code's
+  // account comes from CLAUDE_CONFIG_DIR. codex's account is its profile string.
+  "harnessLegs": ${JSON.stringify(cfg.harnessLegs)}
 }
 `
 }
