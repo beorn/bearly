@@ -314,7 +314,7 @@ describe("pro dry-run harness legs", () => {
     expect(log).toContain('"account":"fake-claude-acct"')
     expect(log).toContain('"account":"codex-login-name"')
     expect(log).toContain("fixture codex launch")
-    expect(JSON.parse(log.trim()).harnessJudge).toEqual(judged)
+    expect(JSON.parse(log.trim())).toMatchObject({ harnessJudge: judged })
     const report = await import("node:fs").then((fs) => fs.readFileSync(join(root, "never-written.txt"), "utf8"))
     expect(report).toContain("## Harness legs")
     expect(report).toContain("fake-claude-acct")
