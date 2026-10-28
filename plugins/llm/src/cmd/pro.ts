@@ -1235,6 +1235,7 @@ export async function runProDual(options: {
     judgeResponses,
     rubric: cfg.rubric,
     harness: harnessOutcomes,
+    harnessJudge: harnessJudge?.ok ? harnessJudge.value : undefined,
   })
 
   // Promotion banner: if the leaderboard now suggests the challenger has

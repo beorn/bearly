@@ -212,7 +212,21 @@ describe("pro dry-run harness legs", () => {
   })
 
   it("runs harness legs through agCodeRunner and does not spawn from bearly", async () => {
-    writeConfig(HARNESS_CONFIG)
+    const judgeModel = getModel("gpt-5-mini")
+    if (!judgeModel) throw new Error("harness judge fixture requires the registered GPT-5 Mini model")
+    const judged = {
+      scoreA: { scores: { specificity: 4, actionability: 4, correctness: 5, depth: 4 }, total: 17 },
+      scoreB: { scores: { specificity: 3, actionability: 3, correctness: 3, depth: 3 }, total: 12 },
+      winner: "A",
+      reasoning: "The Claude opinion answers the question.",
+    }
+    const claudeOpinion = "The Claude harness opinion."
+    const codexOpinion = "The Codex harness opinion."
+    nativeRunner
+      .mockResolvedValueOnce({ exitCode: 0, timedOut: false, ms: 5, stdout: claudeOpinion })
+      .mockResolvedValueOnce({ exitCode: 0, timedOut: false, ms: 5, stdout: codexOpinion })
+    askMock.mockResolvedValueOnce({ model: judgeModel, content: JSON.stringify(judged), durationMs: 5 })
+    writeConfig({ ...HARNESS_CONFIG, judge: judgeModel.modelId })
     vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
     const diagnostics: string[] = []
     const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
@@ -248,17 +262,26 @@ describe("pro dry-run harness legs", () => {
       ]),
     )
     expect(stdout).toHaveBeenCalledTimes(1)
-    expect((JSON.parse(String(stdout.mock.calls[0]![0])) as { harness: unknown }).harness).toEqual([
+    const envelope = JSON.parse(String(stdout.mock.calls[0]![0])) as { harness: unknown; harnessJudge: unknown }
+    expect(envelope.harness).toEqual([
       expect.objectContaining({ harness: "claude-code", ok: true }),
       expect.objectContaining({ harness: "codex", ok: true }),
     ])
+    expect(envelope.harnessJudge).toEqual(judged)
     stdout.mockRestore()
     expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual([
       "\n",
       `Output written to: ${join(root, "never-written.txt")}\n`,
     ])
     fileNotice.mockRestore()
-    expect(askMock).not.toHaveBeenCalled()
+    expect(askMock).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("QUESTION:\nping"),
+      "quick",
+      expect.objectContaining({ modelObject: judgeModel, stream: false }),
+    )
+    const judgePrompt = askMock.mock.calls[0]![0] as string
+    expect(judgePrompt).toContain(`### Response A (claude-code fable)\n\n${claudeOpinion}`)
+    expect(judgePrompt).toContain(`### Response B (codex gpt-6-astra)\n\n${codexOpinion}`)
     expect(queryBackgroundMock).not.toHaveBeenCalled()
     expect(spawnMock).not.toHaveBeenCalled()
     expect(nativeRunner).toHaveBeenCalled()
@@ -291,10 +314,12 @@ describe("pro dry-run harness legs", () => {
     expect(log).toContain('"account":"fake-claude-acct"')
     expect(log).toContain('"account":"codex-login-name"')
     expect(log).toContain("fixture codex launch")
+    expect(JSON.parse(log.trim()).harnessJudge).toEqual(judged)
     const report = await import("node:fs").then((fs) => fs.readFileSync(join(root, "never-written.txt"), "utf8"))
     expect(report).toContain("## Harness legs")
     expect(report).toContain("fake-claude-acct")
     expect(report).toContain("codex-login-name")
+    expect(report).toContain(`Harness judge: A — A 17, B 12. ${judged.reasoning}`)
   })
 
   // The earlier launcher-failure cases excluded every API route, so they
