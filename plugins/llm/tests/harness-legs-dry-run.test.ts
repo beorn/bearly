@@ -456,6 +456,29 @@ describe("configured harness launcher boundary", () => {
     expect(outcome).toMatchObject({ ok: true, content: "harness opinion", timeoutMs: 300_000 })
   })
 
+  it("stores stdout full as the assistant text, not a json wrapper", async () => {
+    // claude -p without --output-format json writes the assistant message as process stdout.
+    // agCodeRunner stdout full returns that string. content is the trim of it.
+    nativeRunner.mockResolvedValueOnce({
+      exitCode: 0,
+      timedOut: false,
+      ms: 5,
+      stdout: "\nThe answer is 4.\n",
+    })
+    const outcome = await runHarnessLeg(
+      {
+        launcher,
+        leg: { provider: "claude-code", model: "fable" },
+        account: "fake-claude-acct",
+        question: "what is 2+2",
+        timeoutMs: 30_000,
+      },
+      { PATH: "/fixture/bin" },
+    )
+    expect(outcome).toMatchObject({ ok: true, content: "The answer is 4." })
+    expect(outcome.content?.startsWith("{")).toBe(false)
+  })
+
   it.each([
     undefined,
     "",
