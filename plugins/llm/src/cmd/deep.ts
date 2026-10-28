@@ -12,6 +12,9 @@ import { withSignalAbort } from "../lib/signals"
 import { confirmOrExit } from "../ui/confirm"
 import { checkAndRecoverPartials } from "./recover"
 import { safeCurrentSeat, declaredHabitatEnvFile } from "../lib/env-preflight"
+import { loadConfig, type HarnessLeg } from "../lib/dual-pro"
+import { resolveClaudeHarnessAccount } from "../lib/harness-account"
+import { HARNESS_RUN_TIMEOUT_CAP_MS, runHarnessLeg } from "../lib/harness-run"
 
 const log = createLogger("bearly:llm")
 
@@ -36,6 +39,24 @@ export async function runDeep(options: {
   const shouldContinue = await checkAndRecoverPartials(skipRecover, skipConfirm)
   if (!shouldContinue) {
     console.error("Cancelled.")
+    return
+  }
+
+  const cfg = await loadConfig({ writeOnMissing: false })
+  const harnessLeg = cfg.harnessLegs[0]
+  if (harnessLeg) {
+    await runDeepHarnessLeg({
+      topic,
+      context,
+      leg: harnessLeg,
+      extraLegs: cfg.harnessLegs.length - 1,
+      launcher: cfg.harnessLauncher,
+      outputFile,
+      sessionTag,
+      skipConfirm,
+      dryRun,
+      modelOverridden: modelOverride !== undefined,
+    })
     return
   }
 
@@ -195,5 +216,74 @@ export async function runDeep(options: {
     options.retryCommand,
     response.servedBy,
     response,
+  )
+}
+
+/**
+ * One configured harness leg, with that harness's own web search, written
+ * through the same completion file as a finished API deep response.
+ * Further configured legs stay listed and are not run.
+ */
+async function runDeepHarnessLeg(args: {
+  topic: string
+  context: string | undefined
+  leg: HarnessLeg
+  extraLegs: number
+  launcher: string | undefined
+  outputFile: string
+  sessionTag: string
+  skipConfirm: boolean
+  dryRun: boolean
+  modelOverridden: boolean
+}): Promise<void> {
+  const account = args.leg.provider === "codex" ? args.leg.profile : resolveClaudeHarnessAccount()
+  const label = `${args.leg.provider} ${args.leg.model} (account ${account})`
+  console.error(`Deep research: ${args.topic}`)
+  console.error(`Harness leg: ${label}`)
+  if (args.extraLegs > 0) console.error(`  • ${args.extraLegs} more configured harness legs are not run`)
+  console.error("Web search: on")
+  console.error(`Quota: subscription, not an API charge. Timeout ${HARNESS_RUN_TIMEOUT_CAP_MS}ms.`)
+  if (args.modelOverridden) console.error("API model override is not used; this run is the harness leg.")
+  if (args.context) console.error(`📎 Context provided (${args.context.length} chars)`)
+  const consent = "This runs one harness leg on subscription quota with web search. Proceed? [Y/n] "
+  if (args.dryRun) {
+    console.error("🔍 Dry run - would run one harness leg with web search")
+    console.error(`   Would ask: ${consent.trim()}`)
+    return
+  }
+  await confirmOrExit(consent, args.skipConfirm)
+  const question = args.context ? `${args.topic}\n\n${args.context}` : args.topic
+  const outcome = await runHarnessLeg({
+    launcher: args.launcher,
+    leg: args.leg,
+    account,
+    question,
+    timeoutMs: HARNESS_RUN_TIMEOUT_CAP_MS,
+    webSearch: true,
+  })
+  const { finishResponse } = await import("../lib/format")
+  const model = {
+    displayName: `${outcome.model} (account ${outcome.account})`,
+    modelId: outcome.model,
+  }
+  const servedBy = {
+    route: "subscription-cli" as const,
+    cli: outcome.harness === "codex" ? "codex" : "claude",
+    model: outcome.model,
+  }
+  const failure = outcome.ok ? undefined : `${label} incomplete: ${outcome.error ?? "unknown"}`
+  await finishResponse(
+    outcome.ok ? outcome.content : undefined,
+    model,
+    args.outputFile,
+    args.sessionTag,
+    undefined,
+    undefined,
+    args.topic,
+    undefined,
+    undefined,
+    failure,
+    undefined,
+    servedBy,
   )
 }

@@ -20,6 +20,8 @@ export interface HarnessRunRequest {
   readonly account: string
   readonly question: string
   readonly timeoutMs: number
+  /** Ask the harness for its own live web search. `/deep` sets this. `/pro` does not. */
+  readonly webSearch?: boolean
 }
 
 export interface HarnessRunOutcome {
@@ -53,6 +55,7 @@ type NativeRunModule = {
     model: string
     prompt: string
     env?: NodeJS.ProcessEnv
+    webSearch?: boolean
   }) => { argv: readonly string[]; env: NodeJS.ProcessEnv; notes: readonly string[] }
   agCodeRunner: (
     timeoutMs?: number,
@@ -111,6 +114,7 @@ export async function runHarnessLeg(
     model: request.leg.model,
     prompt: request.question,
     env,
+    ...(request.webSearch ? { webSearch: true } : {}),
   })
   const result = await native.agCodeRunner(timeoutMs, { stdout: "full" })(launch.argv, launch.env)
   const base = {
