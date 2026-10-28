@@ -50,7 +50,7 @@ import { formatCostColumns, estimateFleetCost } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
 import { resolveResponseCost } from "../lib/pricing"
 import { resolveClaudeHarnessAccount } from "../lib/harness-account"
-import { runHarnessLeg, type HarnessRunOutcome } from "../lib/harness-run"
+import { judgeHarnessTexts, runHarnessLeg, type HarnessRunOutcome } from "../lib/harness-run"
 
 /** One completion rule for every requested leg, independent of its role. */
 function panelStatus(completion: ProCompletion): "completed" | "incomplete" | "failed" {
@@ -943,6 +943,37 @@ export async function runProDual(options: {
         }
       : undefined
 
+  const judgedHarness = harnessOutcomes.filter((leg) => leg.ok && leg.content)
+  let harnessJudge: Awaited<ReturnType<typeof judgeHarnessTexts>> | undefined
+  if (judgedHarness.length >= 2) {
+    const harnessJudgeModel = getModel(cfg.judge)
+    if (!harnessJudgeModel) {
+      harnessJudge = { ok: false, error: `judge model "${cfg.judge}" not found in registry` }
+    } else {
+      harnessJudge = await judgeHarnessTexts({
+        question: enrichedQuestion,
+        rubric: cfg.rubric,
+        left: {
+          model: `${judgedHarness[0]!.harness} ${judgedHarness[0]!.model}`,
+          content: judgedHarness[0]!.content!,
+        },
+        right: {
+          model: `${judgedHarness[1]!.harness} ${judgedHarness[1]!.model}`,
+          content: judgedHarness[1]!.content!,
+        },
+        ask: async (prompt) => {
+          const raw = await ask(prompt, "quick", {
+            modelObject: harnessJudgeModel,
+            maxOutputTokens: options.maxOutputTokens,
+            stream: false,
+          })
+          if (raw.error) throw new Error(raw.error)
+          return raw.content
+        },
+      })
+    }
+  }
+
   // Build the combined markdown report. All responses presented side-by-side,
   // headers labelled so the reader can diff. Non-fatal errors surface inline
   // so the reader sees which model failed without digging through logs.
@@ -1039,6 +1070,13 @@ export async function runProDual(options: {
     for (const leg of harnessOutcomes) {
       parts.push(`### ${leg.harness} ${leg.model} (account ${leg.account})`)
       parts.push(leg.ok ? (leg.content ?? "") : `⚠️  Incomplete: ${leg.error ?? "no content"}`)
+    }
+    if (harnessJudge?.ok) {
+      parts.push(
+        `Harness judge: ${harnessJudge.value.winner} — A ${harnessJudge.value.scoreA?.total ?? "?"}, B ${harnessJudge.value.scoreB?.total ?? "?"}. ${harnessJudge.value.reasoning}`,
+      )
+    } else if (harnessJudge && !harnessJudge.ok) {
+      parts.push(`⚠️  Harness judge incomplete: ${harnessJudge.error}`)
     }
   }
 
@@ -1148,6 +1186,7 @@ export async function runProDual(options: {
       stderrTail: leg.stderrTail,
       content: leg.content,
     })),
+    harnessJudge: harnessJudge?.ok ? harnessJudge.value : undefined,
     judge: judgeResult
       ? {
           model: judgeModelId,
@@ -1317,6 +1356,7 @@ async function appendAbProLog(entry: {
   judgeModel?: string
   judgeWinner?: "a" | "b" | "c" | "d" | "tie"
   harness?: HarnessRunOutcome[]
+  harnessJudge?: import("../lib/dual-pro").PairwiseJudgeResult
   judgeReasoning?: string
   judgeError?: string
   judgeCost: ResolvedCost
@@ -1426,6 +1466,7 @@ async function appendAbProLog(entry: {
           stderrTail: leg.stderrTail,
           content: leg.content,
         })),
+        harnessJudge: entry.harnessJudge,
         judge:
           entry.judgeWinner || entry.judgeError || entry.pairwise.ab || entry.pairwise.ac || entry.pairwise.ad
             ? {

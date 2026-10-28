@@ -1,5 +1,12 @@
 import { join } from "node:path"
-import { getMemoryDir, type HarnessLeg } from "./dual-pro"
+import {
+  buildPairwiseJudgePrompt,
+  getMemoryDir,
+  parsePairwiseJudgeResponseDetailed,
+  type HarnessLeg,
+  type PairwiseJudgeResult,
+  type Rubric,
+} from "./dual-pro"
 
 /** A harness leg never waits longer than this, whatever the API leg timeout is. */
 export const HARNESS_RUN_TIMEOUT_CAP_MS = 300_000
@@ -125,4 +132,28 @@ export async function runHarnessLeg(
   const content = result.stdout?.trim() ?? ""
   if (content.length === 0) return { ...base, ok: false, error: "empty stdout" }
   return { ...base, ok: true, content }
+}
+
+/** Score two harness opinions with the same pairwise prompt the API legs use. */
+export async function judgeHarnessTexts(args: {
+  question: string
+  rubric: Rubric
+  left: { model: string; content: string }
+  right: { model: string; content: string }
+  ask: (prompt: string) => Promise<string>
+}): Promise<{ ok: true; value: PairwiseJudgeResult } | { ok: false; error: string }> {
+  const prompt = buildPairwiseJudgePrompt({
+    question: args.question,
+    pair: { a: args.left, b: args.right },
+    rubric: args.rubric,
+  })
+  let raw: string
+  try {
+    raw = await args.ask(prompt)
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+  const parsed = parsePairwiseJudgeResponseDetailed(raw)
+  if (!parsed.ok) return { ok: false, error: `${parsed.kind}: ${parsed.message}` }
+  return { ok: true, value: parsed.value }
 }
