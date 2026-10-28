@@ -25,12 +25,12 @@ Follow [[../agent-system/references/resolver|resolver quality plateau]]: keep ro
 ### Always Read
 
 - [[#Phase 1 State the Symptom Precisely]] — start with the observable symptom in user terms.
-- [[#Phase 2 The 5 Whys]] — every why needs evidence, not guesses.
+- [[#Phase 2 The 5 Whys]] — a rate or count starts with a hypothesis table; every why needs evidence, never "unknown".
 
 ### By Intent
 
 - [[#Phase 3 The Chain]] — read when checking causal coherence.
-- [[#Phase 4 Fix Levels]] — read when mapping patch/guard/redesign/spec/architecture.
+- [[#Phase 4 Fix Levels]] — read when mapping patch/correct/redesign/spec/architecture.
 - [[#Phase 5 Recommend  Act]] — read when converting root cause into immediate and deeper work.
 - [[#Phase 3b Ishikawa  Fishbone Diagram Optional]] — read when causes branch instead of forming one chain.
 
@@ -53,6 +53,10 @@ FREQUENCY: [Once? Every time? Intermittent?]
 ## Phase 2: The 5 Whys
 
 For each "why", do actual investigation — grep, read code, check history. Don't guess.
+
+**A rate or count (merges a day, error rate, latency) starts with a hypothesis table, before Why 1.** List 8-12 candidate causes, deep and wide (your own team's decisions too, not only code); for each, the check you ran, the number it gave, a verdict of PROVED, RULED OUT or UNTESTED, and its share of the change. Proved shares should add up to nearly the whole change; a gap means a missing candidate. Why 1 starts from the largest proved share. Example: merges fell from ~160 to ~20 a day; of 12 candidates, held agents PROVED 52%, quota exhaustion RULED OUT by the quota ledger.
+
+**"Unknown" is never an answer.** Every cause here leaves a trace you can read, so an UNTESTED cause gets the smallest experiment that settles it (one rerun, one toggle, one day), with the number you predict written down before you run it.
 
 Use this template for each level:
 
@@ -81,12 +85,12 @@ Each "why" suggests a fix at a different level. Map them:
 | Level | Fix                                      | Type         | Solves               |
 | ----- | ---------------------------------------- | ------------ | -------------------- |
 | Why 1 | [Narrow fix — patch the direct cause]    | PATCH        | This instance only   |
-| Why 2 | [Guard — prevent the enabling condition] | GUARD        | This class of bug    |
+| Why 2 | [Remove or correct the mechanism]        | CORRECT      | This class of bug    |
 | Why 3 | [Redesign — change the abstraction]      | REDESIGN     | Related problems too |
 | Why 4 | [Spec — define the missing rules]        | SPEC         | Future problems      |
 | Why 5 | [Architecture — structural change]       | ARCHITECTURE | Entire category      |
 
-**The deeper you fix, the more problems you prevent — but the more effort it takes.**
+**The deeper you fix, the more problems you prevent — but the more effort it takes.** CORRECT removes or fixes the mechanism that allowed Why 1; a new check, gate, alarm or timer needs the operator's yes first.
 
 ## Phase 5: Recommend + Act
 
@@ -112,14 +116,7 @@ cost, recovery, and citations.
 
 When the causal chain has **multiple contributing causes** at the same level (not a single chain but a convergence), draw an Ishikawa diagram. This is common for systemic issues where several factors combine.
 
-Categories (adapt to the problem):
-
-- **Code** — bugs, missing abstractions, wrong patterns
-- **Process** — missing tests, no review, no spec
-- **Tools** — inadequate tooling, wrong tool for the job
-- **Knowledge** — undocumented conventions, tribal knowledge
-- **Environment** — CI, runtime, platform differences
-- **Design** — architectural decisions, missing boundaries
+Categories (adapt to the problem): **Code** (bugs, missing abstractions), **Process** (tests, review, spec), **Tools**, **Knowledge** (undocumented conventions), **Environment** (CI, runtime), **Design** (boundaries).
 
 Format (indented tree — no box drawing):
 
@@ -137,7 +134,7 @@ SYMPTOM: Diagrams have misaligned borders
     └── Dense punctuation confuses visual estimation
 ```
 
-Use this when Phase 3's linear chain feels incomplete — when you suspect **multiple independent causes** contribute. The fishbone reveals which categories need investigation; the 5 Whys reveals depth within each.
+The fishbone reveals which categories need investigation; the 5 Whys reveals depth within each.
 
 ## Example
 
@@ -173,7 +170,6 @@ Why 5: Write outliner spec, derive all guards from it         → SPEC (2-3 days
 | ------------------------------------ | ---------------------------------------------------- |
 | Guess at causes without reading code | Each "why" must have EVIDENCE                        |
 | Stop at Why 1                        | That's just the narrow fix — the value is deeper     |
-| Force exactly 5 levels               | Stop when you hit bedrock, go past 5 if there's more |
 | Skip the causal chain paragraph      | Writing it reveals logical gaps                      |
 | Only ship the deep fix               | Ship the PATCH now, bead the deeper fixes            |
 | Do /why without a specific symptom   | It needs a concrete starting point                   |
