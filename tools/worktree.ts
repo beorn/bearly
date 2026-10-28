@@ -78,8 +78,6 @@ const error = (msg: string) => console.error(`${RED}✗${RESET} ${msg}`)
 /** Internal parent→delegate handoff after the parent has fetched and verified the base. */
 export const PREPARED_BASE_SHA_ENV = "BEARLY_WORKTREE_PREPARED_BASE_SHA"
 
-/** Internal composing-caller→delegate admission policy for pool-shaped names. */
-
 /**
  * `git worktree add` runs the clone-wide post-checkout hook before returning.
  * The creator owns submodule initialization immediately afterward, using the
