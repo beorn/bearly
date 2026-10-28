@@ -10,12 +10,13 @@
  * (src/lib/subscription-cli.ts). A dry-run must call none of them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getMemoryDir, loadConfig } from "../src/lib/dual-pro"
 import { NO_CLAUDE_LOGIN, resolveClaudeHarnessAccount } from "../src/lib/harness-account"
 import { runProDual } from "../src/cmd/pro"
+import { getModel } from "../src/lib/types"
 
 import { nativeRunner, agCodeRunner as nativeRunnerFactory, harnessLegLaunch } from "./fixtures/harness-launcher"
 import { runHarnessLeg } from "../src/lib/harness-run"
@@ -26,17 +27,18 @@ const launcher = new URL("./fixtures/harness-launcher.ts", import.meta.url).href
 const askMock = vi.hoisted(() => vi.fn())
 const queryBackgroundMock = vi.hoisted(() => vi.fn())
 const costMock = vi.hoisted(() => vi.fn())
+const providerRouteMock = vi.hoisted(() => vi.fn((_provider: string) => false))
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>()
   return { ...actual, spawn: spawnMock }
 })
 
-// This suite exercises subscription legs only. Unavailable API routes must
-// never reach dispatch; the throwing mocks below detect any bypass.
+// Most cases isolate subscription legs; the coexistence case opts one API
+// route into the existing dispatch mock without contacting a provider.
 vi.mock("../src/lib/providers", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/providers")>()
-  return { ...actual, isProviderRoutable: () => false }
+  return { ...actual, isProviderRoutable: providerRouteMock }
 })
 
 vi.mock("../src/lib/research", async (importOriginal) => {
@@ -118,6 +120,8 @@ beforeEach(() => {
   nativeRunnerFactory.mockReset()
   nativeRunner.mockResolvedValue({ exitCode: 0, timedOut: false, ms: 5, stdout: "harness opinion" })
   nativeRunnerFactory.mockImplementation(() => nativeRunner)
+  providerRouteMock.mockReset()
+  providerRouteMock.mockReturnValue(false)
   askMock.mockReset()
   queryBackgroundMock.mockReset()
   costMock.mockReset()
@@ -291,6 +295,85 @@ describe("pro dry-run harness legs", () => {
     expect(report).toContain("## Harness legs")
     expect(report).toContain("fake-claude-acct")
     expect(report).toContain("codex-login-name")
+  })
+
+  // The earlier launcher-failure cases excluded every API route, so they
+  // could not detect a failed launcher cancelling a paid opinion or its report.
+  it("keeps a successful API opinion alongside an unloadable configured harness launcher", async () => {
+    const apiModel = getModel("moonshotai/kimi-k2.6")
+    if (!apiModel) throw new Error("coexistence fixture requires the registered Kimi model")
+    providerRouteMock.mockImplementation((provider) => provider === apiModel.provider)
+    const apiContent = "The API opinion survives the failed harness launcher."
+    askMock.mockResolvedValue({ model: apiModel, content: apiContent, durationMs: 5 })
+    vi.stubEnv("LLM_SKIP_MODEL_LIVENESS", "1")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
+    const missingLauncher = "missing-coexistence-launcher"
+    writeConfig({
+      harnessLauncher: missingLauncher,
+      harnessLegs: [{ provider: "claude-code", model: "fable" }],
+    })
+    const outputFile = join(root, "coexistence-report.txt")
+    const diagnostics: string[] = []
+    const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      diagnostics.push(parts.map(String).join(" "))
+    })
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {})
+    const fileNotice = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit ${code ?? ""}`)
+    }) as typeof process.exit)
+    try {
+      await expect(
+        runProDual({
+          question: "coexistence question",
+          modelOverride: undefined,
+          imagePath: undefined,
+          streamToken: vi.fn(),
+          buildContext: async () => undefined,
+          outputFile,
+          sessionTag: "api-harness-coexistence",
+          skipConfirm: true,
+          dryRun: false,
+          noChallenger: true,
+          noJudge: true,
+        }),
+      ).rejects.toThrow("exit 1")
+      expect(askMock).toHaveBeenCalledTimes(1)
+      expect(askMock).toHaveBeenCalledWith(
+        "coexistence question",
+        "standard",
+        expect.objectContaining({
+          modelObject: apiModel,
+          stream: false,
+        }),
+      )
+      expect(queryBackgroundMock).not.toHaveBeenCalled()
+      expect(nativeRunner).not.toHaveBeenCalled()
+      expect(stdout).toHaveBeenCalledTimes(1)
+      const envelope = JSON.parse(String(stdout.mock.calls[0]![0])) as { b: unknown; harness: unknown }
+      expect(envelope.b).toEqual(expect.objectContaining({ model: apiModel.displayName, status: "completed" }))
+      expect(envelope.harness).toEqual([
+        expect.objectContaining({
+          harness: "claude-code",
+          model: "fable",
+          ok: false,
+          error: expect.stringContaining(missingLauncher),
+        }),
+      ])
+      const report = readFileSync(outputFile, "utf8")
+      expect(report).toContain(apiContent)
+      expect(report).toContain("## Harness legs")
+      expect(report).toContain(`Incomplete: harnessLauncher "${missingLauncher}"`)
+      expect(
+        diagnostics.some((line) => line.includes("harness claude-code fable") && line.includes("incomplete")),
+      ).toBe(true)
+      expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual(["\n", `Output written to: ${outputFile}\n`])
+    } finally {
+      exit.mockRestore()
+      stderr.mockRestore()
+      stdout.mockRestore()
+      fileNotice.mockRestore()
+    }
   })
 
   it.each([
