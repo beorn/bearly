@@ -79,7 +79,6 @@ const error = (msg: string) => console.error(`${RED}✗${RESET} ${msg}`)
 export const PREPARED_BASE_SHA_ENV = "BEARLY_WORKTREE_PREPARED_BASE_SHA"
 
 /** Internal composing-caller→delegate admission policy for pool-shaped names. */
-const POOL_SLOTS_ENV = "BEARLY_WORKTREE_POOL_SLOTS"
 
 /**
  * `git worktree add` runs the clone-wide post-checkout hook before returning.
@@ -1223,42 +1222,6 @@ async function sharedConfigBool(gitRoot: string, key: string): Promise<boolean |
   throw new Error(`worktree audit received invalid boolean ${key}=${JSON.stringify(value)}`)
 }
 
-function requireDeclaredPoolSlot(name: string, environment: NodeJS.ProcessEnv = process.env): void {
-  if (!/^wt\d+$/.test(name)) return
-
-  const serializedSlots = environment[POOL_SLOTS_ENV]
-  if (serializedSlots === undefined) {
-    error(`Pool slot ${name} requires explicit admission policy from the composing caller`)
-    console.log(DIM + `  Missing ${POOL_SLOTS_ENV}; refusing instead of assuming a pool size.` + RESET)
-    process.exit(1)
-  }
-
-  let slots: unknown
-  try {
-    slots = JSON.parse(serializedSlots)
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause)
-    error(`Invalid ${POOL_SLOTS_ENV}: expected an exact JSON array of pool slot names (${detail})`)
-    process.exit(1)
-  }
-
-  if (
-    !Array.isArray(slots) ||
-    slots.some((slot) => typeof slot !== "string" || !/^wt\d+$/.test(slot)) ||
-    new Set(slots).size !== slots.length
-  ) {
-    error(`Invalid ${POOL_SLOTS_ENV}: expected unique pool slot names such as ["wt0","wt13"]`)
-    process.exit(1)
-  }
-
-  if (!slots.includes(name)) {
-    error(`Pool slot ${name} is not present in the composing caller's declared slot set`)
-    console.log(DIM + `  ${POOL_SLOTS_ENV} declared: ${slots.length === 0 ? "(none)" : slots.join(", ")}` + RESET)
-    console.log(DIM + "  For scratch worktrees, pick a non-pool name: bun worktree create my-feature" + RESET)
-    process.exit(1)
-  }
-}
-
 // ============================================
 // Commands
 // ============================================
@@ -2003,11 +1966,6 @@ export async function createWorktree(name: string, branch?: string, options: Cre
     error("Not in a git repository")
     process.exit(1)
   }
-
-  // Fleet policy belongs to the composing caller. Bearly only enforces the
-  // exact generic set it receives, and refuses pool-shaped names when that
-  // required policy is absent or invalid.
-  requireDeclaredPoolSlot(name)
 
   const repoName = basename(gitRoot)
   const poolRoot = resolvePoolRoot(gitRoot)
