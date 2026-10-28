@@ -425,7 +425,10 @@ describe("pro dry-run harness legs", () => {
     fileNotice.mockRestore()
     expect(askMock).not.toHaveBeenCalled()
     expect(queryBackgroundMock).not.toHaveBeenCalled()
-    expect(lines.some((line) => line.includes(printed) && line.includes("incomplete"))).toBe(true)
+    expect(
+      lines.some((line) => line.includes(printed) && line.includes("incomplete") && line.includes("fake-claude-acct")),
+    ).toBe(true)
+    expect(lines.some((line) => line.includes("[dual-pro] incomplete"))).toBe(true)
     const log = await import("node:fs").then((fs) => fs.readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8"))
     expect(log).toContain(printed.startsWith("timed out") ? "timed out after" : printed)
     if ("stderrTail" in result && result.stderrTail) expect(log).toContain("refused")

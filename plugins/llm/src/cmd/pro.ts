@@ -1161,7 +1161,8 @@ export async function runProDual(options: {
       })),
     judges: { waived: !!options.noJudge, required: judgeRequired, returned: judgeReturned, failed: judgeFailed },
   }
-  const status = panelStatus(completion)
+  const panel = panelStatus(completion)
+  const status = harnessOutcomes.some((leg) => !leg.ok) ? "incomplete" : panel
   await finalizeOutput(combined, outputFile, sessionTag, {
     query: question,
     model: `dual-pro (${legOutcomes.map((l) => l.model.displayName).join(" + ")})`,
