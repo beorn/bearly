@@ -82,13 +82,13 @@ Read it aloud. Does it make logical sense? Does each "because" follow from the p
 
 Each "why" suggests a fix at a different level. Map them:
 
-| Level | Fix                                      | Type         | Solves               |
-| ----- | ---------------------------------------- | ------------ | -------------------- |
-| Why 1 | [Narrow fix — patch the direct cause]    | PATCH        | This instance only   |
-| Why 2 | [Remove or correct the mechanism]        | CORRECT      | This class of bug    |
-| Why 3 | [Redesign — change the abstraction]      | REDESIGN     | Related problems too |
-| Why 4 | [Spec — define the missing rules]        | SPEC         | Future problems      |
-| Why 5 | [Architecture — structural change]       | ARCHITECTURE | Entire category      |
+| Level | Fix                                   | Type         | Solves               |
+| ----- | ------------------------------------- | ------------ | -------------------- |
+| Why 1 | [Narrow fix — patch the direct cause] | PATCH        | This instance only   |
+| Why 2 | [Remove or correct the mechanism]     | CORRECT      | This class of bug    |
+| Why 3 | [Redesign — change the abstraction]   | REDESIGN     | Related problems too |
+| Why 4 | [Spec — define the missing rules]     | SPEC         | Future problems      |
+| Why 5 | [Architecture — structural change]    | ARCHITECTURE | Entire category      |
 
 **The deeper you fix, the more problems you prevent — but the more effort it takes.** CORRECT removes or fixes the mechanism that allowed Why 1; a new check, gate, alarm or timer needs the operator's yes first.
 
@@ -166,10 +166,10 @@ Why 5: Write outliner spec, derive all guards from it         → SPEC (2-3 days
 
 ## Anti-Patterns
 
-| Don't                                | Why                                                  |
-| ------------------------------------ | ---------------------------------------------------- |
-| Guess at causes without reading code | Each "why" must have EVIDENCE                        |
-| Stop at Why 1                        | That's just the narrow fix — the value is deeper     |
-| Skip the causal chain paragraph      | Writing it reveals logical gaps                      |
-| Only ship the deep fix               | Ship the PATCH now, bead the deeper fixes            |
-| Do /why without a specific symptom   | It needs a concrete starting point                   |
+| Don't                                | Why                                              |
+| ------------------------------------ | ------------------------------------------------ |
+| Guess at causes without reading code | Each "why" must have EVIDENCE                    |
+| Stop at Why 1                        | That's just the narrow fix — the value is deeper |
+| Skip the causal chain paragraph      | Writing it reveals logical gaps                  |
+| Only ship the deep fix               | Ship the PATCH now, bead the deeper fixes        |
+| Do /why without a specific symptom   | It needs a concrete starting point               |
