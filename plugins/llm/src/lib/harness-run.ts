@@ -7,6 +7,7 @@ import {
   type PairwiseJudgeResult,
   type Rubric,
 } from "./dual-pro"
+import { NO_CLAUDE_LOGIN } from "./harness-account"
 
 /** A harness leg never waits longer than this, whatever the API leg timeout is. */
 export const HARNESS_RUN_TIMEOUT_CAP_MS = 300_000
@@ -79,6 +80,19 @@ export async function runHarnessLeg(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessRunOutcome> {
   const timeoutMs = harnessTimeoutMs(request.timeoutMs)
+  if (request.account === NO_CLAUDE_LOGIN) {
+    return {
+      provider: "harness",
+      harness: request.leg.provider,
+      model: request.leg.model,
+      account: request.account,
+      ok: false,
+      error: NO_CLAUDE_LOGIN,
+      notes: [],
+      argv: [],
+      timeoutMs,
+    }
+  }
   let native: NativeRunModule
   try {
     if (!request.launcher?.trim()) throw new Error("launcher is unset")

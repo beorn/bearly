@@ -532,4 +532,22 @@ describe("configured harness launcher boundary", () => {
     expect(outcome.error).toContain("set harnessLauncher to a module exporting harnessLegLaunch and agCodeRunner")
     expect(nativeRunner).not.toHaveBeenCalled()
   })
+
+  it("does not launch a logged-out Claude account and names that account", async () => {
+    const outcome = await runHarnessLeg({
+      launcher,
+      leg: { provider: "claude-code", model: "fable" },
+      account: NO_CLAUDE_LOGIN,
+      question: "ping",
+      timeoutMs: 1,
+    })
+    expect(outcome).toMatchObject({
+      ok: false,
+      account: NO_CLAUDE_LOGIN,
+      argv: [],
+      notes: [],
+    })
+    expect(outcome.error).toContain(NO_CLAUDE_LOGIN)
+    expect(nativeRunner).not.toHaveBeenCalled()
+  })
 })
