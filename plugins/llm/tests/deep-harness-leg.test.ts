@@ -7,7 +7,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
 
 const LAUNCHER = `import { writeFileSync } from "node:fs"
@@ -30,7 +30,10 @@ function writeConfig(dir: string, launcher: string, legs: unknown[]): void {
 }
 
 describe("/deep one harness leg", () => {
-  makeTestEnv()
+  let env: ReturnType<typeof makeTestEnv>
+  beforeEach(() => {
+    env = makeTestEnv()
+  })
   const memory = mkdtempSync(join(tmpdir(), "deep-harness-"))
   const launcher = join(memory, "launcher.mjs")
   const launchLog = join(memory, "launch.json")
@@ -83,6 +86,7 @@ describe("/deep one harness leg", () => {
     const { stderr } = await run({ dryRun: true })
     expect(stderr).toContain("Dry run - would call deep research API")
     expect(stderr).not.toContain("would run one harness leg")
+    expect(env.stdout).toEqual([])
   })
 
   it("dry-run names the one leg and web search, and does not launch", async () => {
@@ -100,6 +104,7 @@ describe("/deep one harness leg", () => {
     expect(text).toContain("would run one harness leg with web search")
     expect(text).not.toContain("would call deep research API")
     expect(() => readFileSync(launchLog, "utf8")).toThrow()
+    expect(env.stdout).toEqual([])
   })
 
   it("writes the harness answer through the API completion file", async () => {
@@ -115,6 +120,8 @@ describe("/deep one harness leg", () => {
     const saved = readFileSync(outputFile, "utf8")
     expect(saved).toContain("Recovered finding.")
     expect(saved).toContain("account fake-claude-acct")
+    expect(env.stdout).toHaveLength(1)
+    expect(JSON.parse(env.stdout[0]!)).toMatchObject({ status: "completed", file: "out-ok.md" })
   })
 
   it("an incomplete leg names the account in the same error file", async () => {
@@ -137,5 +144,7 @@ describe("/deep one harness leg", () => {
     const saved = readFileSync(outputFile, "utf8")
     expect(saved).toContain("astra-login")
     expect(saved).toContain("incomplete")
+    expect(env.stdout).toHaveLength(1)
+    expect(JSON.parse(env.stdout[0]!)).toMatchObject({ status: "failed", code: "provider_error", file: "out-fail.md" })
   })
 })
