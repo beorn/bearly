@@ -70,6 +70,8 @@ Use this template for each level:
 
 Stop earlier if you reach bedrock or "we haven't built X yet"; go past 5 when each level reveals genuine new insight.
 
+Then re-run the whole chain from the symptom, at most 10 rounds; each round starts without reading the previous round's answer (a fresh subagent where the harness has one), or agreement only measures anchoring. Stop when two successive rounds name the same deepest actionable cause, fix and owner; if round 10 passes without agreement, report the disagreement.
+
 ## Phase 3: The Chain
 
 Write the full causal chain as one paragraph:
