@@ -414,7 +414,9 @@ describe("pro dry-run harness legs", () => {
           expect(report).toContain(`Incomplete: harnessLauncher "${missingLauncher}"`)
         }
         if (loadedFailure) expect(report).toContain("harness opinion")
-        const logged = JSON.parse(readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8").trim())
+        const logged = JSON.parse(readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8").trim()) as {
+          harness: unknown[]
+        }
         for (const leg of logged.harness) expect(leg).not.toHaveProperty("cause")
         if (failureKind === "rejected config") {
           const file = join(getMemoryDir(), "dual-pro-config.json")
@@ -510,7 +512,7 @@ describe("pro dry-run harness legs", () => {
     expect(log).toContain(printed.startsWith("timed out") ? "timed out after" : printed)
     if ("stderrTail" in result && result.stderrTail) expect(log).toContain("refused")
     if (_name === "nonzero exit") {
-      expect(JSON.stringify(JSON.parse(log.trim()).harness[0])).toBe(
+      expect(JSON.stringify((JSON.parse(log.trim()) as { harness: unknown[] }).harness[0])).toBe(
         '{"provider":"harness","harness":"claude-code","model":"fable","account":"fake-claude-acct","ok":false,"error":"exit 2","notes":[],"stderrTail":"line-a\\nrefused","content":"nope"}',
       )
     }
