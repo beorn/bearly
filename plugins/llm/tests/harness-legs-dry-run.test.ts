@@ -327,113 +327,131 @@ describe("pro dry-run harness legs", () => {
   it.each(["unloadable module", "rejected config", "planner throw", "factory throw", "runner rejection"])(
     "keeps independent opinions alongside a harness failure: %s",
     async (failureKind) => {
-    const apiModel = getModel("moonshotai/kimi-k2.6")
-    if (!apiModel) throw new Error("coexistence fixture requires the registered Kimi model")
-    providerRouteMock.mockImplementation((provider) => provider === apiModel.provider)
-    const apiContent = "The API opinion survives the failed harness launcher."
-    askMock.mockResolvedValue({ model: apiModel, content: apiContent, durationMs: 5 })
-    vi.stubEnv("LLM_SKIP_MODEL_LIVENESS", "1")
-    vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
-    const missingLauncher = "missing-coexistence-launcher"
-    const nativeFailure = Object.assign(new Error(`fixture ${failureKind}`), { jsonUnsafe: 1n })
-    if (failureKind === "planner throw") harnessLegLaunch.mockImplementationOnce(() => { throw nativeFailure })
-    if (failureKind === "factory throw") nativeRunnerFactory.mockImplementationOnce(() => { throw nativeFailure })
-    if (failureKind === "runner rejection") nativeRunner.mockRejectedValueOnce(nativeFailure)
-    const loadedFailure = failureKind.endsWith("throw") || failureKind === "runner rejection"
-    const declaredLegs = loadedFailure ? HARNESS_CONFIG.harnessLegs : [{ provider: "claude-code", model: "fable" }]
-    const mainstays = ["gpt-5-mini", apiModel.modelId]
-    writeConfig({
-      mainstays,
-      harnessLauncher: failureKind === "rejected config" ? 42 : loadedFailure ? launcher : missingLauncher,
-      harnessLegs: declaredLegs,
-    })
-    const outputFile = join(root, "coexistence-report.txt")
-    const diagnostics: string[] = []
-    const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
-      diagnostics.push(parts.map(String).join(" "))
-    })
-    const stdout = vi.spyOn(console, "log").mockImplementation(() => {})
-    const fileNotice = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`exit ${code ?? ""}`)
-    }) as typeof process.exit)
-    try {
-      await expect(
-        runProDual({
-          question: "coexistence question",
-          modelOverride: undefined,
-          imagePath: undefined,
-          streamToken: vi.fn(),
-          buildContext: async () => undefined,
-          outputFile,
-          sessionTag: "api-harness-coexistence",
-          skipConfirm: true,
-          dryRun: false,
-          noChallenger: true,
-          noJudge: true,
-        }),
-      ).rejects.toThrow("exit 1")
-      expect(askMock).toHaveBeenCalledTimes(1)
-      expect(askMock).toHaveBeenCalledWith(
-        "coexistence question",
-        "standard",
-        expect.objectContaining({
-          modelObject: apiModel,
-          stream: false,
-        }),
-      )
-      expect(queryBackgroundMock).not.toHaveBeenCalled()
-      expect(nativeRunner).not.toHaveBeenCalled()
-      expect(stdout).toHaveBeenCalledTimes(1)
-      const envelope = JSON.parse(String(stdout.mock.calls[0]![0])) as { b: unknown; harness: { ok: boolean; error?: string }[] }
-      expect(envelope.b).toEqual(expect.objectContaining({ model: apiModel.displayName, status: "completed" }))
-      expect(envelope.harness).toHaveLength(declaredLegs.length)
-      const failed = envelope.harness.filter((leg) => !leg.ok)
-      expect(failed).toHaveLength(1)
-      expect(failed[0]!.error).toContain(loadedFailure ? nativeFailure.message : failureKind === "rejected config" ? "rejected" : missingLauncher)
-      for (const leg of envelope.harness) expect(leg).not.toHaveProperty("cause")
-      if (loadedFailure) expect(envelope.harness.filter((leg) => leg.ok)).toHaveLength(1)
-      const report = readFileSync(outputFile, "utf8")
-      expect(report).toContain(apiContent)
-      expect(report).toContain("## Harness legs")
-      if (failureKind === "unloadable module") expect(report).toContain(`Incomplete: harnessLauncher "${missingLauncher}"`)
-      if (loadedFailure) expect(report).toContain("harness opinion")
-      const logged = JSON.parse(readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8").trim())
-      for (const leg of logged.harness) expect(leg).not.toHaveProperty("cause")
-      if (failureKind === "rejected config") {
-        const file = join(getMemoryDir(), "dual-pro-config.json")
-        expect(failed[0]!.error).toContain(file)
-        expect(failed[0]!.error).toContain("harnessLauncher")
-        expect(failed[0]!.error).toContain("expected string")
-        expect(failed[0]!.error).not.toContain("unset")
-        const cfg = await loadConfig({ writeOnMissing: false })
-        expect(cfg.mainstays).toEqual(mainstays)
-        expect(cfg.harnessLegs).toEqual(declaredLegs)
-        const warnings = warning.mock.calls.flatMap((parts) => parts.map((part) => typeof part === "string" ? part : JSON.stringify(part))).join(" ")
-        expect(warnings).toContain(file)
-        expect(warnings).toContain("harnessLauncher")
-        expect(warnings).toContain("expected string")
-        writeConfig({ splitTestSlots: "invalid" })
-        expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
-        writeFileSync(file, "{")
-        expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
-        rmSync(file)
-        expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
-        expect(() => readFileSync(file)).toThrow()
+      const apiModel = getModel("moonshotai/kimi-k2.6")
+      if (!apiModel) throw new Error("coexistence fixture requires the registered Kimi model")
+      providerRouteMock.mockImplementation((provider) => provider === apiModel.provider)
+      const apiContent = "The API opinion survives the failed harness launcher."
+      askMock.mockResolvedValue({ model: apiModel, content: apiContent, durationMs: 5 })
+      vi.stubEnv("LLM_SKIP_MODEL_LIVENESS", "1")
+      vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "profiles", "claude", "fake-claude-acct"))
+      const missingLauncher = "missing-coexistence-launcher"
+      const nativeFailure = Object.assign(new Error(`fixture ${failureKind}`), { jsonUnsafe: 1n })
+      if (failureKind === "planner throw") {
+        harnessLegLaunch.mockImplementationOnce(() => {
+          throw nativeFailure
+        })
       }
-      expect(
-        diagnostics.some((line) => line.includes("harness claude-code fable") && line.includes("incomplete")),
-      ).toBe(true)
-      expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual(["\n", `Output written to: ${outputFile}\n`])
-    } finally {
-      exit.mockRestore()
-      stderr.mockRestore()
-      stdout.mockRestore()
-      fileNotice.mockRestore()
-      warning.mockRestore()
-    }
-  })
+      if (failureKind === "factory throw") {
+        nativeRunnerFactory.mockImplementationOnce(() => {
+          throw nativeFailure
+        })
+      }
+      if (failureKind === "runner rejection") nativeRunner.mockRejectedValueOnce(nativeFailure)
+      const loadedFailure = failureKind.endsWith("throw") || failureKind === "runner rejection"
+      const declaredLegs = loadedFailure ? HARNESS_CONFIG.harnessLegs : [{ provider: "claude-code", model: "fable" }]
+      const mainstays = ["gpt-5-mini", apiModel.modelId]
+      writeConfig({
+        mainstays,
+        harnessLauncher: failureKind === "rejected config" ? 42 : loadedFailure ? launcher : missingLauncher,
+        harnessLegs: declaredLegs,
+      })
+      const outputFile = join(root, "coexistence-report.txt")
+      const diagnostics: string[] = []
+      const stderr = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+        diagnostics.push(parts.map(String).join(" "))
+      })
+      const stdout = vi.spyOn(console, "log").mockImplementation(() => {})
+      const fileNotice = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+        throw new Error(`exit ${code ?? ""}`)
+      }) as typeof process.exit)
+      try {
+        await expect(
+          runProDual({
+            question: "coexistence question",
+            modelOverride: undefined,
+            imagePath: undefined,
+            streamToken: vi.fn(),
+            buildContext: async () => undefined,
+            outputFile,
+            sessionTag: "api-harness-coexistence",
+            skipConfirm: true,
+            dryRun: false,
+            noChallenger: true,
+            noJudge: true,
+          }),
+        ).rejects.toThrow("exit 1")
+        expect(askMock).toHaveBeenCalledTimes(1)
+        expect(askMock).toHaveBeenCalledWith(
+          "coexistence question",
+          "standard",
+          expect.objectContaining({
+            modelObject: apiModel,
+            stream: false,
+          }),
+        )
+        expect(queryBackgroundMock).not.toHaveBeenCalled()
+        expect(nativeRunner).toHaveBeenCalledTimes(loadedFailure ? (failureKind === "runner rejection" ? 2 : 1) : 0)
+        expect(stdout).toHaveBeenCalledTimes(1)
+        const envelope = JSON.parse(String(stdout.mock.calls[0]![0])) as {
+          b: unknown
+          harness: { ok: boolean; error?: string }[]
+        }
+        expect(envelope.b).toEqual(expect.objectContaining({ model: apiModel.displayName, status: "completed" }))
+        expect(envelope.harness).toHaveLength(declaredLegs.length)
+        const failed = envelope.harness.filter((leg) => !leg.ok)
+        expect(failed).toHaveLength(1)
+        expect(failed[0]!.error).toContain(
+          loadedFailure ? nativeFailure.message : failureKind === "rejected config" ? "rejected" : missingLauncher,
+        )
+        for (const leg of envelope.harness) expect(leg).not.toHaveProperty("cause")
+        if (loadedFailure) expect(envelope.harness.filter((leg) => leg.ok)).toHaveLength(1)
+        const report = readFileSync(outputFile, "utf8")
+        expect(report).toContain(apiContent)
+        expect(report).toContain("## Harness legs")
+        if (failureKind === "unloadable module") {
+          expect(report).toContain(`Incomplete: harnessLauncher "${missingLauncher}"`)
+        }
+        if (loadedFailure) expect(report).toContain("harness opinion")
+        const logged = JSON.parse(readFileSync(join(getMemoryDir(), "ab-pro.jsonl"), "utf8").trim())
+        for (const leg of logged.harness) expect(leg).not.toHaveProperty("cause")
+        if (failureKind === "rejected config") {
+          const file = join(getMemoryDir(), "dual-pro-config.json")
+          expect(failed[0]!.error).toContain(file)
+          expect(failed[0]!.error).toContain("harnessLauncher")
+          expect(failed[0]!.error).toContain("expected string")
+          expect(failed[0]!.error).not.toContain("unset")
+          const cfg = await loadConfig({ writeOnMissing: false })
+          expect(cfg.mainstays).toEqual(mainstays)
+          expect(cfg.harnessLegs).toEqual(declaredLegs)
+          const warnings = warning.mock.calls
+            .flatMap((parts) => parts.map((part) => (typeof part === "string" ? part : JSON.stringify(part))))
+            .join(" ")
+          expect(warnings).toContain(file)
+          expect(warnings).toContain("harnessLauncher")
+          expect(warnings).toContain("expected string")
+          writeConfig({ splitTestSlots: "invalid" })
+          expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
+          writeFileSync(file, "{")
+          expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
+          rmSync(file)
+          expect(await loadConfig({ writeOnMissing: false })).toEqual(DEFAULT_CONFIG)
+          expect(() => readFileSync(file)).toThrow()
+        }
+        expect(
+          diagnostics.some((line) => line.includes("harness claude-code fable") && line.includes("incomplete")),
+        ).toBe(true)
+        expect(fileNotice.mock.calls.map(([chunk]) => chunk)).toEqual(["\n", `Output written to: ${outputFile}\n`])
+      } finally {
+        exit.mockRestore()
+        stderr.mockRestore()
+        stdout.mockRestore()
+        fileNotice.mockRestore()
+        warning.mockRestore()
+      }
+    },
+  )
 
   it.each([
     ["over-cap", { exitCode: 0, timedOut: false, ms: 1, stdoutOverCap: true, stdout: "A" }, "stdout exceeded 1 MiB"],
@@ -492,24 +510,45 @@ describe("pro dry-run harness legs", () => {
     expect(log).toContain(printed.startsWith("timed out") ? "timed out after" : printed)
     if ("stderrTail" in result && result.stderrTail) expect(log).toContain("refused")
     if (_name === "nonzero exit") {
-      expect(JSON.stringify(JSON.parse(log.trim()).harness[0])).toBe('{"provider":"harness","harness":"claude-code","model":"fable","account":"fake-claude-acct","ok":false,"error":"exit 2","notes":[],"stderrTail":"line-a\\nrefused","content":"nope"}')
+      expect(JSON.stringify(JSON.parse(log.trim()).harness[0])).toBe(
+        '{"provider":"harness","harness":"claude-code","model":"fable","account":"fake-claude-acct","ok":false,"error":"exit 2","notes":[],"stderrTail":"line-a\\nrefused","content":"nope"}',
+      )
     }
   })
 })
 
 describe("configured harness launcher boundary", () => {
-  it.each(["planner", "factory", "runner"])("retains the original %s failure and available launch metadata", async (stage) => {
-    const cause = Object.assign(new Error(`fixture ${stage} failure`), { jsonUnsafe: 1n })
-    if (stage === "planner") harnessLegLaunch.mockImplementationOnce(() => { throw cause })
-    if (stage === "factory") nativeRunnerFactory.mockImplementationOnce(() => { throw cause })
-    if (stage === "runner") nativeRunner.mockRejectedValueOnce(cause)
-    const outcome = await runHarnessLeg({ launcher, leg: { provider: "codex", model: "test-model", profile: "test-account" }, account: "test-account", question: "ping", timeoutMs: 10 })
-    expect(outcome).toMatchObject({ ok: false, model: "test-model", account: "test-account", timeoutMs: 10 })
-    expect(outcome.cause).toBe(cause)
-    expect(outcome.error).toContain(cause.message)
-    expect(outcome.argv).toEqual(stage === "planner" ? [] : ["fixture-launch", "codex", "test-account", "test-model", "ping"])
-    expect(outcome.notes).toEqual(stage === "planner" ? [] : ["fixture codex launch"])
-  })
+  it.each(["planner", "factory", "runner"])(
+    "retains the original %s failure and available launch metadata",
+    async (stage) => {
+      const cause = Object.assign(new Error(`fixture ${stage} failure`), { jsonUnsafe: 1n })
+      if (stage === "planner") {
+        harnessLegLaunch.mockImplementationOnce(() => {
+          throw cause
+        })
+      }
+      if (stage === "factory") {
+        nativeRunnerFactory.mockImplementationOnce(() => {
+          throw cause
+        })
+      }
+      if (stage === "runner") nativeRunner.mockRejectedValueOnce(cause)
+      const outcome = await runHarnessLeg({
+        launcher,
+        leg: { provider: "codex", model: "test-model", profile: "test-account" },
+        account: "test-account",
+        question: "ping",
+        timeoutMs: 10,
+      })
+      expect(outcome).toMatchObject({ ok: false, model: "test-model", account: "test-account", timeoutMs: 10 })
+      expect(outcome.cause).toBe(cause)
+      expect(outcome.error).toContain(cause.message)
+      expect(outcome.argv).toEqual(
+        stage === "planner" ? [] : ["fixture-launch", "codex", "test-account", "test-model", "ping"],
+      )
+      expect(outcome.notes).toEqual(stage === "planner" ? [] : ["fixture codex launch"])
+    },
+  )
 
   it("delegates the capped request and supplied environment to the configured module", async () => {
     const env = { PATH: "/fixture/bin", REQUEST: "explicit" }

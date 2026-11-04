@@ -505,6 +505,7 @@ export async function runProDual(options: {
           cfg.harnessLegs.map((leg) =>
             runHarnessLeg({
               launcher: cfg.harnessLauncher,
+              launcherError: cfg.launcherError,
               leg,
               account: leg.provider === "codex" ? leg.profile : resolveClaudeHarnessAccount(),
               question: enrichedQuestion,

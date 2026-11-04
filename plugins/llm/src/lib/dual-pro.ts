@@ -183,6 +183,8 @@ export interface DualProConfig {
   exclude: string[]
   harnessLegs: HarnessLeg[]
   harnessLauncher?: string
+  /** Disk-loader diagnostic only; never an authored configuration field. */
+  launcherError?: string
 }
 
 /**
@@ -320,12 +322,23 @@ export async function loadConfig(opts: { writeOnMissing?: boolean } = {}): Promi
       // Strip JSONC-style line comments before parsing so users can keep
       // the comment header that explains each field.
       const stripped = raw.replace(/^\s*\/\/.*$/gm, "")
-      const parsed = JSON.parse(stripped)
+      const parsed: unknown = JSON.parse(stripped)
+      let launcherError: string | undefined
+      if (parsed && typeof parsed === "object" && Object.hasOwn(parsed, "harnessLauncher")) {
+        const input = parsed as Record<string, unknown>
+        const launcher = DualProConfigInputSchema.shape.harnessLauncher.safeParse(input.harnessLauncher)
+        if (!launcher.success) {
+          launcherError = `harnessLauncher in ${file} rejected: ${launcher.error.message}`
+          log.warn?.(launcherError)
+          delete input.harnessLauncher
+        }
+      }
       // Parse the raw input shape (accepts both v0.6 legacy and v0.7 new
       // fields) then normalize. This is what makes the schema migration
       // back-compatible: a config file with only `champion`+`runnerUp`+
       // `challengerPool` still loads cleanly into the new internal shape.
       cfg = DualProConfigSchema.parse(parsed)
+      if (launcherError !== undefined) cfg.launcherError = launcherError
     } catch (e) {
       log.warn?.("dual-pro-config.json malformed; using defaults", { error: String(e) })
       cfg = { ...DEFAULT_CONFIG }

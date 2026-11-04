@@ -17,6 +17,7 @@ const STDERR_TAIL_LINES = 20
 
 export interface HarnessRunRequest {
   readonly launcher: string | undefined
+  readonly launcherError?: string
   readonly leg: HarnessLeg
   readonly account: string
   readonly question: string
@@ -33,6 +34,8 @@ export interface HarnessRunOutcome {
   readonly ok: boolean
   readonly content?: string
   readonly error?: string
+  /** Original native failure for internal diagnostics; report mappings omit it. */
+  readonly cause?: unknown
   readonly notes: readonly string[]
   readonly stderrTail?: string
   readonly argv: readonly string[]
@@ -93,6 +96,19 @@ export async function runHarnessLeg(
       timeoutMs,
     }
   }
+  if (request.launcherError !== undefined) {
+    return {
+      provider: "harness",
+      harness: request.leg.provider,
+      model: request.leg.model,
+      account: request.account,
+      ok: false,
+      error: `${request.launcherError}; leg ${request.leg.provider} ${request.leg.model}; set harnessLauncher to a module exporting harnessLegLaunch and agCodeRunner`,
+      notes: [],
+      argv: [],
+      timeoutMs,
+    }
+  }
   let native: NativeRunModule
   try {
     if (!request.launcher?.trim()) throw new Error("launcher is unset")
@@ -122,15 +138,35 @@ export async function runHarnessLeg(
     }
   }
   const harness = request.leg.provider === "codex" ? "codex" : "claude"
-  const launch = native.harnessLegLaunch({
+  const launchInput: Parameters<NativeRunModule["harnessLegLaunch"]>[0] = {
     harness,
     account: request.account,
     model: request.leg.model,
     prompt: request.question,
     env,
     ...(request.webSearch ? { webSearch: true } : {}),
-  })
-  const result = await native.agCodeRunner(timeoutMs, { stdout: "full" })(launch.argv, launch.env)
+  }
+  let launch: ReturnType<NativeRunModule["harnessLegLaunch"]> | undefined
+  let result: NativeExit
+  const runnerOptions = { stdout: "full" as const }
+  try {
+    launch = native.harnessLegLaunch(launchInput)
+    const runner = native.agCodeRunner(timeoutMs, runnerOptions)
+    result = await runner(launch.argv, launch.env)
+  } catch (cause) {
+    return {
+      provider: "harness",
+      harness: request.leg.provider,
+      model: request.leg.model,
+      account: request.account,
+      ok: false,
+      error: `harnessLauncher ${JSON.stringify(request.launcher)} in ${join(getMemoryDir(env), "dual-pro-config.json")} for leg ${request.leg.provider} ${request.leg.model}: ${cause instanceof Error ? cause.message : String(cause)}; inspect harnessLegLaunch and agCodeRunner in that module`,
+      cause,
+      notes: launch?.notes ?? [],
+      argv: launch?.argv ?? [],
+      timeoutMs,
+    }
+  }
   const base = {
     provider: "harness" as const,
     harness: request.leg.provider,

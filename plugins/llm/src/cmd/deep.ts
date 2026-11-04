@@ -51,6 +51,7 @@ export async function runDeep(options: {
       leg: harnessLeg,
       extraLegs: cfg.harnessLegs.length - 1,
       launcher: cfg.harnessLauncher,
+      launcherError: cfg.launcherError,
       outputFile,
       sessionTag,
       skipConfirm,
@@ -230,6 +231,7 @@ async function runDeepHarnessLeg(args: {
   leg: HarnessLeg
   extraLegs: number
   launcher: string | undefined
+  launcherError?: string
   outputFile: string
   sessionTag: string
   skipConfirm: boolean
@@ -255,6 +257,7 @@ async function runDeepHarnessLeg(args: {
   const question = args.context ? `${args.topic}\n\n${args.context}` : args.topic
   const outcome = await runHarnessLeg({
     launcher: args.launcher,
+    launcherError: args.launcherError,
     leg: args.leg,
     account,
     question,

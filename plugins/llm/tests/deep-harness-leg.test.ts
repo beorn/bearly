@@ -10,9 +10,11 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
 
-const researchMock = vi.hoisted(() => vi.fn(async () => {
-  throw new Error("unexpected API dispatch from a harness fixture")
-}))
+const researchMock = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw new Error("unexpected API dispatch from a harness fixture")
+  }),
+)
 vi.mock("../src/lib/research", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/research")>()
   return { ...actual, research: researchMock }
@@ -158,7 +160,14 @@ describe("/deep one harness leg", () => {
   })
 
   it("retains a configured leg and names a rejected launcher instead of calling it unset", async () => {
-    await expect(run({ dryRun: false, stub: "rejected", launcher: 42, legs: [{ provider: "codex", model: "gpt-6-astra", profile: "astra-login" }] })).rejects.toThrow(/exit/i)
+    await expect(
+      run({
+        dryRun: false,
+        stub: "rejected",
+        launcher: 42,
+        legs: [{ provider: "codex", model: "gpt-6-astra", profile: "astra-login" }],
+      }),
+    ).rejects.toThrow(/exit/i)
     const saved = readFileSync(join(memory, "out-rejected.md"), "utf8")
     expect(saved).toContain("astra-login")
     expect(saved).toContain("harnessLauncher")
@@ -168,6 +177,10 @@ describe("/deep one harness leg", () => {
     expect(saved).not.toContain("unset")
     expect(() => readFileSync(launchLog)).toThrow()
     expect(researchMock).not.toHaveBeenCalled()
-    expect(JSON.parse(env.stdout[0]!)).toMatchObject({ status: "failed", code: "provider_error", file: "out-rejected.md" })
+    expect(JSON.parse(env.stdout[0]!)).toMatchObject({
+      status: "failed",
+      code: "provider_error",
+      file: "out-rejected.md",
+    })
   })
 })
