@@ -10,6 +10,14 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
 
+const researchMock = vi.hoisted(() => vi.fn(async () => {
+  throw new Error("unexpected API dispatch from a harness fixture")
+}))
+vi.mock("../src/lib/research", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/research")>()
+  return { ...actual, research: researchMock }
+})
+
 const LAUNCHER = `import { writeFileSync } from "node:fs"
 export function harnessLegLaunch(input) {
   writeFileSync(process.env.HARNESS_LAUNCH_LOG, JSON.stringify(input))
@@ -25,7 +33,7 @@ export function agCodeRunner() {
 }
 `
 
-function writeConfig(dir: string, launcher: string, legs: unknown[]): void {
+function writeConfig(dir: string, launcher: unknown, legs: unknown[]): void {
   writeFileSync(join(dir, "dual-pro-config.json"), JSON.stringify({ harnessLegs: legs, harnessLauncher: launcher }))
 }
 
@@ -33,6 +41,7 @@ describe("/deep one harness leg", () => {
   let env: ReturnType<typeof makeTestEnv>
   beforeEach(() => {
     env = makeTestEnv()
+    researchMock.mockClear()
   })
   const memory = mkdtempSync(join(tmpdir(), "deep-harness-"))
   const launcher = join(memory, "launcher.mjs")
@@ -47,14 +56,14 @@ describe("/deep one harness leg", () => {
     vi.resetModules()
   })
 
-  async function run(opts: { dryRun: boolean; legs?: unknown[]; stub?: string }) {
+  async function run(opts: { dryRun: boolean; legs?: unknown[]; stub?: string; launcher?: unknown }) {
     rmSync(launchLog, { force: true })
     process.env.BEARLY_LLM_MEMORY_DIR = memory
     process.env.HARNESS_LAUNCH_LOG = launchLog
     process.env.CLAUDE_CONFIG_DIR = "/tmp/profiles/claude/fake-claude-acct"
     if (opts.stub) process.env.HARNESS_STUB = opts.stub
     else delete process.env.HARNESS_STUB
-    if (opts.legs) writeConfig(memory, launcher, opts.legs)
+    if (opts.legs) writeConfig(memory, opts.launcher ?? launcher, opts.legs)
     else writeFileSync(join(memory, "dual-pro-config.json"), "{}")
     vi.resetModules()
     const { runDeep } = await import("../src/cmd/deep")
@@ -146,5 +155,19 @@ describe("/deep one harness leg", () => {
     expect(saved).toContain("incomplete")
     expect(env.stdout).toHaveLength(1)
     expect(JSON.parse(env.stdout[0]!)).toMatchObject({ status: "failed", code: "provider_error", file: "out-fail.md" })
+  })
+
+  it("retains a configured leg and names a rejected launcher instead of calling it unset", async () => {
+    await expect(run({ dryRun: false, stub: "rejected", launcher: 42, legs: [{ provider: "codex", model: "gpt-6-astra", profile: "astra-login" }] })).rejects.toThrow(/exit/i)
+    const saved = readFileSync(join(memory, "out-rejected.md"), "utf8")
+    expect(saved).toContain("astra-login")
+    expect(saved).toContain("harnessLauncher")
+    expect(saved).toContain("rejected")
+    expect(saved).toContain(join(memory, "dual-pro-config.json"))
+    expect(saved).toContain("expected string")
+    expect(saved).not.toContain("unset")
+    expect(() => readFileSync(launchLog)).toThrow()
+    expect(researchMock).not.toHaveBeenCalled()
+    expect(JSON.parse(env.stdout[0]!)).toMatchObject({ status: "failed", code: "provider_error", file: "out-rejected.md" })
   })
 })
