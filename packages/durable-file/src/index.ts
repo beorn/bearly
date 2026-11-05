@@ -1,1 +1,1 @@
-export { atomicPublishFileSync, atomicWriteFile, atomicWriteFileSync } from "./atomic.ts"
+export { atomicPublishFileSync, atomicWriteFile, atomicWriteFileSync, isAtomicTemporaryName } from "./atomic.ts"

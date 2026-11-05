@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { safeRemoveSync } from "removely"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
@@ -130,7 +130,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 // setup reaches it through habitat.ts), and a cached instance keeps the real node:fs. A fresh instance
 // after resetModules binds the mocked one, so the injected faults reach the code under test.
 vi.resetModules()
-const { atomicPublishFileSync, atomicWriteFileSync, atomicWriteFile } = await import("../src/index.ts")
+const { atomicPublishFileSync, atomicWriteFileSync, atomicWriteFile, isAtomicTemporaryName } =
+  await import("../src/index.ts")
 
 const roots: string[] = []
 const OBSERVED_AT = "2026-08-14T20:00:00.000Z"
@@ -186,7 +187,8 @@ describe.each([
       expect(statSync(path).mode & 0o777).toBe((mode ?? 0o600) & ~process.umask())
       expect(readdirSync(root)).toEqual(["verdict.json"])
       expect(faults.opened).toHaveLength(1)
-      expect(faults.opened[0]).toMatch(/\.verdict\.json\.tmp-[0-9a-z]+-[0-9a-f-]{36}$/)
+      expect(isAtomicTemporaryName(basename(faults.opened[0]!))).toBe(true)
+      expect(isAtomicTemporaryName(basename(path))).toBe(false)
     },
   )
   test("creates a private parent and writes all short chunks", async () => {
@@ -251,6 +253,16 @@ describe.each([
     }
     expect(readFileSync(path, "utf8")).toBe("old")
   })
+})
+
+test.each([
+  "state.json",
+  ".state.json.tmp-a1",
+  "state.json.tmp-a1-40844b70-28c4-4f1c-b234-38d320cb8d73",
+  ".state.json.tmp-a1-not-a-uuid",
+  "directory/.state.json.tmp-a1-40844b70-28c4-4f1c-b234-38d320cb8d73",
+])("atomic temporary-name predicate rejects near miss %s", (name) => {
+  expect(isAtomicTemporaryName(name)).toBe(false)
 })
 
 test("async replacement yields before publication and names post-replacement durability uncertainty", async () => {

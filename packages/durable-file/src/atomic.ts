@@ -111,6 +111,11 @@ function temporaryPath(path: string): string {
   return join(dirname(path), `.${basename(path)}.tmp-${process.pid.toString(36)}-${randomUUID()}`)
 }
 
+/** Recognize only a basename produced by this owner's atomic writers. */
+export function isAtomicTemporaryName(name: string): boolean {
+  return name === basename(name) && /^\..+\.tmp-[0-9a-z]+-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(name)
+}
+
 function writeTemporaryFileSync(temporary: string, body: string | Uint8Array, path: string, mode = 0o600): void {
   const file = openSync(temporary, "wx", mode)
   try {

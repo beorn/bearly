@@ -9,6 +9,9 @@ contract through asynchronous file I/O. If directory durability fails after
 replacement, it rejects with an explicit warning and the original error as its
 cause; the destination already contains complete bytes.
 
+`isAtomicTemporaryName(name)` recognizes the writers' temporary basenames for
+directory readers and file-change filters.
+
 `atomicPublishFileSync(path, body)` uses the same byte-writing and durability
 barriers, with an exclusive hard link instead of replacement. It returns
 `"published"` for the winning creator or `"exists"` when a destination already
