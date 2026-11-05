@@ -4,6 +4,11 @@ Crash-durable file publication for Node and Bun. `atomicWriteFileSync` writes
 complete bytes to a unique sibling, fsyncs the file, renames it over the target,
 and fsyncs the parent directory.
 
+`atomicWriteFile(path, body, mode = 0o600)` provides the same replacement
+contract through asynchronous file I/O. If directory durability fails after
+replacement, it rejects with an explicit warning and the original error as its
+cause; the destination already contains complete bytes.
+
 `atomicPublishFileSync(path, body)` uses the same byte-writing and durability
 barriers, with an exclusive hard link instead of replacement. It returns
 `"published"` for the winning creator or `"exists"` when a destination already

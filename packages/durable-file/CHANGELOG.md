@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add asynchronous atomic replacement; harness writes delegate to this owner, with complete writes, explicit directory durability failures and loud cleanup errors.
+
 - Let exact-byte CAS callers opt into a bounded adjacent-lock wait; omitted options retain immediate acquisition and timeout still returns locked.
 
 - Added: file-CAS writes (moved from Inhab, CTO ruling3304645a), through `@bearly/durable-file/cas` for exact-byte compare-and-swap, locked replacement, and conditional withdrawal using an adjacent kernel lock.

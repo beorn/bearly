@@ -16,19 +16,60 @@ import {
   type VerdictArtifact,
 } from "../src/verdict.ts"
 
-const faults = vi.hoisted(() => ({ short: false, failure: "", syncs: 0 }))
+const faults = vi.hoisted(() => ({
+  short: false,
+  zero: false,
+  failure: "",
+  cleanup: "",
+  syncs: 0,
+  opened: [] as string[],
+}))
+function injected(phase: string): void {
+  if (faults.failure === phase) throw Object.assign(new Error(`injected ${phase} failure`), { code: "EIO" })
+}
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>()
+  const directories = new Set<number>()
   return {
     ...real,
+    mkdirSync: (...args: Parameters<typeof real.mkdirSync>) => {
+      injected("mkdir")
+      return real.mkdirSync(...args)
+    },
+    openSync: (...args: Parameters<typeof real.openSync>) => {
+      const directory = args[1] === "r"
+      injected(directory ? "directory-open" : "open")
+      const fd = real.openSync(...args)
+      if (directory) directories.add(fd)
+      else faults.opened.push(String(args[0]))
+      return fd
+    },
     writeSync: (fd: number, bytes: Uint8Array, offset: number, length: number) => {
-      if (faults.failure === "write") throw new Error("injected write failure")
+      injected("write")
+      if (faults.zero) return 0
       return real.writeSync(fd, bytes, offset, faults.short ? Math.min(3, length) : length)
     },
     fsyncSync: (fd: number) => {
       faults.syncs += 1
       if (faults.failure === "directory" && faults.syncs === 2) throw new Error("injected directory fsync failure")
+      injected(directories.has(fd) ? "directory-sync" : "file-sync")
       return real.fsyncSync(fd)
+    },
+    closeSync: (fd: number) => {
+      const directory = directories.delete(fd)
+      real.closeSync(fd)
+      injected(directory ? "directory-close" : "file-close")
+    },
+    renameSync: (...args: Parameters<typeof real.renameSync>) => {
+      injected("rename")
+      return real.renameSync(...args)
+    },
+    unlinkSync: (path: Parameters<typeof real.unlinkSync>[0]) => {
+      if (faults.cleanup) {
+        if (faults.cleanup === "ENOENT") real.unlinkSync(path)
+        throw Object.assign(new Error("injected cleanup failure"), { code: faults.cleanup })
+      }
+      return real.unlinkSync(path)
     },
     linkSync: (...args: Parameters<typeof real.linkSync>) => {
       if (faults.failure === "link") throw Object.assign(new Error("injected link refusal"), { code: "EPERM" })
@@ -36,17 +77,69 @@ vi.mock("node:fs", async (importOriginal) => {
     },
   }
 })
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...real,
+    mkdir: async (...args: Parameters<typeof real.mkdir>) => {
+      injected("mkdir")
+      return real.mkdir(...args)
+    },
+    open: async (...args: Parameters<typeof real.open>) => {
+      const directory = args[1] === "r"
+      injected(directory ? "directory-open" : "open")
+      const handle = await real.open(...args)
+      if (!directory) faults.opened.push(String(args[0]))
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === "write")
+            return async (bytes: Uint8Array, offset: number, length: number) => {
+              injected("write")
+              if (faults.zero) return { bytesWritten: 0, buffer: bytes }
+              return target.write(bytes, offset, faults.short ? Math.min(3, length) : length)
+            }
+          if (key === "sync")
+            return async () => {
+              injected(directory ? "directory-sync" : "file-sync")
+              await target.sync()
+            }
+          if (key === "close")
+            return async () => {
+              await target.close()
+              injected(directory ? "directory-close" : "file-close")
+            }
+          const value = Reflect.get(target, key)
+          return typeof value === "function" ? value.bind(target) : value
+        },
+      })
+    },
+    rename: async (...args: Parameters<typeof real.rename>) => {
+      injected("rename")
+      return real.rename(...args)
+    },
+    unlink: async (path: Parameters<typeof real.unlink>[0]) => {
+      if (faults.cleanup) {
+        if (faults.cleanup === "ENOENT") await real.unlink(path)
+        throw Object.assign(new Error("injected cleanup failure"), { code: faults.cleanup })
+      }
+      return real.unlink(path)
+    },
+  }
+})
 // A setup file can load this module before the mock above registers (the superproject's root vitest
 // setup reaches it through habitat.ts), and a cached instance keeps the real node:fs. A fresh instance
 // after resetModules binds the mocked one, so the injected faults reach the code under test.
 vi.resetModules()
-const { atomicPublishFileSync, atomicWriteFileSync } = await import("../src/index.ts")
+const { atomicPublishFileSync, atomicWriteFileSync, atomicWriteFile } = await import("../src/index.ts")
 
 const roots: string[] = []
 const OBSERVED_AT = "2026-08-14T20:00:00.000Z"
 
 afterEach(() => {
   faults.short = false
+  faults.zero = false
+  faults.cleanup = ""
+  faults.opened = []
   faults.failure = ""
   faults.syncs = 0
   for (const root of roots.splice(0)) {
@@ -72,22 +165,107 @@ function artifact(overrides: Partial<VerdictArtifact> = {}): VerdictArtifact {
   }
 }
 
-/** @failure Atomic replacement strips executable permissions from installed launchers. @level l2 @consumer hh bundle installer and durable-file callers */
-describe("atomicWriteFileSync", () => {
-  test.each([undefined, 0o755])(
+/** @failure Atomic replacement tears bytes, loses modes or hides filesystem failures. @level l2 @consumer harness backend-state and hh bundle installer */
+describe.each([
+  {
+    name: "sync",
+    write: async (path: string, body: string | Uint8Array, mode?: number) => atomicWriteFileSync(path, body, mode),
+  },
+  { name: "async", write: atomicWriteFile },
+])("atomic replacement $name contract", ({ write }) => {
+  test.each([undefined, 0o600, 0o700, 0o644, 0o755])(
     "publishes complete replacement bytes with mode %s and no sibling temp file",
-    (mode) => {
+    async (mode) => {
       const root = scratch()
       const path = join(root, "verdict.json")
       writeFileSync(path, "old")
 
-      atomicWriteFileSync(path, Buffer.from("new verdict\n"), mode)
+      await write(path, Buffer.from("new verdict\n"), mode)
 
       expect(readFileSync(path, "utf8")).toBe("new verdict\n")
       expect(statSync(path).mode & 0o777).toBe((mode ?? 0o600) & ~process.umask())
       expect(readdirSync(root)).toEqual(["verdict.json"])
+      expect(faults.opened).toHaveLength(1)
+      expect(faults.opened[0]).toMatch(/\.verdict\.json\.tmp-[0-9a-z]+-[0-9a-f-]{36}$/)
     },
   )
+  test("creates a private parent and writes all short chunks", async () => {
+    const root = scratch(),
+      path = join(root, "nested", "state")
+    faults.short = true
+    await write(path, "complete state bytes")
+    expect(readFileSync(path, "utf8")).toBe("complete state bytes")
+    expect(statSync(join(root, "nested")).mode & 0o777).toBe(0o700 & ~process.umask())
+    expect(readdirSync(join(root, "nested"))).toEqual(["state"])
+  })
+  test.each(["", "  "])("rejects an empty path %j before opening a file", async (path) => {
+    await expect(write(path, "body")).rejects.toThrow(/path must not be empty/)
+    expect(faults.opened).toEqual([])
+  })
+  test.each([
+    "mkdir",
+    "open",
+    "write",
+    "file-sync",
+    "file-close",
+    "rename",
+    "directory-open",
+    "directory-sync",
+    "directory-close",
+  ])("reports %s failure and leaves only a complete destination", async (phase) => {
+    const root = scratch(),
+      path = join(root, "state")
+    writeFileSync(path, "old")
+    faults.failure = phase
+    await expect(write(path, "new complete bytes")).rejects.toThrow()
+    expect(readFileSync(path, "utf8")).toBe(phase.startsWith("directory-") ? "new complete bytes" : "old")
+    expect(readdirSync(root)).toEqual(["state"])
+  })
+  test("rejects zero-progress writes without replacing old bytes", async () => {
+    const root = scratch(),
+      path = join(root, "state")
+    writeFileSync(path, "old")
+    faults.zero = true
+    await expect(write(path, "new")).rejects.toThrow(/no progress/)
+    expect(readFileSync(path, "utf8")).toBe("old")
+    expect(readdirSync(root)).toEqual(["state"])
+  })
+  test.each(["ENOENT", "EACCES"])("keeps primary and %s cleanup evidence", async (code) => {
+    const root = scratch(),
+      path = join(root, "state")
+    writeFileSync(path, "old")
+    faults.failure = "write"
+    faults.cleanup = code
+    try {
+      await write(path, "new")
+      throw new Error("write should reject")
+    } catch (error) {
+      if (code === "ENOENT") expect(String(error)).toContain("injected write failure")
+      else {
+        expect(error).toBeInstanceOf(AggregateError)
+        expect((error as AggregateError).errors).toEqual([
+          expect.objectContaining({ message: "injected write failure" }),
+          expect.objectContaining({ code: "EACCES" }),
+        ])
+      }
+    }
+    expect(readFileSync(path, "utf8")).toBe("old")
+  })
+})
+
+test("async replacement yields before publication and names post-replacement durability uncertainty", async () => {
+  const root = scratch(),
+    path = join(root, "state")
+  writeFileSync(path, "old")
+  const pending = atomicWriteFile(path, "new")
+  expect(readFileSync(path, "utf8")).toBe("old")
+  await pending
+  faults.failure = "directory-open"
+  await expect(atomicWriteFile(path, "complete replacement")).rejects.toMatchObject({
+    message: expect.stringContaining("replacement completed but directory durability is unproven"),
+    cause: expect.objectContaining({ code: "EIO" }),
+  })
+  expect(readFileSync(path, "utf8")).toBe("complete replacement")
 })
 
 /** @failure Exclusive first publication overwrites, tears bytes or hides durability failure. @level l2 @consumer habitat scratch marker and signing-key creator */

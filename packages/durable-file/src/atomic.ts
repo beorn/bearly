@@ -1,6 +1,48 @@
 import { randomUUID } from "node:crypto"
 import { closeSync, fsyncSync, mkdirSync, linkSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import { mkdir, open, rename, unlink } from "node:fs/promises"
+
+/** Async replacement with the same complete-byte and durability contract as the sync writer. */
+export async function atomicWriteFile(path: string, body: string | Uint8Array, mode = 0o600): Promise<void> {
+  if (path.trim().length === 0) throw new Error("atomicWriteFile: path must not be empty")
+  const directory = dirname(path)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const temporary = temporaryPath(path)
+  try {
+    const file = await open(temporary, "wx", mode)
+    try {
+      const bytes = typeof body === "string" ? Buffer.from(body) : body
+      let offset = 0
+      while (offset < bytes.length) {
+        const { bytesWritten } = await file.write(bytes, offset, bytes.length - offset)
+        if (bytesWritten <= 0) throw new Error(`atomic write made no progress for ${path}`)
+        offset += bytesWritten
+      }
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await rename(temporary, path)
+    try {
+      const parent = await open(directory, "r")
+      try {
+        await parent.sync()
+      } finally {
+        await parent.close()
+      }
+    } catch (cause) {
+      throw new Error(`atomicWriteFile: ${path}: replacement completed but directory durability is unproven`, { cause })
+    }
+  } catch (error) {
+    try {
+      await unlink(temporary)
+    } catch (cleanup) {
+      checkCleanupError(temporary, error, cleanup)
+    }
+    throw error
+  }
+}
 
 /** Publish complete bytes through a unique sibling and both durability barriers; mode is subject to the umask. */
 export function atomicWriteFileSync(path: string, body: string | Uint8Array, mode = 0o600): void {
@@ -102,11 +144,15 @@ function removeTemporary(path: string, original: unknown): never {
   try {
     unlinkSync(path)
   } catch (cleanup) {
-    if (errorCode(cleanup) !== "ENOENT") {
-      throw new AggregateError([original, cleanup], `atomic write failed and could not remove ${path}`)
-    }
+    checkCleanupError(path, original, cleanup)
   }
   throw original
+}
+
+function checkCleanupError(path: string, original: unknown, cleanup: unknown): void {
+  if (errorCode(cleanup) !== "ENOENT") {
+    throw new AggregateError([original, cleanup], `atomic write failed and could not remove ${path}`)
+  }
 }
 
 function errorCode(error: unknown): string | null {
