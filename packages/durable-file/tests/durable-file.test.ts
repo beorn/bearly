@@ -92,22 +92,25 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (!directory) faults.opened.push(String(args[0]))
       return new Proxy(handle, {
         get(target, key) {
-          if (key === "write")
+          if (key === "write") {
             return async (bytes: Uint8Array, offset: number, length: number) => {
               injected("write")
               if (faults.zero) return { bytesWritten: 0, buffer: bytes }
               return target.write(bytes, offset, faults.short ? Math.min(3, length) : length)
             }
-          if (key === "sync")
+          }
+          if (key === "sync") {
             return async () => {
               injected(directory ? "directory-sync" : "file-sync")
               await target.sync()
             }
-          if (key === "close")
+          }
+          if (key === "close") {
             return async () => {
               await target.close()
               injected(directory ? "directory-close" : "file-close")
             }
+          }
           const value = Reflect.get(target, key)
           return typeof value === "function" ? value.bind(target) : value
         },
