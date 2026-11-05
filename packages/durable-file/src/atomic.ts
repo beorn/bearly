@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto"
 import { closeSync, fsyncSync, mkdirSync, linkSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
-/** Publish complete bytes through a unique sibling and both durability barriers. */
-export function atomicWriteFileSync(path: string, body: string | Uint8Array): void {
+/** Publish complete bytes through a unique sibling and both durability barriers; mode is subject to the umask. */
+export function atomicWriteFileSync(path: string, body: string | Uint8Array, mode = 0o600): void {
   if (path.trim().length === 0) throw new Error("atomicWriteFileSync: path must not be empty")
   const directory = dirname(path)
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const temporary = temporaryPath(path)
 
   try {
-    writeTemporaryFileSync(temporary, body, path)
+    writeTemporaryFileSync(temporary, body, path, mode)
     renameSync(temporary, path)
     syncDirectorySync(directory)
   } catch (error) {
@@ -69,8 +69,8 @@ function temporaryPath(path: string): string {
   return join(dirname(path), `.${basename(path)}.tmp-${process.pid.toString(36)}-${randomUUID()}`)
 }
 
-function writeTemporaryFileSync(temporary: string, body: string | Uint8Array, path: string): void {
-  const file = openSync(temporary, "wx", 0o600)
+function writeTemporaryFileSync(temporary: string, body: string | Uint8Array, path: string, mode = 0o600): void {
+  const file = openSync(temporary, "wx", mode)
   try {
     writeAllBytesSync(file, typeof body === "string" ? Buffer.from(body) : body, path)
     fsyncSync(file)

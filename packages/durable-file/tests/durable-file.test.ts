@@ -72,17 +72,22 @@ function artifact(overrides: Partial<VerdictArtifact> = {}): VerdictArtifact {
   }
 }
 
+/** @failure Atomic replacement strips executable permissions from installed launchers. @level l2 @consumer hh bundle installer and durable-file callers */
 describe("atomicWriteFileSync", () => {
-  test("publishes complete replacement bytes and leaves no sibling temp file", () => {
-    const root = scratch()
-    const path = join(root, "verdict.json")
-    writeFileSync(path, "old")
+  test.each([undefined, 0o755])(
+    "publishes complete replacement bytes with mode %s and no sibling temp file",
+    (mode) => {
+      const root = scratch()
+      const path = join(root, "verdict.json")
+      writeFileSync(path, "old")
 
-    atomicWriteFileSync(path, Buffer.from("new verdict\n"))
+      atomicWriteFileSync(path, Buffer.from("new verdict\n"), mode)
 
-    expect(readFileSync(path, "utf8")).toBe("new verdict\n")
-    expect(readdirSync(root)).toEqual(["verdict.json"])
-  })
+      expect(readFileSync(path, "utf8")).toBe("new verdict\n")
+      expect(statSync(path).mode & 0o777).toBe((mode ?? 0o600) & ~process.umask())
+      expect(readdirSync(root)).toEqual(["verdict.json"])
+    },
+  )
 })
 
 /** @failure Exclusive first publication overwrites, tears bytes or hides durability failure. @level l2 @consumer habitat scratch marker and signing-key creator */
