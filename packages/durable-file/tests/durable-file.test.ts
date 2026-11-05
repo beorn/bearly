@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, stat
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { safeRemoveSync } from "removely"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import {
   classifyErrno,
@@ -23,6 +23,8 @@ const faults = vi.hoisted(() => ({
   cleanup: "",
   syncs: 0,
   opened: [] as string[],
+  writeFd: -1,
+  chmods: [] as { fd: number; size: number; syncs: number }[],
 }))
 function injected(phase: string): void {
   if (faults.failure === phase) throw Object.assign(new Error(`injected ${phase} failure`), { code: "EIO" })
@@ -41,8 +43,16 @@ vi.mock("node:fs", async (importOriginal) => {
       injected(directory ? "directory-open" : "open")
       const fd = real.openSync(...args)
       if (directory) directories.add(fd)
-      else faults.opened.push(String(args[0]))
+      else {
+        faults.opened.push(String(args[0]))
+        faults.writeFd = fd
+      }
       return fd
+    },
+    fchmodSync: (fd: number, mode: number) => {
+      faults.chmods.push({ fd, size: real.fstatSync(fd).size, syncs: faults.syncs })
+      injected("file-chmod")
+      return real.fchmodSync(fd, mode)
     },
     writeSync: (fd: number, bytes: Uint8Array, offset: number, length: number) => {
       injected("write")
@@ -146,6 +156,8 @@ afterEach(() => {
   faults.opened = []
   faults.failure = ""
   faults.syncs = 0
+  faults.writeFd = -1
+  faults.chmods = []
   for (const root of roots.splice(0)) {
     safeRemoveSync(root, { within: tmpdir(), allowMissing: true })
   }
@@ -256,6 +268,51 @@ describe.each([
     }
     expect(readFileSync(path, "utf8")).toBe("old")
   })
+})
+
+// Exact mode is a credential policy; ordinary numeric modes must still honor umask.
+test.skipIf(!["linux", "darwin"].includes(process.platform))(
+  "sync exact mode precedes durability and preserves masked defaults",
+  () => {
+    const root = scratch()
+    const source = fileURLToPath(new URL("../src/index.ts", import.meta.url))
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--eval",
+        `
+    import { atomicWriteFileSync } from ${JSON.stringify(source)};
+    import { statSync } from "node:fs";
+    const root = ${JSON.stringify(root)};
+    process.umask(0o777);
+    atomicWriteFileSync(root + "/default", "private");
+    atomicWriteFileSync(root + "/false", "private", 0o600, { exactMode: false });
+    atomicWriteFileSync(root + "/exact", "private", 0o600, { exactMode: true });
+    process.umask(0o077);
+    atomicWriteFileSync(root + "/shim", "executable", 0o755);
+    console.log(JSON.stringify(Object.fromEntries(["default", "false", "exact", "shim"].map(name => [name, statSync(root + "/" + name).mode & 0o777]))));
+  `,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    )
+    expect(child.error).toBeUndefined()
+    expect(child.status, child.stderr).toBe(0)
+    expect(JSON.parse(child.stdout)).toEqual({ default: 0, false: 0, exact: 0o600, shim: 0o700 })
+    expect(readFileSync(join(root, "exact"), "utf8")).toBe("private")
+    expect(readFileSync(join(root, "shim"), "utf8")).toBe("executable")
+  },
+)
+
+test("sync fchmod failure follows complete writes on the same descriptor and preserves the target", () => {
+  const root = scratch()
+  const path = join(root, "state")
+  writeFileSync(path, "old")
+  faults.short = true
+  faults.failure = "file-chmod"
+  expect(() => atomicWriteFileSync(path, "new complete bytes", 0o600, { exactMode: true })).toThrow(/file-chmod/)
+  expect(faults.chmods).toEqual([{ fd: faults.writeFd, size: Buffer.byteLength("new complete bytes"), syncs: 0 }])
+  expect(readFileSync(path, "utf8")).toBe("old")
+  expect(readdirSync(root)).toEqual(["state"])
 })
 
 test.each([

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in `atomicWriteFileSync(..., mode, { exactMode: true })`: set the complete temporary file's mode on its open descriptor before fsync and rename. Omitted or false policy retains umask-masked modes.
+
 - Add asynchronous atomic replacement; harness writes delegate to this owner, with complete writes, explicit directory durability failures and loud cleanup errors.
 
 - Let exact-byte CAS callers opt into a bounded adjacent-lock wait; omitted options retain immediate acquisition and timeout still returns locked.

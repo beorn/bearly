@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto"
-import { closeSync, fsyncSync, mkdirSync, linkSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs"
+import {
+  closeSync,
+  fchmodSync,
+  fsyncSync,
+  mkdirSync,
+  linkSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { mkdir, open, rename, unlink } from "node:fs/promises"
 
@@ -44,15 +54,20 @@ export async function atomicWriteFile(path: string, body: string | Uint8Array, m
   }
 }
 
-/** Publish complete bytes through a unique sibling and both durability barriers; mode is subject to the umask. */
-export function atomicWriteFileSync(path: string, body: string | Uint8Array, mode = 0o600): void {
+/** Publish complete bytes with both durability barriers; mode honors umask unless exactMode is requested. */
+export function atomicWriteFileSync(
+  path: string,
+  body: string | Uint8Array,
+  mode = 0o600,
+  policy?: { exactMode?: boolean },
+): void {
   if (path.trim().length === 0) throw new Error("atomicWriteFileSync: path must not be empty")
   const directory = dirname(path)
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const temporary = temporaryPath(path)
 
   try {
-    writeTemporaryFileSync(temporary, body, path, mode)
+    writeTemporaryFileSync(temporary, body, path, mode, policy?.exactMode)
     renameSync(temporary, path)
     syncDirectorySync(directory)
   } catch (error) {
@@ -116,10 +131,17 @@ export function isAtomicTemporaryName(name: string): boolean {
   return name === basename(name) && /^\..+\.tmp-[0-9a-z]+-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(name)
 }
 
-function writeTemporaryFileSync(temporary: string, body: string | Uint8Array, path: string, mode = 0o600): void {
+function writeTemporaryFileSync(
+  temporary: string,
+  body: string | Uint8Array,
+  path: string,
+  mode = 0o600,
+  exactMode = false,
+): void {
   const file = openSync(temporary, "wx", mode)
   try {
     writeAllBytesSync(file, typeof body === "string" ? Buffer.from(body) : body, path)
+    if (exactMode) fchmodSync(file, mode)
     fsyncSync(file)
   } finally {
     closeSync(file)

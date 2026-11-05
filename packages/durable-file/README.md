@@ -4,6 +4,12 @@ Crash-durable file publication for Node and Bun. `atomicWriteFileSync` writes
 complete bytes to a unique sibling, fsyncs the file, renames it over the target,
 and fsyncs the parent directory.
 
+`atomicWriteFileSync(path, body, mode, { exactMode: true })` sets the temporary
+file's exact mode on its open descriptor before fsync and rename. On Linux and
+macOS this keeps private files readable even when umask removes owner bits.
+Omitted or false policy keeps `mode & ~umask`; parent-directory creation always
+keeps its existing masked mode and never changes existing directories.
+
 `atomicWriteFile(path, body, mode = 0o600)` provides the same replacement
 contract through asynchronous file I/O. If directory durability fails after
 replacement, it rejects with an explicit warning and the original error as its
