@@ -5,7 +5,7 @@
 ### Added
 
 - Provider availability is now a barrel-exported `available | refusing |
-unknown` fact with closed refusal kinds, evidence source, age, expiry, and
+  unknown` fact with closed refusal kinds, evidence source, age, expiry, and
   optional retry time. Real dispatches persist observations atomically at
   `~/.cache/bearly-llm/providers/<provider>.json`; stale or missing evidence is
   explicit, corrupt evidence names its path and warns once, and no billed probe
@@ -117,7 +117,7 @@ until a 1.0 release is explicitly approved.
   tarball so consumers don't need the km repo to use them.
 - **`bin: { "bearly-llm": "./src/cli.ts" }`** — installs as
   `bearly-llm` on PATH (standalone consumers can invoke via `npx
-bearly-llm` or after `npm i -g`).
+  bearly-llm` or after `npm i -g`).
 - **README "Use without Claude Code" section** — quickstart for
   standalone usage covering env vars, install-skills, and CLAUDE_PROJECT_DIR
   back-compat.
@@ -241,7 +241,7 @@ wins reproduce instead of pure pool exploration).
   single `Promise.all` round trip. Total runtime is dominated by the slowest
   leg, not the sum.
 - **Slot D = correlated re-test**: `pickSplitTestSlots(pool, strategy,
-counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
+  counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
   picks the most-recent winner from `ab-pro.jsonl` history that is in the
   pool, NOT a mainstay, and NOT slot C. Cold start (no winners) falls back
   to "next pool entry after slot C in pool-list order" so the two slots
@@ -254,7 +254,7 @@ counter, history, mainstays, exclude)` returns `[slotC, slotD]`. Slot D
 - **`buildPairwiseJudgePrompt`** + **`parsePairwiseJudgeResponse`**: pairwise
   prompt builder + tolerant parser (strips ` ```json ` fences, handles
   prepended prose). Output: `{ winner: "A" | "B" | "tie", scoreA, scoreB,
-reasoning }`.
+  reasoning }`.
 - **`synthesizePairwiseFromV2`**: v2 → v3 reader. Historical v2 ab-pro.jsonl
   entries with N-way `judge.{a,b,c,winner}` fields surface a synthesized
   `judge.ab`/`ac` to keep leaderboard / judge-history / backtest consumers
@@ -392,9 +392,9 @@ brings score down — speed and failure rate are display-only.
 - **`scoreWeights.cost` semantics flipped from linear to log-scale.** Old:
   `rank = score * quality - cost * avgCost`. New: `rank = score \* quality
   - cost \* max(0, log10(avgCost / costThreshold))`. Cheap models (≤
-`costThreshold`) pay zero penalty; each 10× over the threshold subtracts
-`cost`points. Defaults:`cost: 1.0, costThreshold: 0.10`($0.10 → 0pt,
-$1 → −1pt, $10 → −2pt, $100 → −3pt). Existing configs with`cost: 0.5`
+    `costThreshold`) pay zero penalty; each 10× over the threshold subtracts
+    `cost`points. Defaults:`cost: 1.0, costThreshold: 0.10`($0.10 → 0pt,
+    $1 → −1pt, $10 → −2pt, $100 → −3pt). Existing configs with`cost: 0.5`
     still parse but produce mathematically different rankings.
 - **`bun llm pro --leaderboard` now sorts by raw quality by default** (was:
   sort by cost-aware rankScore). Add `--rank-by-cost` for the prior
@@ -435,7 +435,7 @@ Recommended `dual-pro-config.json`:
 - **Runner-up**: `moonshotai/kimi-k2.6` (proven cheap baseline; 241 calls
   of judge calibration history)
 - **Pool**: `gemini-3-pro-preview, deepseek/deepseek-chat, grok-4,
-claude-opus-4-6`
+  claude-opus-4-6`
 - **Judge**: `gemini-2.5-flash` (~$0.001/judge call)
 
 GPT-5.4 Pro deliberately removed from default pool — opt-in via
@@ -599,8 +599,8 @@ surface; existing invocations still work.
   `recover`, `await`) supports `--json`. JSON envelope on stdout; all
   human-readable progress on stderr. Pipe-friendly for skill consumption.
 - Envelope: `{ file, model, tokens: { prompt, completion, total }, cost,
-durationMs, responseId?, status }`. Status ∈ `completed | failed |
-background | recovered`.
+  durationMs, responseId?, status }`. Status ∈ `completed | failed |
+  background | recovered`.
 - Dual-pro emits per-leg `a` and `b` envelopes plus aggregate metadata.
 - Centralized via `output-mode.ts` singleton (`setJsonMode`/`isJsonMode`/
   `emitJson`/`emitContent`); test-isolatable via `resetOutputMode()`.
@@ -620,7 +620,7 @@ background | recovered`.
     queries and three-gate threshold (≥10 calls, score margin ≥0.3, failure
     rate ≤ champion's)
   - `bun llm pro --backtest [--sample N] [--quick] [--no-old-fire]
-[--no-challenger]` — replay historical queries through OLD + NEW configs
+    [--no-challenger]` — replay historical queries through OLD + NEW configs
     in parallel for apples-to-apples promotion gate
 - Cost sliders: `--no-challenger` (skip leg C), `--no-judge` (skip judge),
   `--challenger <id>` (override rotation).
