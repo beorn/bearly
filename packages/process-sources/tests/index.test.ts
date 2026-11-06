@@ -7,6 +7,51 @@
 import { describe, expect, it } from "vitest"
 import * as sources from "../src/index.ts"
 
+/**
+ * @failure Stat consumers misalign fields around comm or normalize raw incarnation bytes.
+ * @level l0
+ * @consumer Accounts, Dutiful, Inhab, hab-sysmon, hab-core
+ * @testonly none
+ */
+describe("Linux proc stat lexical fields", () => {
+  it("finds the tail after names containing spaces and parentheses", () => {
+    for (const command of ["Web Content", "a) b (c)"]) {
+      const prefix = `123 (${command})`
+      expect(sources.parseLinuxProcStatFields(`${prefix} S 7 8`)).toEqual({
+        commandEnd: prefix.length - 1,
+        fields: ["S", "7", "8"],
+        startTime: undefined,
+      })
+    }
+  })
+
+  it("returns unavailable lexical fields without a closing command delimiter", () => {
+    expect(sources.parseLinuxProcStatFields("123 (unfinished S 7 8")).toBeUndefined()
+  })
+
+  it("preserves a short or fully empty tail without inventing a start time", () => {
+    for (const [tail, fields] of [
+      [" S 0", ["S", "0"]],
+      ["", [""]],
+    ] as const) {
+      expect(sources.parseLinuxProcStatFields(`123 (x)${tail}`)).toEqual({
+        commandEnd: 6,
+        fields,
+        startTime: undefined,
+      })
+    }
+  })
+
+  it("tokenizes doubled spaces and tabs with one whitespace grammar", () => {
+    expect(sources.parseLinuxProcStatFields("123 (x)  S\t 7  8\n")?.fields).toEqual(["S", "7", "8"])
+  })
+
+  it("preserves field 22 bytes beyond numeric precision", () => {
+    const stat = "123 (x) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 0009007199254740993\n"
+    expect(sources.parseLinuxProcStatFields(stat)?.startTime).toBe("0009007199254740993")
+  })
+})
+
 describe("pure process-source interpretation", () => {
   it("preserves argv fields while removing only the final terminator", () => {
     for (const [input, expected] of [

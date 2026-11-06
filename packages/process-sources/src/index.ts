@@ -11,6 +11,23 @@ export type ProcessFdSummary = Readonly<{
   unreadableCount: number
 }>
 
+/** Interpret the tail after comm; callers retain PID, state, numeric and identity validation. */
+export function parseLinuxProcStatFields(source: string):
+  | {
+      readonly commandEnd: number
+      readonly fields: readonly string[]
+      readonly startTime: string | undefined
+    }
+  | undefined {
+  const commandEnd = source.lastIndexOf(")")
+  if (commandEnd < 0) return undefined
+  const fields = source
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/u)
+  return { commandEnd, fields, startTime: fields[19] }
+}
+
 /** A final NUL terminates the vector; other empty fields are real arguments. */
 export function parseProcessArgv(contents: string): readonly string[] {
   const argv = contents.split("\0")
