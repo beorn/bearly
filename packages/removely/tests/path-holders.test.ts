@@ -625,6 +625,34 @@ describe("inspectPathHolderCensus", () => {
       },
     )
 
+    /**
+     * @failure A native overlong argv pathname makes every worktree CWD observation unavailable (32551).
+     * @level l2
+     * @consumer Removely path-holder census and worktree-pool-enforce argv projection.
+     * Existing symlink/dangling cases miss ENAMETOOLONG; lexical holders must still win before resolution.
+     */
+    test.runIf(process.platform === "linux").each([false, true])(
+      "an overlong argv operand preserves readable census coverage (allowMissing=%s)",
+      async (allowMissing) => {
+        const probe = argvFixture()
+        const target = allowMissing ? join(probe.ownedPath, "missing") : probe.ownedPath
+        const operand = join(
+          dirname(probe.ownedPath),
+          `chrome-headless-shell ${"--disable-background-networking ".repeat(60)}`,
+        )
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${operand}\0`)
+        const outside = await censusInProc(target, probe.procRoot, { scope: "same-uid", allowMissing })
+        expect(outside.holders).toEqual([])
+        expect(outside.coverage.complete).toBe(true)
+
+        const inside = join(target, operand.slice(operand.lastIndexOf("/") + 1))
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${inside}\0`)
+        const held = await censusInProc(target, probe.procRoot, { scope: "same-uid", allowMissing })
+        expect(held.holders).toEqual([{ pid: 4242, source: "argv", target: inside }])
+        expect(held.coverage.complete).toBe(true)
+      },
+    )
+
     // 29167 (review2 REVISE): a DENIED alias read is unmeasured, never "no holder". EACCES must leave a coverage
     // gap that names the argv source, so a caller cannot read the row as proof that nothing holds the tree.
     test.runIf(process.platform === "linux" && process.getuid?.() !== 0)(
