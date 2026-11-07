@@ -12,6 +12,9 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  realpathSync,
+  rmdirSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -652,6 +655,60 @@ describe("inspectPathHolderCensus", () => {
         expect(held.coverage.complete).toBe(true)
       },
     )
+
+    // 32551: NAME_MAX limits bytes, not characters; the ASCII operand cases cannot detect this regression.
+    test.runIf(process.platform === "linux")("an argv component over NAME_MAX in bytes names nothing", async () => {
+      const probe = argvFixture()
+      const element = join(dirname(probe.ownedPath), "é".repeat(128))
+      writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${element}\0`)
+      const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+      expect(census.holders).toEqual([])
+      expect(census.coverage.complete).toBe(true)
+    })
+
+    // 32551: ENAMETOOLONG also describes real files reached through a short alias past PATH_MAX.
+    // The existing dangling/denied fixtures do not exercise this native alias-expansion boundary.
+    test.runIf(process.platform === "linux")("a short argv alias past PATH_MAX keeps coverage incomplete", async () => {
+      const probe = argvFixture()
+      const base = dirname(probe.ownedPath)
+      const cleanup: (() => void)[] = []
+      try {
+        let path = base
+        const segments = Array.from({ length: 19 }, (_, i) => `${i}`.padEnd(200, "x"))
+        for (const segment of segments) {
+          path = join(path, segment)
+          mkdirSync(path)
+          const created = path
+          cleanup.push(() => rmdirSync(created))
+        }
+        const firstAlias = join(base, "first-alias")
+        symlinkSync(path, firstAlias)
+        cleanup.push(() => unlinkSync(firstAlias))
+        path = firstAlias
+        for (const segment of segments) {
+          path = join(path, segment)
+          mkdirSync(path)
+          const created = path
+          cleanup.push(() => rmdirSync(created))
+        }
+        const secondAlias = join(firstAlias, "second-alias")
+        symlinkSync(segments.join("/"), secondAlias)
+        cleanup.push(() => unlinkSync(secondAlias))
+        const element = join(secondAlias, "target")
+        writeFileSync(element, "real file")
+        cleanup.push(() => unlinkSync(element))
+        expect(statSync(element).isFile()).toBe(true)
+        expect(() => realpathSync(element)).toThrow(expect.objectContaining({ code: "ENAMETOOLONG" }))
+        writeFileSync(join(probe.processRoot, "cmdline"), `bun\0${element}\0`)
+        const census = await censusInProc(probe.ownedPath, probe.procRoot, { scope: "same-uid" })
+        expect(census.holders).toEqual([])
+        expect(census.coverage.complete).toBe(false)
+        if (census.coverage.platform !== "linux") throw new Error("fixture must run the Linux collector")
+        expect(census.coverage.unreadable?.[0]?.denied).toContain("argv")
+      } finally {
+        for (const remove of cleanup.reverse()) remove()
+      }
+    })
 
     // 29167 (review2 REVISE): a DENIED alias read is unmeasured, never "no holder". EACCES must leave a coverage
     // gap that names the argv source, so a caller cannot read the row as proof that nothing holds the tree.

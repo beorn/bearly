@@ -866,7 +866,7 @@ function argvElementRealPath(element: string, cache?: ArgvAliasCache, anchoredRo
   try {
     resolved = realpathSync(element)
   } catch (error) {
-    if (isDanglingElementError(error)) {
+    if (isDanglingElementError(error, element)) {
       if (anchoredRoot && (error as NodeJS.ErrnoException).code === "ENOENT") {
         try {
           const { existingAncestor, missingSegments } = splitAtNearestExistingAncestor(element)
@@ -890,10 +890,19 @@ function argvElementRealPath(element: string, cache?: ArgvAliasCache, anchoredRo
   return resolved
 }
 
-/** ENOENT/ENOTDIR: the element names nothing. Any other errno says the alias exists but could not be read. */
-function isDanglingElementError(error: unknown): boolean {
+const NAME_MAX = 255
+
+/**
+ * ENOENT/ENOTDIR, or a component over NAME_MAX bytes: the element names nothing.
+ * ENAMETOOLONG from an expanded path past PATH_MAX remains unmeasured: a short alias can name a real file.
+ */
+function isDanglingElementError(error: unknown, element: string): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code
-  return code === "ENOENT" || code === "ENOTDIR"
+  return (
+    code === "ENOENT" ||
+    code === "ENOTDIR" ||
+    (code === "ENAMETOOLONG" && element.split("/").some((segment) => Buffer.byteLength(segment) > NAME_MAX))
+  )
 }
 
 /** The holders a row proves, and the argv aliases whose denial leaves that row's evidence incomplete (29167). */
