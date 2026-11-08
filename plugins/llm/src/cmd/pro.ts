@@ -34,7 +34,7 @@
  * incomplete report and nonzero exit.
  */
 
-import { ask } from "../lib/research"
+import { ask, estimateTokens, computeMaxOutputTokens } from "../lib/research"
 import { isProviderRoutable, providerRouteLabel, getProviderEnvVar } from "../lib/providers"
 import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getModel, type Model, type ModelResponse, type ModelMode, type ServedBy } from "../lib/types"
@@ -44,7 +44,7 @@ import { checkModelLiveness, describeLiveness } from "../lib/model-liveness"
 import { describeDispatchFailure } from "../lib/dispatch-error"
 import { failingMainstays, formatFleetWarning, readFleetFailureReport } from "../lib/fleet-failure"
 import { confirmOrExit } from "../ui/confirm"
-import { askAndFinish } from "./ask"
+import { askAndFinish, enrichQuestion } from "./ask"
 import { outputTokenStop, type ProCompletion } from "../lib/format"
 import { formatCostColumns, estimateFleetCost } from "../lib/format"
 import { aggregateCosts, serializeCost, type CostFields, type ResolvedCost } from "../lib/cost"
@@ -107,9 +107,45 @@ export async function runProDual(options: {
   // reads its files once and the live path reuses the same promise.
   let builtContext: Promise<string | undefined> | undefined
   const contextOnce = (): Promise<string | undefined> => (builtContext ??= buildContext(question))
-  /** The dispatch's own input assumption: question plus built context at 4 chars per token. */
-  function estimatedInputTokens(question: string, context: string | undefined): number {
-    return Math.max(200, Math.ceil((question.length + (context?.length ?? 0)) / 4))
+  const { isOpenAIBackgroundCapable } = await import("../lib/openai-deep")
+
+  async function forecastLeg(model: Model, enriched: string): Promise<string> {
+    const inputTokens = estimateTokens(["", enriched].join(""))
+    const subscription = resolveSubscriptionRoute(model, { hasImage: imagePath !== undefined }) !== undefined
+    const background = isOpenAIBackgroundCapable(model) && !imagePath
+    let route = "route: skipped (dispatch does not check)"
+    if (model.provider === "openrouter" && process.env.LLM_SKIP_MODEL_LIVENESS !== "1") {
+      const { decideOpenRouterRoutePin } = await import("../lib/openrouter-route-pin")
+      const decision = await decideOpenRouterRoutePin(model.modelId, inputTokens, { cacheOnly: true })
+      route =
+        decision.kind === "unknown"
+          ? "route: unknown (no fresh cached endpoint catalog)"
+          : decision.kind === "refuse"
+            ? "route: would refuse " + decision.promptTokens + " input against " + decision.routeWindow
+            : "route: " + decision.pin.only.join(", ")
+    }
+    let cap: number | undefined
+    try {
+      if (!subscription && (!background || options.maxOutputTokens !== undefined)) {
+        cap = computeMaxOutputTokens(model, [{ role: "user", content: enriched }], undefined, options.maxOutputTokens)
+      }
+    } catch (error) {
+      return (
+        model.displayName + "; " + route + "; would refuse: " + (error instanceof Error ? error.message : String(error))
+      )
+    }
+    const outputAssumption = cap ?? options.maxOutputTokens ?? 1_000
+    const price = estimateFleetCost([model], inputTokens, outputAssumption, imagePath !== undefined).text
+    return (
+      model.displayName +
+      " output cap: " +
+      (cap === undefined ? "none sent (provider default)" : cap) +
+      "; " +
+      route +
+      "; " +
+      price +
+      (cap === undefined ? "; output price assumption: " + outputAssumption : "")
+    )
   }
 
   const { finalizeOutput, formatBudgetRetry, quotePosixArgument } = await import("../lib/format")
@@ -120,12 +156,7 @@ export async function runProDual(options: {
     assertDispatchableModelIds([modelOverride.modelId])
     if (dryRun) {
       const context = await contextOnce()
-      const estimate = estimateFleetCost(
-        [modelOverride],
-        estimatedInputTokens(question, context),
-        options.maxOutputTokens ?? 1_000,
-        imagePath !== undefined,
-      ).text
+      const estimate = await forecastLeg(modelOverride, enrichQuestion(question, context))
       console.error("[pro] Dry run - would query one model:")
       console.error(`  • Model: ${modelOverride.displayName} (${modelOverride.modelId})`)
       console.error("  • Config: explicit --model override")
@@ -268,12 +299,9 @@ export async function runProDual(options: {
     const knownLegs = dryLegs.filter((l): l is DryLeg & { model: Model } => Boolean(l.model))
     const dryProLegCount = knownLegs.filter((l) => l.model.costTier === "very-high").length
     const dryContext = await contextOnce()
-    const dryCost = estimateFleetCost(
-      knownLegs.map((l) => l.model),
-      estimatedInputTokens(question, dryContext),
-      options.maxOutputTokens ?? 1_000,
-      imagePath !== undefined,
-    ).text
+    const dryCost = (
+      await Promise.all(knownLegs.map((leg) => forecastLeg(leg.model, enrichQuestion(question, dryContext))))
+    ).join(" | ")
     console.error("[dual-pro] Dry run - would query these models:")
     for (const leg of dryLegs) {
       const tag = leg.role === "split-test" ? " [split-test]" : ""
@@ -332,7 +360,7 @@ export async function runProDual(options: {
   }
 
   const context = await contextOnce()
-  const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
+  const enrichedQuestion = enrichQuestion(question, context)
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
 
   // Build the slot/leg list. Always 2 mainstays; up to 2 split-test slots.
@@ -413,34 +441,8 @@ export async function runProDual(options: {
   console.error(`[dual-pro] Querying ${legSlots.length} legs in parallel: ${fleetLabel}...`)
   // Cost estimate, derived from the models this call actually selected.
   const proLegCount = legSlots.filter((s) => s.model.costTier === "very-high").length
-  const estInputTokens = estimatedInputTokens(question, context)
-  const estOutputTokens = options.maxOutputTokens ?? 1_000
-  const fleetEstimate = estimateFleetCost(
-    legSlots.map((s) => s.model),
-    estInputTokens,
-    estOutputTokens,
-    imagePath !== undefined,
-  )
-  const totalEstStr = fleetEstimate.text
-  console.error(
-    `  • Estimated cost: ${totalEstStr} — registry prices for ${legSlots.length} legs at ~${estInputTokens} in / ${estOutputTokens} out tokens`,
-  )
-  // A requested reservation takes precedence over the model's capacity label.
-  for (const s of legSlots) {
-    if (
-      options.maxOutputTokens !== undefined ||
-      s.model.reasoning?.contextWindow ||
-      s.model.reasoning?.maxOutputTokens
-    ) {
-      const cap =
-        options.maxOutputTokens !== undefined
-          ? `${options.maxOutputTokens} tokens (requested)`
-          : s.model.reasoning?.contextWindow
-            ? `dynamic (up to ~${s.model.reasoning.contextWindow - 4096} tokens, scales with input)`
-            : `${s.model.reasoning?.maxOutputTokens} tokens (static)`
-      console.error(`  • ${s.model.displayName} output budget: ${cap}`)
-    }
-  }
+  const totalEstStr = (await Promise.all(legSlots.map((slot) => forecastLeg(slot.model, enrichedQuestion)))).join(" | ")
+  console.error("  • Estimated cost: " + totalEstStr)
   // A mainstay that has been failing across the fleet must say so HERE, in the
   // output every real run prints — `pro --diagnostics` is where this signal
   // lived, and nobody runs it. Fleet-wide by construction: the per-directory
@@ -466,7 +468,7 @@ export async function runProDual(options: {
   const tierLabel = proLegCount >= 2 ? `${proLegCount} Pro-tier legs` : "mostly mainstays"
   await confirmOrExit(`⚠️  Dual-pro costs ${totalEstStr} (${tierLabel}). Proceed? [Y/n] `, skipConfirm)
 
-  const { queryOpenAIBackground, isOpenAIBackgroundCapable } = await import("../lib/openai-deep")
+  const { queryOpenAIBackground } = await import("../lib/openai-deep")
 
   // Route OpenAI Pro legs through the Responses API so they're recoverable:
   // a 30+ min Pro call that gets SIGINT / network-hiccup / wall-clock killed

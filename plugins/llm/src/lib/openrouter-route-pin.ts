@@ -151,6 +151,8 @@ export async function readOpenRouterRoutes(
     readonly fetchImpl?: typeof fetch
     readonly now?: number
     readonly useCache?: boolean
+    /** Read a fresh existing catalog without fetching, warning or writing. */
+    readonly cacheOnly?: boolean
   } = {},
 ): Promise<OpenRouterRoute[] | undefined> {
   const env = options.env ?? process.env
@@ -160,6 +162,7 @@ export async function readOpenRouterRoutes(
     const cached = readCachedRoutes(modelId, now)
     if (cached) return cached
   }
+  if (options.cacheOnly) return undefined
   const key = env.OPENROUTER_API_KEY
   if (!key) {
     console.warn(

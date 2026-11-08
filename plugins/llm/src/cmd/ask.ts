@@ -16,6 +16,11 @@ import { outputTokenStop } from "../lib/format"
 import { resolveResponseCost } from "../lib/pricing"
 import { serializeCost } from "../lib/cost"
 
+/** One prepared prompt for single-model and panel forecasts and dispatch. */
+export function enrichQuestion(question: string, context: string | undefined): string {
+  return context ? [context, question].join("\n\n---\n\n") : question
+}
+
 /** Shared single-model ask: select model, stream, finalize */
 export async function askAndFinish(options: {
   question: string
@@ -53,7 +58,7 @@ export async function askAndFinish(options: {
   const { finishResponse } = await import("../lib/format")
 
   const context = await buildContext(question)
-  const enrichedQuestion = context ? `${context}\n\n---\n\n${question}` : question
+  const enrichedQuestion = enrichQuestion(question, context)
   if (context) console.error(`📎 Context provided (${context.length} chars)\n`)
   let model: Model
   if (modelOverride) {

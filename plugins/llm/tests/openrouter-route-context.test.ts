@@ -12,6 +12,49 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { makeTestEnv } from "./helpers"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+
+/** @failure A cache-only forecast fetches or rewrites a missing/stale catalog. @level l1
+ * @consumer Pro dry-run callers; existing live-route tests permit cache refresh. */
+describe("cache-only route preview", () => {
+  it.each([
+    { label: "small", window: 32768, age: 0, kind: "refuse" },
+    { label: "fitting", window: 128000, age: 0, kind: "pin" },
+    { label: "stale", window: 128000, age: 7200000, kind: "unknown" },
+    { label: "missing", window: undefined, age: 0, kind: "unknown" },
+  ])("uses $label evidence without fetch, write or skipped-key warning", async ({ window, age, kind }) => {
+    const env = makeTestEnv()
+    vi.resetModules()
+    const now = Date.now()
+    const cacheDir = join(env.homeDir, ".cache", "bearly-llm")
+    const cache = join(cacheDir, "openrouter-endpoints.deepseek_deepseek-chat.json")
+    if (window !== undefined) {
+      mkdirSync(cacheDir, { recursive: true })
+      writeFileSync(
+        cache,
+        JSON.stringify({ fetchedAt: now - age, routes: [{ provider_name: "Together", context_length: window }] }),
+      )
+    }
+    const before = existsSync(cache) ? readFileSync(cache, "utf8") : undefined
+    const fetchImpl = vi.fn(
+      async () => new Response(endpointsBody([{ provider_name: "Together", context_length: 128000 }])),
+    )
+    const { decideOpenRouterRoutePin } = await import("../src/lib/openrouter-route-pin")
+    const decision = await decideOpenRouterRoutePin("deepseek/deepseek-chat", 117114, {
+      now,
+      cacheOnly: true,
+      fetchImpl,
+      env: window === undefined ? {} : { OPENROUTER_API_KEY: "test-key" },
+    })
+    expect(decision.kind).toBe(kind)
+    if (decision.kind === "pin") expect(decision.pin.only).toEqual(["Together"])
+    if (decision.kind === "refuse") expect(decision.routeWindow).toBe(32768)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(existsSync(cache) ? readFileSync(cache, "utf8") : undefined).toBe(before)
+    expect(env.stderr).toEqual([])
+  })
+})
 
 /**
  * Recorded 2026-10-09 /pro specimen

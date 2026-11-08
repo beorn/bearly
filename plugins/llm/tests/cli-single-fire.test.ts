@@ -460,8 +460,7 @@ describe("cli-single-fire", () => {
     const stderr = env.stderr.join("\n")
     const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
     expect(stderr).toMatch(/Dry run/)
-    const combinedContext = [context, secondContext].join("\n\n---\n\n")
-    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + combinedContext.length) / 4)))
+    expect(Number(assumed)).toBe(3434)
   }, 10_000)
 
   /**
@@ -513,9 +512,76 @@ describe("cli-single-fire", () => {
     expect(readFileSync(logFile, "utf8")).toBe("")
     const stderr = env.stderr.join("\n")
     const assumed = /assumed (\d+) input/.exec(stderr)?.[1]
-    const combinedContext = [context, secondContext].join("\n\n---\n\n")
-    expect(Number(assumed)).toBe(Math.max(200, Math.ceil((question.length + combinedContext.length) / 4)))
+    expect(Number(assumed)).toBe(3435)
   }, 10_000)
+
+  /** @failure Forecast hides the smaller cap actually sent to a model. @level l1
+   * @consumer Pro callers sizing a reservation; old cases asserted only chars/4 input. */
+  it.each([
+    { model: "deepseek/deepseek-chat", cap: 553 },
+    { model: "moonshotai/kimi-k2.7-code", cap: 1000 },
+  ])("forecast agrees with dispatched $cap output for $model", async ({ model, cap }) => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const contextFile = join(env.tmpDir, "context.md")
+    // Fully enriched length431728 reconstructs the recorded553-headroom case.
+    writeFileSync(contextFile, "x".repeat(431717))
+    const args = ["pro", "--model", model, "--max-output-tokens", "1000", "--context-file", contextFile, "-y", "ping"]
+    const preview = await runCli([...args, "--dry-run"])
+    expect(preview.error).toBeUndefined()
+    expect(streamTextMock).not.toHaveBeenCalled()
+    expect(generateTextMock).not.toHaveBeenCalled()
+    const forecast = env.stderr.join("\n")
+    expect(forecast).toContain("output cap: " + cap)
+    const sent = await runCli(args)
+    expect(sent.error).toBeUndefined()
+    expect(sent.exited).toBeUndefined()
+    // Oracle: the real queryModel's mocked SDK request, never a second budget calculation.
+    expect(streamTextMock).toHaveBeenCalledOnce()
+    expect(streamTextMock.mock.calls[0]![0].maxOutputTokens).toBe(cap)
+    expect(streamTextMock.mock.calls[0]![0].messages[0].content.length).toBe(431728)
+    expect(forecast).toContain("assumed 123351 input")
+
+    expect(forecast).toContain("output cap: " + streamTextMock.mock.calls[0]![0].maxOutputTokens)
+  })
+
+  /** @failure One fleet estimate hides differing caps or an oversized leg. @level l1
+   * @consumer Seats choosing a mixed panel before dispatch. */
+  it("forecasts each leg and retains oversized would-refuse evidence", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    const config = join(env.tmpDir, "dual-pro-config.json")
+    writeFileSync(
+      config,
+      JSON.stringify({ mainstays: ["deepseek/deepseek-chat", "moonshotai/kimi-k2.7-code"], splitTestSlots: 0 }),
+    )
+    vi.stubEnv("BEARLY_LLM_MEMORY_DIR", env.tmpDir)
+    afterEach(() => vi.unstubAllEnvs())
+    const contextFile = join(env.tmpDir, "large.md")
+    writeFileSync(contextFile, "x".repeat(431717))
+    const args = [
+      "pro",
+      "--no-challenger",
+      "--no-judge",
+      "--max-output-tokens",
+      "1000",
+      "--context-file",
+      contextFile,
+      "-y",
+      "ping",
+    ]
+    const result = await runCli([...args, "--dry-run"])
+    expect(result.error).toBeUndefined()
+    const preview = env.stderr.join("\n")
+    expect(preview).toMatch(/DeepSeek.*output cap: 553/)
+    expect(preview).toMatch(/Kimi.*output cap: 1000/)
+    writeFileSync(contextFile, "x".repeat(519029))
+    const oversized = await runCli([...args, "--dry-run"])
+    expect(oversized.error).toBeUndefined()
+    expect(env.stderr.join("\n")).toMatch(/DeepSeek.*would refuse: Estimated input/)
+    expect(streamTextMock).not.toHaveBeenCalled()
+    expect(generateTextMock).not.toHaveBeenCalled()
+  })
 
   /**
    * @failure A dry-run with a named context file that cannot be read prints a forecast instead of the
