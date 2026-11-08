@@ -745,8 +745,8 @@ describe("24533 — the cost estimate is derived from the models actually select
     expect(estimateLine, "the run must still print an estimate").toBeDefined()
     // The band is the defect. Any occurrence of it means the figure was invented.
     expect(estimateLine!, "the hardcoded tier band must be gone").not.toMatch(/\$5-15/)
-    // A derived figure states what it assumed, so a reader can judge it.
-    expect(estimateLine!, "the estimate names its token assumption").toMatch(/in \/ .* out tokens/)
-    expect(estimateLine!, "and is priced from the registry").toMatch(/registry prices for \d+ legs/)
+    // The selected two legs each name their assumption and registry price provenance.
+    expect(estimateLine!.match(/assumed \d+ input \/ \d+ output tokens per model/g)).toHaveLength(2)
+    expect(estimateLine!.match(/list-equivalent \$[\d.]+ \[[^\]]*model [^\]]+\]/g)).toHaveLength(2)
   }, 20_000)
 })
