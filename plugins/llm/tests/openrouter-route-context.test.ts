@@ -37,8 +37,9 @@ describe("cache-only route preview", () => {
       )
     }
     const before = existsSync(cache) ? readFileSync(cache, "utf8") : undefined
-    const fetchImpl = vi.fn(
-      async () => new Response(endpointsBody([{ provider_name: "Together", context_length: 128000 }])),
+    const fetchImpl = Object.assign(
+      vi.fn(async () => new Response(endpointsBody([{ provider_name: "Together", context_length: 128000 }]))),
+      { preconnect: vi.fn() },
     )
     const { decideOpenRouterRoutePin } = await import("../src/lib/openrouter-route-pin")
     const decision = await decideOpenRouterRoutePin("deepseek/deepseek-chat", 117114, {
@@ -51,6 +52,7 @@ describe("cache-only route preview", () => {
     if (decision.kind === "pin") expect(decision.pin.only).toEqual(["Together"])
     if (decision.kind === "refuse") expect(decision.routeWindow).toBe(32768)
     expect(fetchImpl).not.toHaveBeenCalled()
+    expect(fetchImpl.preconnect).not.toHaveBeenCalled()
     expect(existsSync(cache) ? readFileSync(cache, "utf8") : undefined).toBe(before)
     expect(env.stderr).toEqual([])
   })
