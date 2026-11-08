@@ -126,7 +126,7 @@ export async function runProDual(options: {
     }
     let cap: number | undefined
     try {
-      if (!subscription && (!background || options.maxOutputTokens !== undefined)) {
+      if (background ? options.maxOutputTokens !== undefined : !subscription) {
         cap = computeMaxOutputTokens(model, [{ role: "user", content: enriched }], undefined, options.maxOutputTokens)
       }
     } catch (error) {

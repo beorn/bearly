@@ -545,6 +545,32 @@ describe("cli-single-fire", () => {
     expect(forecast).toContain("output cap: " + streamTextMock.mock.calls[0]![0].maxOutputTokens)
   })
 
+  /** @failure Available subscription login hides the cap on Pro's background API path. @level l1
+   * @consumer Explicit Pro callers; OpenRouter parity cases never select a subscription. */
+  it("forecasts the background request even when a subscription login is available", async () => {
+    const env = makeTestEnv()
+    resetGenerateTextToOk()
+    writeFileSync(join(env.tmpDir, "codex"), "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+    writeFileSync(join(env.tmpDir, "config.toml"), "")
+    vi.stubEnv("PATH", env.tmpDir)
+    vi.stubEnv("CODEX_HOME", env.tmpDir)
+    vi.stubEnv("LLM_SUBSCRIPTION_CLI", "1")
+    afterEach(() => vi.unstubAllEnvs())
+    const args = ["pro", "--model", "gpt-5.4-pro", "--max-output-tokens", "1000", "-y", "ping"]
+    const preview = await runCli([...args, "--dry-run"])
+    expect(preview.error).toBeUndefined()
+    const forecast = env.stderr.join("\n")
+    expect(forecast).toContain("output cap: 1000")
+    const sent = await runCli(args)
+    expect(sent.error).toBeUndefined()
+    expect(queryBackgroundMock).toHaveBeenCalledOnce()
+    const request = queryBackgroundMock.mock.calls[0]![0]
+    expect(request.maxOutputTokens).toBe(1000)
+    expect(forecast).toContain("output cap: " + request.maxOutputTokens)
+    expect(request.topic).toBe("ping")
+    expect(streamTextMock).not.toHaveBeenCalled()
+  })
+
   /** @failure One fleet estimate hides differing caps or an oversized leg. @level l1
    * @consumer Seats choosing a mixed panel before dispatch. */
   it("forecasts each leg and retains oversized would-refuse evidence", async () => {
