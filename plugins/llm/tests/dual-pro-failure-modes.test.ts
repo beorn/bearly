@@ -428,9 +428,9 @@ describe("dual-pro failure modes", () => {
     expect(queryBackgroundMock.mock.calls[0]![0].maxOutputTokens).toBe(4096)
     // The live Pro log must describe this requested reservation, rather than
     // displaying a model's much larger context capacity as the output cap.
-    const budgets = env.stderr.filter((line) => line.includes("output budget:"))
-    expect(budgets).toHaveLength(2)
-    expect(budgets.every((line) => line.endsWith("4096 tokens (requested)"))).toBe(true)
+    const estimate = env.stderr.find((line) => line.includes("Estimated cost:"))
+    expect(estimate).toContain("GPT-5.4 Pro output cap: 4096;")
+    expect(estimate).toContain("Kimi K2.6 output cap: 4096;")
     expect(JSON.stringify(judgeCalls[1]?.[0] ?? {})).toContain("scoreA.scores.correctness")
     const report = readFileSync(outputFile, "utf8")
     expect(report).toContain("first unranked opinion")
