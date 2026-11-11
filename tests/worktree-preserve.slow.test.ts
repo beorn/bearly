@@ -160,6 +160,58 @@ describe("worktree preserve-first (L5): destructive ops never discard", () => {
     }
   }, 60_000)
 
+  /** @failure 33552: env close's early preserve check writes a snapshot, ref, push or log line, or disagrees with the
+   * real run's validation. @level l2 @consumer yrd env close through tools/worktree.ts preserve --check @testonly none */
+  test("validateOnly runs the same validation, says checked, and writes nothing", async () => {
+    const mainRepo = await buildMain()
+    const slot = "wt8"
+    const worktreePath = join(sandbox, "main-wt8")
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(mainRepo)
+      await createWorktree(slot, undefined, { install: false, direnv: false, hooks: false })
+      const head = (await $`git -C ${worktreePath} rev-parse HEAD`.text()).trim()
+      writeFileSync(join(worktreePath, "README.md"), "working\n")
+      const origin = join(sandbox, "origin.git")
+      const state = async () =>
+        JSON.stringify({
+          main: await $`git -C ${mainRepo} for-each-ref --format=${"%(refname) %(objectname)"}`.text(),
+          origin: await $`git -C ${origin} for-each-ref --format=${"%(refname) %(objectname)"}`.text(),
+          status: await $`git -C ${worktreePath} status --porcelain --untracked-files=all`.text(),
+          log: existsSync(join(mainRepo, ".git", "worktree-preserve.log")),
+        })
+      const destination = (ref: string) => async () =>
+        new Map([[".", { ref, remote: "origin", expectedLocal: head, expectedRemote: null }]])
+      const before = await state()
+      const passing = await preserveSlotState(worktreePath, slot, mainRepo, {
+        quiet: true,
+        validateOnly: true,
+        selectDestinations: destination(`refs/heads/${slot}`),
+      })
+      expect(passing).toMatchObject({ preserved: false, checked: true, reason: "dirty", submodules: [] })
+      expect(passing.ref).toBeUndefined()
+      expect(await state()).toBe(before)
+      // A destination the real run would refuse (not the attached branch) refuses the check with the same message.
+      const refusal = /preserve: \. is attached to refs\/heads\/wt8, expected refs\/heads\/other; no refs written/u
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          validateOnly: true,
+          selectDestinations: destination("refs/heads/other"),
+        }),
+      ).rejects.toThrow(refusal)
+      expect(await state()).toBe(before)
+      await expect(
+        preserveSlotState(worktreePath, slot, mainRepo, {
+          quiet: true,
+          selectDestinations: destination("refs/heads/other"),
+        }),
+      ).rejects.toThrow(refusal)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  }, 60_000)
+
   /** @failure 30814: a missing later-store destination can leave an earlier store's ref mutated.
    * @level l2 @consumer yrd env close through the public Bearly preserve function @testonly none */
   test("selected destinations preflight every required store before any branch write", async () => {

@@ -2221,6 +2221,11 @@ export interface PreserveResult {
   notCompared?: RemovalInspection["notCompared"]
   /** Repositories skipped because shared main has no primary store for them and they were clean on their recorded pin (29392). */
   skipped?: SkippedRepository[]
+  /**
+   * `validateOnly` passed every check a real preserve runs before its first ref write (33552). Nothing was written;
+   * a later real preserve can still fail if state changes in between, so this is a check, never a promise.
+   */
+  checked?: boolean
 }
 
 /** UTC stamp safe as a ref component: `YYYYMMDDTHHMMSSZ`. */
@@ -2425,6 +2430,13 @@ export interface PreserveOptions {
    * ahead of it. remove and reset leave it unset and keep the print.
    */
   quiet?: boolean
+  /**
+   * Run the same inventory, destination selection and whole-batch validation, then return before the first write:
+   * no snapshot commit, ref, push or log line (33552). It may fetch commit objects a check needs into an object
+   * store, as the real run does first; those carry no ref. Result: `checked: true` with the reason, or the same
+   * error the real run would throw at that point.
+   */
+  validateOnly?: boolean
   /** Select already-authorized real branches for every store that needs custody. Called once, before ref writes. */
   selectDestinations?: (
     repositories: readonly PreserveRepository[],
@@ -2785,6 +2797,7 @@ export async function preserveSlotState(
       }
     }
   }
+  if (opts.validateOnly === true) return { ...empty, checked: true, reason, ...observations, ...skippedObservation }
   const preservedSubs: PreservedSubmodule[] = []
   const overrides = new Map<string, Map<string, string>>()
   const written: { repo: string; ref: string; sha: string }[] = []
@@ -3883,6 +3896,10 @@ ${BOLD}USAGE${RESET}
   bun worktree create --branch <branch> Create worktree using branch as name
   bun worktree remove <name>            Remove worktree
   bun worktree reset <name> [--force]   Recreate worktree at origin/main (DCG-safe slot recovery)
+  bun worktree preserve <name> [--json] [--check]
+                                        Preserve a dirty or ahead slot; exit 0 preserved, 3 nothing to preserve
+                                        --check: write nothing; exit 0 would preserve, 3 nothing to preserve,
+                                        4 a real preserve would refuse (its message on stderr). A check, not a promise.
   bun worktree path <name>              Print the resolved slot path (pool-aware)
   bun worktree list                     Detailed worktree status
   bun worktree gc                       Prune stale agent-isolation clones (.claude/worktrees/agent-*)
@@ -4052,7 +4069,7 @@ const SUBCOMMAND_SPECS: Record<string, SubcommandSpec> = {
       "--no-hooks": {},
     },
   },
-  preserve: { maxPositionals: 1, flags: { "--json": {} } },
+  preserve: { maxPositionals: 1, flags: { "--json": {}, "--check": {} } },
   path: { maxPositionals: 1, flags: {} },
   list: { maxPositionals: 0, flags: { "--json": {}, "--name": { value: true }, "--limit": { value: true } } },
   ls: { maxPositionals: 0, flags: { "--json": {}, "--name": { value: true }, "--limit": { value: true } } },
@@ -4076,6 +4093,8 @@ export type CreatePlanOptions = Required<Omit<CreateOptions, "base" | "destinati
 export interface PreservePlanOptions {
   /** Machine receipt on stdout instead of the human line. */
   json?: boolean
+  /** Validate only (33552): run every check before the first write, write nothing, exit by PRESERVE_* code. */
+  check?: boolean
 }
 
 export type CliPlan =
@@ -4230,8 +4249,12 @@ export function planCliInvocation(argv: string[]): CliPlan {
     }
     case "preserve": {
       const name = positionals[0]
-      if (!name) return { action: "usage-error", message: "Usage: bun worktree preserve <name> [--json]" }
-      return { action: "preserve", name, options: { json: flags.has("--json") } }
+      if (!name) return { action: "usage-error", message: "Usage: bun worktree preserve <name> [--json] [--check]" }
+      return {
+        action: "preserve",
+        name,
+        options: { json: flags.has("--json"), ...(flags.has("--check") ? { check: true } : {}) },
+      }
     }
     case "path": {
       const name = positionals[0]
@@ -4296,6 +4319,9 @@ export function planCliInvocation(argv: string[]): CliPlan {
 /** `preserve`'s "nothing preserved" ending: non-zero so a caller never reads a no-op as success. */
 export const PRESERVE_NOTHING_EXIT = 3
 
+/** `preserve --check`'s refusal (33552): a real preserve would refuse now; the message is the real run's. */
+export const PRESERVE_REFUSED_EXIT = 4
+
 /** The public preserve result's existing CLI receipt, shared with composing callers. */
 export function preserveReceipt(slot: string, worktreePath: string, preserved: PreserveResult) {
   const reason = preserved.reason ?? (existsSync(worktreePath) ? "clean" : "no such worktree")
@@ -4304,6 +4330,7 @@ export function preserveReceipt(slot: string, worktreePath: string, preserved: P
     slot,
     path: worktreePath,
     preserved: preserved.preserved,
+    ...(preserved.checked === true ? { checked: true } : {}),
     reason,
     ref: preserved.ref ?? null,
     sha: preserved.sha ?? null,
@@ -4334,7 +4361,36 @@ export function preserveReceipt(slot: string, worktreePath: string, preserved: P
  * verb exits PRESERVE_NOTHING_EXIT, with the reason on stderr, when it preserves
  * nothing, so a caller never mistakes a no-op for success.
  */
-export async function preserveWorktreeState(name: string, options: { json?: boolean } = {}): Promise<void> {
+/**
+ * The preserve verb's one outcome mapping, shared by this CLI and the km wrapper (33552). Without `check` it is the
+ * real preserve: exit 0 preserved, PRESERVE_NOTHING_EXIT nothing to preserve, and a refusal throws as before. With
+ * `check` it runs preserveSlotState's validateOnly: exit 0 would preserve (receipt `checked: true`, never
+ * `preserved: true`), PRESERVE_NOTHING_EXIT nothing to preserve, PRESERVE_REFUSED_EXIT with the real message when a
+ * real preserve would refuse now.
+ */
+export async function runPreserveVerb(
+  worktreePath: string,
+  slot: string,
+  gitRoot: string,
+  plan: PreservePlanOptions,
+  opts: PreserveOptions = {},
+): Promise<{ exit: number; receipt?: ReturnType<typeof preserveReceipt>; refusal?: string }> {
+  let preserved: PreserveResult
+  try {
+    preserved = await preserveSlotState(worktreePath, slot, gitRoot, {
+      ...opts,
+      quiet: true,
+      ...(plan.check === true ? { validateOnly: true } : {}),
+    })
+  } catch (caught) {
+    if (plan.check !== true) throw caught
+    return { exit: PRESERVE_REFUSED_EXIT, refusal: caught instanceof Error ? caught.message : String(caught) }
+  }
+  const receipt = preserveReceipt(slot, worktreePath, preserved)
+  return { exit: preserved.preserved || preserved.checked === true ? 0 : PRESERVE_NOTHING_EXIT, receipt }
+}
+
+export async function preserveWorktreeState(name: string, options: PreservePlanOptions = {}): Promise<void> {
   const gitRoot = findGitRoot(process.cwd())
   if (!gitRoot) {
     error("Not in a git repository")
@@ -4342,19 +4398,23 @@ export async function preserveWorktreeState(name: string, options: { json?: bool
   }
   const worktreePath = resolveWorktreeTargetPath(gitRoot, name, { poolRoot: resolvePoolRoot(gitRoot) })
   const slot = slotNameFromResolvedPath(gitRoot, worktreePath)
-  const preserved = await preserveSlotState(worktreePath, slot, gitRoot, { quiet: true })
-  const receipt = preserveReceipt(slot, worktreePath, preserved)
-  const reason = receipt.reason
+  const outcome = await runPreserveVerb(worktreePath, slot, gitRoot, options)
+  if (outcome.receipt === undefined) {
+    error(`worktree preserve --check: a real preserve of ${slot} would refuse: ${outcome.refusal}`)
+    process.exit(outcome.exit)
+  }
+  const receipt = outcome.receipt
   if (options.json === true) console.log(JSON.stringify(receipt))
-  else if (preserved.preserved) {
+  else if (receipt.checked === true) success(`check passed: preserve would save ${receipt.reason} state of ${slot}`)
+  else if (receipt.preserved) {
     success(
-      `preserved ${reason} state of ${slot}: ${preserved.ref ?? "(no ref)"} (${(preserved.sha ?? "").slice(0, 12)})`,
+      `preserved ${receipt.reason} state of ${slot}: ${receipt.ref ?? "(no ref)"} (${(receipt.sha ?? "").slice(0, 12)})`,
     )
   }
-  if (!preserved.preserved) {
+  if (outcome.exit !== 0) {
     // Non-zero with the reason: the exit code alone must never say success for a no-op.
-    error(`worktree preserve: nothing preserved in ${slot}: ${reason}`)
-    process.exit(PRESERVE_NOTHING_EXIT)
+    error(`worktree preserve: nothing preserved in ${slot}: ${receipt.reason}`)
+    process.exit(outcome.exit)
   }
 }
 
