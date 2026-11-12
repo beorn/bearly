@@ -14,6 +14,7 @@ export {
   argvHoldsRoot,
   type ArgvAliasCache,
   clearedByIdentity,
+  heldNothingAsZombie,
   inspectProcessCensus,
   inspectProcessCwds,
   inspectProcessSources,

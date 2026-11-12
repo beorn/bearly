@@ -533,7 +533,7 @@ async function collectProcessRows(
  * while another thread lives also reads Z, and the live thread's cwd, fd and maps are still there. A thread count that
  * was not read proves nothing.
  */
-function heldNothingAsZombie(identity: ProcessIdentity): boolean {
+export function heldNothingAsZombie(identity: ProcessIdentity): boolean {
   return identity.state === "Z" && identity.threads === 1
 }
 
