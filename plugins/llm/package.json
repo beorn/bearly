@@ -45,7 +45,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./cli": "./src/cli.ts"
+    "./cli": "./src/cli.ts",
+    "./env-file": "./src/lib/env-preflight.ts"
   },
   "publishConfig": {
     "access": "public"
