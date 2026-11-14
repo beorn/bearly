@@ -344,6 +344,8 @@ export interface ReadProviderAvailabilityOptions {
   store: ProviderObservationStore
   now: number
   env?: Readonly<Record<string, string | undefined>>
+  /** Subscription routes do not require an API key; stored refusals still apply. */
+  requireApiKey?: boolean
 }
 
 function hasCurrentCredential(provider: Provider, env: Readonly<Record<string, string | undefined>>): boolean {
@@ -367,7 +369,7 @@ export async function readProviderAvailability(
     throw new Error(`provider availability now must be finite; received ${String(options.now)}`)
   }
   const env = options.env ?? process.env
-  if (!hasCurrentCredential(provider, env)) {
+  if (options.requireApiKey !== false && !hasCurrentCredential(provider, env)) {
     const envVar = getProviderEnvVar(provider)
     return {
       provider,

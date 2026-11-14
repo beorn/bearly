@@ -50,7 +50,7 @@ describe("provider transport across AI SDK upgrades", () => {
       expect(response.error).toBeUndefined()
     } else {
       expect(response.content).toBe("")
-      expect(response.error).toMatch(/unpaid|metered|subscription/i)
+      expect(response.error).toBe(`no unpaid route for ${modelId}`)
     }
   })
 

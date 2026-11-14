@@ -613,7 +613,9 @@ describe("route decision (pure)", () => {
 })
 
 describe("queryModel wiring", () => {
-  it("answers an OpenAI model with no key through the codex CLI", async () => {
+  // 33909: opting into billing must still prefer the existing subscription;
+  // opting out must preserve that route, and omission preserves Bearly's default.
+  it.each([undefined, false, true])("answers through codex with allowMetered=%s", async (allowMetered) => {
     writeBin("codex", OK_CODEX)
     resetSubscriptionCliProbe()
     // No LLM_SUBSCRIPTION_CLI: the default is subscription-first.
@@ -623,6 +625,7 @@ describe("queryModel wiring", () => {
       const { response } = await queryModel({
         question: "hi",
         model: modelOf("gpt-5.4"),
+        allowMetered,
         observationStore: null,
       })
       expect(response.error).toBeUndefined()
@@ -630,6 +633,27 @@ describe("queryModel wiring", () => {
       expect(response.servedBy?.cli).toBe("codex")
     } finally {
       errSpy.mockRestore()
+    }
+  })
+
+  // A billing key plus an absent subscription is the actual spending hazard;
+  // selection alone cannot prove the final HTTP boundary stays untouched.
+  it("refuses billing with a key present and no subscription CLI", async () => {
+    process.env.OPENAI_API_KEY = "sk-test"
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected metered HTTP"))
+    try {
+      const { queryModel } = await import("../src/lib/research")
+      const { response } = await queryModel({
+        question: "hi",
+        model: modelOf("gpt-5.4"),
+        allowMetered: false,
+        observationStore: null,
+      })
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(response.content).toBe("")
+      expect(response.error).toBe("no unpaid route for gpt-5.4")
+    } finally {
+      fetchSpy.mockRestore()
     }
   })
 

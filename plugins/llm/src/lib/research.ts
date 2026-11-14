@@ -21,6 +21,7 @@ import {
   subscriptionCliFor,
   subscriptionRouteNote,
   describeSubscriptionRoute,
+  type SubscriptionCliId,
 } from "./subscription-cli"
 import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
@@ -141,8 +142,22 @@ export interface QueryOptions {
   abortSignal?: AbortSignal
   /** Per-call output ceiling; can only lower the model's existing limits. */
   maxOutputTokens?: number
+  /** False permits only local or subscription routes. Omitted preserves metered dispatch. */
+  allowMetered?: boolean
   /** Explicit provider-evidence sink. `null` intentionally disables recording. */
   observationStore?: ProviderObservationStore | null
+}
+
+export type QueryRoute =
+  | { kind: "local" }
+  | { kind: "subscription"; cli: SubscriptionCliId }
+  | { kind: "metered" }
+
+/** Project the same route used by dispatch without starting a model request. */
+export function resolveQueryRoute(model: Model, context: { hasImage?: boolean } = {}): QueryRoute {
+  if (model.provider === "ollama") return { kind: "local" }
+  const cli = resolveSubscriptionRoute(model, context)
+  return cli === undefined ? { kind: "metered" } : { kind: "subscription", cli }
 }
 
 /** Rough token estimate: must OVERESTIMATE, not under-estimate.
@@ -405,7 +420,18 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   // is never switched silently.
   let subscriptionRoute: boolean
   try {
-    subscriptionRoute = resolveSubscriptionRoute(model, { hasImage: options.imagePath !== undefined }) !== undefined
+    const route = resolveQueryRoute(model, { hasImage: options.imagePath !== undefined })
+    subscriptionRoute = route.kind === "subscription"
+    if (options.allowMetered === false && route.kind === "metered") {
+      return {
+        response: {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: `no unpaid route for ${model.modelId}`,
+        },
+      }
+    }
     if (!isProviderAvailable(model.provider) && !subscriptionRoute) {
       const envVar = getProviderEnvVar(model.provider)
       let error = envVar

@@ -9,7 +9,7 @@
  * @bearly/tribe (session summarizer — internally), and the standalone `bun llm` CLI.
  */
 
-export { queryModel } from "./lib/research.ts"
+export { queryModel, resolveQueryRoute, type QueryOptions, type QueryRoute } from "./lib/research.ts"
 export { formatCostColumns } from "./lib/format.ts"
 export { averageCost } from "./lib/cost.ts"
 export { getCheapModel, getCheapModels, selectModels, getModel, formatCost, skuRates, MODELS } from "./lib/types.ts"
