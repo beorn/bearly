@@ -23,18 +23,26 @@ describe("provider transport across AI SDK upgrades", () => {
   it.each([false, true])("honors per-call metered consent allowMetered=%s", async (allowMetered) => {
     makeTestEnv()
     const modelId = "moonshotai/kimi-k2.6"
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      id: "resp_metered_consent",
-      created_at: 1,
-      model: modelId,
-      output: [{
-        type: "message",
-        id: "msg_metered_consent",
-        role: "assistant",
-        content: [{ type: "output_text", text: "offline answer", annotations: [] }],
-      }],
-      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-    }), { headers: { "content-type": "application/json" } }))
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "resp_metered_consent",
+            created_at: 1,
+            model: modelId,
+            output: [
+              {
+                type: "message",
+                id: "msg_metered_consent",
+                role: "assistant",
+                content: [{ type: "output_text", text: "offline answer", annotations: [] }],
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    )
     vi.stubGlobal("fetch", fetchMock)
     const { queryModel } = await import("../src/lib/research")
     const { getModel } = await import("../src/lib/types")

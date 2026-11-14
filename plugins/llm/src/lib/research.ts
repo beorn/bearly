@@ -148,10 +148,7 @@ export interface QueryOptions {
   observationStore?: ProviderObservationStore | null
 }
 
-export type QueryRoute =
-  | { kind: "local" }
-  | { kind: "subscription"; cli: SubscriptionCliId }
-  | { kind: "metered" }
+export type QueryRoute = { kind: "local" } | { kind: "subscription"; cli: SubscriptionCliId } | { kind: "metered" }
 
 /** Project the same route used by dispatch without starting a model request. */
 export function resolveQueryRoute(model: Model, context: { hasImage?: boolean } = {}): QueryRoute {

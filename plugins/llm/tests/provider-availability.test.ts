@@ -53,7 +53,12 @@ describe("provider observation store", () => {
       env: {},
       requireApiKey: false,
     })
-    expect(fact).toMatchObject({ status: "refusing", kind, source: "dispatch", reason: "retained subscription refusal" })
+    expect(fact).toMatchObject({
+      status: "refusing",
+      kind,
+      source: "dispatch",
+      reason: "retained subscription refusal",
+    })
   })
 
   it("honors LLM_NO_CACHE for provider observation reads and writes", async () => {

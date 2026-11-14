@@ -126,8 +126,9 @@ function isProviderObservation(value: unknown, provider?: Provider): value is Re
   if (!value || typeof value !== "object") return false
   const item = value as Partial<RecordedProviderObservation>
   if (provider !== undefined && item.provider !== provider) return false
-  if (!ProviderSchema.safeParse(item.provider).success || typeof item.source !== "string" || item.source.length === 0)
+  if (!ProviderSchema.safeParse(item.provider).success || typeof item.source !== "string" || item.source.length === 0) {
     return false
+  }
   if (typeof item.reason !== "string" || item.reason.length === 0) return false
   if (!Number.isFinite(item.observedAt) || !Number.isFinite(item.expiresAt)) return false
   if ((item.expiresAt as number) < (item.observedAt as number)) return false
