@@ -1,5 +1,5 @@
 /**
- * @failure An AI SDK upgrade silently sends a provider to a different HTTP API.
+ * @failure An AI SDK upgrade changes a provider's HTTP API, or dispatch ignores a caller's metered consent.
  * @level l2 — real provider models with mocked HTTP, no billed request
  * @consumer bearly LLM callers using OpenRouter or xAI
  * @testonly none
@@ -18,6 +18,42 @@ afterEach(() => {
 })
 
 describe("provider transport across AI SDK upgrades", () => {
+  // 33909: a configured billing key is not consent. Mock HTTP at the real
+  // dispatch boundary so a selection-only check cannot hide a paid fallback.
+  it.each([false, true])("honors per-call metered consent allowMetered=%s", async (allowMetered) => {
+    makeTestEnv()
+    const modelId = "moonshotai/kimi-k2.6"
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "resp_metered_consent",
+      created_at: 1,
+      model: modelId,
+      output: [{
+        type: "message",
+        id: "msg_metered_consent",
+        role: "assistant",
+        content: [{ type: "output_text", text: "offline answer", annotations: [] }],
+      }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }), { headers: { "content-type": "application/json" } }))
+    vi.stubGlobal("fetch", fetchMock)
+    const { queryModel } = await import("../src/lib/research")
+    const { getModel } = await import("../src/lib/types")
+    const { response } = await queryModel({
+      question: "offline metered consent probe",
+      model: getModel(modelId)!,
+      allowMetered,
+      observationStore: null,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(allowMetered ? 1 : 0)
+    if (allowMetered) {
+      expect(response.content).toBe("offline answer")
+      expect(response.error).toBeUndefined()
+    } else {
+      expect(response.content).toBe("")
+      expect(response.error).toMatch(/unpaid|metered|subscription/i)
+    }
+  })
+
   // A local observation-store failure happens after the paid HTTP response.
   // The caller must receive both the original receipt and the local failure.
   it.each([

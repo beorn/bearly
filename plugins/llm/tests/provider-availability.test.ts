@@ -35,6 +35,27 @@ function memoryStore(
 }
 
 describe("provider observation store", () => {
+  // 33909: a subscription route does not need an API key, but must still
+  // retain real auth/quota refusals instead of treating the route as usable.
+  it.each(["auth", "quota"] as const)("keeps stored %s refusal on a keyless subscription route", async (kind) => {
+    const store = createProviderObservationStore({ cacheRoot })
+    await recordProviderObservation(store, {
+      provider: "google",
+      status: "refusing",
+      kind,
+      source: "dispatch",
+      reason: "retained subscription refusal",
+      observedAt: 1_000,
+    })
+    const fact = await readProviderAvailability("google", {
+      store,
+      now: 1_001,
+      env: {},
+      requireApiKey: false,
+    })
+    expect(fact).toMatchObject({ status: "refusing", kind, source: "dispatch", reason: "retained subscription refusal" })
+  })
+
   it("honors LLM_NO_CACHE for provider observation reads and writes", async () => {
     vi.stubEnv("LLM_NO_CACHE", "1")
     const store = createProviderObservationStore({ cacheRoot })
