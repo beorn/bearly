@@ -67,6 +67,30 @@ afterEach(() => {
 })
 
 describe("inspectPathHolderCensus", () => {
+  test.each(["before scan", "during metadata"])("starts no later reads when cancelled %s", async (when) => {
+    const root = mkdtempSync(join(tmpdir(), "removely-aborted-census-"))
+    temporary.push(root)
+    const proc = join(root, "4242")
+    mkdirSync(proc)
+    writeFileSync(join(proc, "stat"), procStat(4242))
+    symlinkSync("/", join(proc, "cwd"))
+    const abort = new AbortController()
+    const reason = new Error("parent work cutoff reached")
+    const nativeStat = fsPromises.stat
+    using listing = vi.spyOn(fsPromises, "readdir")
+    using reads = vi.spyOn(fsPromises, "readFile")
+    using metadata = vi.spyOn(fsPromises, "stat").mockImplementation((...args) => {
+      if (when === "during metadata") abort.abort(reason)
+      return Reflect.apply(nativeStat, fsPromises, args)
+    })
+    if (when === "before scan") abort.abort(reason)
+    const options = { scope: "same-uid" as const, sources: ["cwd"] as const, signal: abort.signal }
+    await expect(inspectProcessCensusInProc(root, options)).rejects.toBe(reason)
+    expect(reads).not.toHaveBeenCalled()
+    expect(metadata).toHaveBeenCalledTimes(when === "before scan" ? 0 : 1)
+    if (when === "before scan") expect(listing).not.toHaveBeenCalled()
+  })
+
   test("the public refusal preserves the holder source and target", () => {
     expect(inspectPathHolderCensus).toBeTypeOf("function")
     const holders: PathHolder[] = [

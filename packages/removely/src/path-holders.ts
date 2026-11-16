@@ -33,6 +33,8 @@ export type PathHolderCensusOptions<S extends PathHolderScope = PathHolderScope>
   scope: S
   /** Wall-clock ms from the census start, shared by every /proc read; default `PATH_HOLDER_CENSUS_DEADLINE_MS`. */
   deadlineMs?: number
+  /** A containing operation may close read admission before this census's own deadline. */
+  signal?: AbortSignal
   /** The proc tree the Linux collector reads; default `/proc`. A deterministic seam for a synthetic
    *  tree, and the only way to run the Linux collector on another platform. */
   procRoot?: string
@@ -190,26 +192,39 @@ async function linuxCensusWithDeadline<S extends PathHolderScope>(
  * The timer never holds the process open.
  */
 type CensusDeadline = Readonly<{
-  answer<T>(read: Promise<T>): Promise<Readonly<{ answered: true; value: T }> | Readonly<{ answered: false }>>
+  answer<T>(read: () => Promise<T>): Promise<Readonly<{ answered: true; value: T }> | Readonly<{ answered: false }>>
   clear(): void
 }>
 
-function censusDeadline(ms: number): CensusDeadline {
+function censusDeadline(ms: number, signal?: AbortSignal): CensusDeadline {
   if (!Number.isFinite(ms) || ms <= 0) {
     throw new RangeError(`removely: path-holder census deadline must be a positive number of ms, got ${ms}`)
   }
+  signal?.throwIfAborted()
+  const cutoff = performance.now() + ms
+  let closed = false
   let timer: ReturnType<typeof setTimeout> | undefined
-  const expired = new Promise<Readonly<{ answered: false }>>((resolve) => {
-    timer = setTimeout(() => resolve({ answered: false }), ms)
-    timer.unref?.()
-  })
+  const expired = Promise.withResolvers<Readonly<{ answered: false }>>()
+  const expire = () => {
+    closed = true
+    expired.resolve({ answered: false })
+  }
+  timer = setTimeout(expire, ms)
+  timer.unref?.()
+  signal?.addEventListener("abort", expire, { once: true })
   return {
-    answer: <T>(read: Promise<T>) => {
+    answer: <T>(start: () => Promise<T>) => {
+      signal?.throwIfAborted()
+      if (closed || performance.now() >= cutoff) return Promise.resolve({ answered: false as const })
+      const read = start()
       // The race below handles an answer in time; this keeps a late rejection of an abandoned read from surfacing.
       read.catch(() => {})
-      return Promise.race([read.then((value) => ({ answered: true as const, value })), expired])
+      return Promise.race([read.then((value) => ({ answered: true as const, value })), expired.promise])
     },
-    clear: () => clearTimeout(timer),
+    clear: () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", expire)
+    },
   }
 }
 
@@ -414,9 +429,11 @@ async function withDeadline<T>(
   options: PathHolderCensusOptions,
   run: (deadline: CensusDeadline) => Promise<T>,
 ): Promise<T> {
-  const deadline = censusDeadline(options.deadlineMs ?? PATH_HOLDER_CENSUS_DEADLINE_MS)
+  const deadline = censusDeadline(options.deadlineMs ?? PATH_HOLDER_CENSUS_DEADLINE_MS, options.signal)
   try {
-    return await run(deadline)
+    const result = await run(deadline)
+    options.signal?.throwIfAborted()
+    return result
   } finally {
     deadline.clear()
   }
@@ -453,11 +470,13 @@ async function collectProcessRows(
   deadline: CensusDeadline,
   selected: readonly SourceName[],
 ): Promise<CollectedRows> {
-  const listing = await deadline.answer(readdir(procRoot, { withFileTypes: true })).catch((error: unknown) => {
-    throw new Error(`Linux path-holder census requires readable proc root '${procRoot}': ${errorDetail(error)}`, {
-      cause: error,
+  const listing = await deadline
+    .answer(() => readdir(procRoot, { withFileTypes: true }))
+    .catch((error: unknown) => {
+      throw new Error(`Linux path-holder census requires readable proc root '${procRoot}': ${errorDetail(error)}`, {
+        cause: error,
+      })
     })
-  })
   // Without the process list there is no census to report coverage for.
   if (!listing.answered) {
     throw new Error(`Linux path-holder census: proc root '${procRoot}' did not list within the census deadline`)
@@ -979,8 +998,9 @@ export type ProcessCwdProjection = Readonly<{
 }>
 
 export async function inspectProcessCwds(
-  options: Readonly<{ deadlineMs?: number }> = {},
+  options: Readonly<{ deadlineMs?: number; signal?: AbortSignal }> = {},
 ): Promise<ProcessCwdProjection> {
+  options.signal?.throwIfAborted()
   if (process.platform === "linux") return inspectProcessCwdsInProc("/proc", options)
   if (process.platform === "darwin") {
     return { rows: darwinProcessCwds(), complete: true, unreadable: [], mechanism: "lsof" }
@@ -991,7 +1011,7 @@ export async function inspectProcessCwds(
 /** @internal Deterministic seam for the same projection against a synthetic proc tree. */
 export async function inspectProcessCwdsInProc(
   procRoot: string,
-  options: Readonly<{ deadlineMs?: number }> = {},
+  options: Readonly<{ deadlineMs?: number; signal?: AbortSignal }> = {},
 ): Promise<ProcessCwdProjection> {
   const census = await inspectProcessCensusInProc(procRoot, {
     scope: "same-uid",
@@ -1000,6 +1020,7 @@ export async function inspectProcessCwdsInProc(
     // tree is observable (29167). Rows are an internal read: no receipt or report serializes them.
     includeArgv: true,
     ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   })
   const rows = census.rows.flatMap((row): ProcessCwdRow[] => {
     const cwd = row.sources.cwd
@@ -1179,7 +1200,7 @@ async function observeSource<T>(
 ): Promise<SourceObservation<T>> {
   try {
     const answer =
-      deadline === undefined ? { answered: true as const, value: await read() } : await deadline.answer(read())
+      deadline === undefined ? { answered: true as const, value: await read() } : await deadline.answer(read)
     if (!answer.answered) {
       return { availability: "unanswered", value: unavailableValue, issues: [{ resource, reason: "unanswered" }] }
     }
@@ -1213,7 +1234,7 @@ async function observeProcessLink(
 }
 async function observeProcessArgv(deadline: CensusDeadline, path: string): Promise<SourceObservation<string[]>> {
   const proc = dirname(path)
-  const answer = await deadline.answer(
+  const answer = await deadline.answer(() =>
     inspectProcessSources(Number(basename(proc)), {
       procRoot: dirname(proc),
       sources: ["argv"],
@@ -1228,7 +1249,7 @@ async function observeProcessCwd(
   deadline: CensusDeadline,
   proc: string,
 ): Promise<SourceObservation<string | undefined>> {
-  const answer = await deadline.answer(
+  const answer = await deadline.answer(() =>
     inspectProcessSources(Number(basename(proc)), {
       procRoot: dirname(proc),
       sources: ["cwd"],
@@ -1314,7 +1335,7 @@ async function observeProcessIdentity(
   bootedAtMs: number | undefined,
 ): Promise<ProcessIdentity> {
   try {
-    const answer = await deadline.answer(readFile(`${proc}/stat`, "utf8"))
+    const answer = await deadline.answer(() => readFile(`${proc}/stat`, "utf8"))
     // Identity is decoration: an unanswered stat read leaves the pid and its sources' own gaps named without it.
     if (!answer.answered) return {}
     const contents = answer.value
