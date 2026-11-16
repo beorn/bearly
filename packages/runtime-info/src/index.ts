@@ -327,3 +327,20 @@ function physicalPath(path: string): string {
     return path
   }
 }
+
+/**
+ * The Linux logind runtime directory for one account: `/run/user/<uid>`.
+ *
+ * A pure formatter. It observes no process UID, environment, platform,
+ * filesystem or session manager, so the caller that knows the account decides
+ * the path — a unit composed for another account and a guard inspecting its own
+ * both reach this same function (34127).
+ */
+export function linuxUserRuntimeDir(uid: number): string {
+  if (typeof uid !== "number" || !Number.isSafeInteger(uid) || uid < 0) {
+    throw new RangeError(
+      `linuxUserRuntimeDir: uid must be a safe non-negative integer, got ${typeof uid === "number" ? String(uid) : `${typeof uid} ${JSON.stringify(uid)}`}`,
+    )
+  }
+  return `/run/user/${uid}`
+}

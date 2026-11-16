@@ -8,6 +8,31 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import { expandHomePath, nativeHome, userHome } from "../src/home.ts"
+import { linuxUserRuntimeDir } from "../src/index.ts"
+
+describe("linux uid runtime directory", () => {
+  test.each([
+    [0, "/run/user/0"],
+    [-0, "/run/user/0"],
+    [3001, "/run/user/3001"],
+    [Number.MAX_SAFE_INTEGER, `/run/user/${Number.MAX_SAFE_INTEGER}`],
+  ])("formats uid %p as %s", (uid, expected) => {
+    expect(linuxUserRuntimeDir(uid)).toBe(expected)
+  })
+
+  test.each([
+    ["negative", -1],
+    ["fractional", 3001.5],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+    ["unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+    ["string", "3001" as unknown as number],
+    ["undefined", undefined as unknown as number],
+  ])("rejects a %s uid and names it", (_label, uid) => {
+    expect(() => linuxUserRuntimeDir(uid)).toThrow(RangeError)
+    expect(() => linuxUserRuntimeDir(uid)).toThrow(/linuxUserRuntimeDir: uid must be a safe non-negative integer/)
+  })
+})
 
 describe("caller home policy", () => {
   test.each(["linux", "darwin", "win32"] as const)("selects and normalizes the %s home", (platform) => {
