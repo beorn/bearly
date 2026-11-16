@@ -329,6 +329,41 @@ function physicalPath(path: string): string {
 }
 
 /**
+ * Describe a rejected `uid` argument without ever throwing.
+ *
+ * A caller can pass anything: `JSON.stringify` raises on a BigInt, a cyclic
+ * value, a throwing `toJSON` or a throwing getter, so the diagnostic itself
+ * must not depend on it succeeding — the contract is a `RangeError` naming the
+ * value, and a `TypeError` from the message would break it.
+ */
+function describeUidArgument(value: unknown): string {
+  switch (typeof value) {
+    case "number":
+      return `number ${String(value)}`
+    case "bigint":
+      return `bigint ${value.toString()}n`
+    case "string":
+      return `string ${JSON.stringify(value)}`
+    case "symbol":
+      return `symbol ${value.toString()}`
+    case "boolean":
+      return `boolean ${String(value)}`
+    case "undefined":
+      return "undefined"
+    case "function":
+      return "function"
+    default:
+      break
+  }
+  if (value === null) return "null"
+  try {
+    return `object ${JSON.stringify(value) ?? "{}"}`
+  } catch {
+    return "object (unserializable)"
+  }
+}
+
+/**
  * The Linux logind runtime directory for one account: `/run/user/<uid>`.
  *
  * A pure formatter. It observes no process UID, environment, platform,
@@ -339,7 +374,7 @@ function physicalPath(path: string): string {
 export function linuxUserRuntimeDir(uid: number): string {
   if (typeof uid !== "number" || !Number.isSafeInteger(uid) || uid < 0) {
     throw new RangeError(
-      `linuxUserRuntimeDir: uid must be a safe non-negative integer, got ${typeof uid === "number" ? String(uid) : `${typeof uid} ${JSON.stringify(uid)}`}`,
+      `linuxUserRuntimeDir: uid must be a safe non-negative integer, got ${describeUidArgument(uid)}`,
     )
   }
   return `/run/user/${uid}`

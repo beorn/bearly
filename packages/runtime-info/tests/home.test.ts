@@ -21,18 +21,55 @@ describe("linux uid runtime directory", () => {
   })
 
   test.each([
-    ["negative", -1],
-    ["fractional", 3001.5],
-    ["NaN", Number.NaN],
-    ["infinite", Number.POSITIVE_INFINITY],
-    ["unsafe integer", Number.MAX_SAFE_INTEGER + 1],
-    ["string", "3001" as unknown as number],
-    ["undefined", undefined as unknown as number],
-  ])("rejects a %s uid and names it", (_label, uid) => {
+    ["negative", -1, "number -1"],
+    ["fractional", 3001.5, "number 3001.5"],
+    ["NaN", Number.NaN, "number NaN"],
+    ["infinite", Number.POSITIVE_INFINITY, "number Infinity"],
+    ["unsafe integer", Number.MAX_SAFE_INTEGER + 1, `number ${Number.MAX_SAFE_INTEGER + 1}`],
+    ["string", "3001" as unknown as number, 'string "3001"'],
+    ["undefined", undefined as unknown as number, "undefined"],
+  ])("rejects a %s uid and names it", (_label, uid, described) => {
     expect(() => linuxUserRuntimeDir(uid)).toThrow(RangeError)
     expect(() => linuxUserRuntimeDir(uid)).toThrow(/linuxUserRuntimeDir: uid must be a safe non-negative integer/)
+    expect(() => linuxUserRuntimeDir(uid)).toThrow(`got ${described}`)
+  })
+
+  test.each([
+    ["bigint", 1n, "bigint 1n"],
+    ["cycling object", cyclicUid(), "object (unserializable)"],
+    ["object holding a bigint", { uid: 1n }, "object (unserializable)"],
+    [
+      "object whose toJSON throws",
+      {
+        toJSON: () => {
+          throw new Error("toJSON boom")
+        },
+      },
+      "object (unserializable)",
+    ],
+    ["plain object", { uid: 1 }, 'object {"uid":1}'],
+    ["null", null, "null"],
+    ["symbol", Symbol("uid"), "symbol Symbol(uid)"],
+    ["function", () => 1, "function"],
+  ])("reports a %s uid as a RangeError, never a TypeError from the message", (_label, uid, described) => {
+    let thrown: unknown
+    try {
+      linuxUserRuntimeDir(uid as unknown as number)
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(RangeError)
+    expect((thrown as RangeError).message).toBe(
+      `linuxUserRuntimeDir: uid must be a safe non-negative integer, got ${described}`,
+    )
   })
 })
+
+function cyclicUid(): Record<string, unknown> {
+  const uid: Record<string, unknown> = {}
+  uid.self = uid
+  return uid
+}
 
 describe("caller home policy", () => {
   test.each(["linux", "darwin", "win32"] as const)("selects and normalizes the %s home", (platform) => {
