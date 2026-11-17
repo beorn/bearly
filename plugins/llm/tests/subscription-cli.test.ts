@@ -40,6 +40,7 @@ import {
   subscriptionCliEnabled,
   subscriptionCliAvailable,
   querySubscriptionCli,
+  agyQuotaClause,
   describeSubscriptionRoute,
   cliOnPath,
   codexProfile,
@@ -505,6 +506,29 @@ describe("dispatch", () => {
     const response = await querySubscriptionCli(modelOf("gemini-2.5-pro"), { question: "hello" })
     expect(response.content).toBe("")
     expect(response.error).toContain("(exit 3, status ERROR, quota reached 429, resets in 77h23m48s)")
+  })
+
+  // 34692 (@dev/11 2bc3df19): the clause is a fact only when AGY_ERROR's own fields say quota. Any other failure gets
+  // none, so its old wording stands, and agy's free text never becomes a reset.
+  it.each<[string, string, string]>([
+    ["no AGY_ERROR line", "error: something else", ""],
+    ["another status", 'AGY_ERROR: {"status":"ERROR","error_code":429}', ""],
+    ["another code", 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":400}', ""],
+    ["not JSON", "AGY_ERROR: {not json", ""],
+    ["a JSON array", 'AGY_ERROR: ["RESOURCE_EXHAUSTED",429]', ""],
+    [
+      "a free-text reset",
+      'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429,"short_error":"Resets in about three days"}',
+      ", quota reached 429",
+    ],
+    ["the code as a string", 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":"429"}', ", quota reached 429"],
+    [
+      "the real line",
+      'error: Individual quota reached.\nAGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 77h23m48s.","status":"RESOURCE_EXHAUSTED","error_code":429}',
+      ", quota reached 429, resets in 77h23m48s",
+    ],
+  ])("agyQuotaClause: %s", (_case, stderr, clause) => {
+    expect(agyQuotaClause(stderr)).toBe(clause)
   })
 
   it("an empty agy answer is an error that still carries the one-shot's cleanup outcome", async () => {

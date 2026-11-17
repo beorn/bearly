@@ -545,7 +545,8 @@ export function agyQuotaClause(stderr: string): string {
   for (const line of stderr.split("\n")) {
     if (!line.startsWith(AGY_ERROR_PREFIX)) continue
     const fields = parseJsonObject(line.slice(AGY_ERROR_PREFIX.length))
-    if (fields?.status !== "RESOURCE_EXHAUSTED" || fields.error_code !== 429) continue
+    // The code is compared as a number, so a "429" string (a future agy shape) still names the quota.
+    if (fields?.status !== "RESOURCE_EXHAUSTED" || Number(fields.error_code) !== 429) continue
     const reset =
       typeof fields.short_error === "string"
         ? /\bResets in ((?:\d{1,4}h)?(?:\d{1,2}m)?(?:\d{1,2}s)?)\.?$/u.exec(fields.short_error)?.[1]
