@@ -207,15 +207,35 @@ function refusing(
 // its unvalidated output, so it is reduced to "a non-success status", and the detail after the colon stays out, like
 // any other raw payload. Before this, recall's planner said only "dispatch failed … matched none" while agy was being
 // aborted by its 8 s budget.
+/** "77h23m48s" (any of the three parts) as milliseconds. */
+function durationMs(text: string): number {
+  const part = (unit: string): number => Number(new RegExp(`(\\d+)${unit}`, "u").exec(text)?.[1] ?? 0)
+  return ((part("h") * 60 + part("m")) * 60 + part("s")) * 1_000
+}
+
 function subscriptionCliFailure(
   message: string,
   target: DispatchFailureTarget,
+  now: number,
 ): DispatchFailureDescription | undefined {
-  const cli = /^(agy|codex) CLI \(.+?\) failed for (.+?) \((aborted|exit (?:\d+|signal))(, status [^)]*)?\)/u.exec(
-    message,
-  )
+  const cli =
+    /^(agy|codex) CLI \(.+?\) failed for (.+?) \((aborted|exit (?:\d+|signal))(, status [^)]*?)?(?:, quota reached (\d{3})(?:, resets in ((?:\d{1,4}h)?(?:\d{1,2}m)?(?:\d{1,2}s)?))?)?\)/u.exec(
+      message,
+    )
   if (!cli) return undefined
-  const [, bin, model, ending, status] = cli
+  const [, bin, model, ending, status, quotaCode, reset] = cli
+  // 34692: subscription-cli adds "quota reached <code>[, resets in <duration>]" only from agy's structured AGY_ERROR
+  // fields, so both are rendered. It is a fact about this call's route, so no provider refusal is recorded.
+  if (quotaCode !== undefined && ending !== "aborted") {
+    const resetMs = reset ? durationMs(reset) : undefined
+    return {
+      kind: "quota",
+      scope: "call",
+      message: `${providerDisplayName(target.provider)} dispatch through the ${bin} CLI one-shot failed for ${model} (${ending}, quota reached (${quotaCode})${reset ? `, resets in ${reset}` : ""}).`,
+      remedy: `wait for the ${bin} quota to reset, or use another route`,
+      ...(resetMs !== undefined ? { retryAt: now + resetMs } : {}),
+    }
+  }
   const aborted = ending === "aborted"
   const outcome = aborted
     ? "aborted: the caller's time budget or signal stopped it"
@@ -457,7 +477,7 @@ function classifyDispatchFailure(
       `${target.provider} transport failure during dispatch`,
     )
   }
-  const cli = subscriptionCliFailure(message, target)
+  const cli = subscriptionCliFailure(message, target, now)
   if (cli) return cli
   // Unowned timeout wording gives retry advice, without certifying elapsed
   // budget or credential health. Concrete evidence above keeps precedence.

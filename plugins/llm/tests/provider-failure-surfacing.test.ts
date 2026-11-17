@@ -191,6 +191,29 @@ describe("dispatch failure classes on recorded provider responses", () => {
     },
   )
 
+  // 34692: an exhausted agy quota read "exit 3, a non-success status" in recall (2026-11-17), so a quota that resets in
+  // three days looked like a broken tool. The clause subscription-cli builds from AGY_ERROR's fields is rendered; the
+  // free-text detail after the colon stays out, and no provider refusal is recorded (the call failed, not the provider).
+  it("an agy quota failure names the quota and its reset, never its raw detail", () => {
+    const now = Date.parse("2026-11-17T23:03:00Z")
+    const described = describeDispatchFailure(
+      new Error(
+        "agy CLI (Antigravity Ultra subscription (agy)) failed for Gemini 2.5 Flash (exit 3, status ERROR, quota reached 429, resets in 77h23m48s): Individual quota reached. private-text sk-test-123",
+      ),
+      { provider: "google", modelId: "m" },
+      now,
+    )
+    expect(described).toMatchObject({
+      kind: "quota",
+      scope: "call",
+      message:
+        "Google dispatch through the agy CLI one-shot failed for Gemini 2.5 Flash (exit 3, quota reached (429), resets in 77h23m48s).",
+      retryAt: now + (77 * 3600 + 23 * 60 + 48) * 1000,
+    })
+    expect(described.observation).toBeUndefined()
+    expect(described.message).not.toMatch(/private-text|sk-test-123|non-success/)
+  })
+
   // 29483: on an HTTP route, a failure with no HTTP status still read "matched none of the known failure classes":
   // an OpenRouter planner call aborted by its caller's 8 s deadline did (@dev/11 9253b5bf, 2026-10-15 09:12Z), and so
   // does a socket reset. The class comes from the error's own name or code, never its message text, and it is a fact

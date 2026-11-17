@@ -532,6 +532,42 @@ export function removeAgyConversation(home: string, conversationId: string | und
   }
 }
 
+const AGY_ERROR_PREFIX = "AGY_ERROR: "
+
+/**
+ * 34692: agy's quota failure, read from its `AGY_ERROR: {json}` stderr line. It returns
+ * ", quota reached 429[, resets in <d>h<m>m<s>s]" when the line's own `status` and `error_code` fields say
+ * RESOURCE_EXHAUSTED / 429, and "" otherwise. The reset is copied only when it matches the strict duration grammar, so
+ * no free text leaves agy's output. Without this clause, an exhausted quota read as "a non-success status" (2026-11-17).
+ * A missing or unparsable line adds nothing: the exit code still fails the call, loudly.
+ */
+export function agyQuotaClause(stderr: string): string {
+  for (const line of stderr.split("\n")) {
+    if (!line.startsWith(AGY_ERROR_PREFIX)) continue
+    const fields = parseJsonObject(line.slice(AGY_ERROR_PREFIX.length))
+    if (fields?.status !== "RESOURCE_EXHAUSTED" || fields.error_code !== 429) continue
+    const reset =
+      typeof fields.short_error === "string"
+        ? /\bResets in ((?:\d{1,4}h)?(?:\d{1,2}m)?(?:\d{1,2}s)?)\.?$/u.exec(fields.short_error)?.[1]
+        : undefined
+    return `, quota reached 429${reset ? `, resets in ${reset}` : ""}`
+  }
+  return ""
+}
+
+/** One JSON object, or undefined when the text is not one (a value agy wrote, so its shape is never assumed). */
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return undefined // not JSON: the caller adds no clause, and the failure it describes still reports its exit code
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
 /** Parse `agy --input-format stream-json --output-format stream-json` NDJSON. */
 function parseAgyStreamJson(ndjson: string): AgyParse {
   let text = ""
@@ -630,7 +666,7 @@ Answer the user question directly using the supplied context. If context is insu
     if (run.aborted || run.code !== 0 || failedStatus) {
       const exit = run.aborted
         ? " (aborted)"
-        : ` (exit ${run.code ?? "signal"}${failedStatus ? `, status ${parsed.status}` : ""})`
+        : ` (exit ${run.code ?? "signal"}${failedStatus ? `, status ${parsed.status}` : ""}${agyQuotaClause(run.stderr)})`
       return {
         model,
         content: "",

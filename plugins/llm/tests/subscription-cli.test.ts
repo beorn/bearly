@@ -124,6 +124,15 @@ const FAIL_AGY = [
 ].join("\n")
 
 // 29475: a run that answers nothing is an error, and its one-shot still had a conversation to remove.
+// 34692: agy 1.5.10's real quota failure (2026-11-17 15:03 PST), with the conversation id swapped for a reserved one.
+const QUOTA_AGY = [
+  "IFS= read -r line",
+  'echo \'{"event":"result","result":{"conversation_id":"not-a-uuid","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 77h23m48s."}}\'',
+  "echo 'error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 77h23m48s.' >&2",
+  'echo \'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 77h23m48s.","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true,"error_id":"x"}\' >&2',
+  "exit 3",
+].join("\n")
+
 const EMPTY_AGY = [
   "IFS= read -r line",
   'echo \'{"event":"init","conversation_id":"00000000-0000-4000-8000-000000029475","init":{"model":"gemini-4-argon-high"}}\'',
@@ -485,6 +494,17 @@ describe("dispatch", () => {
         cleanup: expect.stringMatching(/^failed: agy conversation id is not a UUID/),
       },
     })
+  })
+
+  // 34692: recall reported an exhausted agy quota as "exit 3, a non-success status", and the 429 and its reset never
+  // reached the caller. The quota is read from AGY_ERROR's own fields, never from its free text.
+  it("an agy quota failure names the 429 and its reset from AGY_ERROR's fields", async () => {
+    writeBin("agy", QUOTA_AGY)
+    resetSubscriptionCliProbe()
+
+    const response = await querySubscriptionCli(modelOf("gemini-2.5-pro"), { question: "hello" })
+    expect(response.content).toBe("")
+    expect(response.error).toContain("(exit 3, status ERROR, quota reached 429, resets in 77h23m48s)")
   })
 
   it("an empty agy answer is an error that still carries the one-shot's cleanup outcome", async () => {
