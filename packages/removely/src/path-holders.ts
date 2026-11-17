@@ -203,13 +203,12 @@ function censusDeadline(ms: number, signal?: AbortSignal): CensusDeadline {
   signal?.throwIfAborted()
   const cutoff = performance.now() + ms
   let closed = false
-  let timer: ReturnType<typeof setTimeout> | undefined
   const expired = Promise.withResolvers<Readonly<{ answered: false }>>()
   const expire = () => {
     closed = true
     expired.resolve({ answered: false })
   }
-  timer = setTimeout(expire, ms)
+  const timer = setTimeout(expire, ms)
   timer.unref?.()
   signal?.addEventListener("abort", expire, { once: true })
   return {
