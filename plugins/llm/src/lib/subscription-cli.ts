@@ -561,7 +561,9 @@ function parseJsonObject(text: string): Record<string, unknown> | undefined {
   try {
     value = JSON.parse(text)
   } catch {
-    return undefined // not JSON: the caller adds no clause, and the failure it describes still reports its exit code
+    // silent-fallback-allow: an AGY_ERROR line that is not JSON names no quota, so no quota clause is added; the agy
+    // failure it sits beside still fails the call loudly with its exit code and status.
+    return undefined
   }
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
