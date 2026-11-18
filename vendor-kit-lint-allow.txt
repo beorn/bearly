@@ -1,3 +1,0 @@
-# vendor-kit boundary-lint allowlist — substring matches against hit line or file path.
-@km/bearly/ # tracking-bead provenance in docs (injection-protocol design rationale)
-vendor/bearly # README + docs document the km-side submodule mount path for consumers
