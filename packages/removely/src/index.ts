@@ -16,6 +16,7 @@ export {
   citationsOf,
   type CorpusFound,
   type CorpusText,
+  enforceHolds,
   type FoundCitation,
   isCitationIndex,
   type RemovalHeldCode,
