@@ -4,7 +4,25 @@ import { spawnSync } from "node:child_process"
 import { lstat, mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, parse, resolve, sep } from "node:path"
+import { enforceHolds, type RemovalHolds } from "./holds.ts"
 import { splitAtNearestExistingAncestor } from "./physical-path.ts"
+
+export {
+  buildCitationIndex,
+  type Citation,
+  type CitationAnchor,
+  type CitationIndex,
+  citationsIn,
+  citationsOf,
+  type CorpusFound,
+  type CorpusText,
+  type FoundCitation,
+  isCitationIndex,
+  type RemovalHeldCode,
+  RemovalHeldError,
+  type RemovalHolds,
+  type TrackedHold,
+} from "./holds.ts"
 
 export { type ProcessCwdRow } from "./process-census.ts"
 
@@ -94,6 +112,13 @@ export interface SafeRemoveOptions {
   readonly allowedRoots?: readonly string[]
   /** Explicitly unlink a symlink leaf without following its target. Default: refuse. */
   readonly symlinkLeaf?: "unlink"
+  /**
+   * Opt-in references that still hold the target: a tracked-file predicate and a citation index, both built by the
+   * caller from its own authority (#34952). Evaluated in the shared predicate after containment, for the resolved
+   * target and the path as given; a hit throws `RemovalHeldError`, a predicate that throws refuses. Absent: no
+   * reference check, exactly as before.
+   */
+  readonly holds?: RemovalHolds
 }
 
 /**
@@ -533,6 +558,7 @@ function resolveRemovalTarget(target: string, options: SafeRemoveOptions, caller
     }
     throw error
   }
+  if (options.holds !== undefined) enforceHolds(caller, options.holds, [targetReal, absoluteRaw])
   return { path: targetReal, kind: unlinkLeaf ? "symlink-leaf" : "recursive" }
 }
 
