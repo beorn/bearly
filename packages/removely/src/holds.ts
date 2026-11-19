@@ -312,7 +312,8 @@ export function citationsOf(index: CitationIndex, target: string): Citation[] {
   mentions(state, path, ENDS_PATH_AT, held)
   for (let ancestor = parentOf(path); ancestor !== null; ancestor = parentOf(ancestor)) {
     if (state.containers.has(ancestor)) break
-    held.push(...ancestorMentions(state, ancestor))
+    // A loop, not a spread: a folder cited a million times would overflow the argument list.
+    for (const citation of ancestorMentions(state, ancestor)) held.push(citation)
   }
   for (let candidate: string | null = path; candidate !== null; candidate = parentOf(candidate)) {
     if (candidate !== path && state.containers.has(candidate)) break

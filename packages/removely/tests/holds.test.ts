@@ -179,9 +179,14 @@ describe("firstCitationOf is the first of citationsOf", () => {
     "/hh/var/@x/q/smoke-linux/run1/raw.json/inner",
     "/hh/var/@x/q/ke-linux/run1/raw.json",
     "/hh/var/@x/only/leaf",
+    // Held only by a tail naming its grandparent: the tail chain must walk past the parent (review2 mutant).
+    "/hh/var/@x/only/leaf/a/b.log",
     "/hh/var/@x/only",
     "/hh/var/@x/unrelated",
   ]
+  test("a path held only by its grandparent's tail is held", () => {
+    expect(firstCitationOf(index, "/hh/var/@x/only/leaf/a/b.log")).not.toBeNull()
+  })
   test.each(targets)("%s", (target) => {
     // Twice: the second answer comes from the folder caches.
     expect(firstCitationOf(index, target)).toEqual(citationsOf(index, target)[0] ?? null)
