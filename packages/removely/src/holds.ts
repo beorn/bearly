@@ -167,7 +167,11 @@ function concreteTail(run: string): string | null {
 
 class LineIndex {
   private readonly starts: number[] = [0]
-  constructor(private readonly text: string) {
+  // An explicit field, never a parameter property: the brain connector runs this file under node, whose type
+  // stripping refuses non-erasable syntax (#35120; km contacts-brain-launch went red on it).
+  private readonly text: string
+  constructor(text: string) {
+    this.text = text
     for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) this.starts.push(at + 1)
   }
   locate(offset: number): { line: number; column: number; lineText: string } {
