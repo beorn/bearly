@@ -25,6 +25,7 @@ import {
   buildCitationIndex,
   citationsIn,
   citationsOf,
+  firstCitationOf,
   type RemovalHolds,
   RemovalHeldError,
   safeRemove,
@@ -120,6 +121,71 @@ describe("the citation boundary", () => {
     expect(citationsOf(index, "/hh/var/@x/run")).toEqual([
       { file: "pm/a.md", path: "/hh/var/@x/run", line: 2, column: 14, lineText: "second cites /hh/var/@x/run. Done" },
     ])
+  })
+})
+
+// 34952 (04:27 PST 2026-11-19): host-store-cleanup's census reached 11.6 GB. It asked once per walked file whether
+// anything cited it, and every answer re-scanned every mention under each ancestor of the file and built a list.
+describe("an index stays small and fast under a whole-tree walk", () => {
+  test("lookups under a heavily cited folder stay fast and exact", () => {
+    const text = Array.from({ length: 2000 }, (_, at) => `- /hh/var/@x/big/n${at}/out.json`).join("\n")
+    const index = buildCitationIndex([{ file: "doc.md", text: `${text}\nall of /hh/var/@x/big/sub is kept\n` }], {
+      anchors: ANCHORS,
+      containers: [ROOT, "/hh/var/@x"],
+    })
+    const started = performance.now()
+    let held = 0
+    for (let at = 0; at < 50_000; at++) {
+      const found = citationsOf(index, `/hh/var/@x/big/sub/d${at % 500}/f${at}.log`)
+      if (found.length === 1 && found[0]?.lineText === "all of /hh/var/@x/big/sub is kept") held++
+    }
+    expect(held).toBe(50_000)
+    expect(performance.now() - started).toBeLessThan(5000)
+    for (let at = 0; at < 50_000; at++) {
+      const first = firstCitationOf(index, `/hh/var/@x/big/sub/d${at % 500}/f${at}.log`)
+      if (first?.lineText !== "all of /hh/var/@x/big/sub is kept") throw new Error(`firstCitationOf missed f${at}`)
+    }
+    // Past the cache's cap the answers are still exact: an uncited sibling stays free, a cited child stays held.
+    for (let at = 0; at < 100_100; at++) citationsOf(index, `/hh/var/@x/other/d${at}/f.log`)
+    expect(citationsOf(index, "/hh/var/@x/other/d1/f.log")).toEqual([])
+    expect(citationsOf(index, "/hh/var/@x/big/n5/out.json/x")).toHaveLength(1)
+  })
+})
+
+describe("firstCitationOf is the first of citationsOf", () => {
+  // Mentions, a sentence end, a descendant, an ancestor, a container, abbreviated tails (target and ancestor forms).
+  const text = [
+    "kept: /hh/var/@x/run. Then /hh/var/@x/deep/a/b/c.json and `var/@x/tree`",
+    "see /hh/var/@x/run-report.md and /hh/var/@y/ for the home",
+    "smoke at .../smoke-linux/run1/raw.json and …/only/leaf",
+    "and /hh/var/@x/tree/sub is also named",
+  ].join("\n")
+  const index = buildCitationIndex([{ file: "doc.md", text }], { anchors: ANCHORS, containers: [ROOT, "/hh/var/@y"] })
+  const targets = [
+    "/hh/var/@x/run",
+    "/hh/var/@x/run/",
+    "/hh/var/@x/run/a.log",
+    "/hh/var/@x/run-report.md",
+    "/hh/var/@x/run-report",
+    "/hh/var/@x/deep",
+    "/hh/var/@x/deep/a/b",
+    "/hh/var/@x/deep/a/b/c.json/z",
+    "/hh/var/@x/tree/sub/f",
+    "/hh/var/@x/tree/other",
+    "/hh/var/@y",
+    "/hh/var/@y/old.log",
+    "/hh/var/@x/q/smoke-linux/run1/raw.json",
+    "/hh/var/@x/q/smoke-linux/run1",
+    "/hh/var/@x/q/smoke-linux/run1/raw.json/inner",
+    "/hh/var/@x/q/ke-linux/run1/raw.json",
+    "/hh/var/@x/only/leaf",
+    "/hh/var/@x/only",
+    "/hh/var/@x/unrelated",
+  ]
+  test.each(targets)("%s", (target) => {
+    // Twice: the second answer comes from the folder caches.
+    expect(firstCitationOf(index, target)).toEqual(citationsOf(index, target)[0] ?? null)
+    expect(firstCitationOf(index, target)).toEqual(citationsOf(index, target)[0] ?? null)
   })
 })
 

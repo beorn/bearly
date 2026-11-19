@@ -14,6 +14,7 @@ export {
   type CitationIndex,
   citationsIn,
   citationsOf,
+  firstCitationOf,
   type CorpusFound,
   type CorpusText,
   enforceHolds,

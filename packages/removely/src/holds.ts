@@ -93,6 +93,25 @@ interface IndexState {
     string,
     readonly { readonly prefix: string; readonly last: boolean; readonly citation: Citation }[]
   >
+  /**
+   * Caches only, keyed by folder. A walk asks about the same parent folders once per file under them, and each answer
+   * was a scan of every mention under the folder (34952: host-store-cleanup's census reached 11.6 GB, 04:27 PST).
+   * `ancestorHits`: the citations naming the folder as an ancestor. `ancestorFirst` / `tailFirst`: the first citation
+   * of the folder's whole ancestor chain / abbreviated-tail chain, up to the nearest container.
+   */
+  readonly ancestorHits: Map<string, readonly Citation[]>
+  readonly ancestorFirst: Map<string, Citation | null>
+  readonly tailFirst: Map<string, Citation | null>
+}
+
+/** Folder answers kept at most per cache; a depth-first walk revisits only its current branch, so clearing loses little. */
+const FOLDER_CACHE_MAX = 100_000
+const NO_CITATIONS: readonly Citation[] = Object.freeze([])
+
+function remember<T>(cache: Map<string, T>, key: string, value: T): T {
+  if (cache.size >= FOLDER_CACHE_MAX) cache.clear()
+  cache.set(key, value)
+  return value
 }
 
 const STATE = new WeakMap<CitationIndex, IndexState>()
@@ -106,6 +125,14 @@ const TRAILING = /(?::\d+(?::\d+)?|[.,;:!?]+|\/+)$/u
 const ENDS_PATH = /^(?:$|[\s/`)\]}>"'*|#~]|:\d|[.,;:!?]+(?:$|[\s`)\]}>"'*|#~]))/u
 /** For an ancestor: the same, but a `/` must be a trailing slash, never the start of another child's name. */
 const ENDS_ANCESTOR = /^(?:\/*(?:$|[\s`)\]}>"'*|#~])|:\d|[.,;:!?]+(?:$|[\s`)\]}>"'*|#~]))/u
+/** The same two tests, sticky: checked at an offset in the mention, so a lookup slices nothing. */
+const ENDS_PATH_AT = new RegExp(ENDS_PATH.source.slice(1), "uy")
+const ENDS_ANCESTOR_AT = new RegExp(ENDS_ANCESTOR.source.slice(1), "uy")
+
+function endsAt(ends: RegExp, raw: string, at: number): boolean {
+  ends.lastIndex = at
+  return ends.test(raw)
+}
 
 /** An ellipsis that starts a path: at a line start or after a delimiter, never inside one (`/v/.../x`, `a...`). */
 const ABBREVIATED_LEAD = /(?<=^|[\s`'"([{<,;:|=>*])(?:\.\.\.|…)(?=\/)/gmu
@@ -254,6 +281,9 @@ export function buildCitationIndex(
     first,
     containers: new Set(options.containers.map((path) => stripTrailing(path))),
     bySegment,
+    ancestorHits: new Map(),
+    ancestorFirst: new Map(),
+    tailFirst: new Map(),
   })
   return index
 }
@@ -279,26 +309,10 @@ export function citationsOf(index: CitationIndex, target: string): Citation[] {
   const state = stateOf(index)
   const path = target.length > 1 ? target.replace(/\/+$/u, "") : target
   const held: Citation[] = []
-  const mentioning = (candidate: string, ends: RegExp) => {
-    let low = 0
-    let high = state.sorted.length
-    while (low < high) {
-      const mid = (low + high) >>> 1
-      if ((state.sorted[mid] ?? "") < candidate) low = mid + 1
-      else high = mid
-    }
-    for (let at = low; at < state.sorted.length; at++) {
-      const raw = state.sorted[at] ?? ""
-      if (!raw.startsWith(candidate)) break
-      if (!ends.test(raw.slice(candidate.length))) continue
-      const citation = state.first.get(raw)
-      if (citation !== undefined) held.push(citation)
-    }
-  }
-  mentioning(path, ENDS_PATH)
+  mentions(state, path, ENDS_PATH_AT, held)
   for (let ancestor = parentOf(path); ancestor !== null; ancestor = parentOf(ancestor)) {
     if (state.containers.has(ancestor)) break
-    mentioning(ancestor, ENDS_ANCESTOR)
+    held.push(...ancestorMentions(state, ancestor))
   }
   for (let candidate: string | null = path; candidate !== null; candidate = parentOf(candidate)) {
     if (candidate !== path && state.containers.has(candidate)) break
@@ -310,6 +324,85 @@ export function citationsOf(index: CitationIndex, target: string): Citation[] {
     if (state.containers.has(candidate)) break
   }
   return held
+}
+
+/**
+ * Each mention starting with `candidate` whose rest passes `ends`, in sorted order, pushed onto `into`; with `firstOnly`
+ * it stops at the first.
+ */
+function mentions(state: IndexState, candidate: string, ends: RegExp, into: Citation[], firstOnly = false): void {
+  let low = 0
+  let high = state.sorted.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if ((state.sorted[mid] ?? "") < candidate) low = mid + 1
+    else high = mid
+  }
+  for (let at = low; at < state.sorted.length; at++) {
+    const raw = state.sorted[at] ?? ""
+    if (!raw.startsWith(candidate)) break
+    if (!endsAt(ends, raw, candidate.length)) continue
+    const citation = state.first.get(raw)
+    if (citation === undefined) continue
+    into.push(citation)
+    if (firstOnly) return
+  }
+}
+
+/** The citations naming `folder` as an ancestor of a target, cached per folder. */
+function ancestorMentions(state: IndexState, folder: string): readonly Citation[] {
+  const cached = state.ancestorHits.get(folder)
+  if (cached !== undefined) return cached
+  const found: Citation[] = []
+  mentions(state, folder, ENDS_ANCESTOR_AT, found)
+  return remember(state.ancestorHits, folder, found.length === 0 ? NO_CITATIONS : found)
+}
+
+/** The first abbreviated tail ending `candidate`; for an ancestor only a tail's last segment counts. */
+function tailAt(state: IndexState, candidate: string, isTarget: boolean): Citation | null {
+  const name = candidate.slice(candidate.lastIndexOf("/") + 1)
+  for (const entry of state.bySegment.get(name) ?? []) {
+    if (!isTarget && !entry.last) continue
+    if (candidate === entry.prefix || candidate.endsWith(entry.prefix)) return entry.citation
+  }
+  return null
+}
+
+/** The first citation naming `folder` or an ancestor of it as an ancestor, nearest first, below the nearest container. */
+function ancestorChainFirst(state: IndexState, folder: string | null): Citation | null {
+  if (folder === null || state.containers.has(folder)) return null
+  const cached = state.ancestorFirst.get(folder)
+  if (cached !== undefined) return cached
+  const here = ancestorMentions(state, folder)[0] ?? ancestorChainFirst(state, parentOf(folder))
+  return remember(state.ancestorFirst, folder, here)
+}
+
+/** The first abbreviated tail ending `folder` or an ancestor of it, nearest first, below the nearest container. */
+function tailChainFirst(state: IndexState, folder: string | null): Citation | null {
+  if (folder === null || state.containers.has(folder)) return null
+  const cached = state.tailFirst.get(folder)
+  if (cached !== undefined) return cached
+  const here = tailAt(state, folder, false) ?? tailChainFirst(state, parentOf(folder))
+  return remember(state.tailFirst, folder, here)
+}
+
+/**
+ * `citationsOf(index, target)[0] ?? null`, without building the list: for a walk that asks once per file whether
+ * anything holds it (34952). The order is the list's: the target's own mentions, then its ancestors' (nearest first),
+ * then abbreviated tails (the target, then its ancestors).
+ */
+export function firstCitationOf(index: CitationIndex, target: string): Citation | null {
+  const state = stateOf(index)
+  const path = target.length > 1 && target.endsWith("/") ? target.replace(/\/+$/u, "") : target
+  const own: Citation[] = []
+  mentions(state, path, ENDS_PATH_AT, own, true)
+  if (own[0] !== undefined) return own[0]
+  const parent = parentOf(path)
+  const ancestor = ancestorChainFirst(state, parent)
+  if (ancestor !== null) return ancestor
+  const tail = tailAt(state, path, true)
+  if (tail !== null || state.containers.has(path)) return tail
+  return tailChainFirst(state, parent)
 }
 
 export type RemovalHeldCode = "removely/held-tracked" | "removely/held-cited"
