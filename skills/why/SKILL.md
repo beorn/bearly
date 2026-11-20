@@ -92,7 +92,7 @@ Each "why" suggests a fix at a different level. Map them:
 | Why 4 | [Spec — define the missing rules]     | SPEC         | Future problems      |
 | Why 5 | [Architecture — structural change]    | ARCHITECTURE | Entire category      |
 
-**The deeper you fix, the more problems you prevent — but the more effort it takes.** CORRECT removes or fixes the mechanism that allowed Why 1; a new check, gate, alarm or timer needs the operator's yes first.
+**Deeper fixes prevent more problems but take more effort.** CORRECT removes or fixes the mechanism behind Why 1; a new system, gate, service or timer needs the operator's yes first; a check inside an existing tool goes to the architecture owner (@cto).
 
 ## Phase 5: Recommend + Act
 
