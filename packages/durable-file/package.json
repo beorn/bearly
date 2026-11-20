@@ -21,6 +21,7 @@
     "directory": "packages/durable-file"
   },
   "files": [
+    "src",
     "dist",
     "README.md",
     "LICENSE"
