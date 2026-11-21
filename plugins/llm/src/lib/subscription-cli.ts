@@ -29,7 +29,7 @@
  * timeout bounds that.
  */
 
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { safeRemoveSync } from "removely"
 import { homedir, tmpdir } from "node:os"
@@ -96,14 +96,21 @@ export interface CodexSubscriptionRow {
   effort: "low" | "medium" | "high"
 }
 
-const CODEX_SUBSCRIPTION_MODEL: Record<string, CodexSubscriptionRow> = {
-  "gpt-5.5": { model: "gpt-5.5", effort: "medium" },
-  "gpt-5.5-pro": { model: "gpt-5.5", effort: "high" },
-  "gpt-5.4": { model: "gpt-5.5", effort: "medium" },
-  "gpt-5.4-pro": { model: "gpt-5.5", effort: "high" },
-  "gpt-5.2-pro": { model: "gpt-5.5", effort: "high" },
-  "gpt-5-nano": { model: "gpt-5.5", effort: "low" },
-  "o3-pro": { model: "gpt-5.5", effort: "high" },
+/**
+ * The codex slug a ChatGPT login serves (37260). It is NOT `gpt-5.5`: an authenticated ChatGPT account refuses that slug
+ * outright ("The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account"), while the same profile
+ * answers on `gpt-6.2-sol`. The requested SKU stays the slot's identity; `servedBy.model` reports who answered.
+ */
+const CODEX_SUBSCRIPTION_ANSWER_MODEL = "gpt-6.2-sol"
+
+export const CODEX_SUBSCRIPTION_MODEL: Record<string, CodexSubscriptionRow> = {
+  "gpt-5.5": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "medium" },
+  "gpt-5.5-pro": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "high" },
+  "gpt-5.4": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "medium" },
+  "gpt-5.4-pro": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "high" },
+  "gpt-5.2-pro": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "high" },
+  "gpt-5-nano": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "low" },
+  "o3-pro": { model: CODEX_SUBSCRIPTION_ANSWER_MODEL, effort: "high" },
 }
 
 /** The codex row that serves a plugin OpenAI SKU, or undefined if none. */
@@ -209,19 +216,62 @@ export function resolveSubscriptionRoute(model: Model, context: { hasImage?: boo
  * LunaRoute profile) is NOT a ChatGPT login, so the codex route must report
  * itself unavailable rather than 401 at dispatch (N1).
  */
+export type CodexLogin = "chatgpt" | "api-key" | "none" | "unknown"
+
 export interface CodexProfile {
   /** Absolute path to the config.toml that decides the route. */
   path: string
   /** Top-level `model_provider`, when the profile names one. */
   modelProvider?: string
-  /** True when the profile is a plain ChatGPT (default-provider) login. */
+  /** What the CLI's own login status says about this profile (37260: an absent profile is not a login). */
+  login: CodexLogin
+  /** The CLI's first status line, for a loud refusal that names the profile. */
+  loginDetail: string
+  /** True when the profile is a plain ChatGPT (default-provider) login that the CLI reports as logged in. */
   subscription: boolean
+}
+
+/** How the profile's login status is read; injected in tests, the real CLI otherwise. */
+export type CodexLoginStatusRunner = (home: string) => { status: number | null; stdout: string; stderr: string }
+
+const defaultLoginStatus: CodexLoginStatusRunner = (home) => {
+  const result = spawnSync("codex", ["login", "status"], {
+    env: { ...process.env, CODEX_HOME: home },
+    encoding: "utf8",
+    timeout: 5000,
+  })
+  if (result.error) {
+    // A host without the CLI cannot carry a ChatGPT login. That is a fact about the profile, named
+    // in `loginDetail`, so only a binary that exists and cannot run is a failed probe.
+    if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: null, stdout: "", stderr: "codex is not on PATH" }
+    }
+    throw new Error(`codex login status in ${home} failed to run: ${result.error.message}`)
+  }
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
+}
+
+/** Classify the CLI's login status. Only an explicit ChatGPT login counts as the subscription (37260). */
+export function codexLoginFromStatus(result: { status: number | null; stdout: string; stderr: string }): {
+  login: CodexLogin
+  detail: string
+} {
+  const text = `${result.stdout}\n${result.stderr}`.trim()
+  const detail =
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "codex login status printed nothing"
+  if (result.status !== 0) return { login: "none", detail }
+  if (/chatgpt/iu.test(text)) return { login: "chatgpt", detail }
+  if (/api[\s-]*key/iu.test(text)) return { login: "api-key", detail }
+  return { login: "unknown", detail }
 }
 
 let codexProfileCache: CodexProfile | undefined
 
-/** Read (and cache) the CODEX_HOME profile's routing decision. */
-export function codexProfile(): CodexProfile {
+/** Read (and cache) the CODEX_HOME profile's routing decision, including whether the CLI is logged in. */
+export function codexProfile(loginStatus: CodexLoginStatusRunner = defaultLoginStatus): CodexProfile {
   if (codexProfileCache) return codexProfileCache
   const home =
     process.env.CODEX_HOME && process.env.CODEX_HOME.length > 0 ? process.env.CODEX_HOME : join(homedir(), ".codex")
@@ -245,7 +295,14 @@ export function codexProfile(): CodexProfile {
       throw error
     }
   }
-  codexProfileCache = { path, modelProvider, subscription: modelProvider === undefined }
+  const { login, detail } = codexLoginFromStatus(loginStatus(home))
+  codexProfileCache = {
+    path,
+    ...(modelProvider === undefined ? {} : { modelProvider }),
+    login,
+    loginDetail: detail,
+    subscription: modelProvider === undefined && login === "chatgpt",
+  }
   return codexProfileCache
 }
 
@@ -254,13 +311,31 @@ export function codexProfile(): CodexProfile {
  * on PATH, or undefined when it does apply. Names the cause so the gate can
  * report it beside the missing key (N5) the same way the image note does.
  */
+/**
+ * Why the metered route for `model` would be a SILENT substitution (37260): the codex CLI is on PATH and has a declared
+ * model for this OpenAI SKU, but the selected profile carries no ChatGPT login. Returning a string makes the dispatch
+ * refuse before it spends an API key; a gateway profile and an unservable SKU stay on their own routes.
+ */
+export function codexNoLoginRefusal(model: Model): string | undefined {
+  if (!subscriptionCliEnabled()) return undefined
+  if (subscriptionCliFor(model.provider) !== "codex") return undefined
+  if (codexSubscriptionModel(model.modelId) === undefined) return undefined
+  if (!cliOnPath(SPECS.codex.bin)) return undefined
+  const profile = codexProfile()
+  if (profile.modelProvider !== undefined || profile.subscription) return undefined
+  return `codex profile ${profile.path} has no ChatGPT login (${profile.loginDetail}); the metered OpenAI key is not spent in its place — log in there or set CODEX_HOME to an authorized codex profile`
+}
+
 export function subscriptionRouteNote(model: Model): string | undefined {
   const id = subscriptionCliFor(model.provider)
   if (id === undefined || !cliOnPath(SPECS[id].bin)) return undefined
   if (id === "codex") {
     const profile = codexProfile()
-    if (!profile.subscription) {
+    if (profile.modelProvider !== undefined) {
       return `codex profile ${profile.path} routes to ${profile.modelProvider}, not a ChatGPT login`
+    }
+    if (!profile.subscription) {
+      return `codex profile ${profile.path} has no ChatGPT login (${profile.loginDetail}); set CODEX_HOME to an authorized codex profile`
     }
     if (codexSubscriptionRow(model.modelId) === undefined) {
       return `codex has no declared model for OpenAI SKU ${model.modelId}`

@@ -70,7 +70,14 @@ let savedCodexHome: string | undefined
 
 function writeBin(name: string, body: string): void {
   const path = join(fakeDir, name)
-  writeFileSync(path, `#!/bin/sh\n${body}\n`)
+  // 37260: the route probe asks `codex login status` before it will treat the
+  // profile as a ChatGPT subscription. Answer it before the fake's own body so
+  // every codex fake in this suite reads as logged in.
+  const loginGate =
+    name === "codex"
+      ? 'if [ "$1" = login ] && [ "$2" = status ]; then echo "Logged in using ChatGPT"; exit 0; fi\n'
+      : ""
+  writeFileSync(path, `#!/bin/sh\n${loginGate}${body}\n`)
   chmodSync(path, 0o755)
 }
 
@@ -327,7 +334,7 @@ describe("provider routing", () => {
 
 describe("codex route table", () => {
   it("N3: declares an effort per row and refuses an undeclared SKU", () => {
-    expect(codexSubscriptionRow("gpt-5.4")).toEqual({ model: "gpt-5.5", effort: "medium" })
+    expect(codexSubscriptionRow("gpt-5.4")).toEqual({ model: "gpt-6.2-sol", effort: "medium" })
     expect(codexSubscriptionRow("gpt-5.4-pro")?.effort).toBe("high")
     expect(codexSubscriptionRow("gpt-5-nano")?.effort).toBe("low")
     expect(codexSubscriptionRow("gpt-4o")).toBeUndefined()
@@ -388,7 +395,7 @@ describe("dispatch", () => {
     expect(response.usage).not.toHaveProperty("estimatedCost")
     expect(response.usage).not.toHaveProperty("totalTokens")
     expect(response.usage?.classes).toEqual({ input: 5, cache_read: 2, output: 3 })
-    expect(response.servedBy).toEqual({ route: "subscription-cli", cli: "codex", model: "gpt-5.5" })
+    expect(response.servedBy).toEqual({ route: "subscription-cli", cli: "codex", model: "gpt-6.2-sol" })
     const argv = readFileSync(argvFile, "utf8")
     expect(argv).toContain("exec")
     expect(argv).toContain("--json")
@@ -396,7 +403,7 @@ describe("dispatch", () => {
     // The model is passed explicitly so codex cannot silently answer with its
     // own config default.
     expect(argv).toContain("-m")
-    expect(argv).toContain("gpt-5.5")
+    expect(argv).toContain("gpt-6.2-sol")
     expect(argv).toContain("model_reasoning_effort=medium")
   })
 

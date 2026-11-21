@@ -16,6 +16,7 @@ import { statedCharge } from "./cost"
 import { getLanguageModel, isProviderAvailable, isProviderRoutable } from "./providers"
 import {
   querySubscriptionCli,
+  codexNoLoginRefusal,
   resolveSubscriptionRoute,
   subscriptionCliAvailable,
   subscriptionCliFor,
@@ -426,6 +427,19 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
           content: "",
           durationMs: Date.now() - startTime,
           error: `no unpaid route for ${model.modelId}`,
+        },
+      }
+    }
+    // 37260: a codex CLI on PATH with no ChatGPT login would otherwise reach the key route and spend it silently. The
+    // refusal names the profile and the login status before any dispatch.
+    const noLogin = route.kind === "metered" ? codexNoLoginRefusal(model) : undefined
+    if (noLogin !== undefined) {
+      return {
+        response: {
+          model,
+          content: "",
+          durationMs: Date.now() - startTime,
+          error: noLogin,
         },
       }
     }
