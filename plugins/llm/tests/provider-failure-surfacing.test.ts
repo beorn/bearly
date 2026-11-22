@@ -214,6 +214,32 @@ describe("dispatch failure classes on recorded provider responses", () => {
     expect(described.message).not.toMatch(/private-text|sk-test-123|non-success/)
   })
 
+  // 37776: agy sitting on a login prompt read as "exit 1, a non-success status", so recall blamed the tool while the
+  // only configured route was simply logged out. An unauthenticated CLI is a credentials fact about the route: it is
+  // named, and it records an auth refusal so the next selection excludes the route and says why.
+  it("an unauthenticated subscription CLI is an auth refusal that names the sign-in", () => {
+    const described = describeDispatchFailure(
+      new Error(
+        "agy CLI (Antigravity Ultra subscription (agy)) is not authenticated for Gemini 2.5 Flash: run agy in a terminal and complete the sign-in it prints",
+      ),
+      { provider: "google", modelId: "gemini-2.5-flash" },
+    )
+    expect(described).toMatchObject({
+      kind: "auth",
+      scope: "provider",
+      message:
+        "Google is not authenticated — the agy CLI needs a sign-in before it can answer Gemini 2.5 Flash; run agy in a terminal and complete the sign-in it prints.",
+      remedy: "run agy in a terminal and complete the sign-in it prints",
+      observation: {
+        provider: "google",
+        status: "refusing",
+        kind: "auth",
+        reason: "agy CLI is not authenticated — run agy in a terminal and complete the sign-in it prints",
+      },
+    })
+    expect(described.message).not.toMatch(/non-success/)
+  })
+
   // 29483: on an HTTP route, a failure with no HTTP status still read "matched none of the known failure classes":
   // an OpenRouter planner call aborted by its caller's 8 s deadline did (@dev/11 9253b5bf, 2026-10-15 09:12Z), and so
   // does a socket reset. The class comes from the error's own name or code, never its message text, and it is a fact

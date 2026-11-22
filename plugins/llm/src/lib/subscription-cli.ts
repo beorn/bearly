@@ -631,6 +631,20 @@ export function agyQuotaClause(stderr: string): string {
   return ""
 }
 
+/**
+ * 37776: agy's own sentence when it has no usable OAuth login. It prints
+ * "Authentication required. Please visit the URL to log in: <url>" on STDERR, then waits for the browser flow
+ * (`--print-timeout` does not bound that wait; the caller's signal does). Measured 2026-11-22 on agy 1.5.14:
+ * stdout empty, exit 1 after the wait, the URL one-shot and expiring. A login is a fact about the route, so it is
+ * stated as one instead of being flattened into "a non-success status".
+ */
+const AGY_AUTH_REQUIRED = /^Authentication required\b/mu
+
+/** True when agy's stderr says it needs a sign-in before it can answer. */
+export function agyAuthRequired(stderr: string): boolean {
+  return AGY_AUTH_REQUIRED.test(stderr)
+}
+
 /** One JSON object, or undefined when the text is not one (a value agy wrote, so its shape is never assumed). */
 function parseJsonObject(text: string): Record<string, unknown> | undefined {
   let value: unknown
@@ -742,6 +756,18 @@ Answer the user question directly using the supplied context. If context is insu
       .replace(/(?:Add an allow-rule|Alternatively, re-run with --dangerously-skip-permissions)[\s\S]*$/u, "")
       .trim()
     if (run.aborted || run.code !== 0 || failedStatus) {
+      // 37776: name a missing login as a missing login. The generic branch renders agy's own wording only as
+      // "a non-success status", so a route that cannot answer until someone signs in read as a broken tool. The
+      // OAuth URL agy prints expires with that run, so the remedy names the action, never the URL.
+      if (agyAuthRequired(run.stderr)) {
+        return {
+          model,
+          content: "",
+          durationMs: Date.now() - startedAt,
+          error: `agy CLI (${SPECS.agy.subscription}) is not authenticated for ${model.displayName}: run agy in a terminal and complete the sign-in it prints`,
+          servedBy,
+        }
+      }
       const exit = run.aborted
         ? " (aborted)"
         : ` (exit ${run.code ?? "signal"}${failedStatus ? `, status ${parsed.status}` : ""}${agyQuotaClause(run.stderr)})`

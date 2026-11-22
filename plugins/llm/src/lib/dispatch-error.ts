@@ -218,6 +218,21 @@ function subscriptionCliFailure(
   target: DispatchFailureTarget,
   now: number,
 ): DispatchFailureDescription | undefined {
+  // 37776: a subscription CLI with no login is a credentials fact about the route, not "a non-success status".
+  // Naming it tells the operator what to do AND records an auth refusal, so the next selection excludes the route
+  // and says why instead of blaming the tool (measured: agy 1.5.14 on 2026-11-22).
+  const noLogin = /^(agy|codex) CLI \(.+?\) is not authenticated for (.+?): (.+?)$/u.exec(message)
+  if (noLogin) {
+    const [, bin, model, remedy] = noLogin
+    return refusing(
+      "auth",
+      target,
+      `${providerDisplayName(target.provider)} is not authenticated — the ${bin} CLI needs a sign-in before it can answer ${model}; ${remedy}.`,
+      remedy,
+      undefined,
+      `${bin} CLI is not authenticated — ${remedy}`,
+    )
+  }
   const cli =
     /^(agy|codex) CLI \(.+?\) failed for (.+?) \((aborted|exit (?:\d+|signal))(, status [^)]*?)?(?:, quota reached (\d{3})(?:, resets in ((?:\d{1,4}h)?(?:\d{1,2}m)?(?:\d{1,2}s)?))?)?\)/u.exec(
       message,

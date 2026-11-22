@@ -148,6 +148,17 @@ const EMPTY_AGY = [
   "exit 0",
 ].join("\n")
 
+// 37776: agy 1.5.14 with no usable OAuth login (measured 2026-11-22): stdout empty, this sentence on STDERR, then
+// the browser wait. The URL is one-shot and expiring, so nothing downstream may quote it.
+const UNAUTHENTICATED_AGY = [
+  "IFS= read -r line",
+  'echo "Authentication required. Please visit the URL to log in:" >&2',
+  'echo "  https://accounts.google.com/o/oauth2/auth?client_id=fixture-client-id&code_challenge=fixture-challenge" >&2',
+  'echo "Waiting for authentication (timeout 60s)..." >&2',
+  'echo "authentication interrupted" >&2',
+  "exit 1",
+].join("\n")
+
 beforeEach(() => {
   fakeDir = mkdtempSync(join(tmpdir(), "llm-subcli-bin-"))
   savedPath = process.env.PATH
@@ -502,6 +513,19 @@ describe("dispatch", () => {
         cleanup: expect.stringMatching(/^failed: agy conversation id is not a UUID/),
       },
     })
+  })
+
+  // 37776: recall said only "exit 1, a non-success status" while agy was sitting on a login prompt, so a route that
+  // cannot answer read as a broken tool. The login is named, and the expiring OAuth URL is never echoed.
+  it("an unauthenticated agy names the sign-in, never its expiring login URL", async () => {
+    writeBin("agy", UNAUTHENTICATED_AGY)
+    resetSubscriptionCliProbe()
+
+    const response = await querySubscriptionCli(modelOf("gemini-2.5-flash"), { question: "hello" })
+    expect(response.content).toBe("")
+    expect(response.error).toContain("is not authenticated")
+    expect(response.error).toContain("run agy in a terminal and complete the sign-in")
+    expect(response.error).not.toMatch(/oauth2|client_id|code_challenge|non-success status/)
   })
 
   // 34692: recall reported an exhausted agy quota as "exit 3, a non-success status", and the 429 and its reset never
