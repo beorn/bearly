@@ -632,13 +632,18 @@ export function agyQuotaClause(stderr: string): string {
 }
 
 /**
- * 37776: agy's own sentence when it has no usable OAuth login. It prints
- * "Authentication required. Please visit the URL to log in: <url>" on STDERR, then waits for the browser flow
- * (`--print-timeout` does not bound that wait; the caller's signal does). Measured 2026-11-22 on agy 1.5.14:
- * stdout empty, exit 1 after the wait, the URL one-shot and expiring. A login is a fact about the route, so it is
- * stated as one instead of being flattened into "a non-success status".
+ * 37776: agy says it has no usable OAuth login in two shapes, both measured on agy 1.5.14 on 2026-11-22:
+ *
+ *   - no cached login: STDERR "Authentication required. Please visit the URL to log in: <url>", then a wait the
+ *     caller's signal has to end (`--print-timeout` does not bound it);
+ *   - a login that expired: STDERR "Error: authentication required. Run 'agy' to log in, then retry." and, on STDOUT,
+ *     a result event with status ERROR and error "authentication failed or timed out", exit 1 in under a second.
+ *
+ * The first shape alone was not enough: recall's live run took the fast shape and still read "a non-success status".
+ * Matched case-insensitively anywhere in the line, on STDERR and on the result event's own error, because "Error: "
+ * prefixes it. A login is a fact about the route, so it is stated as one.
  */
-const AGY_AUTH_REQUIRED = /^Authentication required\b/mu
+const AGY_AUTH_REQUIRED = /authentication required\b/iu
 
 /** True when agy's stderr says it needs a sign-in before it can answer. */
 export function agyAuthRequired(stderr: string): boolean {
@@ -759,7 +764,7 @@ Answer the user question directly using the supplied context. If context is insu
       // 37776: name a missing login as a missing login. The generic branch renders agy's own wording only as
       // "a non-success status", so a route that cannot answer until someone signs in read as a broken tool. The
       // OAuth URL agy prints expires with that run, so the remedy names the action, never the URL.
-      if (agyAuthRequired(run.stderr)) {
+      if (agyAuthRequired(run.stderr) || agyAuthRequired(parsed.error ?? "")) {
         return {
           model,
           content: "",

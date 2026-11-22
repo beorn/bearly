@@ -159,6 +159,17 @@ const UNAUTHENTICATED_AGY = [
   "exit 1",
 ].join("\n")
 
+// 37776: the SECOND shape, measured on the live route 2026-11-22 08:0xZ — an expired login fails in under a second:
+// stderr "Error: authentication required. Run 'agy' to log in, then retry." plus a result event that says only
+// "authentication failed or timed out". The long-form detector missed this one, so recall still read a non-success status.
+const EXPIRED_LOGIN_AGY = [
+  "IFS= read -r line",
+  'echo \'{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"authentication failed or timed out","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"finished_reason":"error"}}\'',
+  `echo "Error: authentication required. Run 'agy' to log in, then retry." >&2`,
+  'echo "error: authentication failed or timed out" >&2',
+  "exit 1",
+].join("\n")
+
 beforeEach(() => {
   fakeDir = mkdtempSync(join(tmpdir(), "llm-subcli-bin-"))
   savedPath = process.env.PATH
@@ -516,9 +527,13 @@ describe("dispatch", () => {
   })
 
   // 37776: recall said only "exit 1, a non-success status" while agy was sitting on a login prompt, so a route that
-  // cannot answer read as a broken tool. The login is named, and the expiring OAuth URL is never echoed.
-  it("an unauthenticated agy names the sign-in, never its expiring login URL", async () => {
-    writeBin("agy", UNAUTHENTICATED_AGY)
+  // cannot answer read as a broken tool. The login is named in both of agy's shapes, and the expiring OAuth URL is
+  // never echoed.
+  it.each([
+    ["no cached login", UNAUTHENTICATED_AGY],
+    ["an expired login", EXPIRED_LOGIN_AGY],
+  ])("an unauthenticated agy names the sign-in (%s), never its expiring login URL", async (_shape, fixture) => {
+    writeBin("agy", fixture)
     resetSubscriptionCliProbe()
 
     const response = await querySubscriptionCli(modelOf("gemini-2.5-flash"), { question: "hello" })
