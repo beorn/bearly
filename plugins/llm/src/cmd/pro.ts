@@ -34,9 +34,14 @@
  * incomplete report and nonzero exit.
  */
 
-import { ask, estimateTokens, computeMaxOutputTokens } from "../lib/research"
+import {
+  ask,
+  estimateTokens,
+  computeMaxOutputTokens,
+  resolveQueryRoute,
+  shouldUseOpenAIBackground,
+} from "../lib/research"
 import { isProviderRoutable, providerRouteLabel, getProviderEnvVar } from "../lib/providers"
-import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getModel, type Model, type ModelResponse, type ModelMode, type ServedBy } from "../lib/types"
 import { withSignalAbort } from "../lib/signals"
 import { assertDispatchableModelIds, getLegTimeoutMs, runWithTimeout } from "../lib/dispatch-safety"
@@ -107,11 +112,9 @@ export async function runProDual(options: {
   // reads its files once and the live path reuses the same promise.
   let builtContext: Promise<string | undefined> | undefined
   const contextOnce = (): Promise<string | undefined> => (builtContext ??= buildContext(question))
-  const { shouldUseOpenAIBackground } = await import("../lib/openai-deep")
-
   async function forecastLeg(model: Model, enriched: string): Promise<string> {
     const inputTokens = estimateTokens(["", enriched].join(""))
-    const subscription = resolveSubscriptionRoute(model, { hasImage: imagePath !== undefined }) !== undefined
+    const subscription = resolveQueryRoute(model, { hasImage: imagePath !== undefined }).kind === "subscription"
     const background = shouldUseOpenAIBackground(model, { hasImage: imagePath !== undefined })
     let route = "route: skipped (dispatch does not check)"
     if (model.provider === "openrouter" && process.env.LLM_SKIP_MODEL_LIVENESS !== "1") {
@@ -310,7 +313,7 @@ export async function runProDual(options: {
         continue
       }
       const availability = providerRouteLabel(leg.model.provider)
-      const subscription = resolveSubscriptionRoute(leg.model, { hasImage: imagePath !== undefined }) !== undefined
+      const subscription = resolveQueryRoute(leg.model, { hasImage: imagePath !== undefined }).kind === "subscription"
       console.error(
         `  • ${leg.id.toUpperCase()} ${leg.model.displayName}${tag} (${leg.model.modelId}; ${availability}${subscription ? "; subscription route" : ""})`,
       )
@@ -335,7 +338,7 @@ export async function runProDual(options: {
       const judgeModel = getModel(cfg.judge)
       if (judgeModel) {
         const availability = providerRouteLabel(judgeModel.provider)
-        const subscription = resolveSubscriptionRoute(judgeModel, {}) !== undefined
+        const subscription = resolveQueryRoute(judgeModel, {}).kind === "subscription"
         console.error(
           `  • Judge: ${judgeModel.displayName} (${judgeModel.modelId}; ${availability}${subscription ? "; subscription route" : ""})`,
         )

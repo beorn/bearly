@@ -28,7 +28,6 @@ import {
   updatePartialMetadata,
 } from "./persistence"
 import { missingApiKeyError } from "./env-preflight"
-import { resolveSubscriptionRoute } from "./subscription-cli"
 import { describeDispatchFailure } from "./dispatch-error"
 import { outputTokenStop } from "./format"
 import { statedCharge } from "./cost"
@@ -596,25 +595,6 @@ export async function queryOpenAIBackground(options: BackgroundQueryOptions): Pr
 export function isOpenAIBackgroundCapable(model: Model): boolean {
   const endpoint = getEndpoint(model.modelId)
   return Boolean(endpoint?.capabilities.backgroundApi) && !model.isDeepResearch
-}
-
-/**
- * The ONE SUBSCRIPTION-FIRST dispatch gate (37884): the metered Responses background path runs only when the model
- * is background-capable AND no subscription CLI route applies — the same `resolveSubscriptionRoute` decision the
- * dry-run line prints and `queryModel` dispatches with. Picking the background path before that decision is what let
- * `llm pro --dry-run` advertise "subscription route" and the same run fail on a missing OPENAI_API_KEY; a model with
- * no subscription route keeps the background path, and an image request stays off it (the helper is text-only).
- *
- * `resolveSubscription` is the resolver under test; callers never pass it.
- */
-export function shouldUseOpenAIBackground(
-  model: Model,
-  context: { hasImage?: boolean } = {},
-  resolveSubscription: typeof resolveSubscriptionRoute = resolveSubscriptionRoute,
-): boolean {
-  if (context.hasImage) return false
-  if (!isOpenAIBackgroundCapable(model)) return false
-  return resolveSubscription(model, { hasImage: false }) === undefined
 }
 
 /** Extract concatenated output_text from a Responses API result. */

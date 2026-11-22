@@ -3,7 +3,7 @@
  * and an explicitly selected single-model Pro call.
  */
 
-import { ask } from "../lib/research"
+import { ask, shouldUseOpenAIBackground } from "../lib/research"
 import { isProviderRoutable } from "../lib/providers"
 import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
@@ -96,7 +96,7 @@ export async function askAndFinish(options: {
   // imagePath disables the background route — queryOpenAIBackground is
   // text-only today. Falling back to generateText preserves multimodal
   // behaviour at the cost of recoverability for that specific invocation.
-  const { shouldUseOpenAIBackground, queryOpenAIBackground } = await import("../lib/openai-deep")
+  const { queryOpenAIBackground } = await import("../lib/openai-deep")
   const useBackground =
     options.modelMode === "pro" && shouldUseOpenAIBackground(model, { hasImage: imagePath !== undefined })
 

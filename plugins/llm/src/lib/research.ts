@@ -24,7 +24,7 @@ import {
   describeSubscriptionRoute,
   type SubscriptionCliId,
 } from "./subscription-cli"
-import { isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
+import { isOpenAIBackgroundCapable, isOpenAIDeepResearch, queryOpenAIDeepResearch } from "./openai-deep"
 import { isGeminiDeepResearch, queryGeminiDeepResearch } from "./gemini-deep"
 import { ollamaChat } from "./ollama"
 import { captureRateLimitFromHeaders, buildPerCallQuota } from "./quota"
@@ -156,6 +156,23 @@ export function resolveQueryRoute(model: Model, context: { hasImage?: boolean } 
   if (model.provider === "ollama") return { kind: "local" }
   const cli = resolveSubscriptionRoute(model, context)
   return cli === undefined ? { kind: "metered" } : { kind: "subscription", cli }
+}
+
+/**
+ * SUBSCRIPTION-FIRST dispatch gate (37884): the metered Responses background path runs only when the model can use
+ * it, the request carries no image (the helper is text-only), and `resolveQueryRoute` says the leg is METERED. The
+ * dry-run line, the forecast and the live dispatch all read this same decision; asking only "is there a billing key"
+ * is what let `pro --dry-run` promise a subscription route and the run then fail on a missing OPENAI_API_KEY.
+ * `route` is the resolver under test; callers never pass it.
+ */
+export function shouldUseOpenAIBackground(
+  model: Model,
+  context: { hasImage?: boolean } = {},
+  route: (m: Model, c: { hasImage?: boolean }) => QueryRoute = resolveQueryRoute,
+): boolean {
+  if (context.hasImage) return false
+  if (!isOpenAIBackgroundCapable(model)) return false
+  return route(model, context).kind === "metered"
 }
 
 /** Rough token estimate: must OVERESTIMATE, not under-estimate.
