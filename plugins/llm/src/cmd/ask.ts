@@ -96,8 +96,9 @@ export async function askAndFinish(options: {
   // imagePath disables the background route — queryOpenAIBackground is
   // text-only today. Falling back to generateText preserves multimodal
   // behaviour at the cost of recoverability for that specific invocation.
-  const { isOpenAIBackgroundCapable, queryOpenAIBackground } = await import("../lib/openai-deep")
-  const useBackground = options.modelMode === "pro" && isOpenAIBackgroundCapable(model) && !imagePath
+  const { shouldUseOpenAIBackground, queryOpenAIBackground } = await import("../lib/openai-deep")
+  const useBackground =
+    options.modelMode === "pro" && shouldUseOpenAIBackground(model, { hasImage: imagePath !== undefined })
 
   // Response cache (CAS) — only for cheap deterministic single-model paths.
   // Pro modelMode is shadow-testing intent — caching there would defeat the

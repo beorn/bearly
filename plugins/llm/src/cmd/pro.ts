@@ -107,12 +107,12 @@ export async function runProDual(options: {
   // reads its files once and the live path reuses the same promise.
   let builtContext: Promise<string | undefined> | undefined
   const contextOnce = (): Promise<string | undefined> => (builtContext ??= buildContext(question))
-  const { isOpenAIBackgroundCapable } = await import("../lib/openai-deep")
+  const { shouldUseOpenAIBackground } = await import("../lib/openai-deep")
 
   async function forecastLeg(model: Model, enriched: string): Promise<string> {
     const inputTokens = estimateTokens(["", enriched].join(""))
     const subscription = resolveSubscriptionRoute(model, { hasImage: imagePath !== undefined }) !== undefined
-    const background = isOpenAIBackgroundCapable(model) && !imagePath
+    const background = shouldUseOpenAIBackground(model, { hasImage: imagePath !== undefined })
     let route = "route: skipped (dispatch does not check)"
     if (model.provider === "openrouter" && process.env.LLM_SKIP_MODEL_LIVENESS !== "1") {
       const { decideOpenRouterRoutePin } = await import("../lib/openrouter-route-pin")
@@ -480,7 +480,7 @@ export async function runProDual(options: {
   // helper is text-only today, and silently dropping the image would be worse
   // than losing recoverability for the rare image+pro case.
   const dispatchOne = (m: Model, abortSignal: AbortSignal) => {
-    const useBackground = isOpenAIBackgroundCapable(m) && !imagePath
+    const useBackground = shouldUseOpenAIBackground(m, { hasImage: imagePath !== undefined })
     return useBackground
       ? queryOpenAIBackground({
           maxOutputTokens: options.maxOutputTokens,
