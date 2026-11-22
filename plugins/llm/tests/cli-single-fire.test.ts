@@ -545,13 +545,15 @@ describe("cli-single-fire", () => {
     expect(forecast).toContain("output cap: " + streamTextMock.mock.calls[0]![0].maxOutputTokens)
   })
 
-  /** @failure Available subscription login hides the cap on Pro's background API path. @level l1
-   * @consumer Explicit Pro callers; OpenRouter parity cases never select a subscription. */
-  it("forecasts the background request even when a subscription login is available", async () => {
+  /** @failure A metered leg hides the cap on Pro's background API path just because a codex CLI is on PATH.
+   * @level l1 @consumer Explicit Pro callers; OpenRouter parity cases never select a subscription. */
+  it("forecasts the background request for a metered leg while the codex CLI is on PATH", async () => {
     const env = makeTestEnv()
     resetGenerateTextToOk()
+    // 37884 follow-up: a default-provider profile with no ChatGPT login is REFUSED before dispatch (37260), so the
+    // metered leg this test is about must be a gateway profile — a CLI on PATH that is not the subscription.
     writeFileSync(join(env.tmpDir, "codex"), "#!/bin/sh\nexit 99\n", { mode: 0o755 })
-    writeFileSync(join(env.tmpDir, "config.toml"), "")
+    writeFileSync(join(env.tmpDir, "config.toml"), 'model_provider = "lunaroute"\n')
     vi.stubEnv("PATH", env.tmpDir)
     vi.stubEnv("CODEX_HOME", env.tmpDir)
     vi.stubEnv("LLM_SUBSCRIPTION_CLI", "1")

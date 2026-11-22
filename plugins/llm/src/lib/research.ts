@@ -175,6 +175,17 @@ export function shouldUseOpenAIBackground(
   return route(model, context).kind === "metered"
 }
 
+/**
+ * The PERMISSION half of the route decision (37884): what forbids spending the METERED route for this model, or
+ * undefined when it may run. `resolveQueryRoute` only CLASSIFIES a route; a raw client that skips these checks spends
+ * a key the fleet already decided not to spend (a signed-out codex profile whose CLI is on PATH, 37260) or was told
+ * not to spend (`allowMetered: false`). `queryModel` and both Pro background call sites read this one function.
+ */
+export function meteredRouteRefusal(model: Model, options: { allowMetered?: boolean } = {}): string | undefined {
+  if (options.allowMetered === false) return `no unpaid route for ${model.modelId}`
+  return codexNoLoginRefusal(model)
+}
+
 /** Rough token estimate: must OVERESTIMATE, not under-estimate.
  *
  * ~4 chars/token is the textbook English value, but dense content (code,
@@ -437,26 +448,14 @@ export async function queryModel(options: QueryOptions): Promise<QueryResult> {
   try {
     const route = resolveQueryRoute(model, { hasImage: options.imagePath !== undefined })
     subscriptionRoute = route.kind === "subscription"
-    if (options.allowMetered === false && route.kind === "metered") {
+    const meteredRefusal = route.kind === "metered" ? meteredRouteRefusal(model, options) : undefined
+    if (meteredRefusal !== undefined) {
       return {
         response: {
           model,
           content: "",
           durationMs: Date.now() - startTime,
-          error: `no unpaid route for ${model.modelId}`,
-        },
-      }
-    }
-    // 37260: a codex CLI on PATH with no ChatGPT login would otherwise reach the key route and spend it silently. The
-    // refusal names the profile and the login status before any dispatch.
-    const noLogin = route.kind === "metered" ? codexNoLoginRefusal(model) : undefined
-    if (noLogin !== undefined) {
-      return {
-        response: {
-          model,
-          content: "",
-          durationMs: Date.now() - startTime,
-          error: noLogin,
+          error: meteredRefusal,
         },
       }
     }

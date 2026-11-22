@@ -3,7 +3,7 @@
  * and an explicitly selected single-model Pro call.
  */
 
-import { ask, shouldUseOpenAIBackground } from "../lib/research"
+import { ask, meteredRouteRefusal, shouldUseOpenAIBackground } from "../lib/research"
 import { isProviderRoutable } from "../lib/providers"
 import { resolveSubscriptionRoute } from "../lib/subscription-cli"
 import { getBestAvailableModel, type Model, type ModelMode, type ModelResponse } from "../lib/types"
@@ -99,6 +99,8 @@ export async function askAndFinish(options: {
   const { queryOpenAIBackground } = await import("../lib/openai-deep")
   const useBackground =
     options.modelMode === "pro" && shouldUseOpenAIBackground(model, { hasImage: imagePath !== undefined })
+  // 37884: classification is not permission — the raw Responses client bypasses the metered checks queryModel applies.
+  const backgroundRefusal = useBackground ? meteredRouteRefusal(model) : undefined
 
   // Response cache (CAS) — only for cheap deterministic single-model paths.
   // Pro modelMode is shadow-testing intent — caching there would defeat the
@@ -132,22 +134,24 @@ export async function askAndFinish(options: {
     // The abort reason surfaces in the response error so finishResponse can
     // write it to the output file instead of silently truncating.
     const dispatch = (signal: AbortSignal) =>
-      useBackground
-        ? queryOpenAIBackground({
-            maxOutputTokens: options.maxOutputTokens,
-            prompt: enrichedQuestion,
-            model,
-            topic: question,
-            abortSignal: signal,
-          })
-        : ask(enrichedQuestion, level, {
-            modelObject: model,
-            maxOutputTokens: options.maxOutputTokens,
-            stream: true,
-            onToken: streamToken,
-            imagePath,
-            abortSignal: signal,
-          })
+      backgroundRefusal !== undefined
+        ? Promise.resolve({ model, content: "", durationMs: 0, error: backgroundRefusal })
+        : useBackground
+          ? queryOpenAIBackground({
+              maxOutputTokens: options.maxOutputTokens,
+              prompt: enrichedQuestion,
+              model,
+              topic: question,
+              abortSignal: signal,
+            })
+          : ask(enrichedQuestion, level, {
+              modelObject: model,
+              maxOutputTokens: options.maxOutputTokens,
+              stream: true,
+              onToken: streamToken,
+              imagePath,
+              abortSignal: signal,
+            })
     if (modelMode === "pro") {
       const startedAt = Date.now()
       response = await withSignalAbort(async (outerSignal) => {

@@ -38,6 +38,7 @@ import {
   ask,
   estimateTokens,
   computeMaxOutputTokens,
+  meteredRouteRefusal,
   resolveQueryRoute,
   shouldUseOpenAIBackground,
 } from "../lib/research"
@@ -484,6 +485,10 @@ export async function runProDual(options: {
   // than losing recoverability for the rare image+pro case.
   const dispatchOne = (m: Model, abortSignal: AbortSignal) => {
     const useBackground = shouldUseOpenAIBackground(m, { hasImage: imagePath !== undefined })
+    // 37884: classification is not permission. The raw Responses client skips the metered checks `queryModel` applies,
+    // so a signed-out codex profile (CLI on PATH, no ChatGPT login) must refuse HERE, before any key is spent.
+    const refusal = useBackground ? meteredRouteRefusal(m) : undefined
+    if (refusal !== undefined) return Promise.resolve({ model: m, content: "", durationMs: 0, error: refusal })
     return useBackground
       ? queryOpenAIBackground({
           maxOutputTokens: options.maxOutputTokens,
