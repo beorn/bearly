@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+Minor.
+
+- The explained-gap rule ships beside the census that produces the gaps.
+  `explainIncompleteCensus(census)` moves here from the superproject's
+  `tools/lib/clean-root.ts` unchanged — a denied read whose identity
+  `clearedByIdentity` clears is explained, a descriptor closed while its
+  process stayed present is exempt, and unanswered, other missing, ambiguous and
+  denied-without-a-clearing-identity are unexplained — so the landing GC, the
+  shared-main updater and hab's estate certificates ask ONE classifier instead
+  of keeping copies. `explainedCensusGaps(census)` is the same verdict,
+  structured (`identity` with the pids it clears, `vanished-descriptor` with the
+  descriptor count), for a caller that must state how many entries it did not
+  read rather than render sentences.
+
 ## 0.5.0
 
 Minor.

@@ -26,10 +26,15 @@ import { dirname, join } from "node:path"
 import * as removely from "../src/index.ts"
 import {
   clearedByIdentity,
+  explainIncompleteCensus,
+  explainedCensusGaps,
+  judgeUnreadableCensusEntry,
   inspectPathHolderCensus,
   pathHolderRefusal,
   safeRemoveSync,
   type PathHolder,
+  type PathHolderCensus,
+  type PathHolderObservationIssue,
   type UnreadableProcess,
 } from "../src/index.ts"
 import { inspectProcessCensusInProc, inspectProcessCwdsInProc } from "../src/path-holders.ts"
@@ -1626,5 +1631,168 @@ describe("the process census rows and their projections (hh 26990 slice 4)", () 
         identity,
       ),
     ).toBeUndefined()
+  })
+})
+
+/** An incomplete same-uid census naming exactly the entries a case is about; every counter derives from them. */
+function partialCensus(unreadable: readonly UnreadableProcess[]): PathHolderCensus {
+  const none = () => ({ exited: 0, denied: 0, missing: 0, ambiguous: 0, unanswered: 0 })
+  const sources = Object.fromEntries(
+    (["cwd", "exe", "root", "argv", "maps", "fd"] as const).map((source) => {
+      const unavailable = none()
+      let affected = 0
+      for (const entry of unreadable) {
+        const reasons = new Set(entry.issues.filter((issue) => issue.source === source).map((issue) => issue.reason))
+        if (reasons.size > 0) affected += 1
+        for (const reason of reasons) unavailable[reason as keyof typeof unavailable] += 1
+      }
+      return [source, { readable: unreadable.length - affected, notApplicable: 0, unavailable }]
+    }),
+  ) as Extract<PathHolderCensus["coverage"], { platform: "linux" }>["sources"]
+  return {
+    holders: [],
+    coverage: {
+      platform: "linux",
+      scope: "same-uid",
+      procRoot: "/synthetic/proc",
+      complete: false,
+      processes: {
+        enumerated: unreadable.length,
+        sameUid: unreadable.length,
+        otherUid: 0,
+        admitted: unreadable.length,
+        inspected: unreadable.length,
+        excluded: 0,
+        zombie: 0,
+        sourceDenied: 0,
+        sourceUnanswered: 0,
+        sourceMissing: 0,
+        sourceAmbiguous: 0,
+        unavailable: none(),
+      },
+      sources,
+      unreadable,
+    },
+  }
+}
+
+function unreadableEntry(
+  pid: number,
+  comm: string,
+  rows: readonly (readonly [source: PathHolderObservationIssue["source"], reason: string, resource?: string])[],
+  argv?: readonly string[],
+): UnreadableProcess {
+  const issues = rows.map(([source, reason, resource]) => ({
+    source,
+    resource: resource ?? `/synthetic/proc/${pid}/${source}`,
+    reason: reason as PathHolderObservationIssue["reason"],
+    ...(reason === "denied" ? { code: "EACCES" } : {}),
+  }))
+  const withReason = (reason: string) => [
+    ...new Set(issues.filter((issue) => issue.reason === reason).map((issue) => issue.source)),
+  ]
+  return {
+    pid,
+    uid: process.getuid?.(),
+    comm,
+    state: "S",
+    denied: withReason("denied"),
+    issues,
+    ...(argv === undefined ? {} : { argv }),
+  }
+}
+
+/**
+ * One verdict, two presentations (#37995, cto 4a4535cc): the landing GC names explained gaps in sentences, hab's
+ * nothing-live certificate counts them, and both ask THIS classifier, so neither can drift from the other.
+ */
+describe("the explained-gap rule", () => {
+  test("a denial cleared by identity is explained in both presentations, and grouped by identity", () => {
+    const census = partialCensus([
+      unreadableEntry(
+        4242,
+        "sshd-session",
+        [
+          ["cwd", "denied"],
+          ["maps", "denied"],
+        ],
+        ["sshd-session: hh@notty"],
+      ),
+      unreadableEntry(4243, "sshd-session", [["cwd", "denied"]], ["sshd-session: hh@notty"]),
+      unreadableEntry(4244, "mystery", [["cwd", "denied"]]),
+    ])
+    expect(explainIncompleteCensus(census)).toEqual({
+      exempted: [
+        "pid 4242 sshd-session denied, cleared by identity (sshd-session)",
+        "pid 4243 sshd-session denied, cleared by identity (sshd-session)",
+      ],
+      unexplained: [{ pid: 4244, comm: "mystery", cause: "denied cwd, and no identity clears it" }],
+    })
+    expect(explainedCensusGaps(census)).toEqual([{ kind: "identity", identity: "sshd-session", pids: [4242, 4243] }])
+  })
+
+  test("a descriptor closed while the process stayed present is explained and counted", () => {
+    const census = partialCensus([unreadableEntry(4245, "bun", [["fd", "missing", "/synthetic/proc/4245/fd/7"]])])
+    expect(explainedCensusGaps(census)).toEqual([{ kind: "vanished-descriptor", pids: [4245], descriptors: 1 }])
+    expect(explainIncompleteCensus(census).unexplained).toEqual([])
+  })
+
+  test("a single unreadable process observed outside a census is judged by the same rule", () => {
+    expect(judgeUnreadableCensusEntry(unreadableEntry(4246, "sshd-session", [["process", "denied"]]))).toEqual({
+      kind: "explained",
+      gap: { kind: "identity", identity: "sshd-session", pids: [4246] },
+    })
+    expect(judgeUnreadableCensusEntry(unreadableEntry(4247, "some-agent", [["process", "denied"]]))).toEqual({
+      kind: "unexplained",
+      gap: { pid: 4247, comm: "some-agent", cause: "denied process, and no identity clears it" },
+    })
+    expect(judgeUnreadableCensusEntry(unreadableEntry(4248, "blocked", [["process", "unanswered"]]))).toEqual({
+      kind: "unexplained",
+      gap: { pid: 4248, comm: "blocked", cause: "no answer from process" },
+    })
+    expect(
+      judgeUnreadableCensusEntry(unreadableEntry(4249, "bun", [["fd", "missing", "/synthetic/proc/4249/fd/9"]])),
+    ).toEqual({
+      kind: "explained",
+      gap: { kind: "vanished-descriptor", pids: [4249], descriptors: 1 },
+    })
+  })
+
+  test("a complete census has nothing to explain", () => {
+    const complete: PathHolderCensus = {
+      holders: [],
+      coverage: {
+        platform: "linux",
+        scope: "same-uid",
+        procRoot: "/synthetic/proc",
+        complete: true,
+        processes: {
+          enumerated: 1,
+          sameUid: 1,
+          otherUid: 0,
+          admitted: 1,
+          inspected: 1,
+          excluded: 0,
+          zombie: 0,
+          sourceDenied: 0,
+          sourceUnanswered: 0,
+          sourceMissing: 0,
+          sourceAmbiguous: 0,
+          unavailable: { exited: 0, denied: 0, missing: 0, ambiguous: 0, unanswered: 0 },
+        },
+        sources: Object.fromEntries(
+          (["cwd", "exe", "root", "argv", "maps", "fd"] as const).map((source) => [
+            source,
+            {
+              readable: 1,
+              notApplicable: 0,
+              unavailable: { exited: 0, denied: 0, missing: 0, ambiguous: 0, unanswered: 0 },
+            },
+          ]),
+        ) as Extract<PathHolderCensus["coverage"], { platform: "linux" }>["sources"],
+      },
+    }
+    expect(explainIncompleteCensus(complete)).toEqual({ exempted: [], unexplained: [] })
+    expect(explainedCensusGaps(complete)).toEqual([])
   })
 })

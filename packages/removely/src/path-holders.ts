@@ -135,6 +135,180 @@ export function pathHolderRefusal(holders: readonly PathHolder[]): string | unde
   return `path remains held by ${evidence.map(({ pid, source, target }) => `pid ${pid} via ${source} (${target})`).join("; ")}`
 }
 
+/** A gap in an incomplete census that no exemption explains: a process and why, or the census itself when it names
+ *  no process. */
+export type UnexplainedCensusGap = {
+  readonly pid?: number
+  readonly comm: string
+  readonly cause: string
+  /** The sources that had not answered by the census deadline, when that is part of the cause. */
+  readonly unanswered?: readonly string[]
+}
+
+/** One class of gap an incomplete census EXPLAINS, with the processes it covers. */
+export type ExplainedCensusGap =
+  | { readonly kind: "identity"; readonly identity: string; readonly pids: readonly number[] }
+  | { readonly kind: "vanished-descriptor"; readonly pids: readonly number[]; readonly descriptors: number }
+
+const VANISHED_DESCRIPTOR = /\/fd\/\d+$/u
+
+type UnreadableVerdict = {
+  readonly exempted: readonly string[]
+  readonly unexplained: readonly string[]
+  readonly explained: { readonly identity?: string; readonly descriptors: number }
+}
+
+/**
+ * Explain an incomplete census from its own `unreadable` entries, one classification per issue (@cto 2e553d4c, 26990):
+ * - denied: `clearedByIdentity` reads the identity the census recorded (uid, comm, argv) and clears the carried
+ *   identities as "denied, cleared by identity" (@cto adce5a62, c1e73bcd; the table on 26990). The second /proc walk
+ *   that recovered argv is gone: the census reads it;
+ * - unanswered: unexplained, since a process whose lock kept us from looking can hold anything;
+ * - a missing descriptor (`fd/N`) in a process still present: exempt, named with its pid and count, because a
+ *   descriptor closed between listing and reading holds nothing;
+ * - any other missing source, every ambiguous one, and an unknown reason: unexplained;
+ * - an incomplete census that names no process: unexplained.
+ *
+ * ONE classifier serves every caller that must tell an explained gap from a blind one — the landing GC, the shared-main
+ * updater and hab's estate certificates (`explainedCensusGaps` is the same verdict, structured) — so no consumer keeps
+ * its own copy of the rule.
+ */
+export function explainIncompleteCensus(census: PathHolderCensus): {
+  readonly exempted: readonly string[]
+  readonly unexplained: readonly UnexplainedCensusGap[]
+} {
+  if (census.coverage.platform !== "linux" || census.coverage.complete) return { exempted: [], unexplained: [] }
+  const unreadable = census.coverage.unreadable ?? []
+  if (unreadable.length === 0) {
+    return {
+      exempted: [],
+      unexplained: [{ comm: "", cause: "the census is incomplete and names no unreadable process" }],
+    }
+  }
+  const exempted: string[] = []
+  const unexplained: UnexplainedCensusGap[] = []
+  for (const entry of unreadable) {
+    const verdict = judgeUnreadableProcess(entry)
+    if (verdict.unexplained.length > 0) {
+      unexplained.push({
+        pid: entry.pid,
+        comm: entry.comm ?? "",
+        cause: verdict.unexplained.join("; "),
+        ...(entry.unanswered === undefined || entry.unanswered.length === 0 ? {} : { unanswered: entry.unanswered }),
+      })
+    } else exempted.push(...verdict.exempted)
+  }
+  return { exempted, unexplained }
+}
+
+/**
+ * The same verdict as {@link explainIncompleteCensus}, structured for a caller that must COUNT what it did not read
+ * (hab's nothing-live certificate names the explained gaps) instead of rendering sentences. Identity classes are
+ * grouped in first-seen order, so one string per cleared identity.
+ */
+export function explainedCensusGaps(census: PathHolderCensus): readonly ExplainedCensusGap[] {
+  if (census.coverage.platform !== "linux" || census.coverage.complete) return []
+  const unreadable = census.coverage.unreadable ?? []
+  const byIdentity = new Map<string, number[]>()
+  const descriptors: number[] = []
+  let closedDescriptors = 0
+  for (const entry of unreadable) {
+    const verdict = judgeUnreadableProcess(entry)
+    if (verdict.unexplained.length > 0) continue
+    if (verdict.explained.identity !== undefined) {
+      const pids = byIdentity.get(verdict.explained.identity) ?? []
+      if (!pids.includes(entry.pid)) pids.push(entry.pid)
+      byIdentity.set(verdict.explained.identity, pids)
+    }
+    if (verdict.explained.descriptors > 0) {
+      closedDescriptors += verdict.explained.descriptors
+      if (!descriptors.includes(entry.pid)) descriptors.push(entry.pid)
+    }
+  }
+  return [
+    ...[...byIdentity].map(([identity, pids]): ExplainedCensusGap => ({ kind: "identity", identity, pids })),
+    ...(descriptors.length === 0
+      ? []
+      : [{ kind: "vanished-descriptor" as const, pids: descriptors, descriptors: closedDescriptors }]),
+  ]
+}
+
+/**
+ * The ONE explained-gap rule applied to a SINGLE unreadable process a caller observed outside a census: hab's
+ * nothing-live certificate reads a holder's environment to tell this session's survivor from a neighbour, and a
+ * denial there is judged exactly as it would be inside a census (@cto 490ae392).
+ *
+ * `explained` is the gap the certificate carries; `unexplained` names the pid, comm and reason the caller must
+ * refuse with. Neither is set only when the entry carries no issue at all, which the rule already calls unexplained.
+ */
+export function judgeUnreadableCensusEntry(
+  entry: UnreadableProcess,
+):
+  | { readonly kind: "explained"; readonly gap: ExplainedCensusGap }
+  | { readonly kind: "unexplained"; readonly gap: UnexplainedCensusGap } {
+  const verdict = judgeUnreadableProcess(entry)
+  const unexplained = (cause: string) =>
+    ({
+      kind: "unexplained",
+      gap: {
+        pid: entry.pid,
+        comm: entry.comm ?? "",
+        cause,
+        ...(entry.unanswered === undefined || entry.unanswered.length === 0 ? {} : { unanswered: entry.unanswered }),
+      },
+    }) as const
+  if (verdict.unexplained.length > 0) return unexplained(verdict.unexplained.join("; "))
+  const identity = verdict.explained.identity
+  if (identity !== undefined) {
+    return { kind: "explained", gap: { kind: "identity", identity, pids: [entry.pid] } }
+  }
+  if (verdict.explained.descriptors > 0) {
+    return {
+      kind: "explained",
+      gap: { kind: "vanished-descriptor", pids: [entry.pid], descriptors: verdict.explained.descriptors },
+    }
+  }
+  // Fail closed: a caller must never read "the rule was silent" as "nothing to report".
+  return unexplained("unreadable, and the explained-gap rule names no identity or descriptor to explain it")
+}
+
+function judgeUnreadableProcess(entry: UnreadableProcess): UnreadableVerdict {
+  const exempted: string[] = []
+  const unexplained: string[] = []
+  let identity: string | undefined
+  let descriptors = 0
+  const name = `pid ${entry.pid} ${entry.comm || "(no comm)"}`
+  const sources = (reason: string, match: (resource: string) => boolean = () => true) => [
+    ...new Set(entry.issues.filter((issue) => issue.reason === reason && match(issue.resource)).map((i) => i.source)),
+  ]
+  if (entry.issues.length === 0) unexplained.push("unreadable with no recorded issue")
+  const denied = sources("denied")
+  if (denied.length > 0) {
+    // The identity is judged on the denials alone; any other reason this entry carries is classified below.
+    const cleared = clearedByIdentity({ ...entry, issues: entry.issues.filter((issue) => issue.reason === "denied") })
+    // A zombie is the census's to judge (one thread, removely 46b520fb); a Z entry that reaches here is one it did not
+    // accept, so it is judged like any other (@cto 4ff2d696).
+    if (cleared !== undefined) {
+      identity = cleared
+      exempted.push(`${name} denied, cleared by identity (${cleared})`)
+    } else unexplained.push(`denied ${denied.join(", ")}, and no identity clears it`)
+  }
+  const unanswered = sources("unanswered")
+  if (unanswered.length > 0) unexplained.push(`no answer from ${unanswered.join(", ")}`)
+  descriptors = entry.issues.filter(
+    (issue) => issue.reason === "missing" && issue.source === "fd" && VANISHED_DESCRIPTOR.test(issue.resource),
+  ).length
+  if (descriptors > 0) exempted.push(`${name} (${descriptors} descriptor(s) closed while it stayed present)`)
+  const missing = sources("missing", (resource) => !VANISHED_DESCRIPTOR.test(resource))
+  if (missing.length > 0) unexplained.push(`${missing.join(", ")} vanished while the process stayed present`)
+  const ambiguous = sources("ambiguous")
+  if (ambiguous.length > 0) unexplained.push(`ambiguous ${ambiguous.join(", ")} evidence`)
+  const known = new Set(["denied", "unanswered", "missing", "ambiguous"])
+  const unknown = [...new Set(entry.issues.map((issue) => issue.reason).filter((reason) => !known.has(reason)))]
+  if (unknown.length > 0) unexplained.push(`unknown issue reason ${unknown.join(", ")}`)
+  return { exempted, unexplained, explained: { ...(identity === undefined ? {} : { identity }), descriptors } }
+}
+
 /**
  * Required resources are the target (unless allowMissing explicitly permits absence) plus /proc on Linux or
  * /usr/sbin/lsof for the Darwin compatibility mechanism. Absent targets require the Linux proc collector.
