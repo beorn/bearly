@@ -39,11 +39,16 @@ export interface TestEnv {
 export function makeTestEnv(): TestEnv {
   const tmpDir = mkdtempSync(join(tmpdir(), "bearly-llm-test-"))
   const homeDir = mkdtempSync(join(tmpdir(), "bearly-llm-home-"))
+  const previousXdgCache = process.env.XDG_CACHE_HOME
 
   // Redirect the CLI's tmp output. buildOutputPath() hardcodes "/tmp/llm-…"
   // but we can't easily retarget it mid-test; instead we check the set of
   // /tmp/llm-* files created during the call window (before/after diff).
   process.env.HOME = homeDir
+  // Provider observations resolve their store through XDG_CACHE_HOME whenever it is set — and a managed seat's
+  // environment sets it to the habitat's cache. Redirecting HOME alone therefore read the LIVE habitat's
+  // observations, so a test that wrote its own store silently compared against production data.
+  process.env.XDG_CACHE_HOME = join(homeDir, ".cache")
   process.env.CLAUDE_SESSION_ID = "testsess12345678"
 
   // Keys so `isProviderAvailable` returns true. The providers never actually
@@ -104,6 +109,8 @@ export function makeTestEnv(): TestEnv {
       rmSync(homeDir, { recursive: true, force: true })
     } catch {}
     delete process.env.LLM_NO_ENV_AUTOLOAD
+    if (previousXdgCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousXdgCache
     ensureProviderKeysLoaded(process.cwd(), { reload: true })
     vi.restoreAllMocks()
     vi.resetModules()
