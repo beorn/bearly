@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-24
+
+First published build: dist ESM + type declarations via publishConfig, so consumers no longer load TypeScript sources.
+
 - Add opt-in `atomicWriteFileSync(..., mode, { exactMode: true })`: set the complete temporary file's mode on its open descriptor before fsync and rename. Omitted or false policy retains umask-masked modes.
 
 - Add asynchronous atomic replacement; harness writes delegate to this owner, with complete writes, explicit directory durability failures and loud cleanup errors.
