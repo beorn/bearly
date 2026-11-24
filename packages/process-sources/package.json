@@ -1,6 +1,7 @@
 {
   "name": "@bearly/process-sources",
   "version": "0.1.0",
+  "private": true,
   "description": "Pure interpretation of process argv, links, acquisition errors and descriptor outcomes",
   "license": "MIT",
   "author": "Bjørn Stabell <bjorn@stabell.org>",

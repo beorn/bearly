@@ -1,6 +1,7 @@
 {
   "name": "removely",
   "version": "0.6.0",
+  "private": true,
   "description": "Guarded recursive removal — a delete that cannot name the root it is allowed to touch does not compile",
   "keywords": [
     "cleanup",

@@ -1,6 +1,7 @@
 {
   "name": "vitest-silvery-dots",
   "version": "0.1.4",
+  "private": true,
   "description": "Streaming dot reporter for Vitest, built with Silvery React terminal UI",
   "keywords": [
     "dot-reporter",

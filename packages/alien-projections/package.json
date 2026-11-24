@@ -1,6 +1,7 @@
 {
   "name": "alien-projections",
   "version": "0.1.4",
+  "private": true,
   "description": "Incremental reactive collection transforms for the alien-signals ecosystem",
   "keywords": [
     "alien-signals",

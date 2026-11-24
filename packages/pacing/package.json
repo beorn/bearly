@@ -1,6 +1,7 @@
 {
   "name": "@bearly/pacing",
   "version": "0.3.0",
+  "private": true,
   "description": "Pure duration parsing and pacing policy: jitter and readiness",
   "keywords": [
     "backoff",
