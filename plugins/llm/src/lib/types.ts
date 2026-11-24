@@ -599,6 +599,20 @@ const SKUS_DATA: SkuConfig[] = [
     typicalLatencyMs: 60000,
   },
 
+  // Anthropic - Claude Fable 5.2, the fleet's strongest critique model.
+  // Served through OpenRouter, like every other leg on a host with no Anthropic
+  // API key: the endpoint carries the provider's own id, which spells 5.2 with
+  // a dot (`anthropic/claude-fable-5.2`), so the alias here is the fleet's
+  // spelling and the endpoint is the API's.
+  {
+    modelId: "claude-fable-5-2",
+    displayName: "Claude Fable 5.2",
+    isDeepResearch: false,
+    costTier: "very-high",
+    inputPricePerM: 8.0,
+    outputPricePerM: 40.0,
+    typicalLatencyMs: 15000,
+  },
   // Anthropic - Claude 4.6 series (latest)
   {
     modelId: "claude-opus-4-6",
@@ -1080,6 +1094,15 @@ const ENDPOINTS_DATA: Record<string, ProviderEndpoint> = {
 
   // Anthropic — 4.6 series ships extended thinking; the param is a numeric
   // `budget_tokens`, semantically a different beast from OpenAI's effort enum.
+  // OpenRouter-hosted Anthropic SKU: the alias above is the fleet's name, and
+  // this is the id OpenRouter serves (`anthropic/claude-fable-5.2`). No
+  // `reasoningParam`: the Anthropic budget knob is a direct-API field, and this
+  // route takes OpenRouter's own `reasoning_effort` instead.
+  "claude-fable-5-2": {
+    provider: "openrouter",
+    apiModelId: "anthropic/claude-fable-5.2",
+    capabilities: { ...NO_CAPS, vision: true },
+  },
   "claude-opus-4-6": {
     provider: "anthropic",
     capabilities: { ...NO_CAPS, vision: true },
