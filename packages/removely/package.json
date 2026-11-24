@@ -51,7 +51,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@bearly/process-sources": "^0.1.0"
+    "@bearly/process-sources": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
