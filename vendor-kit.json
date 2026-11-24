@@ -1,5 +1,5 @@
 {
-  "modules": ["release", "format-check", "oxfmt", "source-siblings"],
+  "modules": ["format-check", "oxfmt", "source-siblings"],
   "vars": {
     "bunVersion": "1.4.3",
     "buildStep": "",
