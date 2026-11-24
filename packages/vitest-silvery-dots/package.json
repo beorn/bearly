@@ -44,14 +44,14 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "loggily": ">=0.13.0"
+    "loggily": "0.13.0"
   },
   "devDependencies": {
     "tsdown": "0.23.7"
   },
   "peerDependencies": {
     "react": ">=19.0.0",
-    "silvery": ">=0.29.3",
+    "silvery": "0.29.3",
     "vitest": ">=4.0.0"
   },
   "tsdown": {
