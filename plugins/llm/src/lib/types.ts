@@ -612,6 +612,10 @@ const SKUS_DATA: SkuConfig[] = [
     inputPricePerM: 8.0,
     outputPricePerM: 40.0,
     typicalLatencyMs: 15000,
+    // The route advertises a 1M window, so it needs the same two bounds every
+    // other 1M route here carries: without maxOutputTokens the output budget
+    // reads the window as the ceiling and asks for everything (22972).
+    reasoning: { contextWindow: 1_048_576, maxOutputTokens: 65_536 },
   },
   // Anthropic - Claude 4.6 series (latest)
   {
