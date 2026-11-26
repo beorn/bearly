@@ -159,6 +159,7 @@ describe("firstCitationOf is the first of citationsOf", () => {
     "see /hh/var/@x/run-report.md and /hh/var/@y/ for the home",
     "smoke at .../smoke-linux/run1/raw.json and …/only/leaf",
     "and /hh/var/@x/tree/sub is also named",
+    "a cut note: /hh/var/@x/trunc/repo… ends here",
   ].join("\n")
   const index = buildCitationIndex([{ file: "doc.md", text }], { anchors: ANCHORS, containers: [ROOT, "/hh/var/@y"] })
   const targets = [
@@ -183,6 +184,9 @@ describe("firstCitationOf is the first of citationsOf", () => {
     "/hh/var/@x/only/leaf/a/b.log",
     "/hh/var/@x/only",
     "/hh/var/@x/unrelated",
+    "/hh/var/@x/trunc/report.md",
+    "/hh/var/@x/trunc/reports/a.json",
+    "/hh/var/@x/trunc/other.md",
   ]
   test("a path held only by its grandparent's tail is held", () => {
     expect(firstCitationOf(index, "/hh/var/@x/only/leaf/a/b.log")).not.toBeNull()
@@ -295,5 +299,33 @@ describe("holds in the shared removal predicate", () => {
     const { root, target } = fixture()
     safeRemoveSync(target, { within: root, allowedRoots: [root] })
     expect(existsSync(target)).toBe(false)
+  })
+})
+
+// #38748 (@cto 8bc24d05): a retro note cited `/hh/var/@chief/terminal-fields-board-1048/repo…`, cut short. The
+// matcher read `repo…` as no file, so the closed-citation pass deleted report.md, the file the note meant.
+describe("a truncated citation holds every path it could name (#38748)", () => {
+  const containers = [ROOT, "/hh/var/@chief", "/hh/var/@x"]
+  const holds = (text: string, target: string) =>
+    citationsOf(buildCitationIndex([{ file: "doc.md", text }], { anchors: ANCHORS, containers }), target).length > 0
+  const board = "/hh/var/@chief/terminal-fields-board-1048"
+  const note = `| log: ${board}/repo…”; @dev/11: “a clean hourly count`
+
+  test.each([
+    ["the real note's ellipsis and closing quote", note],
+    ["three dots", `log at ${board}/repo... then more`],
+  ])("%s keeps the full file", (_name, text) => {
+    expect(holds(text, `${board}/report.md`)).toBe(true)
+    expect(holds(text, `${board}/reports/a.json`)).toBe(true)
+    expect(holds(text, `${board}/other.md`)).toBe(false)
+  })
+
+  test("a cut that ends at a slash holds that folder's contents", () => {
+    expect(holds("see /hh/var/@x/run/… for the logs", "/hh/var/@x/run/a.log")).toBe(true)
+  })
+
+  test("a cut directly inside a container holds nothing inside it", () => {
+    expect(holds("seat scratch: /hh/var/@… and /hh/var/@x/…", "/hh/var/@x/old.log")).toBe(false)
+    expect(holds("seat scratch: /hh/var/@x/ol…", "/hh/var/@x/old.log")).toBe(false)
   })
 })

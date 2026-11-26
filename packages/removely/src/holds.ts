@@ -100,6 +100,11 @@ interface IndexState {
    * of the folder's whole ancestor chain / abbreviated-tail chain, up to the nearest container.
    */
   readonly ancestorHits: Map<string, readonly Citation[]>
+  /**
+   * #38748: mentions cut short by an ellipsis (`…/board/repo…`), by the folder the cut falls in: each holds every
+   * name in that folder starting with the text before the ellipsis. A cut directly inside a container is not kept.
+   */
+  readonly truncated: ReadonlyMap<string, readonly { readonly fragment: string; readonly citation: Citation }[]>
   readonly ancestorFirst: Map<string, Citation | null>
   readonly tailFirst: Map<string, Citation | null>
 }
@@ -132,6 +137,17 @@ const ENDS_ANCESTOR_AT = new RegExp(ENDS_ANCESTOR.source.slice(1), "uy")
 function endsAt(ends: RegExp, raw: string, at: number): boolean {
   ends.lastIndex = at
   return ends.test(raw)
+}
+
+/**
+ * #38748: the text before an ellipsis (`…` or `...`) inside a mention's path run, or null. `/a/board/repo…` is
+ * `/a/board/repo`: someone cut the path short, so it names every path that text could begin.
+ */
+function truncatedPrefix(raw: string): string | null {
+  const end = raw.search(HARD_END)
+  const run = end === -1 ? raw : raw.slice(0, end)
+  const cuts = [run.indexOf("…"), run.indexOf("...")].filter((at) => at !== -1)
+  return cuts.length === 0 ? null : run.slice(0, Math.min(...cuts))
 }
 
 /** An ellipsis that starts a path: at a line start or after a delimiter, never inside one (`/v/.../x`, `a...`). */
@@ -246,6 +262,8 @@ export function buildCitationIndex(
   if (!Array.isArray(given)) throw new Error("buildCitationIndex: files must be an array of { file, text | found }")
   const first = new Map<string, Citation>()
   const tails = new Map<string, Citation>()
+  const containers = new Set(options.containers.map((path) => stripTrailing(path)))
+  const truncated = new Map<string, { fragment: string; citation: Citation }[]>()
   for (const entry of files) {
     const file: unknown = entry?.file
     // Checked at run time: a caller outside TypeScript can hand anything here, and a missing list must refuse.
@@ -266,7 +284,20 @@ export function buildCitationIndex(
       }
       if (found.abbreviated) {
         if (!tails.has(found.path)) tails.set(found.path, citation)
-      } else if (!first.has(found.raw)) first.set(found.raw, citation)
+      } else {
+        if (!first.has(found.raw)) first.set(found.raw, citation)
+        const prefix = truncatedPrefix(found.raw)
+        const slash = prefix === null ? -1 : prefix.lastIndexOf("/")
+        if (prefix !== null && slash > 0) {
+          const folder = prefix.slice(0, slash)
+          const fragment = prefix.slice(slash + 1)
+          const list = truncated.get(folder) ?? []
+          if (!containers.has(folder) && !list.some((entry) => entry.fragment === fragment)) {
+            list.push({ fragment, citation })
+            truncated.set(folder, list)
+          }
+        }
+      }
     }
   }
   const bySegment = new Map<string, { prefix: string; last: boolean; citation: Citation }[]>()
@@ -283,8 +314,9 @@ export function buildCitationIndex(
   STATE.set(index, {
     sorted: [...first.keys()].sort(),
     first,
-    containers: new Set(options.containers.map((path) => stripTrailing(path))),
+    containers,
     bySegment,
+    truncated,
     ancestorHits: new Map(),
     ancestorFirst: new Map(),
     tailFirst: new Map(),
@@ -328,7 +360,34 @@ export function citationsOf(index: CitationIndex, target: string): Citation[] {
     }
     if (state.containers.has(candidate)) break
   }
+  for (let candidate: string | null = path; candidate !== null; candidate = parentOf(candidate)) {
+    if (candidate !== path && state.containers.has(candidate)) break
+    for (const citation of truncatedAt(state, candidate)) held.push(citation)
+    if (state.containers.has(candidate)) break
+  }
   return held
+}
+
+/** #38748: the truncated mentions whose cut text begins `candidate`'s own name, in its folder. */
+function truncatedAt(state: IndexState, candidate: string): readonly Citation[] {
+  if (state.truncated.size === 0) return NO_CITATIONS
+  const folder = parentOf(candidate)
+  const entries = folder === null ? undefined : state.truncated.get(folder)
+  if (entries === undefined) return NO_CITATIONS
+  const name = candidate.slice(candidate.lastIndexOf("/") + 1)
+  return entries.filter((entry) => name.startsWith(entry.fragment)).map((entry) => entry.citation)
+}
+
+/** The first truncated mention holding `path` or an ancestor, nearest first, below the nearest container. */
+function truncatedChainFirst(state: IndexState, path: string): Citation | null {
+  if (state.truncated.size === 0) return null
+  for (let candidate: string | null = path; candidate !== null; candidate = parentOf(candidate)) {
+    if (candidate !== path && state.containers.has(candidate)) break
+    const hit = truncatedAt(state, candidate)[0]
+    if (hit !== undefined) return hit
+    if (state.containers.has(candidate)) break
+  }
+  return null
 }
 
 /**
@@ -405,9 +464,8 @@ export function firstCitationOf(index: CitationIndex, target: string): Citation 
   const parent = parentOf(path)
   const ancestor = ancestorChainFirst(state, parent)
   if (ancestor !== null) return ancestor
-  const tail = tailAt(state, path, true)
-  if (tail !== null || state.containers.has(path)) return tail
-  return tailChainFirst(state, parent)
+  const tail = tailAt(state, path, true) ?? (state.containers.has(path) ? null : tailChainFirst(state, parent))
+  return tail ?? truncatedChainFirst(state, path)
 }
 
 export type RemovalHeldCode = "removely/held-tracked" | "removely/held-cited"
