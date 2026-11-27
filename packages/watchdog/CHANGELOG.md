@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `logger: { name, file? }` writes the lines as a named logger: each template is then the message alone, stderr gets
+  `HH:MM:SS LEVEL name message` and `file`, when given, one JSON row `{time, level, name, msg}` per line through a
+  second line sink on that path (`loggily/sink` `openLineSink({ path })`). A log line is warn, a recovery info, the
+  kill error, and the kill waits for both sinks within the same 1 s bound. The km daemon's kill line had reached only
+  its supervisor's pane log, never daemon.log (km 38943).
+
 ## 0.2.0
 
 - The worker's lines reach stderr through loggily's line sink (`loggily/sink`, new dependency) instead of a blocking

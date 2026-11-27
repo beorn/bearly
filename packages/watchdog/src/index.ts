@@ -22,7 +22,10 @@
  * with the daemon (km 25947). A kill waits at most SINK_DRAIN_BEFORE_KILL_MS for
  * its line to reach the kernel and then SIGKILLs regardless, because a signal
  * handler would be queued on the frozen loop; a line past the sink's byte bound
- * is dropped and counted, and the next line written says so. Its lines are
+ * is dropped and counted, and the next line written says so. With a `logger`
+ * naming a `file`, each line also goes to that file as a JSON row through a
+ * second sink on its path, and the kill waits for both within the same bound
+ * (km 38943: the daemon's own log said nothing of who killed it). Its lines are
  * built only from what shared memory holds: the stamp's age, the stall count,
  * integer fields the main thread publishes, with names only through static
  * tables, and short texts it publishes into fixed byte slots (what it was doing
@@ -52,9 +55,27 @@ export interface WatchdogKillAction {
   readonly message: string
 }
 
+/**
+ * The lines as a named logger writes them. Each template is then the message alone: stderr gets
+ * `HH:MM:SS LEVEL name message` (loggily's console line) and `file`, when given, one JSON row
+ * `{time, level, name, msg}` (loggily's file row) per line, so a process's own log carries its watchdog's lines among
+ * its own. A log line is level warn, a recovery info, the kill error.
+ */
+export interface WatchdogLogger {
+  readonly name: string
+  /**
+   * A file each line is appended to, through its own line sink on the path: the writer thread opens the file for every
+   * line, so a log rotated by rename keeps getting the lines, and a write that blocks holds neither the watchdog nor
+   * the kill. A kill line counts as written once the kernel has it, which a SIGKILL does not undo.
+   */
+  readonly file?: string
+}
+
 export interface WatchdogOptions {
   /** Names this watchdog in its refusals. */
   readonly label: string
+  /** Write the lines as this logger; without it each template is the whole line, written to stderr as it renders. */
+  readonly logger?: WatchdogLogger
   /** How often the worker wakes to read the stamp. */
   readonly checkEveryMs: number
   /** Integer facts the main thread publishes with `set`, readable as `{name}` in a line. */
@@ -155,6 +176,8 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
   // a producer port (transferred) and the sink's shared control, and posts lines without ever waiting on the reader.
   const sink = openLineSink({ fd: 2 })
   const producer = sink.producer()
+  const fileSink = options.logger?.file === undefined ? null : openLineSink({ path: options.logger.file })
+  const fileProducer = fileSink?.producer() ?? null
   const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
     eval: true,
     workerData: {
@@ -169,9 +192,12 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       sampler: sampling,
       sinkPort: producer.port,
       sinkControl: producer.control,
+      logger: options.logger === undefined ? null : { name: options.logger.name },
+      fileSinkPort: fileProducer?.port ?? null,
+      fileSinkControl: fileProducer?.control ?? null,
       drainBeforeKillMs: SINK_DRAIN_BEFORE_KILL_MS,
     },
-    transferList: [producer.port],
+    transferList: fileProducer === null ? [producer.port] : [producer.port, fileProducer.port],
   })
   worker.unref()
   // A worker that dies leaves the process unwatched, which is the state this package exists to rule out:
@@ -220,6 +246,7 @@ export function armWatchdog(options: WatchdogOptions): Watchdog {
       void sampler?.terminate()
       // Drain what the worker posted, within the sink's own bound on the wait, then stop its writer.
       void sink.close()
+      void fileSink?.close()
     },
   }
 }

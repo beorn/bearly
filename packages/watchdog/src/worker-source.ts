@@ -200,11 +200,22 @@ const { workerData } = require("node:worker_threads")
 ${renderWatchdogLine.toString()}
 ${readFinishedSample.toString()}
 ${postSinkLine.toString()}
-const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler, sinkPort, sinkControl, drainBeforeKillMs } = workerData
+const { stamps, slots, checkEveryMs, fields, tables, texts: textSlots, log, kill, sampler, sinkPort, sinkControl, logger, fileSinkPort, fileSinkControl, drainBeforeKillMs } = workerData
 // Every line goes through loggily's line sink: the post returns at once, and a stderr whose reader has stalled parks
-// the sink's writer, never this thread. A line past the sink's byte bound is dropped and counted there.
+// the sink's writer, never this thread. A line past the sink's byte bound is dropped and counted there. A logger's
+// file has a sink of its own on its path, so a file write that blocks holds this thread no more than stderr does.
 const sinkState = new Int32Array(sinkControl)
-const emit = (line) => postSinkLine(sinkPort, sinkState, line)
+const fileState = fileSinkControl === null ? null : new Int32Array(fileSinkControl)
+const emit = (level, line) => {
+  if (logger === null) {
+    postSinkLine(sinkPort, sinkState, line)
+    return
+  }
+  const msg = line.replace(/\\n+$/u, "")
+  const now = new Date()
+  postSinkLine(sinkPort, sinkState, now.toTimeString().slice(0, 8) + " " + level.toUpperCase() + " " + logger.name + " " + msg + "\\n")
+  if (fileState !== null) postSinkLine(fileSinkPort, fileState, JSON.stringify({ time: now.toISOString(), level, name: logger.name, msg }) + "\\n")
+}
 const stamp = new Float64Array(stamps)
 const values = new Float64Array(slots)
 const decoder = new TextDecoder()
@@ -258,14 +269,17 @@ for (;;) {
   const last = stamp[0]
   const age = Date.now() - last
   if (kill && age >= kill.afterMs) {
-    emit(renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message, false) }))
-    // Give the writer up to drainBeforeKillMs to get the kill line, and what precedes it, to the kernel. A reader
-    // that stays stalled keeps the bytes pending, and the kill goes ahead regardless: it never waits on the log.
+    emit("error", renderWatchdogLine(kill.message, { elapsedMs: age, count, ...facts(kill.message, false) }))
+    // Give the writers up to drainBeforeKillMs, together, to get the kill line, and what precedes it, to the kernel.
+    // A reader that stays stalled, or a file write that blocks, keeps the bytes pending, and the kill goes ahead
+    // regardless: it never waits on the log.
     const deadline = Date.now() + drainBeforeKillMs
-    for (let pending = Atomics.load(sinkState, 0); pending > 0; pending = Atomics.load(sinkState, 0)) {
-      const remaining = deadline - Date.now()
-      if (remaining <= 0) break
-      Atomics.wait(sinkState, 0, pending, remaining)
+    for (const state of fileState === null ? [sinkState] : [sinkState, fileState]) {
+      for (let pending = Atomics.load(state, 0); pending > 0; pending = Atomics.load(state, 0)) {
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) break
+        Atomics.wait(state, 0, pending, remaining)
+      }
     }
     process.kill(process.pid, "SIGKILL")
   }
@@ -278,11 +292,11 @@ for (;;) {
     }
     if (age >= nextLineAt) {
       count += 1
-      emit(renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message, true) }))
+      emit("warn", renderWatchdogLine(log.message, { elapsedMs: age, count, ...facts(log.message, true) }))
       nextLineAt += log.repeatEveryMs
     }
   } else if (count > 0) {
-    emit(renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered, false) }))
+    emit("info", renderWatchdogLine(log.recovered, { elapsedMs: last - stallStamp, count, ...facts(log.recovered, false) }))
     count = 0
     stallStamp = -1
   }
